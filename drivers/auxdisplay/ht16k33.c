@@ -547,8 +547,11 @@ static int ht16k33_keypad_probe(struct i2c_client *client,
 					ht16k33_keypad_irq_thread,
 					IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
 					DRIVER_NAME, keypad);
-	if (err)
+	if (err) {
+		dev_err(dev, "irq request failed %d, error %d\n", client->irq,
+			err);
 		return err;
+	}
 
 	ht16k33_keypad_stop(keypad->dev);
 
@@ -663,7 +666,7 @@ static int ht16k33_probe(struct i2c_client *client)
 		return -EIO;
 	}
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

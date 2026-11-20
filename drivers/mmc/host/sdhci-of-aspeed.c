@@ -525,7 +525,7 @@ static int aspeed_sdc_probe(struct platform_device *pdev)
 	struct aspeed_sdc *sdc;
 	int ret;
 
-	sdc = devm_kzalloc_obj(&pdev->dev, *sdc);
+	sdc = devm_kzalloc(&pdev->dev, sizeof(*sdc), GFP_KERNEL);
 	if (!sdc)
 		return -ENOMEM;
 

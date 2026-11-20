@@ -43,8 +43,10 @@ raw_copy_from_user(void *to, const void __user *from, unsigned long size)
 		asm_inline volatile(
 			"	lhi	%%r0,%[spec]\n"
 			"0:	mvcos	%[to],%[from],%[size]\n"
+			"1:	nopr	%%r7\n"
 			CC_IPM(cc)
-			EX_TABLE_INSN_UA_MVCOS_FROM(0b, 0b)
+			EX_TABLE_UA_MVCOS_FROM(0b, 0b)
+			EX_TABLE_UA_MVCOS_FROM(1b, 0b)
 			: CC_OUT(cc, cc), [size] "+d" (size), [to] "=Q" (*(char *)to)
 			: [spec] "I" (0x81), [from] "Q" (*(const char __user *)from)
 			: CC_CLOBBER_LIST("memory", "0"));
@@ -69,8 +71,10 @@ raw_copy_to_user(void __user *to, const void *from, unsigned long size)
 		asm_inline volatile(
 			"	llilh	%%r0,%[spec]\n"
 			"0:	mvcos	%[to],%[from],%[size]\n"
+			"1:	nopr	%%r7\n"
 			CC_IPM(cc)
-			EX_TABLE_INSN_UA_MVCOS_TO(0b, 0b)
+			EX_TABLE_UA_MVCOS_TO(0b, 0b)
+			EX_TABLE_UA_MVCOS_TO(1b, 0b)
 			: CC_OUT(cc, cc), [size] "+d" (size), [to] "=Q" (*(char __user *)to)
 			: [spec] "I" (0x81), [from] "Q" (*(const char *)from)
 			: CC_CLOBBER_LIST("memory", "0"));
@@ -119,7 +123,9 @@ __put_user_##type##_noinstr(unsigned type __user *to,			\
 	asm goto(							\
 		"	llilh	%%r0,%[spec]\n"				\
 		"0:	mvcos	%[to],%[from],%[size]\n"		\
-		EX_TABLE_INSN(0b, %l[Efault])				\
+		"1:	nopr	%%r7\n"					\
+		EX_TABLE(0b, %l[Efault])				\
+		EX_TABLE(1b, %l[Efault])				\
 		: [to] "+Q" (*to)					\
 		: [size] "d" (size), [from] "Q" (*from),		\
 		  [spec] "I" (0x81)					\
@@ -144,9 +150,10 @@ __put_user_##type##_noinstr(unsigned type __user *to,			\
 	asm_inline volatile(						\
 		"	llilh	%%r0,%[spec]\n"				\
 		"0:	mvcos	%[to],%[from],%[size]\n"		\
-		"	lhi	%[rc],0\n"				\
-		"1:\n"							\
-		EX_TABLE_INSN_UA_FAULT(0b, 1b, %[rc])			\
+		"1:	lhi	%[rc],0\n"				\
+		"2:\n"							\
+		EX_TABLE_UA_FAULT(0b, 2b, %[rc])			\
+		EX_TABLE_UA_FAULT(1b, 2b, %[rc])			\
 		: [rc] "=d" (rc), [to] "+Q" (*to)			\
 		: [size] "d" (size), [from] "Q" (*from),		\
 		  [spec] "I" (0x81)					\
@@ -231,7 +238,9 @@ __get_user_##type##_noinstr(unsigned type *to,				\
 	asm goto(							\
 		"	lhi	%%r0,%[spec]\n"				\
 		"0:	mvcos	%[to],%[from],%[size]\n"		\
-		EX_TABLE_INSN(0b, %l[Efault])				\
+		"1:	nopr	%%r7\n"					\
+		EX_TABLE(0b, %l[Efault])				\
+		EX_TABLE(1b, %l[Efault])				\
 		: [to] "=Q" (*to)					\
 		: [size] "d" (size), [from] "Q" (*from),		\
 		  [spec] "I" (0x81)					\
@@ -257,9 +266,10 @@ __get_user_##type##_noinstr(unsigned type *to,				\
 	asm_inline volatile(						\
 		"	lhi	%%r0,%[spec]\n"				\
 		"0:	mvcos	%[to],%[from],%[size]\n"		\
-		"	lhi	%[rc],0\n"				\
-		"1:\n"							\
-		EX_TABLE_INSN_UA_FAULT(0b, 1b, %[rc])			\
+		"1:	lhi	%[rc],0\n"				\
+		"2:\n"							\
+		EX_TABLE_UA_FAULT(0b, 2b, %[rc])			\
+		EX_TABLE_UA_FAULT(1b, 2b, %[rc])			\
 		: [rc] "=d" (rc), [to] "=Q" (*to)			\
 		: [size] "d" (size), [from] "Q" (*from),		\
 		  [spec] "I" (0x81)					\
@@ -364,8 +374,10 @@ __clear_user(void __user *to, unsigned long size)
 		asm_inline volatile(
 			"	llilh	%%r0,%[spec]\n"
 			"0:	mvcos	%[to],%[from],%[size]\n"
+			"1:	nopr	%%r7\n"
 			CC_IPM(cc)
-			EX_TABLE_INSN_UA_MVCOS_TO(0b, 0b)
+			EX_TABLE_UA_MVCOS_TO(0b, 0b)
+			EX_TABLE_UA_MVCOS_TO(1b, 0b)
 			: CC_OUT(cc, cc), [size] "+d" (size), [to] "=Q" (*(char __user *)to)
 			: [spec] "I" (0x81), [from] "Q" (*(const char *)empty_zero_page)
 			: CC_CLOBBER_LIST("memory", "0"));
@@ -406,7 +418,9 @@ do {									\
 	case 8:								\
 		asm goto(						\
 			"0:	mvc	%O[_dst](%[_len],%R[_dst]),%[_src]\n" \
-			EX_TABLE_INSN(0b, %l[err_label])		\
+			"1:	nopr	%%r7\n"				\
+			EX_TABLE(0b, %l[err_label])			\
+			EX_TABLE(1b, %l[err_label])			\
 			: [_dst] "=Q" (*(type *)dst)			\
 			: [_src] "Q" (*(type *)(src)),			\
 			  [_len] "I" (sizeof(type))			\
@@ -433,9 +447,10 @@ do {									\
 	case 8:								\
 		asm_inline volatile(					\
 			"0:	mvc	0(%[_len],%[_dst]),%[_src]\n"	\
-			"	lhi	%[_rc],0\n"			\
-			"1:\n"						\
-			EX_TABLE_INSN_UA_FAULT(0b, 1b, %[_rc])		\
+			"1:	lhi	%[_rc],0\n"			\
+			"2:\n"						\
+			EX_TABLE_UA_FAULT(0b, 2b, %[_rc])		\
+			EX_TABLE_UA_FAULT(1b, 2b, %[_rc])		\
 			: [_rc] "=d" (__rc),				\
 			  "=m" (*__dst)					\
 			: [_src] "Q" (*(type *)(src)),			\

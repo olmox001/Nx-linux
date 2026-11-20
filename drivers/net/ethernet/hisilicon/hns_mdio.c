@@ -503,7 +503,7 @@ static int hns_mdio_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	mdio_dev = devm_kzalloc_obj(&pdev->dev, *mdio_dev);
+	mdio_dev = devm_kzalloc(&pdev->dev, sizeof(*mdio_dev), GFP_KERNEL);
 	if (!mdio_dev)
 		return -ENOMEM;
 

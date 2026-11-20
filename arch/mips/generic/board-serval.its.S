@@ -18,6 +18,7 @@
 			description = "Serval Linux kernel";
 			kernel = "kernel";
 			fdt = "fdt-serval_pcb105";
+			ramdisk = "ramdisk";
 		};
 	};
 };

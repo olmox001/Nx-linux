@@ -1018,7 +1018,9 @@ static int mt8183_dai_i2s_set_priv(struct mtk_base_afe *afe)
 	int i;
 
 	for (i = 0; i < DAI_I2S_NUM; i++) {
-		i2s_priv = devm_kzalloc_obj(afe->dev, struct mtk_afe_i2s_priv);
+		i2s_priv = devm_kzalloc(afe->dev,
+					sizeof(struct mtk_afe_i2s_priv),
+					GFP_KERNEL);
 		if (!i2s_priv)
 			return -ENOMEM;
 
@@ -1035,7 +1037,7 @@ int mt8183_dai_i2s_register(struct mtk_base_afe *afe)
 {
 	struct mtk_base_afe_dai *dai;
 
-	dai = devm_kzalloc_obj(afe->dev, *dai);
+	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
 	if (!dai)
 		return -ENOMEM;
 

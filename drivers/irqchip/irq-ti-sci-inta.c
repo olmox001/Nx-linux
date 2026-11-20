@@ -620,8 +620,9 @@ static int ti_sci_inta_get_unmapped_sources(struct ti_sci_inta_irq_domain *inta)
 	if (count <= 0)
 		return 0;
 
-	inta->unmapped_dev_ids = devm_kzalloc_objs(dev, *inta->unmapped_dev_ids,
-						   count);
+	inta->unmapped_dev_ids = devm_kcalloc(dev, count,
+					      sizeof(*inta->unmapped_dev_ids),
+					      GFP_KERNEL);
 	if (!inta->unmapped_dev_ids)
 		return -ENOMEM;
 
@@ -662,7 +663,7 @@ static int ti_sci_inta_irq_domain_probe(struct platform_device *pdev)
 	if (!parent_domain)
 		return -EPROBE_DEFER;
 
-	inta = devm_kzalloc_obj(dev, *inta);
+	inta = devm_kzalloc(dev, sizeof(*inta), GFP_KERNEL);
 	if (!inta)
 		return -ENOMEM;
 

@@ -138,7 +138,7 @@ static int ice40_fpga_probe(struct spi_device *spi)
 	struct fpga_manager *mgr;
 	int ret;
 
-	priv = devm_kzalloc_obj(&spi->dev, *priv);
+	priv = devm_kzalloc(&spi->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

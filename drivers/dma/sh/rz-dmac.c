@@ -937,7 +937,7 @@ static u32 rz_dmac_calculate_residue_bytes_in_vd(struct rz_dmac_chan *channel,
 	struct rz_dmac *dmac = to_rz_dmac(chan->device);
 	u32 residue = 0, i = 0;
 
-	while (rz_dmac_lmdesc_addr(channel, lmdesc) != crla) {
+	while (lmdesc->nxla != crla) {
 		lmdesc = rz_dmac_get_next_lmdesc(channel->lmdesc.base, lmdesc);
 		if (++i >= DMAC_NR_LMDESC)
 			return 0;
@@ -948,13 +948,13 @@ static u32 rz_dmac_calculate_residue_bytes_in_vd(struct rz_dmac_chan *channel,
 		u32 start_lmdesc_addr = rz_dmac_lmdesc_addr(channel, desc->start_lmdesc);
 
 		while (lmdesc->nxla != start_lmdesc_addr) {
-			lmdesc = rz_dmac_get_next_lmdesc(channel->lmdesc.base, lmdesc);
 			residue += lmdesc->tb;
+			lmdesc = rz_dmac_get_next_lmdesc(channel->lmdesc.base, lmdesc);
 		}
 	} else {
 		while (lmdesc->chcfg & CHCFG_DEM) {
-			lmdesc = rz_dmac_get_next_lmdesc(channel->lmdesc.base, lmdesc);
 			residue += lmdesc->tb;
+			lmdesc = rz_dmac_get_next_lmdesc(channel->lmdesc.base, lmdesc);
 		}
 	}
 
@@ -1411,7 +1411,7 @@ static int rz_dmac_probe(struct platform_device *pdev)
 	int irq;
 	u8 i;
 
-	dmac = devm_kzalloc_obj(&pdev->dev, *dmac);
+	dmac = devm_kzalloc(&pdev->dev, sizeof(*dmac), GFP_KERNEL);
 	if (!dmac)
 		return -ENOMEM;
 
@@ -1423,8 +1423,8 @@ static int rz_dmac_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	dmac->channels = devm_kzalloc_objs(&pdev->dev, *dmac->channels,
-					   dmac->n_channels);
+	dmac->channels = devm_kcalloc(&pdev->dev, dmac->n_channels,
+				      sizeof(*dmac->channels), GFP_KERNEL);
 	if (!dmac->channels)
 		return -ENOMEM;
 

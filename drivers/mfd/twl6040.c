@@ -648,7 +648,8 @@ static int twl6040_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	twl6040 = devm_kzalloc_obj(&client->dev, struct twl6040);
+	twl6040 = devm_kzalloc(&client->dev, sizeof(struct twl6040),
+			       GFP_KERNEL);
 	if (!twl6040)
 		return -ENOMEM;
 

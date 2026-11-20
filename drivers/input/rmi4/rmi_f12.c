@@ -155,10 +155,6 @@ static int rmi_f12_read_sensor_tuning(struct f12_data *f12)
 		offset += 4;
 	}
 
-	/* When platform data are provided, we're done */
-	if (sensor->x_mm && sensor->y_mm)
-		return 0;
-
 	/*
 	 * Use the Query DPM feature when the resolution query register
 	 * exists.
@@ -175,10 +171,8 @@ static int rmi_f12_read_sensor_tuning(struct f12_data *f12)
 		}
 		dpm_resolution = buf[0];
 
-		if (!sensor->x_mm)
-			sensor->x_mm = sensor->max_x / dpm_resolution;
-		if (!sensor->y_mm)
-			sensor->y_mm = sensor->max_y / dpm_resolution;
+		sensor->x_mm = sensor->max_x / dpm_resolution;
+		sensor->y_mm = sensor->max_y / dpm_resolution;
 	} else {
 		if (rmi_register_desc_has_subpacket(item, 3)) {
 			rx_receivers = buf[offset];
@@ -190,10 +184,8 @@ static int rmi_f12_read_sensor_tuning(struct f12_data *f12)
 		if (rmi_register_desc_has_subpacket(item, 4))
 			offset += 1;
 
-		if (!sensor->x_mm)
-			sensor->x_mm = (pitch_x * rx_receivers) >> 12;
-		if (!sensor->y_mm)
-			sensor->y_mm = (pitch_y * tx_receivers) >> 12;
+		sensor->x_mm = (pitch_x * rx_receivers) >> 12;
+		sensor->y_mm = (pitch_y * tx_receivers) >> 12;
 	}
 
 	rmi_dbg(RMI_DEBUG_FN, &fn->dev, "%s: x_mm: %d y_mm: %d\n", __func__,
@@ -411,7 +403,8 @@ static int rmi_f12_probe(struct rmi_function *fn)
 		return -ENODEV;
 	}
 
-	f12 = devm_kzalloc_flex(&fn->dev, *f12, irq_mask, irq_mask_size * 2);
+	f12 = devm_kzalloc(&fn->dev, struct_size(f12, irq_mask, irq_mask_size * 2),
+			   GFP_KERNEL);
 	if (!f12)
 		return -ENOMEM;
 
@@ -529,20 +522,20 @@ static int rmi_f12_probe(struct rmi_function *fn)
 	}
 
 	/* allocate the in-kernel tracking buffers */
-	sensor->tracking_pos = devm_kzalloc_objs(&fn->dev,
-						 *sensor->tracking_pos,
-						 sensor->nbr_fingers);
+	sensor->tracking_pos = devm_kcalloc(&fn->dev, sensor->nbr_fingers,
+					    sizeof(*sensor->tracking_pos),
+					    GFP_KERNEL);
 	if (!sensor->tracking_pos)
 		return -ENOMEM;
 
-	sensor->tracking_slots = devm_kzalloc_objs(&fn->dev,
-						   *sensor->tracking_slots,
-						   sensor->nbr_fingers);
+	sensor->tracking_slots = devm_kcalloc(&fn->dev, sensor->nbr_fingers,
+					      sizeof(*sensor->tracking_slots),
+					      GFP_KERNEL);
 	if (!sensor->tracking_slots)
 		return -ENOMEM;
 
-	sensor->objs = devm_kzalloc_objs(&fn->dev, *sensor->objs,
-					 sensor->nbr_fingers);
+	sensor->objs = devm_kcalloc(&fn->dev, sensor->nbr_fingers,
+				    sizeof(*sensor->objs), GFP_KERNEL);
 	if (!sensor->objs)
 		return -ENOMEM;
 

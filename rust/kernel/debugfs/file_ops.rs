@@ -20,6 +20,9 @@ use crate::{
 
 use core::marker::PhantomData;
 
+#[cfg(CONFIG_DEBUG_FS)]
+use core::ops::Deref;
+
 /// # Invariant
 ///
 /// `FileOps<T>` will always contain an `operations` which is safe to use for a file backed
@@ -27,7 +30,7 @@ use core::marker::PhantomData;
 /// into a reference.
 pub(super) struct FileOps<T> {
     #[cfg(CONFIG_DEBUG_FS)]
-    operations: &'static bindings::file_operations,
+    operations: bindings::file_operations,
     #[cfg(CONFIG_DEBUG_FS)]
     mode: u16,
     _phantom: PhantomData<T>,
@@ -38,7 +41,7 @@ impl<T> FileOps<T> {
     ///
     /// The caller asserts that the provided `operations` is safe to use for a file whose
     /// inode has a pointer to `T` in its private data that is safe to convert into a reference.
-    const unsafe fn new(operations: &'static bindings::file_operations, mode: u16) -> Self {
+    const unsafe fn new(operations: bindings::file_operations, mode: u16) -> Self {
         Self {
             #[cfg(CONFIG_DEBUG_FS)]
             operations,
@@ -62,11 +65,11 @@ impl<T: Adapter> FileOps<T> {
 }
 
 #[cfg(CONFIG_DEBUG_FS)]
-impl<T> FileOps<T> {
-    /// Returns a `'static` reference to the inner `file_operations`.
-    #[inline]
-    pub(crate) fn fops(&self) -> &'static bindings::file_operations {
-        self.operations
+impl<T> Deref for FileOps<T> {
+    type Target = bindings::file_operations;
+
+    fn deref(&self) -> &Self::Target {
+        &self.operations
     }
 }
 
@@ -127,7 +130,7 @@ pub(crate) trait ReadFile<T> {
 
 impl<T: Writer + Sync> ReadFile<T> for T {
     const FILE_OPS: FileOps<T> = {
-        let operations = &bindings::file_operations {
+        let operations = bindings::file_operations {
             read: Some(bindings::seq_read),
             llseek: Some(bindings::seq_lseek),
             release: Some(bindings::single_release),
@@ -178,7 +181,7 @@ pub(crate) trait ReadWriteFile<T> {
 
 impl<T: Writer + Reader + Sync> ReadWriteFile<T> for T {
     const FILE_OPS: FileOps<T> = {
-        let operations = &bindings::file_operations {
+        let operations = bindings::file_operations {
             open: Some(writer_open::<T>),
             read: Some(bindings::seq_read),
             write: Some(write::<T>),
@@ -235,7 +238,7 @@ pub(crate) trait WriteFile<T> {
 
 impl<T: Reader + Sync> WriteFile<T> for T {
     const FILE_OPS: FileOps<T> = {
-        let operations = &bindings::file_operations {
+        let operations = bindings::file_operations {
             open: Some(write_only_open),
             write: Some(write_only_write::<T>),
             llseek: Some(bindings::noop_llseek),
@@ -287,7 +290,7 @@ pub(crate) trait BinaryReadFile<T> {
 
 impl<T: BinaryWriter + Sync> BinaryReadFile<T> for T {
     const FILE_OPS: FileOps<T> = {
-        let operations = &bindings::file_operations {
+        let operations = bindings::file_operations {
             read: Some(blob_read::<T>),
             llseek: Some(bindings::default_llseek),
             open: Some(bindings::simple_open),
@@ -341,7 +344,7 @@ pub(crate) trait BinaryWriteFile<T> {
 
 impl<T: BinaryReader + Sync> BinaryWriteFile<T> for T {
     const FILE_OPS: FileOps<T> = {
-        let operations = &bindings::file_operations {
+        let operations = bindings::file_operations {
             write: Some(blob_write::<T>),
             llseek: Some(bindings::default_llseek),
             open: Some(bindings::simple_open),
@@ -365,7 +368,7 @@ pub(crate) trait BinaryReadWriteFile<T> {
 
 impl<T: BinaryWriter + BinaryReader + Sync> BinaryReadWriteFile<T> for T {
     const FILE_OPS: FileOps<T> = {
-        let operations = &bindings::file_operations {
+        let operations = bindings::file_operations {
             read: Some(blob_read::<T>),
             write: Some(blob_write::<T>),
             llseek: Some(bindings::default_llseek),

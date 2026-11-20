@@ -485,8 +485,7 @@ static int th1520_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 			}
 
 			npins = of_property_count_strings(child, "pins");
-			pgnames = devm_kzalloc_objs(thp->pctl->dev, *pgnames,
-						    npins);
+			pgnames = devm_kcalloc(thp->pctl->dev, npins, sizeof(*pgnames), GFP_KERNEL);
 			if (!pgnames) {
 				ret = -ENOMEM;
 				goto free_configs;
@@ -856,7 +855,7 @@ static int th1520_pinctrl_probe(struct platform_device *pdev)
 	u32 pin_group;
 	int ret;
 
-	thp = devm_kzalloc_obj(dev, *thp);
+	thp = devm_kzalloc(dev, sizeof(*thp), GFP_KERNEL);
 	if (!thp)
 		return -ENOMEM;
 

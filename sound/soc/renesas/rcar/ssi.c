@@ -1175,7 +1175,7 @@ int rsnd_ssi_probe(struct rsnd_priv *priv)
 		goto rsnd_ssi_probe_done;
 	}
 
-	ssi	= devm_kzalloc_objs(dev, *ssi, nr);
+	ssi	= devm_kcalloc(dev, nr, sizeof(*ssi), GFP_KERNEL);
 	if (!ssi) {
 		ret = -ENOMEM;
 		goto rsnd_ssi_probe_done;

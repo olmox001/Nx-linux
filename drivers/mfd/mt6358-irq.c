@@ -250,13 +250,17 @@ int mt6358_irq_init(struct mt6397_chip *chip)
 
 	mutex_init(&chip->irqlock);
 	irqd = chip->irq_data;
-	irqd->enable_hwirq = devm_kzalloc_objs(chip->dev, *irqd->enable_hwirq,
-					       irqd->num_pmic_irqs);
+	irqd->enable_hwirq = devm_kcalloc(chip->dev,
+					  irqd->num_pmic_irqs,
+					  sizeof(*irqd->enable_hwirq),
+					  GFP_KERNEL);
 	if (!irqd->enable_hwirq)
 		return -ENOMEM;
 
-	irqd->cache_hwirq = devm_kzalloc_objs(chip->dev, *irqd->cache_hwirq,
-					      irqd->num_pmic_irqs);
+	irqd->cache_hwirq = devm_kcalloc(chip->dev,
+					 irqd->num_pmic_irqs,
+					 sizeof(*irqd->cache_hwirq),
+					 GFP_KERNEL);
 	if (!irqd->cache_hwirq)
 		return -ENOMEM;
 

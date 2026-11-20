@@ -26,7 +26,6 @@ static int ip_local_port_range_max[] = { 65535, 65535 };
 static int tcp_adv_win_scale_min = -31;
 static int tcp_adv_win_scale_max = 31;
 static int tcp_app_win_max = 31;
-static int tcp_tso_rtt_log_max = 31;
 static int tcp_min_snd_mss_min = TCP_MIN_SND_MSS;
 static int tcp_min_snd_mss_max = 65535;
 static int tcp_rto_max_max = TCP_RTO_MAX_SEC * MSEC_PER_SEC;
@@ -627,7 +626,7 @@ static struct ctl_table ipv4_table[] = {
 	},
 };
 
-static const struct ctl_table ipv4_net_table[] = {
+static struct ctl_table ipv4_net_table[] = {
 	{
 		.procname	= "tcp_max_tw_buckets",
 		.data		= &init_net.ipv4.tcp_death_row.sysctl_max_tw_buckets,
@@ -1407,7 +1406,6 @@ static const struct ctl_table ipv4_net_table[] = {
 		.maxlen		= sizeof(u8),
 		.mode		= 0644,
 		.proc_handler	= proc_dou8vec_minmax,
-		.extra2		= &tcp_tso_rtt_log_max,
 	},
 	{
 		.procname	= "tcp_min_rtt_wlen",
@@ -1658,45 +1656,35 @@ static const struct ctl_table ipv4_net_table[] = {
 	},
 };
 
-static const struct ctl_table *ipv4_net_table_dup(struct net *net)
-{
-	size_t table_size = ARRAY_SIZE(ipv4_net_table);
-	struct ctl_table *table;
-	int i;
-
-	table = kmemdup(ipv4_net_table, sizeof(ipv4_net_table), GFP_KERNEL);
-	if (!table)
-		return NULL;
-
-	for (i = 0; i < table_size; i++) {
-		if (table[i].data) {
-			/* Update the variables to point into
-			 * the current struct net
-			 */
-			table[i].data += (void *)net - (void *)&init_net;
-		} else {
-			/* Entries without data pointer are global;
-			 * Make them read-only in non-init_net ns
-			 */
-			table[i].mode &= ~0222;
-		}
-		if (table[i].extra2 >= (void *)&init_net.ipv4 &&
-		    table[i].extra2 < (void *)(&init_net.ipv4 + 1))
-			table[i].extra2 += (void *)net - (void *)&init_net;
-	}
-	return table;
-}
-
 static __net_init int ipv4_sysctl_init_net(struct net *net)
 {
 	size_t table_size = ARRAY_SIZE(ipv4_net_table);
-	const struct ctl_table *table;
+	struct ctl_table *table;
 
 	table = ipv4_net_table;
 	if (!net_eq(net, &init_net)) {
-		table = ipv4_net_table_dup(net);
+		int i;
+
+		table = kmemdup(table, sizeof(ipv4_net_table), GFP_KERNEL);
 		if (!table)
 			goto err_alloc;
+
+		for (i = 0; i < table_size; i++) {
+			if (table[i].data) {
+				/* Update the variables to point into
+				 * the current struct net
+				 */
+				table[i].data += (void *)net - (void *)&init_net;
+			} else {
+				/* Entries without data pointer are global;
+				 * Make them read-only in non-init_net ns
+				 */
+				table[i].mode &= ~0222;
+			}
+			if (table[i].extra2 >= (void *)&init_net.ipv4 &&
+			    table[i].extra2 < (void *)(&init_net.ipv4 + 1))
+				table[i].extra2 += (void *)net - (void *)&init_net;
+		}
 	}
 
 	net->ipv4.ipv4_hdr = register_net_sysctl_sz(net, "net/ipv4", table,

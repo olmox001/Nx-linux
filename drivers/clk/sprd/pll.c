@@ -104,7 +104,7 @@ static unsigned long _sprd_pll_recalc_rate(const struct sprd_pll *pll,
 	u64 refin;
 	u16 k1, k2;
 
-	cfg = kzalloc_objs(*cfg, regs_num);
+	cfg = kcalloc(regs_num, sizeof(*cfg), GFP_KERNEL);
 	if (!cfg)
 		return parent_rate;
 
@@ -254,10 +254,16 @@ static int sprd_pll_clk_prepare(struct clk_hw *hw)
 	return 0;
 }
 
+static int sprd_pll_determine_rate(struct clk_hw *hw,
+				   struct clk_rate_request *req)
+{
+	return 0;
+}
+
 const struct clk_ops sprd_pll_ops = {
 	.prepare = sprd_pll_clk_prepare,
 	.recalc_rate = sprd_pll_recalc_rate,
-	.determine_rate = clk_determine_rate_noop,
+	.determine_rate = sprd_pll_determine_rate,
 	.set_rate = sprd_pll_set_rate,
 };
 EXPORT_SYMBOL_GPL(sprd_pll_ops);

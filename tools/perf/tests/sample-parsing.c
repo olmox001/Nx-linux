@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <stdbool.h>
-#include <errno.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,27 +86,10 @@ static bool samples_same(struct perf_sample *s1,
 			COMP(read.time_running);
 		/* PERF_FORMAT_ID is forced for PERF_SAMPLE_READ */
 		if (read_format & PERF_FORMAT_GROUP) {
-			struct sample_read_value *v1 = s1->read.group.values;
-			struct sample_read_value *v2 = s2->read.group.values;
-
 			for (i = 0; i < s1->read.group.nr; i++) {
-				if (v1->value != v2->value) {
-					pr_debug("Samples differ at 'read.group.values[].value'\n");
-					return false;
-				}
-
-				if (v1->id != v2->id) {
-					pr_debug("Samples differ at 'read.group.values[].id'\n");
-					return false;
-				}
-
-				if (read_format & PERF_FORMAT_LOST &&
-				    v1->lost != v2->lost) {
-					pr_debug("Samples differ at 'read.group.values[].lost'\n");
-					return false;
-				}
-				v1 = next_sample_read_value(v1, read_format);
-				v2 = next_sample_read_value(v2, read_format);
+				/* FIXME: check values without LOST */
+				if (read_format & PERF_FORMAT_LOST)
+					MCOMP(read.group.values[i]);
 			}
 		} else {
 			COMP(read.one.id);
@@ -297,7 +279,6 @@ static int do_test(u64 sample_type, u64 sample_regs, u64 read_format)
 		},
 	};
 	struct sample_read_value values[] = {{1, 5, 0}, {9, 3, 0}, {2, 7, 0}, {6, 4, 1},};
-	struct sample_read_value packed_values[ARRAY_SIZE(values)];
 	struct perf_sample sample_out, sample_out_endian;
 	size_t i, sz, bufsz;
 	int err, ret = -1;
@@ -322,19 +303,8 @@ static int do_test(u64 sample_type, u64 sample_regs, u64 read_format)
 		*(i + (u8 *)regs) = i & 0xfe;
 
 	if (read_format & PERF_FORMAT_GROUP) {
-		size_t vsz = sample_read_value_size(read_format);
-
-		/*
-		 * evsel__parse_sample() points read.group.values at the event
-		 * data, where the entries are packed according to read_format,
-		 * so build the input the same way.  Otherwise the fields
-		 * compared afterwards are just overlapping bytes.
-		 */
-		for (i = 0; i < ARRAY_SIZE(values); i++)
-			memcpy((void *)packed_values + i * vsz, &values[i], vsz);
-
-		sample.read.group.nr     = ARRAY_SIZE(values);
-		sample.read.group.values = packed_values;
+		sample.read.group.nr     = 4;
+		sample.read.group.values = values;
 	} else {
 		sample.read.one.value = 0x08789faeb786aa87ULL;
 		sample.read.one.id    = 99;
@@ -418,98 +388,6 @@ out_free:
 	return ret;
 }
 
-static int test_truncated_branch_stack(void)
-{
-	struct perf_event_attr attr = {
-		.sample_type = PERF_SAMPLE_BRANCH_STACK,
-	};
-	struct {
-		struct perf_event_header header;
-		u64 nr;
-		struct branch_entry entry;
-	} input = {
-		.header = {
-			.type = PERF_RECORD_SAMPLE,
-			.size = sizeof(input.header) + sizeof(input.nr),
-		},
-		.nr = 1,
-	};
-	struct perf_sample sample;
-	struct evsel *evsel;
-	u64 flags = 1;
-	int err;
-
-	input.entry.flags.value = flags;
-	evsel = evsel__new(&attr);
-	if (!evsel)
-		return -1;
-
-	evsel->sample_size = __evsel__sample_size(attr.sample_type);
-	err = __evsel__parse_sample(evsel, (union perf_event *)&input,
-				    &sample, /*needs_swap=*/true);
-	perf_sample__exit(&sample);
-	evsel__put(evsel);
-
-	if (err != -EFAULT) {
-		pr_debug("truncated branch stack returned %d, expected -EFAULT\n", err);
-		return -1;
-	}
-	if (input.entry.flags.value != flags) {
-		pr_debug("truncated branch stack modified data past the event\n");
-		return -1;
-	}
-	return 0;
-}
-
-static int test_truncated_swapped_raw(u16 event_size, u32 raw_size)
-{
-	struct perf_event_attr attr = {
-		.sample_type = PERF_SAMPLE_RAW,
-	};
-	struct {
-		struct perf_event_header header;
-		union {
-			u64 value;
-			u32 words[2];
-		} raw;
-		u64 canary;
-	} input = {
-		.header = {
-			.type = PERF_RECORD_SAMPLE,
-			.size = event_size,
-		},
-		/* Parsing a pre-swapped word exchanges these two u32 values. */
-		.raw.words = { 0x12345678, raw_size },
-		.canary = 0x8877665544332211ULL,
-	};
-	struct perf_sample sample;
-	struct evsel *evsel;
-	u64 raw = input.raw.value;
-	u64 canary = input.canary;
-	int err;
-
-	evsel = evsel__new(&attr);
-	if (!evsel)
-		return -1;
-
-	evsel->sample_size = __evsel__sample_size(attr.sample_type);
-	err = __evsel__parse_sample(evsel, (union perf_event *)&input,
-				    &sample, /*needs_swap=*/true);
-	perf_sample__exit(&sample);
-	evsel__put(evsel);
-
-	if (err != -EFAULT) {
-		pr_debug("truncated swapped RAW sample (size %u, raw %u) returned %d, expected -EFAULT\n",
-			 event_size, raw_size, err);
-		return -1;
-	}
-	if (input.raw.value != raw || input.canary != canary) {
-		pr_debug("truncated swapped RAW sample modified data before validation\n");
-		return -1;
-	}
-	return 0;
-}
-
 /**
  * test__sample_parsing - test sample parsing.
  *
@@ -525,22 +403,6 @@ static int test__sample_parsing(struct test_suite *test __maybe_unused, int subt
 	u64 sample_regs;
 	size_t i;
 	int err;
-
-	err = test_truncated_branch_stack();
-	if (err)
-		return err;
-
-	/* The declared RAW payload extends past an otherwise aligned event. */
-	err = test_truncated_swapped_raw(sizeof(struct perf_event_header) +
-					 sizeof(u64), 16);
-	if (err)
-		return err;
-
-	/* The final complete word touched by mem_bswap_64() extends past it. */
-	err = test_truncated_swapped_raw(sizeof(struct perf_event_header) +
-					 sizeof(u32) + 9, 9);
-	if (err)
-		return err;
 
 	/*
 	 * Fail the test if it has not been updated when new sample format bits

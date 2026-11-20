@@ -251,7 +251,7 @@ void tcp_select_initial_window(const struct sock *sk, int __space, __u32 mss,
 		(*rcv_wnd) = space;
 
 	if (init_rcv_wnd)
-		*rcv_wnd = min_t(u64, *rcv_wnd, (u64)init_rcv_wnd * mss);
+		*rcv_wnd = min(*rcv_wnd, init_rcv_wnd * mss);
 
 	*rcv_wscale = 0;
 	if (wscale_ok) {
@@ -476,8 +476,8 @@ static u32 bpf_skops_hdr_opt_len(struct sock *sk, struct sk_buff *skb,
 	struct bpf_sock_ops_kern sock_ops;
 	int err;
 
-	if (!BPF_SOCK_OPS_TEST_FLAG(tcp_sk(sk),
-				    BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG) ||
+	if (likely(!BPF_SOCK_OPS_TEST_FLAG(tcp_sk(sk),
+					   BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG)) ||
 	    !remaining)
 		return remaining;
 
@@ -518,7 +518,7 @@ static u32 bpf_skops_hdr_opt_len(struct sock *sk, struct sk_buff *skb,
 	if (skb)
 		bpf_skops_init_skb(&sock_ops, skb, 0);
 
-	err = __BPF_CGROUP_RUN_PROG_SOCK_OPS_SK(&sock_ops, sk);
+	err = BPF_CGROUP_RUN_PROG_SOCK_OPS_SK(&sock_ops, sk);
 
 	if (err || sock_ops.remaining_opt_len == remaining)
 		return remaining;
@@ -536,54 +536,43 @@ static void bpf_skops_write_hdr_opt(struct sock *sk, struct sk_buff *skb,
 				    enum tcp_synack_type synack_type,
 				    struct tcp_out_options *opts)
 {
-	u8 first_opt_off, nr_written = 0, max_opt_len = opts->bpf_opt_len;
+	u8 first_opt_off, nr_written, max_opt_len = opts->bpf_opt_len;
+	struct bpf_sock_ops_kern sock_ops;
+	int err;
 
 	if (likely(!max_opt_len))
 		return;
 
-	first_opt_off = tcp_hdrlen(skb) - max_opt_len;
+	memset(&sock_ops, 0, offsetof(struct bpf_sock_ops_kern, temp));
 
-	if (cgroup_bpf_enabled(CGROUP_SOCK_OPS) &&
-	    BPF_SOCK_OPS_TEST_FLAG(tcp_sk(sk),
-				   BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG)) {
-		struct bpf_sock_ops_kern sock_ops;
-		int err;
+	sock_ops.op = BPF_SOCK_OPS_WRITE_HDR_OPT_CB;
 
-		memset(&sock_ops, 0, offsetof(struct bpf_sock_ops_kern, temp));
+	if (req) {
+		sock_ops.sk = (struct sock *)req;
+		sock_ops.syn_skb = syn_skb;
+	} else {
+		sock_owned_by_me(sk);
 
-		sock_ops.op = BPF_SOCK_OPS_WRITE_HDR_OPT_CB;
-
-		if (req) {
-			sock_ops.sk = (struct sock *)req;
-			sock_ops.syn_skb = syn_skb;
-		} else {
-			sock_owned_by_me(sk);
-
-			sock_ops.is_fullsock = 1;
-			sock_ops.is_locked_tcp_sock = 1;
-			sock_ops.sk = sk;
-		}
-
-		sock_ops.args[0] = bpf_skops_write_hdr_opt_arg0(skb, synack_type);
-		sock_ops.remaining_opt_len = max_opt_len;
-		bpf_skops_init_skb(&sock_ops, skb, first_opt_off);
-
-		err = __BPF_CGROUP_RUN_PROG_SOCK_OPS_SK(&sock_ops, sk);
-		if (!err)
-			nr_written = max_opt_len - sock_ops.remaining_opt_len;
+		sock_ops.is_fullsock = 1;
+		sock_ops.is_locked_tcp_sock = 1;
+		sock_ops.sk = sk;
 	}
+
+	sock_ops.args[0] = bpf_skops_write_hdr_opt_arg0(skb, synack_type);
+	sock_ops.remaining_opt_len = max_opt_len;
+	first_opt_off = tcp_hdrlen(skb) - max_opt_len;
+	bpf_skops_init_skb(&sock_ops, skb, first_opt_off);
+
+	err = BPF_CGROUP_RUN_PROG_SOCK_OPS_SK(&sock_ops, sk);
+
+	if (err)
+		nr_written = 0;
+	else
+		nr_written = max_opt_len - sock_ops.remaining_opt_len;
 
 	if (nr_written < max_opt_len)
 		memset(skb->data + first_opt_off + nr_written, TCPOPT_NOP,
 		       max_opt_len - nr_written);
-
-	/*
-	 * bpf_tcp_ops portion is NOP-filled (everything past the sockops
-	 * writer's bytes). The writer finds the append point by scanning from
-	 * first_opt_off + nr_written to the first NOP.
-	 */
-	bpf_tcp_ops_call_flag(write_hdr_opt, WRITE_HDR_OPT, sk, skb, req,
-			      syn_skb, synack_type, first_opt_off + nr_written);
 }
 #else
 static u32 bpf_skops_hdr_opt_len(struct sock *sk, struct sk_buff *skb,
@@ -604,53 +593,6 @@ static void bpf_skops_write_hdr_opt(struct sock *sk, struct sk_buff *skb,
 {
 }
 #endif
-
-static u32 bpf_tcp_ops_hdr_opt_len(struct sock *sk, struct sk_buff *skb,
-				   struct request_sock *req,
-				   struct sk_buff *syn_skb,
-				   enum tcp_synack_type synack_type,
-				   struct tcp_out_options *opts,
-				   u32 remaining)
-{
-	unsigned int remaining_out = remaining, reserved;
-
-	if (!BPF_TCP_OPS_TEST_FLAG(tcp_sk(sk), WRITE_HDR_OPT) ||
-	    !remaining)
-		return remaining;
-
-	/* bpf_tcp_ops_reserve_hdr_opt() reserves space via remaining_out */
-	__bpf_tcp_ops_call(hdr_opt_len, sk, skb, req, syn_skb, synack_type, &remaining_out);
-
-	reserved = remaining - remaining_out;
-	if (!reserved)
-		return remaining;
-
-	/* round up to 4 bytes */
-	reserved = (reserved + 3) & ~3;
-
-	opts->bpf_opt_len += reserved;
-	return remaining - reserved;
-}
-
-static __always_inline u32 tcp_bpf_hdr_opt_len(struct sock *sk, struct sk_buff *skb,
-					       struct request_sock *req,
-					       struct sk_buff *syn_skb,
-					       enum tcp_synack_type synack_type,
-					       struct tcp_out_options *opts,
-					       u32 remaining)
-{
-	if (cgroup_bpf_enabled(CGROUP_SOCK_OPS))
-		remaining = bpf_skops_hdr_opt_len(sk, skb, req, syn_skb,
-						  synack_type, opts,
-						  remaining);
-
-	if (cgroup_bpf_enabled(CGROUP_TCP_SOCK_OPS))
-		remaining = bpf_tcp_ops_hdr_opt_len(sk, skb, req, syn_skb,
-						    synack_type, opts,
-						    remaining);
-
-	return remaining;
-}
 
 static __be32 *process_tcp_ao_options(struct tcp_sock *tp,
 				      const struct tcp_request_sock *tcprsk,
@@ -1109,8 +1051,8 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 		remaining -= tcp_options_fit_accecn(opts, 0, remaining);
 	}
 
-	remaining = tcp_bpf_hdr_opt_len(sk, skb, NULL, NULL, 0, opts,
-					remaining);
+	remaining = bpf_skops_hdr_opt_len(sk, skb, NULL, NULL, 0, opts,
+					  remaining);
 
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
@@ -1197,8 +1139,8 @@ static unsigned int tcp_synack_options(const struct sock *sk,
 		remaining -= tcp_options_fit_accecn(opts, 0, remaining);
 	}
 
-	remaining = tcp_bpf_hdr_opt_len((struct sock *)sk, skb, req, syn_skb,
-					synack_type, opts, remaining);
+	remaining = bpf_skops_hdr_opt_len((struct sock *)sk, skb, req, syn_skb,
+					  synack_type, opts, remaining);
 
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
@@ -1211,12 +1153,10 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 					struct tcp_key *key)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	unsigned int eff_sacks;
-	unsigned int remaining;
 	unsigned int size = 0;
+	unsigned int eff_sacks;
 
 	opts->options = 0;
-	opts->bpf_opt_len = 0;
 
 	/* Better than switch (key.type) as it has static branches */
 	if (tcp_key_is_md5(key)) {
@@ -1243,10 +1183,10 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 	 * left.
 	 */
 	if (sk_is_mptcp(sk)) {
+		unsigned int remaining = MAX_TCP_OPTION_SPACE - size;
 		bool has_ts = opts->options & OPTION_TS;
 		int opt_size;
 
-		remaining = MAX_TCP_OPTION_SPACE - size;
 		opts->mptcp.drop_ts = 0;
 
 		opt_size = mptcp_established_options(sk, skb, remaining, has_ts,
@@ -1263,8 +1203,7 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 
 	eff_sacks = tp->rx_opt.num_sacks + tp->rx_opt.dsack;
 	if (unlikely(eff_sacks)) {
-		remaining = MAX_TCP_OPTION_SPACE - size;
-
+		const unsigned int remaining = MAX_TCP_OPTION_SPACE - size;
 		if (likely(remaining >= TCPOLEN_SACK_BASE_ALIGNED +
 					TCPOLEN_SACK_PERBLOCK)) {
 			opts->num_sack_blocks =
@@ -1295,10 +1234,15 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 		}
 	}
 
-	remaining = tcp_bpf_hdr_opt_len(sk, skb, NULL, NULL, 0, opts,
-					MAX_TCP_OPTION_SPACE - size);
+	if (unlikely(BPF_SOCK_OPS_TEST_FLAG(tp,
+					    BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG))) {
+		unsigned int remaining = MAX_TCP_OPTION_SPACE - size;
 
-	size = MAX_TCP_OPTION_SPACE - remaining;
+		remaining = bpf_skops_hdr_opt_len(sk, skb, NULL, NULL, 0, opts,
+						  remaining);
+
+		size = MAX_TCP_OPTION_SPACE - remaining;
+	}
 
 	return size;
 }
@@ -2308,20 +2252,12 @@ static bool tcp_nagle_check(bool partial, const struct tcp_sock *tp,
  * in bigger TSO bursts. We we cut the RTT-based allowance in half
  * for every 2^9 usec (aka 512 us) of RTT, so that the RTT-based allowance
  * is below 1500 bytes after 6 * ~500 usec = 3ms.
- *
- * The min_tso_segs is floored to 1 to avoid surprising conversion. Also,
- * BPF callers may pass mss_now == 0. In that case the function returns the
- * sanitized min_tso_segs value and skips autosizing.
  */
-__bpf_kfunc u32 tcp_tso_autosize(const struct sock *sk, unsigned int mss_now,
-				 int min_tso_segs)
+static u32 tcp_tso_autosize(const struct sock *sk, unsigned int mss_now,
+			    int min_tso_segs)
 {
-	u32 min_tso = max(min_tso_segs, 1);
 	unsigned long bytes;
 	u32 r;
-
-	if (unlikely(!mss_now))
-		return min_tso;
 
 	bytes = READ_ONCE(sk->sk_pacing_rate) >> READ_ONCE(sk->sk_pacing_shift);
 
@@ -2331,9 +2267,8 @@ __bpf_kfunc u32 tcp_tso_autosize(const struct sock *sk, unsigned int mss_now,
 
 	bytes = min_t(unsigned long, bytes, sk->sk_gso_max_size);
 
-	return max_t(u32, bytes / mss_now, min_tso);
+	return max_t(u32, bytes / mss_now, min_tso_segs);
 }
-EXPORT_SYMBOL_GPL(tcp_tso_autosize);
 
 /* Return the number of segments we want in the skb we are transmitting.
  * See if congestion control module wants to decide; otherwise, autosize.
@@ -2341,13 +2276,14 @@ EXPORT_SYMBOL_GPL(tcp_tso_autosize);
 static u32 tcp_tso_segs(struct sock *sk, unsigned int mss_now)
 {
 	const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
-	u32 tso_segs;
+	u32 min_tso, tso_segs;
 
-	tso_segs = ca_ops->tso_segs ?
-			ca_ops->tso_segs(sk, mss_now) :
-			tcp_tso_autosize(sk, mss_now,
-					 READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_min_tso_segs));
-	return clamp_t(u32, tso_segs, 1, sk->sk_gso_max_segs);
+	min_tso = ca_ops->min_tso_segs ?
+			ca_ops->min_tso_segs(sk) :
+			READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_min_tso_segs);
+
+	tso_segs = tcp_tso_autosize(sk, mss_now, min_tso);
+	return min_t(u32, tso_segs, sk->sk_gso_max_segs);
 }
 
 /* Returns the portion of skb which can be sent right away */
@@ -2776,7 +2712,7 @@ static int tcp_mtu_probe(struct sock *sk)
 	mss_now = tcp_current_mss(sk);
 	probe_size = tcp_mtu_to_mss(sk, (icsk->icsk_mtup.search_high +
 				    icsk->icsk_mtup.search_low) >> 1);
-	size_needed = probe_size + ((u64)tp->reordering + 1) * tp->mss_cache;
+	size_needed = probe_size + (tp->reordering + 1) * (u64)tp->mss_cache;
 	interval = icsk->icsk_mtup.search_high - icsk->icsk_mtup.search_low;
 	/* When misfortune happens, we are reprobing actively,
 	 * and then reprobe timer has expired. We stick with current
@@ -3739,9 +3675,9 @@ start:
 		err = tcp_transmit_skb(sk, skb, 1, GFP_ATOMIC);
 	}
 
-	tcp_call_bpf_flag(sk, BPF_SOCK_OPS_RETRANS_CB,
-			  TCP_SKB_CB(skb)->seq, segs, err);
-	bpf_tcp_ops_call(retrans, sk, skb, err);
+	if (BPF_SOCK_OPS_TEST_FLAG(tp, BPF_SOCK_OPS_RETRANS_CB_FLAG))
+		tcp_call_bpf_3arg(sk, BPF_SOCK_OPS_RETRANS_CB,
+				  TCP_SKB_CB(skb)->seq, segs, err);
 
 	if (unlikely(err) && err != -EBUSY)
 		NET_ADD_STATS(sock_net(sk), LINUX_MIB_TCPRETRANSFAIL, segs);
@@ -4170,7 +4106,6 @@ static void tcp_connect_init(struct sock *sk)
 	const struct dst_entry *dst = __sk_dst_get(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 	__u8 rcv_wscale;
-	int full_space;
 	u16 user_mss;
 	u32 rcv_wnd;
 
@@ -4205,13 +4140,10 @@ static void tcp_connect_init(struct sock *sk)
 		WRITE_ONCE(tp->window_clamp, tcp_full_space(sk));
 
 	rcv_wnd = tcp_rwnd_init_bpf(sk);
-	full_space = tcp_full_space(sk);
 	if (rcv_wnd == 0)
 		rcv_wnd = dst_metric(dst, RTAX_INITRWND);
-	else if (full_space < (u64)rcv_wnd * tp->advmss)
-		full_space = min_t(u64, (u64)rcv_wnd * tp->advmss, INT_MAX);
 
-	tcp_select_initial_window(sk, full_space,
+	tcp_select_initial_window(sk, tcp_full_space(sk),
 				  tp->advmss - (tp->rx_opt.ts_recent_stamp ? tp->tcp_header_len - sizeof(struct tcphdr) : 0),
 				  &tp->rcv_wnd,
 				  &tp->window_clamp,
@@ -4368,8 +4300,7 @@ int tcp_connect(struct sock *sk)
 	struct sk_buff *buff;
 	int err;
 
-	tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_CONNECT_CB);
-	bpf_tcp_ops_call(connect, sk);
+	tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_CONNECT_CB, 0, NULL);
 
 #if defined(CONFIG_TCP_MD5SIG) && defined(CONFIG_TCP_AO)
 	/* Has to be checked late, after setting daddr/saddr/ops.

@@ -267,13 +267,13 @@ static int wl1271_probe(struct sdio_func *func,
 	if (func->num != 0x02)
 		return -ENODEV;
 
-	pdev_data = devm_kzalloc_obj(&func->dev, *pdev_data);
+	pdev_data = devm_kzalloc(&func->dev, sizeof(*pdev_data), GFP_KERNEL);
 	if (!pdev_data)
 		return -ENOMEM;
 
 	pdev_data->if_ops = &sdio_ops;
 
-	glue = devm_kzalloc_obj(&func->dev, *glue);
+	glue = devm_kzalloc(&func->dev, sizeof(*glue), GFP_KERNEL);
 	if (!glue)
 		return -ENOMEM;
 

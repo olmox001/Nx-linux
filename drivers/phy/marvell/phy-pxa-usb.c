@@ -290,7 +290,7 @@ static int pxa_usb_phy_probe(struct platform_device *pdev)
 	struct phy_provider *provider;
 	const struct of_device_id *of_id;
 
-	pxa_usb_phy = devm_kzalloc_obj(dev, struct pxa_usb_phy);
+	pxa_usb_phy = devm_kzalloc(dev, sizeof(struct pxa_usb_phy), GFP_KERNEL);
 	if (!pxa_usb_phy)
 		return -ENOMEM;
 

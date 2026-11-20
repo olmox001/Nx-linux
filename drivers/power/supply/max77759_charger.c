@@ -532,7 +532,9 @@ static int max77759_init_irqhandler(struct max77759_charger *chg)
 		ret = devm_request_threaded_irq(dev, chg->irqs[i], NULL,
 						thread_fn, 0, name, chg);
 		if (ret)
-			return ret;
+			return dev_err_probe(dev, ret,
+					     "Unable to register irq handler for %s\n",
+					     chgr_irqs_str[i]);
 	}
 
 	return 0;
@@ -690,7 +692,7 @@ static int max77759_charger_probe(struct platform_device *pdev)
 	int ret;
 
 	device_set_of_node_from_dev(dev, dev->parent);
-	chg = devm_kzalloc_obj(dev, *chg);
+	chg = devm_kzalloc(dev, sizeof(*chg), GFP_KERNEL);
 	if (!chg)
 		return -ENOMEM;
 

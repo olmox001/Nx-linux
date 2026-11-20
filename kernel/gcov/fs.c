@@ -529,7 +529,7 @@ static void init_node(struct gcov_node *node, struct gcov_info *info,
 	}
 	node->parent = parent;
 	if (name)
-		strscpy(node->name, name, strlen(name) + 1);
+		strcpy(node->name, name);
 }
 
 /*

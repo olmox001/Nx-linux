@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _RDS_RDS_SINGLE_H
 #define _RDS_RDS_SINGLE_H
 
@@ -15,17 +14,25 @@
 #define c_retrans		c_path[0].cp_retrans
 #define c_next_rx_seq		c_path[0].cp_next_rx_seq
 #define c_transport_data	c_path[0].cp_transport_data
+#define c_wq			c_path[0].cp_wq
 #define c_state			c_path[0].cp_state
 #define c_send_gen		c_path[0].cp_send_gen
 #define c_flags			c_path[0].cp_flags
 #define c_reconnect_jiffies	c_path[0].cp_reconnect_jiffies
 #define c_send_w		c_path[0].cp_send_w
 #define c_recv_w		c_path[0].cp_recv_w
-#define c_conn_w		c_path[0].cp_conn_w
-#define c_down_w		c_path[0].cp_down_w
+#define c_up_or_down_w		c_path[0].cp_up_or_down_w
+#define c_down_wait_w		c_path[0].cp_down_wait_w
 #define c_cm_lock		c_path[0].cp_cm_lock
 #define c_waitq			c_path[0].cp_waitq
 #define c_unacked_packets	c_path[0].cp_unacked_packets
 #define c_unacked_bytes		c_path[0].cp_unacked_bytes
+#define c_route			c_path[0].cp_route_resolved
+#define c_drop_source		c_path[0].cp_drop_source
+#define c_acl_init		c_path[0].cp_acl_init
+#define c_reconnect		c_path[0].cp_reconnect
+#define c_to_index		c_path[0].cp_to_index
+#define c_acl_en		c_path[0].cp_acl_en
+#define c_reconnect_err		c_path[0].cp_reconnect_err
 
 #endif /* _RDS_RDS_SINGLE_H */

@@ -3,7 +3,7 @@
 import argparse
 import math
 import os
-from typing import Optional, Union
+from typing import Optional
 from common_metrics import Cycles
 from metric import (d_ratio, has_event, max, Event, JsonEncodeMetric,
                     JsonEncodeMetricGroupDescriptions, Literal, LoadEvents,
@@ -70,6 +70,7 @@ def AmdBr():
         ])
 
     def Conditional() -> Optional[MetricGroup]:
+        global _zen_model
         br = Event("ex_ret_brn_cond", "ex_ret_cond")
         br_r = d_ratio(br, interval_sec)
         ins_r = d_ratio(ins, br)
@@ -155,24 +156,25 @@ def AmdCtxSw() -> MetricGroup:
 
 
 def AmdDtlb() -> Optional[MetricGroup]:
+    global _zen_model
     if _zen_model >= 4:
         return None
 
-    d_dat = Event("ls_dc_accesses")
+    d_dat = Event("ls_dc_accesses") if _zen_model <= 3 else None
     d_h4k = Event("ls_l1_d_tlb_miss.tlb_reload_4k_l2_hit")
-    d_hcoal: Union[Event, int] = Event(
+    d_hcoal = Event(
         "ls_l1_d_tlb_miss.tlb_reload_coalesced_page_hit") if _zen_model >= 2 else 0
     d_h2m = Event("ls_l1_d_tlb_miss.tlb_reload_2m_l2_hit")
     d_h1g = Event("ls_l1_d_tlb_miss.tlb_reload_1g_l2_hit")
 
     d_m4k = Event("ls_l1_d_tlb_miss.tlb_reload_4k_l2_miss")
-    d_mcoal: Union[Event, int] = Event(
+    d_mcoal = Event(
         "ls_l1_d_tlb_miss.tlb_reload_coalesced_page_miss") if _zen_model >= 2 else 0
     d_m2m = Event("ls_l1_d_tlb_miss.tlb_reload_2m_l2_miss")
     d_m1g = Event("ls_l1_d_tlb_miss.tlb_reload_1g_l2_miss")
 
-    d_w0 = Event("ls_tablewalker.dc_type0")
-    d_w1 = Event("ls_tablewalker.dc_type1")
+    d_w0 = Event("ls_tablewalker.dc_type0") if _zen_model <= 3 else None
+    d_w1 = Event("ls_tablewalker.dc_type1") if _zen_model <= 3 else None
     walks = d_w0 + d_w1
     walks_r = d_ratio(walks, interval_sec)
     ins_w = d_ratio(ins, walks)
@@ -264,6 +266,7 @@ def AmdDtlb() -> Optional[MetricGroup]:
 
 
 def AmdIotlb() -> Optional[MetricGroup]:
+    global _zen_model
     if _zen_model < 2:
         return None
 
@@ -319,6 +322,7 @@ def AmdIotlb() -> Optional[MetricGroup]:
 
 
 def AmdItlb():
+    global _zen_model
     l2h = Event("bp_l1_tlb_miss_l2_tlb_hit", "bp_l1_tlb_miss_l2_hit")
     l2m = Event("bp_l1_tlb_miss_l2_tlb_miss.all", "l2_itlb_misses",)
     l2r = l2h + l2m

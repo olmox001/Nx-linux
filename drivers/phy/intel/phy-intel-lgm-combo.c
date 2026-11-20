@@ -573,7 +573,7 @@ static int intel_cbphy_probe(struct platform_device *pdev)
 	struct intel_combo_phy *cbphy;
 	int ret;
 
-	cbphy = devm_kzalloc_obj(dev, *cbphy);
+	cbphy = devm_kzalloc(dev, sizeof(*cbphy), GFP_KERNEL);
 	if (!cbphy)
 		return -ENOMEM;
 

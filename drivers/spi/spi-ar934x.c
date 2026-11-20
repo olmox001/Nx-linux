@@ -197,13 +197,23 @@ static int ar934x_spi_probe(struct platform_device *pdev)
 				   SPI_BPW_MASK(16) | SPI_BPW_MASK(8);
 	ctlr->num_chipselect = 3;
 
+	dev_set_drvdata(&pdev->dev, ctlr);
+
 	sp = spi_controller_get_devdata(ctlr);
 	sp->base = base;
 	sp->clk = clk;
 	sp->clk_freq = clk_get_rate(clk);
 	sp->ctlr = ctlr;
 
-	return devm_spi_register_controller(&pdev->dev, ctlr);
+	return spi_register_controller(ctlr);
+}
+
+static void ar934x_spi_remove(struct platform_device *pdev)
+{
+	struct spi_controller *ctlr;
+
+	ctlr = dev_get_drvdata(&pdev->dev);
+	spi_unregister_controller(ctlr);
 }
 
 static struct platform_driver ar934x_spi_driver = {
@@ -212,6 +222,7 @@ static struct platform_driver ar934x_spi_driver = {
 		.of_match_table = ar934x_spi_match,
 	},
 	.probe = ar934x_spi_probe,
+	.remove = ar934x_spi_remove,
 };
 
 module_platform_driver(ar934x_spi_driver);

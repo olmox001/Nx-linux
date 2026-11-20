@@ -79,12 +79,6 @@
 #define NFC_REG_H6_MDMA_BUF_ADDR 0x0210
 #define NFC_REG_H6_MDMA_CNT	0x0214
 
-#define NFC_H6_MDMA_STA_DESC0_COMPLETE	BIT(0)
-
-#define NFC_MDMA_DESC_LAST	BIT(2)
-#define NFC_MDMA_DESC_FIRST	BIT(3)
-#define NFC_MDMA_DESC_SIZE_MASK	GENMASK(15, 0)
-
 #define NFC_RAM0_BASE		0x0400
 #define NFC_RAM1_BASE		0x0800
 
@@ -222,7 +216,6 @@
  * USER_DATA_LEN registers.
  */
 #define USER_DATA_SZ 4
-#define SUNXI_NFC_MAX_USER_DATA_SZ 32
 
 /**
  * struct sunxi_nand_chip_sel - stores information related to NAND Chip Select
@@ -286,19 +279,12 @@ static inline struct sunxi_nand_chip *to_sunxi_nand(struct nand_chip *nand)
 	return container_of(nand, struct sunxi_nand_chip, nand);
 }
 
-struct sunxi_nfc_mdma_desc {
-	__le32 config;
-	__le32 size;
-	__le32 buf;
-	__le32 next;
-} __packed __aligned(4);
-
 /*
  * NAND Controller capabilities structure: stores NAND controller capabilities
  * for distinction between compatible strings.
  *
- * @has_mdma:		Use A23/A33-style MBUS DMA registers
- * @has_mdma_desc:	MBUS DMA uses H6-style descriptors
+ * @has_mdma:		Use mbus dma mode, otherwise general dma
+ *			through MBUS on A23/A33 needs extra configuration.
  * @has_ecc_block_512:	If the ECC can handle 512B or only 1024B chunks
  * @has_ecc_clk:	If the controller needs an ECC clock.
  * @has_mbus_clk:	If the controller needs a mbus clock.
@@ -331,7 +317,6 @@ struct sunxi_nfc_mdma_desc {
  */
 struct sunxi_nfc_caps {
 	bool has_mdma;
-	bool has_mdma_desc;
 	bool has_ecc_block_512;
 	bool has_ecc_clk;
 	bool has_mbus_clk;
@@ -375,9 +360,6 @@ struct sunxi_nfc_caps {
  *	   controller
  * @complete: a completion object used to wait for NAND controller events
  * @dmac: the DMA channel attached to the NAND controller
- * @use_mdma: use an internal MBUS DMA backend
- * @mdma_desc: H6-style MBUS DMA descriptor
- * @mdma_desc_dma: DMA address of @mdma_desc
  * @caps: NAND Controller capabilities
  */
 struct sunxi_nfc {
@@ -394,9 +376,6 @@ struct sunxi_nfc {
 	struct list_head chips;
 	struct completion complete;
 	struct dma_chan *dmac;
-	bool use_mdma;
-	struct sunxi_nfc_mdma_desc *mdma_desc;
-	dma_addr_t mdma_desc_dma;
 	const struct sunxi_nfc_caps *caps;
 };
 
@@ -501,10 +480,7 @@ static int sunxi_nfc_dma_op_prepare(struct sunxi_nfc *nfc, const void *buf,
 {
 	struct dma_async_tx_descriptor *dmad;
 	enum dma_transfer_direction tdir;
-	dma_addr_t buf_dma;
 	dma_cookie_t dmat;
-	int len = chunksize * nchunks;
-	u32 data_blocks = nchunks;
 	int ret;
 
 	if (ddir == DMA_FROM_DEVICE)
@@ -512,21 +488,12 @@ static int sunxi_nfc_dma_op_prepare(struct sunxi_nfc *nfc, const void *buf,
 	else
 		tdir = DMA_MEM_TO_DEV;
 
-	sg_init_one(sg, buf, len);
+	sg_init_one(sg, buf, nchunks * chunksize);
 	ret = dma_map_sg(nfc->dev, sg, 1, ddir);
 	if (!ret)
 		return -ENOMEM;
 
-	buf_dma = sg_dma_address(sg);
-
-	if (nfc->mdma_desc &&
-	    (len > NFC_MDMA_DESC_SIZE_MASK || !IS_ALIGNED(len, 8) ||
-	     !IS_ALIGNED(buf_dma, 4))) {
-		ret = -EINVAL;
-		goto err_unmap_buf;
-	}
-
-	if (!nfc->use_mdma) {
+	if (!nfc->caps->has_mdma) {
 		dmad = dmaengine_prep_slave_sg(nfc->dmac, sg, 1, tdir, DMA_CTRL_ACK);
 		if (!dmad) {
 			ret = -EINVAL;
@@ -536,35 +503,14 @@ static int sunxi_nfc_dma_op_prepare(struct sunxi_nfc *nfc, const void *buf,
 
 	writel(readl(nfc->regs + NFC_REG_CTL) | NFC_RAM_METHOD,
 	       nfc->regs + NFC_REG_CTL);
-
-	/* H6/H616 use one enable bit per ECC data block. */
-	if (nfc->caps->has_mdma_desc)
-		data_blocks = GENMASK(nchunks - 1, 0);
-	writel(data_blocks, nfc->regs + NFC_REG_SECTOR_NUM);
+	writel(nchunks, nfc->regs + NFC_REG_SECTOR_NUM);
 	writel(chunksize, nfc->regs + NFC_REG_CNT);
 
-	if (nfc->use_mdma)
+	if (nfc->caps->has_mdma) {
 		writel(readl(nfc->regs + NFC_REG_CTL) & ~NFC_DMA_TYPE_NORMAL,
 		       nfc->regs + NFC_REG_CTL);
-
-	if (nfc->mdma_desc) {
-		struct sunxi_nfc_mdma_desc *desc = nfc->mdma_desc;
-
-		desc->config = cpu_to_le32(NFC_MDMA_DESC_FIRST |
-					   NFC_MDMA_DESC_LAST);
-		desc->size = cpu_to_le32(len);
-		/* Descriptor words are little-endian DMA memory, not MMIO. */
-		desc->buf = cpu_to_le32(buf_dma);
-		desc->next = cpu_to_le32(nfc->mdma_desc_dma);
-
-		writel(NFC_H6_MDMA_STA_DESC0_COMPLETE,
-		       nfc->regs + NFC_REG_H6_MDMA_STA);
-		dma_wmb();
-		writel(nfc->mdma_desc_dma,
-		       nfc->regs + NFC_REG_H6_MDMA_DLBA_REG);
-	} else if (nfc->caps->has_mdma) {
-		writel(len, nfc->regs + NFC_REG_MDMA_CNT);
-		writel(buf_dma, nfc->regs + NFC_REG_MDMA_ADDR);
+		writel(chunksize * nchunks, nfc->regs + NFC_REG_MDMA_CNT);
+		writel(sg_dma_address(sg), nfc->regs + NFC_REG_MDMA_ADDR);
 	} else {
 		dmat = dmaengine_submit(dmad);
 
@@ -591,14 +537,6 @@ static void sunxi_nfc_dma_op_cleanup(struct sunxi_nfc *nfc,
 	dma_unmap_sg(nfc->dev, sg, 1, ddir);
 	writel(readl(nfc->regs + NFC_REG_CTL) & ~NFC_RAM_METHOD,
 	       nfc->regs + NFC_REG_CTL);
-}
-
-static void sunxi_nfc_dma_op_abort(struct sunxi_nfc *nfc)
-{
-	if (nfc->use_mdma)
-		sunxi_nfc_rst(nfc);
-	else
-		dmaengine_terminate_all(nfc->dmac);
 }
 
 static void sunxi_nfc_select_chip(struct nand_chip *nand, unsigned int cs)
@@ -1004,10 +942,11 @@ static void sunxi_nfc_hw_ecc_set_prot_oob_bytes(struct nand_chip *nand,
 	struct sunxi_nfc *nfc = to_sunxi_nfc(nand->controller);
 	struct sunxi_nand_chip *sunxi_nand = to_sunxi_nand(nand);
 	unsigned int user_data_sz = sunxi_nfc_user_data_sz(sunxi_nand, step);
-	u8 user_data[SUNXI_NFC_MAX_USER_DATA_SZ] = {};
+	u8 *user_data = NULL;
 
 	/* Randomize the Bad Block Marker. */
 	if (bbm && (nand->options & NAND_NEED_SCRAMBLING)) {
+		user_data = kmalloc(user_data_sz, GFP_KERNEL);
 		memcpy(user_data, oob, user_data_sz);
 		sunxi_nfc_randomize_bbm(nand, page, user_data);
 		oob = user_data;
@@ -1040,6 +979,7 @@ static void sunxi_nfc_hw_ecc_set_prot_oob_bytes(struct nand_chip *nand,
 		}
 	}
 
+	kfree(user_data);
 }
 
 static void sunxi_nfc_hw_ecc_update_stats(struct nand_chip *nand,
@@ -1276,7 +1216,7 @@ static int sunxi_nfc_hw_ecc_read_chunks_dma(struct nand_chip *nand, uint8_t *buf
 
 	wait = NFC_CMD_INT_FLAG;
 
-	if (nfc->use_mdma)
+	if (nfc->caps->has_mdma)
 		wait |= NFC_DMA_INT_FLAG;
 	else
 		dma_async_issue_pending(nfc->dmac);
@@ -1285,8 +1225,8 @@ static int sunxi_nfc_hw_ecc_read_chunks_dma(struct nand_chip *nand, uint8_t *buf
 	       nfc->regs + NFC_REG_CMD);
 
 	ret = sunxi_nfc_wait_events(nfc, wait, false, 0);
-	if (ret)
-		sunxi_nfc_dma_op_abort(nfc);
+	if (ret && !nfc->caps->has_mdma)
+		dmaengine_terminate_all(nfc->dmac);
 
 	sunxi_nfc_randomizer_disable(nand);
 	sunxi_nfc_hw_ecc_disable(nand);
@@ -1687,7 +1627,7 @@ static int sunxi_nfc_hw_ecc_write_page_dma(struct nand_chip *nand,
 
 	wait = NFC_CMD_INT_FLAG;
 
-	if (nfc->use_mdma)
+	if (nfc->caps->has_mdma)
 		wait |= NFC_DMA_INT_FLAG;
 	else
 		dma_async_issue_pending(nfc->dmac);
@@ -1697,8 +1637,8 @@ static int sunxi_nfc_hw_ecc_write_page_dma(struct nand_chip *nand,
 	       nfc->regs + NFC_REG_CMD);
 
 	ret = sunxi_nfc_wait_events(nfc, wait, false, 0);
-	if (ret)
-		sunxi_nfc_dma_op_abort(nfc);
+	if (ret && !nfc->caps->has_mdma)
+		dmaengine_terminate_all(nfc->dmac);
 
 	sunxi_nfc_randomizer_disable(nand);
 	sunxi_nfc_hw_ecc_disable(nand);
@@ -1990,7 +1930,7 @@ static int sunxi_nand_ooblayout_free(struct mtd_info *mtd, int section,
 	struct nand_chip *nand = mtd_to_nand(mtd);
 	struct nand_ecc_ctrl *ecc = &nand->ecc;
 	struct sunxi_nand_chip *sunxi_nand = to_sunxi_nand(nand);
-	unsigned int user_data_sz;
+	unsigned int user_data_sz = sunxi_nfc_user_data_sz(sunxi_nand, section);
 
 	/*
 	 * The controller does not provide access to OOB bytes
@@ -1999,8 +1939,6 @@ static int sunxi_nand_ooblayout_free(struct mtd_info *mtd, int section,
 	if (section >= ecc->steps)
 		return -ERANGE;
 
-	user_data_sz = sunxi_nfc_user_data_sz(sunxi_nand, section);
-
 	/*
 	 * The first 2 bytes are used for BB markers, hence we
 	 * only have user_data_sz - 2 bytes available in the first user data
@@ -2008,12 +1946,12 @@ static int sunxi_nand_ooblayout_free(struct mtd_info *mtd, int section,
 	 */
 	if (section == 0) {
 		oobregion->offset = 2;
-		oobregion->length = user_data_sz > 2 ? user_data_sz - 2 : 0;
+		oobregion->length = user_data_sz - 2;
 
 		return 0;
 	}
 
-	oobregion->offset = sunxi_get_oob_offset(sunxi_nand, ecc, section);
+	oobregion->offset = sunxi_get_ecc_offset(sunxi_nand, ecc, section);
 	oobregion->length = user_data_sz;
 
 	return 0;
@@ -2042,9 +1980,6 @@ static int sunxi_nfc_maximize_user_data(struct nand_chip *nand, uint32_t oobsize
 	int remaining_bytes = oobsize - (ecc_bytes * nsectors);
 	int i, step;
 
-	if (nsectors <= 0)
-		return -EINVAL;
-
 	sunxi_nand->user_data_bytes = devm_kzalloc(nfc->dev, nsectors,
 						   GFP_KERNEL);
 	if (!sunxi_nand->user_data_bytes)
@@ -2060,8 +1995,6 @@ static int sunxi_nfc_maximize_user_data(struct nand_chip *nand, uint32_t oobsize
 		if (sunxi_nand->user_data_bytes[step] == 0)
 			break;
 	}
-	if (sunxi_nand->user_data_bytes[0] < USER_DATA_SZ)
-		return -EINVAL;
 
 	return 0;
 }
@@ -2078,14 +2011,10 @@ static int sunxi_nand_hw_ecc_ctrl_init(struct nand_chip *nand,
 	int total_user_data_sz = 0;
 	int nsectors;
 	int ecc_mode;
-	int ret;
 	int i;
 
 	if (nanddev->ecc.user_conf.flags & NAND_ECC_MAXIMIZE_STRENGTH) {
 		int bytes = mtd->oobsize;
-
-		if (mtd->writesize < 1024)
-			return -EINVAL;
 
 		ecc->size = 1024;
 		nsectors = mtd->writesize / ecc->size;
@@ -2112,10 +2041,10 @@ static int sunxi_nand_hw_ecc_ctrl_init(struct nand_chip *nand,
 			bytes -= total_user_data_sz;
 		} else {
 			/*
-			 * User-data lengths are encoded in four-byte units. Reserve
-			 * the first word because it contains the two BBM bytes.
+			 * remove at least the BBM size before computing the
+			 * max ECC
 			 */
-			bytes -= USER_DATA_SZ;
+			bytes -= 2;
 		}
 
 		/*
@@ -2179,12 +2108,9 @@ static int sunxi_nand_hw_ecc_ctrl_init(struct nand_chip *nand,
 	 * The rationale for variable data length is to prioritize maximum ECC
 	 * strength, and then use the remaining space for user data.
 	 */
-	if (nfc->caps->reg_user_data_len) {
-		ret = sunxi_nfc_maximize_user_data(nand, mtd->oobsize,
-						   ecc->bytes, nsectors);
-		if (ret)
-			return ret;
-	}
+	if (nfc->caps->reg_user_data_len)
+		sunxi_nfc_maximize_user_data(nand, mtd->oobsize, ecc->bytes,
+					     nsectors);
 
 	if (total_user_data_sz == 0)
 		for (i = 0; i < nsectors; i++)
@@ -2197,13 +2123,11 @@ static int sunxi_nand_hw_ecc_ctrl_init(struct nand_chip *nand,
 	ecc->write_oob = sunxi_nfc_hw_ecc_write_oob;
 	mtd_set_ooblayout(mtd, &sunxi_nand_ooblayout_ops);
 
-	if (nfc->dmac || nfc->use_mdma) {
+	if (nfc->dmac || nfc->caps->has_mdma) {
 		ecc->read_page = sunxi_nfc_hw_ecc_read_page_dma;
 		ecc->read_subpage = sunxi_nfc_hw_ecc_read_subpage_dma;
 		ecc->write_page = sunxi_nfc_hw_ecc_write_page_dma;
 		nand->options |= NAND_USES_DMA;
-		if (nfc->mdma_desc)
-			nand->buf_align = 4;
 	} else {
 		ecc->read_page = sunxi_nfc_hw_ecc_read_page;
 		ecc->read_subpage = sunxi_nfc_hw_ecc_read_subpage;
@@ -2465,7 +2389,8 @@ static int sunxi_nand_chip_init(struct device *dev, struct sunxi_nfc *nfc,
 		return -EINVAL;
 	}
 
-	sunxi_nand = devm_kzalloc_flex(dev, *sunxi_nand, sels, nsels);
+	sunxi_nand = devm_kzalloc(dev, struct_size(sunxi_nand, sels, nsels),
+				  GFP_KERNEL);
 	if (!sunxi_nand)
 		return -ENOMEM;
 
@@ -2551,32 +2476,8 @@ static int sunxi_nfc_dma_init(struct sunxi_nfc *nfc, struct resource *r)
 {
 	int ret;
 
-	if (nfc->caps->has_mdma_desc) {
-		ret = dma_set_mask_and_coherent(nfc->dev, DMA_BIT_MASK(32));
-		if (ret) {
-			dev_warn(nfc->dev,
-				 "failed to set MBUS DMA mask, using PIO: %d\n",
-				 ret);
-			return 0;
-		}
-
-		nfc->mdma_desc =
-			dmam_alloc_coherent(nfc->dev, sizeof(*nfc->mdma_desc),
-					    &nfc->mdma_desc_dma, GFP_KERNEL);
-		if (!nfc->mdma_desc) {
-			dev_warn(nfc->dev,
-				 "failed to allocate MBUS DMA descriptor, using PIO\n");
-			return 0;
-		}
-
-		nfc->use_mdma = true;
+	if (nfc->caps->has_mdma)
 		return 0;
-	}
-
-	if (nfc->caps->has_mdma) {
-		nfc->use_mdma = true;
-		return 0;
-	}
 
 	nfc->dmac = dma_request_chan(nfc->dev, "rxtx");
 	if (IS_ERR(nfc->dmac)) {
@@ -2609,7 +2510,7 @@ static int sunxi_nfc_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	nfc = devm_kzalloc_obj(dev, *nfc);
+	nfc = devm_kzalloc(dev, sizeof(*nfc), GFP_KERNEL);
 	if (!nfc)
 		return -ENOMEM;
 
@@ -2771,7 +2672,6 @@ static const struct sunxi_nfc_caps sunxi_nfc_a23_caps = {
 };
 
 static const struct sunxi_nfc_caps sunxi_nfc_h616_caps = {
-	.has_mdma_desc = true,
 	.has_ecc_clk = true,
 	.has_mbus_clk = true,
 	.reg_io_data = NFC_REG_A23_IO_DATA,

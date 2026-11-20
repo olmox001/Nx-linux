@@ -1059,7 +1059,6 @@ static int imx274_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int imx274_set_fmt(struct v4l2_subdev *sd,
-			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *format)
 {
@@ -1093,7 +1092,6 @@ out:
 }
 
 static int imx274_get_selection(struct v4l2_subdev *sd,
-				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -1210,7 +1208,6 @@ static int imx274_set_selection_crop(struct stimx274 *imx274,
 }
 
 static int imx274_set_selection(struct v4l2_subdev *sd,
-				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -1958,7 +1955,7 @@ static int imx274_probe(struct i2c_client *client)
 	struct device *dev = &client->dev;
 	int ret;
 
-	imx274 = devm_kzalloc_obj(dev, *imx274);
+	imx274 = devm_kzalloc(dev, sizeof(*imx274), GFP_KERNEL);
 	if (!imx274)
 		return -ENOMEM;
 

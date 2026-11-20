@@ -19,10 +19,8 @@ struct skb_gso_cb {
 	int	encap_level;
 	__wsum	csum;
 	__u16	csum_start;
-	/* Number of IPv4/IPv6/NSH GSO handler entries for this packet. */
+	/* Number of IPv4/IPv6 GSO handler entries for this packet. */
 	u8	recursion_counter;
-	/* Max MSS segs per output skb, 0 = no limit */
-	u8	max_segs;
 };
 #define SKB_GSO_CB_OFFSET	32
 #define SKB_GSO_CB(skb) ((struct skb_gso_cb *)((skb)->cb + SKB_GSO_CB_OFFSET))
@@ -85,13 +83,12 @@ static inline __sum16 gso_make_checksum(struct sk_buff *skb, __wsum res)
 }
 
 struct sk_buff *__skb_gso_segment(struct sk_buff *skb,
-				  netdev_features_t features, bool tx_path,
-				  unsigned int max_segs);
+				  netdev_features_t features, bool tx_path);
 
 static inline struct sk_buff *skb_gso_segment(struct sk_buff *skb,
 					      netdev_features_t features)
 {
-	return __skb_gso_segment(skb, features, true, 0);
+	return __skb_gso_segment(skb, features, true);
 }
 
 struct sk_buff *skb_eth_gso_segment(struct sk_buff *skb,

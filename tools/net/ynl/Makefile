@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
 
-include ../../scripts/Makefile.include
 include ../../scripts/Makefile.arch
 
 INSTALL	?= install

@@ -361,7 +361,7 @@ static struct mbox_chan *sti_mbox_xlate(struct mbox_controller *mbox,
 		return ERR_PTR(-EBUSY);
 	}
 
-	chan_info = devm_kzalloc_obj(mbox->dev, *chan_info);
+	chan_info = devm_kzalloc(mbox->dev, sizeof(*chan_info), GFP_KERNEL);
 	if (!chan_info)
 		return ERR_PTR(-ENOMEM);
 
@@ -414,7 +414,7 @@ static int sti_mbox_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	mdev = devm_kzalloc_obj(&pdev->dev, *mdev);
+	mdev = devm_kzalloc(&pdev->dev, sizeof(*mdev), GFP_KERNEL);
 	if (!mdev)
 		return -ENOMEM;
 
@@ -428,11 +428,12 @@ static int sti_mbox_probe(struct platform_device *pdev)
 	if (ret)
 		mdev->name = np->full_name;
 
-	mbox = devm_kzalloc_obj(&pdev->dev, *mbox);
+	mbox = devm_kzalloc(&pdev->dev, sizeof(*mbox), GFP_KERNEL);
 	if (!mbox)
 		return -ENOMEM;
 
-	chans = devm_kzalloc_objs(&pdev->dev, *chans, STI_MBOX_CHAN_MAX);
+	chans = devm_kcalloc(&pdev->dev,
+			     STI_MBOX_CHAN_MAX, sizeof(*chans), GFP_KERNEL);
 	if (!chans)
 		return -ENOMEM;
 
@@ -467,8 +468,10 @@ static int sti_mbox_probe(struct platform_device *pdev)
 					sti_mbox_irq_handler,
 					sti_mbox_thread_handler,
 					IRQF_ONESHOT, mdev->name, mdev);
-	if (ret)
+	if (ret) {
+		dev_err(&pdev->dev, "Can't claim IRQ %d\n", irq);
 		return -EINVAL;
+	}
 
 	dev_info(&pdev->dev, "%s: Registered Tx/Rx Mailbox\n", mdev->name);
 

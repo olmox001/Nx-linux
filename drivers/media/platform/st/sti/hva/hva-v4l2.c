@@ -1348,7 +1348,7 @@ static int hva_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	hva = devm_kzalloc_obj(dev, *hva);
+	hva = devm_kzalloc(dev, sizeof(*hva), GFP_KERNEL);
 	if (!hva) {
 		ret = -ENOMEM;
 		goto err;

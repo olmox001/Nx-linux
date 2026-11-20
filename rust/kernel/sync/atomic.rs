@@ -140,7 +140,7 @@ pub unsafe trait AtomicAdd<Rhs = Self>: AtomicType {
 const fn into_repr<T: AtomicType>(v: T) -> T::Repr {
     // SAFETY: Per the safety requirement of `AtomicType`, `T` is round-trip transmutable to
     // `T::Repr`, therefore the transmute operation is sound.
-    unsafe { crate::mem::transmute(v) }
+    unsafe { core::mem::transmute_copy(&v) }
 }
 
 /// # Safety
@@ -149,7 +149,7 @@ const fn into_repr<T: AtomicType>(v: T) -> T::Repr {
 #[inline(always)]
 const unsafe fn from_repr<T: AtomicType>(r: T::Repr) -> T {
     // SAFETY: Per the safety requirement of the function, the transmute operation is sound.
-    unsafe { crate::mem::transmute(r) }
+    unsafe { core::mem::transmute_copy(&r) }
 }
 
 impl<T: AtomicType> Atomic<T> {

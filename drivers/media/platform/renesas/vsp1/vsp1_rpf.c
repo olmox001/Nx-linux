@@ -421,7 +421,7 @@ struct vsp1_rwpf *vsp1_rpf_create(struct vsp1_device *vsp1, unsigned int index)
 	char name[6];
 	int ret;
 
-	rpf = devm_kzalloc_obj(vsp1->dev, *rpf);
+	rpf = devm_kzalloc(vsp1->dev, sizeof(*rpf), GFP_KERNEL);
 	if (rpf == NULL)
 		return ERR_PTR(-ENOMEM);
 

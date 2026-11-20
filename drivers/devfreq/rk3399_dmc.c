@@ -342,7 +342,7 @@ static int rk3399_dmcfreq_probe(struct platform_device *pdev)
 	u32 ddr_type;
 	u32 val;
 
-	data = devm_kzalloc_obj(dev, struct rk3399_dmcfreq);
+	data = devm_kzalloc(dev, sizeof(struct rk3399_dmcfreq), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

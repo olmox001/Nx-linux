@@ -1254,7 +1254,6 @@ static int mt9m114_pa_enum_framesizes(struct v4l2_subdev *sd,
 }
 
 static int mt9m114_pa_set_fmt(struct v4l2_subdev *sd,
-			      const struct v4l2_subdev_client_info *ci,
 			      struct v4l2_subdev_state *state,
 			      struct v4l2_subdev_format *fmt)
 {
@@ -1282,7 +1281,6 @@ static int mt9m114_pa_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int mt9m114_pa_get_selection(struct v4l2_subdev *sd,
-				    const struct v4l2_subdev_client_info *ci,
 				    struct v4l2_subdev_state *state,
 				    struct v4l2_subdev_selection *sel)
 {
@@ -1306,7 +1304,6 @@ static int mt9m114_pa_get_selection(struct v4l2_subdev *sd,
 }
 
 static int mt9m114_pa_set_selection(struct v4l2_subdev *sd,
-				    const struct v4l2_subdev_client_info *ci,
 				    struct v4l2_subdev_state *state,
 				    struct v4l2_subdev_selection *sel)
 {
@@ -1880,7 +1877,6 @@ static void mt9m114_ifp_update_sel_and_src_fmt(struct v4l2_subdev_state *state)
 }
 
 static int mt9m114_ifp_set_fmt(struct v4l2_subdev *sd,
-			       const struct v4l2_subdev_client_info *ci,
 			       struct v4l2_subdev_state *state,
 			       struct v4l2_subdev_format *fmt)
 {
@@ -1927,7 +1923,6 @@ static int mt9m114_ifp_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int mt9m114_ifp_get_selection(struct v4l2_subdev *sd,
-				     const struct v4l2_subdev_client_info *ci,
 				     struct v4l2_subdev_state *state,
 				     struct v4l2_subdev_selection *sel)
 {
@@ -1987,7 +1982,6 @@ static int mt9m114_ifp_get_selection(struct v4l2_subdev *sd,
 }
 
 static int mt9m114_ifp_set_selection(struct v4l2_subdev *sd,
-				     const struct v4l2_subdev_client_info *ci,
 				     struct v4l2_subdev_state *state,
 				     struct v4l2_subdev_selection *sel)
 {
@@ -2529,7 +2523,7 @@ static int mt9m114_probe(struct i2c_client *client)
 	struct mt9m114 *sensor;
 	int ret;
 
-	sensor = devm_kzalloc_obj(dev, *sensor);
+	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
 

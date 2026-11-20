@@ -221,7 +221,8 @@ static int adp8860_led_probe(struct i2c_client *client)
 	struct led_info *cur_led;
 	int ret, i;
 
-	led = devm_kzalloc_objs(&client->dev, *led, pdata->num_leds);
+	led = devm_kcalloc(&client->dev, pdata->num_leds, sizeof(*led),
+				GFP_KERNEL);
 	if (led == NULL)
 		return -ENOMEM;
 
@@ -668,7 +669,7 @@ static int adp8860_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	data = devm_kzalloc_obj(&client->dev, *data);
+	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
 	if (data == NULL)
 		return -ENOMEM;
 

@@ -6,12 +6,10 @@
 
 #include <linux/kvm_host.h>
 #include <asm/kvm_emulate.h>
-#include <asm/kvm_mmu.h>
 #include <trace/events/kvm.h>
 
 #include "trace.h"
 
-#if ARM64_S390_COMMON == 1
 void kvm_mmio_write_buf(void *buf, unsigned int len, unsigned long data)
 {
 	void *datap = NULL;
@@ -260,4 +258,3 @@ int io_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa)
 	run->exit_reason	= KVM_EXIT_MMIO;
 	return 0;
 }
-#endif /* ARM64_S390_COMMON == 1 */

@@ -1009,7 +1009,7 @@ static int ipmmu_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	mmu = devm_kzalloc_obj(&pdev->dev, *mmu);
+	mmu = devm_kzalloc(&pdev->dev, sizeof(*mmu), GFP_KERNEL);
 	if (!mmu) {
 		dev_err(&pdev->dev, "cannot allocate device data\n");
 		return -ENOMEM;

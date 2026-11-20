@@ -182,19 +182,18 @@ static int raw_v4_input(struct net *net, struct sk_buff *skb,
 				  iph->saddr, iph->daddr, dif, sdif))
 			continue;
 
+		if (atomic_read(&sk->sk_rmem_alloc) >=
+		    READ_ONCE(sk->sk_rcvbuf)) {
+			sk_drops_inc(sk);
+			continue;
+		}
+
 		delivered = 1;
 		if ((iph->protocol != IPPROTO_ICMP || !icmp_filter(sk, skb)) &&
 		    ip_mc_sf_allow(sk, iph->daddr, iph->saddr,
 				   skb->dev->ifindex, sdif)) {
-			struct sk_buff *clone;
+			struct sk_buff *clone = skb_clone(skb, GFP_ATOMIC);
 
-			if (atomic_read(&sk->sk_rmem_alloc) >=
-			    READ_ONCE(sk->sk_rcvbuf)) {
-				sk_drops_inc(sk);
-				continue;
-			}
-
-			clone = skb_clone(skb, GFP_ATOMIC);
 			/* Not releasing hash table! */
 			if (clone)
 				raw_rcv(sk, clone);
@@ -819,18 +818,23 @@ static int raw_seticmpfilter(struct sock *sk, sockptr_t optval, int optlen)
 	return 0;
 }
 
-static int raw_geticmpfilter(struct sock *sk, sockopt_t *opt)
+static int raw_geticmpfilter(struct sock *sk, char __user *optval, int __user *optlen)
 {
-	int len = opt->optlen;
+	int len, ret = -EFAULT;
 
+	if (get_user(len, optlen))
+		goto out;
+	ret = -EINVAL;
 	if (len < 0)
-		return -EINVAL;
+		goto out;
 	if (len > sizeof(struct icmp_filter))
 		len = sizeof(struct icmp_filter);
-	opt->optlen = len;
-	if (copy_to_iter(&raw_sk(sk)->filter, len, &opt->iter_out) != len)
-		return -EFAULT;
-	return 0;
+	ret = -EFAULT;
+	if (put_user(len, optlen) ||
+	    copy_to_user(optval, &raw_sk(sk)->filter, len))
+		goto out;
+	ret = 0;
+out:	return ret;
 }
 
 static int do_raw_setsockopt(struct sock *sk, int optname,
@@ -853,13 +857,14 @@ static int raw_setsockopt(struct sock *sk, int level, int optname,
 	return do_raw_setsockopt(sk, optname, optval, optlen);
 }
 
-static int do_raw_getsockopt(struct sock *sk, int optname, sockopt_t *opt)
+static int do_raw_getsockopt(struct sock *sk, int optname,
+			     char __user *optval, int __user *optlen)
 {
 	if (optname == ICMP_FILTER) {
 		if (inet_sk(sk)->inet_num != IPPROTO_ICMP)
 			return -EOPNOTSUPP;
 		else
-			return raw_geticmpfilter(sk, opt);
+			return raw_geticmpfilter(sk, optval, optlen);
 	}
 	return -ENOPROTOOPT;
 }
@@ -867,24 +872,9 @@ static int do_raw_getsockopt(struct sock *sk, int optname, sockopt_t *opt)
 static int raw_getsockopt(struct sock *sk, int level, int optname,
 			  char __user *optval, int __user *optlen)
 {
-	sockopt_t opt;
-	int err;
-
 	if (level != SOL_RAW)
 		return ip_getsockopt(sk, level, optname, optval, optlen);
-
-	err = sockopt_init_user(&opt, optval, optlen);
-	if (err)
-		return err;
-
-	err = do_raw_getsockopt(sk, optname, &opt);
-	if (err)
-		return err;
-
-	if (put_user(opt.optlen, optlen))
-		return -EFAULT;
-
-	return 0;
+	return do_raw_getsockopt(sk, optname, optval, optlen);
 }
 
 static int raw_ioctl(struct sock *sk, int cmd, int *karg)
@@ -1055,14 +1045,14 @@ static void raw_sock_seq_show(struct seq_file *seq, struct sock *sp, int i)
 	      srcp  = inet->inet_num;
 
 	seq_printf(seq, "%4d: %08X:%04X %08X:%04X"
-		" %02X %08X:%08X %02X:%08lX %08X %5u %8d %llu %d 0 %u\n",
+		" %02X %08X:%08X %02X:%08lX %08X %5u %8d %llu %d %pK %u\n",
 		i, src, srcp, dest, destp, sp->sk_state,
 		sk_wmem_alloc_get(sp),
 		sk_rmem_alloc_get(sp),
 		0, 0L, 0,
 		from_kuid_munged(seq_user_ns(seq), sk_uid(sp)),
 		0, sock_i_ino(sp),
-		refcount_read(&sp->sk_refcnt), sk_drops_read(sp));
+		refcount_read(&sp->sk_refcnt), sp, sk_drops_read(sp));
 }
 
 static int raw_seq_show(struct seq_file *seq, void *v)

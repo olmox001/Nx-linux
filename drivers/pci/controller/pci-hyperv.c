@@ -641,7 +641,10 @@ static void hv_irq_retarget_interrupt(struct irq_data *data)
 	params->int_entry.source = HV_INTERRUPT_SOURCE_MSI;
 	params->int_entry.msi_entry.address.as_uint32 = int_desc->address & 0xffffffff;
 	params->int_entry.msi_entry.data.as_uint32 = int_desc->data;
-	params->device_id = hv_build_logical_dev_id_prefix(hbus->hdev) |
+	params->device_id = (hbus->hdev->dev_instance.b[5] << 24) |
+			   (hbus->hdev->dev_instance.b[4] << 16) |
+			   (hbus->hdev->dev_instance.b[7] << 8) |
+			   (hbus->hdev->dev_instance.b[6] & 0xf8) |
 			   PCI_FUNC(pdev->devfn);
 	params->int_target.vector = hv_msi_get_int_vector(data);
 
@@ -1037,38 +1040,19 @@ static void put_pcichild(struct hv_pci_dev *hpdev)
 
 /*
  * There is no good way to get notified from vmbus_onoffer_rescind(),
- * so let's use polling here, since this is not a hot path. If
- * wait_for_response() has been polling for 2 minutes
- * without either a rescind or completion, add a warning.
+ * so let's use polling here, since this is not a hot path.
  */
-#define PCI_RESPONSE_WARN_POLL_COUNT 1200
-
 static int wait_for_response(struct hv_device *hdev,
-			     struct completion *comp,
-			     const char *msg_type)
+			     struct completion *comp)
 {
-	u64 counter = 0;
-
 	while (true) {
 		if (hdev->channel->rescind) {
 			dev_warn_once(&hdev->device, "The device is gone.\n");
 			return -ENODEV;
 		}
 
-		counter++;
-
-		if (wait_for_completion_timeout(comp, HZ / 10)) {
-			if (counter > PCI_RESPONSE_WARN_POLL_COUNT)
-				dev_warn(&hdev->device,
-					 "Late %s completion arrived.\n", msg_type);
+		if (wait_for_completion_timeout(comp, HZ / 10))
 			break;
-		}
-
-		if (counter == PCI_RESPONSE_WARN_POLL_COUNT) {
-			dev_err(&hdev->device,
-				"%s stuck waiting for response, relid = %u\n",
-				msg_type, hdev->channel->offermsg.child_relid);
-		}
 	}
 
 	return 0;
@@ -1534,8 +1518,7 @@ static int hv_read_config_block(struct pci_dev *pdev, void *buf,
 	if (ret)
 		return ret;
 
-	ret = wait_for_response(hbus->hdev, &comp_pkt.comp_pkt.host_event,
-				"PCI_READ_BLOCK");
+	ret = wait_for_response(hbus->hdev, &comp_pkt.comp_pkt.host_event);
 	if (ret)
 		return ret;
 
@@ -1624,8 +1607,7 @@ static int hv_write_config_block(struct pci_dev *pdev, void *buf,
 	if (ret)
 		return ret;
 
-	ret = wait_for_response(hbus->hdev, &comp_pkt.host_event,
-				"PCI_WRITE_BLOCK");
+	ret = wait_for_response(hbus->hdev, &comp_pkt.host_event);
 	if (ret)
 		return ret;
 
@@ -2642,8 +2624,7 @@ static struct hv_pci_dev *new_pcichild_device(struct hv_pcibus_device *hbus,
 	if (ret)
 		goto error;
 
-	if (wait_for_response(hbus->hdev, &comp_pkt.host_event,
-			      "PCI_QUERY_RESOURCE_REQUIREMENTS"))
+	if (wait_for_response(hbus->hdev, &comp_pkt.host_event))
 		goto error;
 
 	hpdev->desc = *desc;
@@ -3275,8 +3256,7 @@ static int hv_pci_protocol_negotiation(struct hv_device *hdev,
 				(unsigned long)pkt, VM_PKT_DATA_INBAND,
 				VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED);
 		if (!ret)
-			ret = wait_for_response(hdev, &comp_pkt.host_event,
-						"PCI_QUERY_PROTOCOL_VERSION");
+			ret = wait_for_response(hdev, &comp_pkt.host_event);
 
 		if (ret) {
 			dev_err(&hdev->device,
@@ -3496,8 +3476,7 @@ enter_d0_retry:
 			       (unsigned long)pkt, VM_PKT_DATA_INBAND,
 			       VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED);
 	if (!ret)
-		ret = wait_for_response(hdev, &comp_pkt.host_event,
-					"PCI_BUS_D0ENTRY");
+		ret = wait_for_response(hdev, &comp_pkt.host_event);
 
 	if (ret)
 		goto exit;
@@ -3574,8 +3553,7 @@ static int hv_pci_query_relations(struct hv_device *hdev)
 	ret = vmbus_sendpacket(hdev->channel, &message, sizeof(message),
 			       0, VM_PKT_DATA_INBAND, 0);
 	if (!ret)
-		ret = wait_for_response(hdev, &comp,
-					"PCI_QUERY_BUS_RELATIONS");
+		ret = wait_for_response(hdev, &comp);
 
 	/*
 	 * In the case of fast device addition/removal, it's possible that
@@ -3666,8 +3644,7 @@ static int hv_send_resources_allocated(struct hv_device *hdev)
 				VM_PKT_DATA_INBAND,
 				VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED);
 		if (!ret)
-			ret = wait_for_response(hdev, &comp_pkt.host_event,
-						"PCI_RESOURCE_ASSIGNED");
+			ret = wait_for_response(hdev, &comp_pkt.host_event);
 		if (ret)
 			break;
 
@@ -3739,7 +3716,6 @@ static int hv_pci_probe(struct hv_device *hdev,
 	struct hv_pcibus_device *hbus;
 	int ret, dom;
 	u16 dom_req;
-	u32 prefix;
 	char *name;
 
 	bridge = devm_pci_alloc_host_bridge(&hdev->device, 0);
@@ -3882,22 +3858,13 @@ static int hv_pci_probe(struct hv_device *hdev,
 
 	hbus->state = hv_pcibus_probed;
 
-	/* Register the bus before scanning any devices on it. */
-	prefix = hv_build_logical_dev_id_prefix(hdev);
-
-	ret = hv_pci_register_dev_id(dom, prefix);
-	if (ret)
-		goto free_windows;
-
 	ret = create_root_hv_pci_bus(hbus);
 	if (ret)
-		goto unregister_pci_bus;
+		goto free_windows;
 
 	mutex_unlock(&hbus->state_lock);
 	return 0;
 
-unregister_pci_bus:
-	hv_pci_unregister_dev_id(dom);
 free_windows:
 	hv_pci_free_bridge_windows(hbus);
 exit_d0:
@@ -4011,8 +3978,6 @@ static void hv_pci_remove(struct hv_device *hdev)
 
 	hbus = hv_get_drvdata(hdev);
 	if (hbus->state == hv_pcibus_installed) {
-		int dom = hbus->bridge->domain_nr;
-
 		tasklet_disable(&hdev->channel->callback_event);
 		hbus->state = hv_pcibus_removing;
 		tasklet_enable(&hdev->channel->callback_event);
@@ -4030,8 +3995,6 @@ static void hv_pci_remove(struct hv_device *hdev)
 		hv_pci_remove_slots(hbus);
 		pci_remove_root_bus(hbus->bridge->bus);
 		pci_unlock_rescan_remove();
-
-		hv_pci_unregister_dev_id(dom);
 	}
 
 	hv_pci_bus_exit(hdev, false);
@@ -4192,9 +4155,6 @@ static struct hv_driver hv_pci_drv = {
 	.remove		= hv_pci_remove,
 	.suspend	= hv_pci_suspend,
 	.resume		= hv_pci_resume,
-	.driver = {
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-	},
 };
 
 static void __exit exit_hv_pci_drv(void)

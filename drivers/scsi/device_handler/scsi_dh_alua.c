@@ -5,7 +5,6 @@
  * Copyright (C) 2007-2010 Hannes Reinecke, SUSE Linux Products GmbH.
  * All rights reserved.
  */
-#include <linux/bitfield.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -433,43 +432,61 @@ static enum scsi_disposition alua_check_sense(struct scsi_device *sdev,
 {
 	switch (sense_hdr->sense_key) {
 	case NOT_READY:
-		if (sense_hdr->sense_code ==
-		    LU_NOT_ACCESSIBLE_ASYMMETRIC_ACCESS_STATE_TRANSITION) {
+		if (sense_hdr->asc == 0x04 && sense_hdr->ascq == 0x0a) {
+			/*
+			 * LUN Not Accessible - ALUA state transition
+			 */
 			alua_handle_state_transition(sdev);
 			return NEEDS_RETRY;
 		}
 		break;
 	case UNIT_ATTENTION:
-		if (sense_hdr->sense_code ==
-		    LU_NOT_ACCESSIBLE_ASYMMETRIC_ACCESS_STATE_TRANSITION) {
+		if (sense_hdr->asc == 0x04 && sense_hdr->ascq == 0x0a) {
+			/*
+			 * LUN Not Accessible - ALUA state transition
+			 */
 			alua_handle_state_transition(sdev);
 			return NEEDS_RETRY;
 		}
-		if (sense_hdr->sense_code ==
-		    POWER_ON_RESET_OR_BUS_DEVICE_RESET_OCCURRED) {
+		if (sense_hdr->asc == 0x29 && sense_hdr->ascq == 0x00) {
 			/*
+			 * Power On, Reset, or Bus Device Reset.
 			 * Might have obscured a state transition,
 			 * so schedule a recheck.
 			 */
 			alua_check(sdev, true);
 			return ADD_TO_MLQUEUE;
 		}
-		if (sense_hdr->sense_code == DEVICE_INTERNAL_RESET)
+		if (sense_hdr->asc == 0x29 && sense_hdr->ascq == 0x04)
+			/*
+			 * Device internal reset
+			 */
 			return ADD_TO_MLQUEUE;
-		if (sense_hdr->sense_code == MODE_PARAMETERS_CHANGED)
+		if (sense_hdr->asc == 0x2a && sense_hdr->ascq == 0x01)
+			/*
+			 * Mode Parameters Changed
+			 */
 			return ADD_TO_MLQUEUE;
-		if (sense_hdr->sense_code == ASYMMETRIC_ACCESS_STATE_CHANGED) {
+		if (sense_hdr->asc == 0x2a && sense_hdr->ascq == 0x06) {
+			/*
+			 * ALUA state changed
+			 */
 			alua_check(sdev, true);
 			return ADD_TO_MLQUEUE;
 		}
-		if (sense_hdr->sense_code ==
-		    IMPLICIT_ASYMMETRIC_ACCESS_STATE_TRANSITION_FAILED) {
+		if (sense_hdr->asc == 0x2a && sense_hdr->ascq == 0x07) {
+			/*
+			 * Implicit ALUA state transition failed
+			 */
 			alua_check(sdev, true);
 			return ADD_TO_MLQUEUE;
 		}
-		if (sense_hdr->sense_code == INQUIRY_DATA_HAS_CHANGED)
+		if (sense_hdr->asc == 0x3f && sense_hdr->ascq == 0x03)
+			/*
+			 * Inquiry data has changed
+			 */
 			return ADD_TO_MLQUEUE;
-		if (sense_hdr->sense_code == REPORTED_LUNS_DATA_HAS_CHANGED)
+		if (sense_hdr->asc == 0x3f && sense_hdr->ascq == 0x0e)
 			/*
 			 * REPORTED_LUNS_DATA_HAS_CHANGED is reported
 			 * when switching controllers on targets like
@@ -499,12 +516,12 @@ static int alua_tur(struct scsi_device *sdev)
 				      ALUA_FAILOVER_RETRIES, &sense_hdr);
 	if ((sense_hdr.sense_key == NOT_READY ||
 	     sense_hdr.sense_key == UNIT_ATTENTION) &&
-	    sense_hdr.sense_code ==
-	    LU_NOT_ACCESSIBLE_ASYMMETRIC_ACCESS_STATE_TRANSITION)
+	    sense_hdr.asc == 0x04 && sense_hdr.ascq == 0x0a)
 		return SCSI_DH_RETRY;
-	if (retval)
+	else if (retval)
 		return SCSI_DH_IO;
-	return SCSI_DH_OK;
+	else
+		return SCSI_DH_OK;
 }
 
 /*
@@ -601,8 +618,7 @@ static int alua_rtpg(struct scsi_device *sdev, struct alua_port_group *pg)
 		 * transition. So set the state to 'transitioning' directly.
 		 */
 		if (sense_hdr.sense_key == NOT_READY &&
-		    sense_hdr.sense_code ==
-		    LU_NOT_ACCESSIBLE_ASYMMETRIC_ACCESS_STATE_TRANSITION) {
+		    sense_hdr.asc == 0x04 && sense_hdr.ascq == 0x0a) {
 			transitioning_sense = true;
 			goto skip_rtpg;
 		}
@@ -677,8 +693,8 @@ static int alua_rtpg(struct scsi_device *sdev, struct alua_port_group *pg)
 				    !(tmp_pg->flags & ALUA_PG_RUNNING)) {
 					struct alua_dh_data *h;
 
-					tmp_pg->state = FIELD_GET(SCSI_ACCESS_STATE_MASK, desc[0]);
-					tmp_pg->pref = FIELD_GET(SCSI_ACCESS_STATE_PREFERRED, desc[0]);
+					tmp_pg->state = desc[0] & 0x0f;
+					tmp_pg->pref = desc[0] >> 7;
 					rcu_read_lock();
 					list_for_each_entry_rcu(h,
 						&tmp_pg->dh_list, node) {

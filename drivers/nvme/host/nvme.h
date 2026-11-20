@@ -183,12 +183,6 @@ enum nvme_quirks {
 	 * Admin queue DMA buffers must be page aligned
 	 */
 	NVME_QUIRK_ADMIN_PAGE_ALIGN		= (1 << 23),
-
-	/*
-	 * The device is extremely slow on FUA writes but fast on Flush;
-	 * do not advertise FUA so the block layer emulates it.
-	 */
-	NVME_QUIRK_NO_FUA			= (1 << 24),
 };
 
 static inline char *nvme_quirk_name(enum nvme_quirks q)
@@ -242,8 +236,6 @@ static inline char *nvme_quirk_name(enum nvme_quirks q)
 		return "dmapool_align_512";
 	case NVME_QUIRK_ADMIN_PAGE_ALIGN:
 		return "admin_page_align";
-	case NVME_QUIRK_NO_FUA:
-		return "no_fua";
 	}
 
 	return "unknown";
@@ -331,7 +323,6 @@ struct nvme_fault_inject {
 #ifdef CONFIG_FAULT_INJECTION_DEBUG_FS
 	struct fault_attr attr;
 	struct dentry *parent;
-	u16 opcode;
 	bool dont_retry;	/* DNR, do not retry */
 	u16 status;		/* status code */
 #endif
@@ -377,8 +368,7 @@ struct nvme_ctrl {
 	wait_queue_head_t state_wq;
 
 	struct nvme_subsystem *subsys;
-	struct list_head subsys_entry
-		__guarded_by(&nvme_subsystems_lock);
+	struct list_head subsys_entry;
 
 	struct opal_dev *opal_dev;
 
@@ -509,11 +499,9 @@ struct nvme_subsystem {
 	 * a separate refcount.
 	 */
 	struct kref		ref;
-	struct list_head	entry
-		__guarded_by(&nvme_subsystems_lock);
+	struct list_head	entry;
 	struct mutex		lock;
-	struct list_head	ctrls
-		__guarded_by(&nvme_subsystems_lock);
+	struct list_head	ctrls;
 	struct list_head	nsheads
 		__guarded_by(&lock);
 	/* Command effects logs, indexed by CSI and protected by lock. */
@@ -583,8 +571,7 @@ struct nvme_ns_head {
 	u16			*plids;
 	u32			write_stream_granularity;
 #ifdef CONFIG_NVME_MULTIPATH
-	struct bio_list		requeue_list
-		__guarded_by(&requeue_lock);
+	struct bio_list		requeue_list;
 	spinlock_t		requeue_lock;
 	struct work_struct	requeue_work;
 	struct work_struct	partition_scan_work;
@@ -598,8 +585,7 @@ struct nvme_ns_head {
 #define NVME_NSHEAD_DISK_LIVE		0
 #define NVME_NSHEAD_QUEUE_IF_NO_PATH	1
 #define NVME_NSHEAD_CDEV_LIVE		2
-#define NVME_NSHEAD_FAIL_ON_CTRL_LOSS	3
-	struct nvme_ns __rcu_guarded	*current_path[];
+	struct nvme_ns __rcu	*current_path[];
 #endif
 };
 
@@ -677,8 +663,6 @@ struct nvme_ctrl_ops {
 	int (*get_address)(struct nvme_ctrl *ctrl, char *buf, int size);
 	void (*print_device_info)(struct nvme_ctrl *ctrl);
 	bool (*supports_pci_p2pdma)(struct nvme_ctrl *ctrl);
-	int (*init_dma_buf_io_ctx)(struct nvme_ctrl *ctrl,
-				   struct dma_buf_io_ctx *ctx);
 	unsigned long (*get_virt_boundary)(struct nvme_ctrl *ctrl, bool is_admin);
 };
 
@@ -706,12 +690,12 @@ static inline struct request *nvme_find_rq(struct blk_mq_tags *tags,
 
 	rq = blk_mq_tag_to_rq(tags, tag);
 	if (unlikely(!rq)) {
-		pr_err_ratelimited("could not locate request for tag %#x\n",
-				   tag);
+		pr_err("could not locate request for tag %#x\n",
+			tag);
 		return NULL;
 	}
 	if (unlikely(nvme_genctr_mask(nvme_req(rq)->genctr) != genctr)) {
-		dev_err_ratelimited(nvme_req(rq)->ctrl->device,
+		dev_err(nvme_req(rq)->ctrl->device,
 			"request %#x genctr mismatch (got %#x expected %#x)\n",
 			tag, genctr, nvme_genctr_mask(nvme_req(rq)->genctr));
 		return NULL;
@@ -1060,8 +1044,7 @@ extern const struct attribute_group *nvme_dev_attr_groups[];
 extern const struct block_device_operations nvme_bdev_ops;
 
 void nvme_delete_ctrl_sync(struct nvme_ctrl *ctrl);
-struct nvme_ns *nvme_find_path(struct nvme_ns_head *head)
-	__must_hold_shared(&head->srcu);
+struct nvme_ns *nvme_find_path(struct nvme_ns_head *head);
 #ifdef CONFIG_NVME_MULTIPATH
 static inline bool nvme_ctrl_use_ana(struct nvme_ctrl *ctrl)
 {
@@ -1107,14 +1090,11 @@ extern struct device_attribute dev_attr_ana_grpid;
 extern struct device_attribute dev_attr_ana_state;
 extern struct device_attribute dev_attr_queue_depth;
 extern struct device_attribute dev_attr_numa_nodes;
-extern struct device_attribute dev_attr_path_state;
 extern struct device_attribute dev_attr_delayed_removal_secs;
-extern struct device_attribute dev_attr_fail_on_ctrl_loss;
 extern struct device_attribute dev_attr_multipath_failover_count;
 extern struct device_attribute dev_attr_io_requeue_no_usable_path_count;
 extern struct device_attribute dev_attr_io_fail_no_available_path_count;
 extern struct device_attribute subsys_attr_iopolicy;
-extern struct device_attribute subsys_attr_iopolicies;
 
 static inline bool nvme_disk_is_ns_head(struct gendisk *disk)
 {
@@ -1218,15 +1198,6 @@ static inline bool nvme_mpath_queue_if_no_path(struct nvme_ns_head *head)
 	return false;
 }
 #endif /* CONFIG_NVME_MULTIPATH */
-
-#if defined(CONFIG_NVME_MULTIPATH) && defined(CONFIG_BLK_DEV_ZONED)
-int nvme_mpath_revalidate_zones(struct nvme_ns_head *head);
-#else
-static inline int nvme_mpath_revalidate_zones(struct nvme_ns_head *head)
-{
-	return 0;
-}
-#endif
 
 int nvme_ns_get_unique_id(struct nvme_ns *ns, u8 id[16],
 		enum blk_unique_id type);
@@ -1334,16 +1305,10 @@ static inline void nvme_auth_revoke_tls_key(struct nvme_ctrl *ctrl) {};
 
 u32 nvme_command_effects(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 			 u8 opcode);
-u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
-	__cond_acquires(nonzero, &ctrl->subsys->lock)
-	__cond_acquires(nonzero, &ctrl->scan_lock);
-
+u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode);
 int nvme_execute_rq(struct request *rq, bool at_head);
-u32 nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
-		       struct nvme_command *cmd, int status)
-		       __cond_releases(nonzero, &ctrl->scan_lock)
-		       __cond_releases(nonzero, &ctrl->subsys->lock);
-
+void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
+		       struct nvme_command *cmd, int status);
 struct nvme_ctrl *nvme_ctrl_from_file(struct file *file);
 struct nvme_ns *nvme_find_get_ns(struct nvme_ctrl *ctrl, unsigned nsid);
 bool nvme_get_ns(struct nvme_ns *ns);

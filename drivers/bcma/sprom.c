@@ -620,7 +620,7 @@ int bcma_sprom_get(struct bcma_bus *bus)
 	for (i = 0; i < ARRAY_SIZE(sprom_sizes); i++) {
 		size_t words = sprom_sizes[i];
 
-		sprom = kzalloc_objs(u16, words);
+		sprom = kcalloc(words, sizeof(u16), GFP_KERNEL);
 		if (!sprom)
 			return -ENOMEM;
 

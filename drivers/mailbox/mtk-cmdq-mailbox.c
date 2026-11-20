@@ -140,7 +140,7 @@ static void cmdq_vm_init(struct cmdq *cmdq)
 	if (!cmdq->pdata->gce_vm)
 		return;
 
-	vm_map = kzalloc_objs(*vm_map, cmdq->pdata->thread_nr);
+	vm_map = kcalloc(cmdq->pdata->thread_nr, sizeof(*vm_map), GFP_KERNEL);
 	if (!vm_map)
 		return;
 
@@ -565,10 +565,8 @@ static int cmdq_mbox_flush(struct mbox_chan *chan, unsigned long timeout)
 	int ret;
 
 	ret = pm_runtime_get_sync(cmdq->mbox.dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(cmdq->mbox.dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	spin_lock_irqsave(&thread->chan->lock, flags);
 	if (list_empty(&thread->task_busy_list))
@@ -604,9 +602,6 @@ wait:
 				      enable, enable == 0, 1, timeout)) {
 		dev_err(cmdq->mbox.dev, "Fail to wait GCE thread 0x%x done\n",
 			(u32)(thread->base - cmdq->base));
-
-		pm_runtime_mark_last_busy(cmdq->mbox.dev);
-		pm_runtime_put_autosuspend(cmdq->mbox.dev);
 
 		return -EFAULT;
 	}
@@ -644,8 +639,8 @@ static int cmdq_get_clocks(struct device *dev, struct cmdq *cmdq)
 	struct device_node *parent = dev->of_node->parent;
 	struct clk_bulk_data *clks;
 
-	cmdq->clocks = devm_kzalloc_objs(dev, *cmdq->clocks,
-					 cmdq->pdata->gce_num);
+	cmdq->clocks = devm_kcalloc(dev, cmdq->pdata->gce_num,
+				    sizeof(*cmdq->clocks), GFP_KERNEL);
 	if (!cmdq->clocks)
 		return -ENOMEM;
 
@@ -693,7 +688,7 @@ static int cmdq_probe(struct platform_device *pdev)
 	struct cmdq *cmdq;
 	int err, i;
 
-	cmdq = devm_kzalloc_obj(dev, *cmdq);
+	cmdq = devm_kzalloc(dev, sizeof(*cmdq), GFP_KERNEL);
 	if (!cmdq)
 		return -ENOMEM;
 
@@ -724,8 +719,8 @@ static int cmdq_probe(struct platform_device *pdev)
 			      DMA_BIT_MASK(sizeof(u32) * BITS_PER_BYTE + cmdq->pdata->shift));
 
 	cmdq->mbox.dev = dev;
-	cmdq->mbox.chans = devm_kzalloc_objs(dev, *cmdq->mbox.chans,
-					     cmdq->pdata->thread_nr);
+	cmdq->mbox.chans = devm_kcalloc(dev, cmdq->pdata->thread_nr,
+					sizeof(*cmdq->mbox.chans), GFP_KERNEL);
 	if (!cmdq->mbox.chans)
 		return -ENOMEM;
 
@@ -737,8 +732,8 @@ static int cmdq_probe(struct platform_device *pdev)
 	cmdq->mbox.txdone_irq = false;
 	cmdq->mbox.txdone_poll = false;
 
-	cmdq->thread = devm_kzalloc_objs(dev, *cmdq->thread,
-					 cmdq->pdata->thread_nr);
+	cmdq->thread = devm_kcalloc(dev, cmdq->pdata->thread_nr,
+					sizeof(*cmdq->thread), GFP_KERNEL);
 	if (!cmdq->thread)
 		return -ENOMEM;
 

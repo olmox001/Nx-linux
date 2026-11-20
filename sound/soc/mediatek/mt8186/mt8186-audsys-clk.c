@@ -114,8 +114,9 @@ int mt8186_audsys_clk_register(struct mtk_base_afe *afe)
 	struct clk_lookup *cl;
 	int i;
 
-	afe_priv->lookup = devm_kzalloc_objs(afe->dev, *afe_priv->lookup,
-					     CLK_AUD_NR_CLK);
+	afe_priv->lookup = devm_kcalloc(afe->dev, CLK_AUD_NR_CLK,
+					sizeof(*afe_priv->lookup),
+					GFP_KERNEL);
 
 	if (!afe_priv->lookup)
 		return -ENOMEM;

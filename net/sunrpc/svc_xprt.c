@@ -64,10 +64,8 @@ static LIST_HEAD(svc_xprt_class_list);
  *		- Can be set or cleared at any time.
  *		- After a set, svc_xprt_enqueue must be called to enqueue
  *		  the transport for processing.
- *		- After clearing XPT_CONN, the transport must be
- *		  accepted. If this succeeds, the bit must be set again.
- *		- xpo_recvfrom decides when XPT_DATA is cleared; see
- *		  svc_xprt_received.
+ *		- After a clear, the transport must be read/accepted.
+ *		  If this succeeds, it must be set again.
  *	XPT_CLOSE:
  *		- Can set at any time. It is never cleared.
  *      XPT_DEAD:
@@ -220,9 +218,8 @@ EXPORT_SYMBOL_GPL(svc_xprt_init);
  * The caller must hold the XPT_BUSY bit and must
  * not thereafter touch transport data.
  *
- * Note: xpo_recvfrom decides when to clear XPT_DATA. A transport may
- * leave the bit set until a read attempt finds no (or insufficient)
- * data, or clear it as soon as it consumes the last queued receive.
+ * Note: XPT_DATA only gets cleared when a read-attempt finds no (or
+ * insufficient) data.
  */
 void svc_xprt_received(struct svc_xprt *xprt)
 {
@@ -478,11 +475,11 @@ static bool svc_xprt_ready(struct svc_xprt *xprt)
 
 	/*
 	 * If another cpu has recently updated xpt_flags,
-	 * sk_sock->flags, xpt_reserved (UDP only), or xpt_nr_rqsts,
-	 * we need to know about it; otherwise it's possible that both
-	 * that cpu and this one could call svc_xprt_enqueue() without
-	 * either svc_xprt_enqueue() recognizing that the conditions
-	 * below are satisfied, and we could stall indefinitely:
+	 * sk_sock->flags, xpt_reserved, or xpt_nr_rqsts, we need to
+	 * know about it; otherwise it's possible that both that cpu and
+	 * this one could call svc_xprt_enqueue() without either
+	 * svc_xprt_enqueue() recognizing that the conditions below
+	 * are satisfied, and we could stall indefinitely:
 	 */
 	smp_rmb();
 	xpt_flags = READ_ONCE(xprt->xpt_flags);
@@ -554,10 +551,6 @@ static struct svc_xprt *svc_xprt_dequeue(struct svc_pool *pool)
  * to make sure the reply fits.  This function reduces that reserved
  * space to be the amount of space used already, plus @space.
  *
- * The transport's reservation is tracked only on classes that set
- * SVC_XPRT_FLAG_WSPACE_RESERVE.  On the others, only @rqstp's
- * reservation is updated.
- *
  */
 void svc_reserve(struct svc_rqst *rqstp, int space)
 {
@@ -566,12 +559,10 @@ void svc_reserve(struct svc_rqst *rqstp, int space)
 	space += rqstp->rq_res.head[0].iov_len;
 
 	if (xprt && space < rqstp->rq_reserved) {
-		if (xprt->xpt_class->xcl_flags & SVC_XPRT_FLAG_WSPACE_RESERVE) {
-			atomic_sub((rqstp->rq_reserved - space),
-				   &xprt->xpt_reserved);
-			svc_xprt_resource_released(xprt);
-		}
+		atomic_sub((rqstp->rq_reserved - space),
+			   &xprt->xpt_reserved);
 		rqstp->rq_reserved = space;
+		svc_xprt_resource_released(xprt);
 	}
 }
 EXPORT_SYMBOL_GPL(svc_reserve);
@@ -861,8 +852,8 @@ static void svc_handle_xprt(struct svc_rqst *rqstp, struct svc_xprt *xprt)
 		newxpt = xprt->xpt_ops->xpo_accept(xprt);
 		if (newxpt) {
 			newxpt->xpt_cred = get_cred(xprt->xpt_cred);
-			trace_svc_xprt_accept(newxpt, serv->sv_name);
 			svc_add_new_temp_xprt(serv, newxpt);
+			trace_svc_xprt_accept(newxpt, serv->sv_name);
 		} else {
 			module_put(xprt->xpt_class->xcl_owner);
 		}
@@ -878,8 +869,7 @@ static void svc_handle_xprt(struct svc_rqst *rqstp, struct svc_xprt *xprt)
 		else
 			len = xprt->xpt_ops->xpo_recvfrom(rqstp);
 		rqstp->rq_reserved = serv->sv_max_mesg;
-		if (xprt->xpt_class->xcl_flags & SVC_XPRT_FLAG_WSPACE_RESERVE)
-			atomic_add(rqstp->rq_reserved, &xprt->xpt_reserved);
+		atomic_add(rqstp->rq_reserved, &xprt->xpt_reserved);
 		if (len <= 0)
 			goto out;
 
@@ -1112,23 +1102,6 @@ static void call_xpt_users(struct svc_xprt *xprt)
 }
 
 /*
- * If rpcbind stops answering, every listener still to be destroyed would
- * only wait out the same timeout again. Drop the flag on the rest of this
- * teardown, which is every listener already marked for close.
- */
-static void svc_xprt_clear_rpcb_unreg(struct svc_serv *serv, struct net *net)
-{
-	struct svc_xprt *xprt;
-
-	spin_lock_bh(&serv->sv_lock);
-	list_for_each_entry(xprt, &serv->sv_permsocks, xpt_list)
-		if (xprt->xpt_net == net &&
-		    test_bit(XPT_CLOSE, &xprt->xpt_flags))
-			clear_bit(XPT_RPCB_UNREG, &xprt->xpt_flags);
-	spin_unlock_bh(&serv->sv_lock);
-}
-
-/*
  * Remove a dead transport
  */
 static void svc_delete_xprt(struct svc_xprt *xprt)
@@ -1142,15 +1115,11 @@ static void svc_delete_xprt(struct svc_xprt *xprt)
 		struct svc_sock *svsk = container_of(xprt, struct svc_sock,
 						     sk_xprt);
 		struct socket *sock = svsk->sk_sock;
-		unsigned int failures = svc_rpcb_failure_count(serv);
 
 		if (svc_register(serv, xprt->xpt_net, sock->sk->sk_family,
 				 sock->sk->sk_protocol, 0) < 0)
 			pr_warn("failed to unregister %s with rpcbind\n",
 				xprt->xpt_class->xcl_name);
-
-		if (svc_rpcb_failure_count(serv) != failures)
-			svc_xprt_clear_rpcb_unreg(serv, xprt->xpt_net);
 	}
 
 	if (test_and_set_bit(XPT_DEAD, &xprt->xpt_flags))
@@ -1219,7 +1188,7 @@ static void svc_clean_up_xprts(struct svc_serv *serv, struct net *net)
 	struct svc_xprt *xprt;
 	int i;
 
-	for (i = 0; i < svc_serv_nrpools(serv); i++) {
+	for (i = 0; i < serv->sv_nrpools; i++) {
 		struct svc_pool *pool = &serv->sv_pools[i];
 		struct llist_node *q, **t1, *t2;
 
@@ -1266,7 +1235,7 @@ void svc_xprt_destroy_all(struct svc_serv *serv, struct net *net,
 		msleep(delay++);
 	}
 
-	if (unregister && !serv->sv_no_rpcbind)
+	if (unregister)
 		svc_rpcb_cleanup(serv, net);
 }
 EXPORT_SYMBOL_GPL(svc_xprt_destroy_all);
@@ -1299,8 +1268,13 @@ static void svc_revisit(struct cache_deferred_req *dreq, int too_many)
 }
 
 /*
- * Save the request off for later processing. Only a Call that fits
- * entirely in rq_arg.head[0] can be deferred.
+ * Save the request off for later processing. The request buffer looks
+ * like this:
+ *
+ * <xprt-header><rpc-header><rpc-pagelist><rpc-tail>
+ *
+ * This code can only handle requests that consist of an xprt-header
+ * and rpc-header.
  */
 static struct cache_deferred_req *svc_defer(struct cache_req *req)
 {
@@ -1313,11 +1287,8 @@ static struct cache_deferred_req *svc_defer(struct cache_req *req)
 		dr = rqstp->rq_deferred;
 		rqstp->rq_deferred = NULL;
 	} else {
+		size_t skip;
 		size_t size;
-
-		if (rqstp->rq_arg.len > rqstp->rq_arg.head[0].iov_len)
-			return NULL;
-
 		/* FIXME maybe discard if size too large */
 		size = sizeof(struct svc_deferred_req) + rqstp->rq_arg.len;
 		dr = kmalloc(size, GFP_KERNEL);
@@ -1331,7 +1302,9 @@ static struct cache_deferred_req *svc_defer(struct cache_req *req)
 		dr->daddr = rqstp->rq_daddr;
 		dr->argslen = rqstp->rq_arg.len >> 2;
 
-		memcpy(dr->args, rqstp->rq_arg.head[0].iov_base,
+		/* back up head to the start of the buffer and copy */
+		skip = rqstp->rq_arg.len - rqstp->rq_arg.head[0].iov_len;
+		memcpy(dr->args, rqstp->rq_arg.head[0].iov_base - skip,
 		       dr->argslen << 2);
 	}
 	dr->xprt_ctxt = rqstp->rq_xprt_ctxt;
@@ -1354,13 +1327,17 @@ static noinline int svc_deferred_recv(struct svc_rqst *rqstp)
 
 	trace_svc_defer_recv(dr);
 
+	/* setup iov_base past transport header */
 	rqstp->rq_arg.head[0].iov_base = dr->args;
+	/* The iov_len does not include the transport header bytes */
 	rqstp->rq_arg.head[0].iov_len = dr->argslen << 2;
 	rqstp->rq_arg.page_len = 0;
+	/* The rq_arg.len includes the transport header bytes */
 	rqstp->rq_arg.len     = dr->argslen << 2;
 	rqstp->rq_prot        = dr->prot;
 	memcpy(&rqstp->rq_addr, &dr->addr, dr->addrlen);
 	rqstp->rq_addrlen     = dr->addrlen;
+	/* Save off transport header len in case we get deferred again */
 	rqstp->rq_daddr       = dr->daddr;
 	rqstp->rq_xprt_ctxt   = dr->xprt_ctxt;
 
@@ -1540,7 +1517,7 @@ static void *svc_pool_stats_start(struct seq_file *m, loff_t *pos)
 		return SEQ_START_TOKEN;
 	if (!si->serv)
 		return NULL;
-	return pidx > svc_serv_nrpools(si->serv) ? NULL
+	return pidx > si->serv->sv_nrpools ? NULL
 		: &si->serv->sv_pools[pidx - 1];
 }
 
@@ -1558,7 +1535,7 @@ static void *svc_pool_stats_next(struct seq_file *m, void *p, loff_t *pos)
 		pool = &serv->sv_pools[0];
 	} else {
 		unsigned int pidx = (pool - &serv->sv_pools[0]);
-		if (pidx < svc_serv_nrpools(serv) - 1)
+		if (pidx < serv->sv_nrpools-1)
 			pool = &serv->sv_pools[pidx+1];
 		else
 			pool = NULL;

@@ -221,7 +221,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 	u32 num_gpios;
 	int irq, ret;
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

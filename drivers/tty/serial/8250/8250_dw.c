@@ -15,7 +15,6 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/lockdep.h>
 #include <linux/module.h>
@@ -52,7 +51,6 @@
 #define DW_UART_QUIRK_APMC0D08		BIT(4)
 #define DW_UART_QUIRK_CPR_VALUE		BIT(5)
 #define DW_UART_QUIRK_IER_KICK		BIT(6)
-#define DW_UART_QUIRK_SKIP_EMPTY_FIFO_READ	BIT(7)
 
 /*
  * Number of consecutive IIR_NO_INT interrupts required to trigger interrupt
@@ -158,7 +156,7 @@ static int dw8250_idle_enter(struct uart_port *p)
 	 *
 	 * FIXME: frame_time delay is too long with very low baudrates.
 	 */
-	serial8250_fifo_wait_for_lsr_thre(up, NULL, p->fifosize);
+	serial8250_fifo_wait_for_lsr_thre(up, p->fifosize);
 	ndelay(p->frame_time);
 
 	serial_port_out(p, UART_MCR, up->mcr | UART_MCR_LOOP);
@@ -438,18 +436,11 @@ static int dw8250_handle_irq(struct uart_port *p)
 	 * This problem has only been observed so far when not in DMA mode
 	 * so we limit the workaround only to non-DMA mode.
 	 */
-	if (!(quirks & DW_UART_QUIRK_SKIP_EMPTY_FIFO_READ) && !up->dma && rx_timeout) {
+	if (!up->dma && rx_timeout) {
 		status = serial_lsr_in(up);
 
-		/*
-		 * Do the bogus read from Shadow RBR (SRBR) if provided.
-		 * Both RBR and SRBR are supported ways to workaround
-		 * this problem. But read RBR can cause hardware error
-		 * (PSLVERR) if hardware choose to implement in this way
-		 * (implement REG_TIMEOUT_WIDTH to 0), whereas SRBR won't.
-		 */
 		if (!(status & (UART_LSR_DR | UART_LSR_BI)))
-			serial_port_in(p, d->data.srbr);
+			serial_port_in(p, UART_RX);
 	}
 
 	/* Manually stop the Rx DMA transfer when acting as flow controller */
@@ -653,7 +644,7 @@ static int dw8250_probe(struct platform_device *pdev)
 	p->set_termios	= dw8250_set_termios;
 	p->set_divisor	= dw8250_set_divisor;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -775,9 +766,9 @@ static int dw8250_probe(struct platform_device *pdev)
 		up->dma = &data->data.dma;
 	}
 
-	data->data.uport = serial8250_register_8250_port(up);
-	if (IS_ERR(data->data.uport))
-		return PTR_ERR(data->data.uport);
+	data->data.line = serial8250_register_8250_port(up);
+	if (data->data.line < 0)
+		return data->data.line;
 
 	platform_set_drvdata(pdev, data);
 
@@ -793,7 +784,7 @@ static void dw8250_remove(struct platform_device *pdev)
 
 	pm_runtime_get_sync(dev);
 
-	serial8250_unregister_port(data->data.uport);
+	serial8250_unregister_port(data->data.line);
 
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
@@ -803,7 +794,7 @@ static int dw8250_suspend(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
 
-	serial8250_suspend_port(data->data.uport);
+	serial8250_suspend_port(data->data.line);
 
 	return 0;
 }
@@ -812,7 +803,7 @@ static int dw8250_resume(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
 
-	serial8250_resume_port(data->data.uport);
+	serial8250_resume_port(data->data.line);
 
 	return 0;
 }
@@ -897,11 +888,6 @@ static const struct dw8250_platform_data dw8250_ultrarisc_dp1000_data = {
 	.quirks = DW_UART_QUIRK_CPR_VALUE,
 };
 
-static const struct dw8250_platform_data dw8250_tda54 = {
-	.usr_reg = DW_UART_USR,
-	.quirks = DW_UART_QUIRK_SKIP_EMPTY_FIFO_READ,
-};
-
 static const struct of_device_id dw8250_of_match[] = {
 	{ .compatible = "snps,dw-apb-uart", .data = &dw8250_dw_apb },
 	{ .compatible = "cavium,octeon-3860-uart", .data = &dw8250_octeon_3860_data },
@@ -909,7 +895,6 @@ static const struct of_device_id dw8250_of_match[] = {
 	{ .compatible = "renesas,rzn1-uart", .data = &dw8250_renesas_rzn1_data },
 	{ .compatible = "sophgo,sg2044-uart", .data = &dw8250_skip_set_rate_data },
 	{ .compatible = "starfive,jh7100-uart", .data = &dw8250_skip_set_rate_data },
-	{ .compatible = "ti,tda54-uart", .data = &dw8250_tda54 },
 	{ .compatible = "ultrarisc,dp1000-uart", .data = &dw8250_ultrarisc_dp1000_data },
 	{ /* Sentinel */ }
 };
@@ -925,7 +910,6 @@ static const struct acpi_device_id dw8250_acpi_match[] = {
 	{ "8086228A", (kernel_ulong_t)&dw8250_dw_apb },
 	{ "AMD0020", (kernel_ulong_t)&dw8250_dw_apb },
 	{ "AMDI0020", (kernel_ulong_t)&dw8250_dw_apb },
-	{ "AMDI0021", (kernel_ulong_t)&dw8250_dw_apb },
 	{ "AMDI0022", (kernel_ulong_t)&dw8250_dw_apb },
 	{ "APMC0D08", (kernel_ulong_t)&dw8250_apmc0d08 },
 	{ "BRCM2032", (kernel_ulong_t)&dw8250_dw_apb },

@@ -215,7 +215,7 @@ static u32 sdhci_cqhci_irq(struct sdhci_host *host, u32 intmask)
 	if (!sdhci_cqe_irq(host, intmask, &cmd_error, &data_error))
 		return intmask;
 
-	cqhci_irq(host->mmc, cmd_error, data_error);
+	cqhci_irq(host->mmc, intmask, cmd_error, data_error);
 
 	return 0;
 }
@@ -959,7 +959,7 @@ static int glk_emmc_add_host(struct sdhci_pci_slot *slot)
 	if (ret)
 		return ret;
 
-	cq_host = devm_kzalloc_obj(dev, *cq_host);
+	cq_host = devm_kzalloc(dev, sizeof(*cq_host), GFP_KERNEL);
 	if (!cq_host) {
 		ret = -ENOMEM;
 		goto cleanup;
@@ -1797,8 +1797,13 @@ static int amd_probe(struct sdhci_pci_chip *chip)
 
 	pci_dev_put(smbus_dev);
 
-	if (gen == AMD_CHIPSET_BEFORE_ML || gen == AMD_CHIPSET_CZ)
+	dev_info(&chip->pdev->dev, "identified AMD generation %d chip\n", gen);
+
+	if (gen == AMD_CHIPSET_BEFORE_ML || gen == AMD_CHIPSET_CZ) {
+		chip->quirks |= SDHCI_QUIRK_BROKEN_ADMA;
+		chip->quirks2 |= SDHCI_QUIRK2_BROKEN_64_BIT_DMA;
 		chip->quirks2 |= SDHCI_QUIRK2_CLEAR_TRANSFERMODE_REG_BEFORE_CMD;
+	}
 
 	return 0;
 }
@@ -2170,11 +2175,13 @@ static struct sdhci_pci_slot *sdhci_pci_probe_slot(
 
 	host->irq = pdev->irq;
 
-	host->ioaddr = pcim_iomap_region(pdev, bar, mmc_hostname(host->mmc));
-	if (IS_ERR(host->ioaddr)) {
+	ret = pcim_iomap_regions(pdev, BIT(bar), mmc_hostname(host->mmc));
+	if (ret) {
 		dev_err(&pdev->dev, "cannot request region\n");
-		return ERR_CAST(host->ioaddr);
+		return ERR_PTR(ret);
 	}
+
+	host->ioaddr = pcim_iomap_table(pdev)[bar];
 
 	if (chip->fixes && chip->fixes->probe_slot) {
 		ret = chip->fixes->probe_slot(slot);
@@ -2327,7 +2334,7 @@ static int sdhci_pci_probe(struct pci_dev *pdev,
 	if (ret)
 		return ret;
 
-	chip = devm_kzalloc_obj(&pdev->dev, *chip);
+	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

@@ -125,7 +125,7 @@ static int lp8788_led_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	led = devm_kzalloc_obj(dev, struct lp8788_led);
+	led = devm_kzalloc(dev, sizeof(struct lp8788_led), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 

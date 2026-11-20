@@ -767,46 +767,13 @@ static long vhost_vdpa_vring_ioctl(struct vhost_vdpa *v, unsigned int cmd,
 			if (ops->get_status(vdpa) &
 			    VIRTIO_CONFIG_S_DRIVER_OK)
 				vhost_vdpa_unsetup_vq_irq(v, idx);
-			/*
-			 * The parent caches call_ctx.ctx in cb.trigger without
-			 * holding a reference, so it has to stop using it
-			 * before vhost_vring_ioctl() drops the last one.
-			 */
-			cb.callback = NULL;
-			cb.private = NULL;
-			cb.trigger = NULL;
-			ops->set_vq_cb(vdpa, idx, &cb);
-
-			/*
-			 * A parent interrupt handler that loaded the callback
-			 * before that store can still be running, so wait for
-			 * it to finish with the context too.
-			 */
-			if (ops->get_vq_irq) {
-				int irq = ops->get_vq_irq(vdpa, idx);
-
-				if (irq >= 0)
-					synchronize_irq(irq);
-			}
 		}
 		break;
 	}
 
 	r = vhost_vring_ioctl(&v->vdev, cmd, argp);
-	if (r) {
-		/*
-		 * A failure here means the swap never happened and the old
-		 * context is still installed, so give the parent back the
-		 * callback that was torn down above.
-		 */
-		if (cmd == VHOST_SET_VRING_CALL && vq->call_ctx.ctx) {
-			cb.callback = vhost_vdpa_virtqueue_cb;
-			cb.private = vq;
-			cb.trigger = vq->call_ctx.ctx;
-			ops->set_vq_cb(vdpa, idx, &cb);
-		}
+	if (r)
 		return r;
-	}
 
 	switch (cmd) {
 	case VHOST_SET_VRING_ADDR:
@@ -981,7 +948,7 @@ static long vhost_vdpa_unlocked_ioctl(struct file *filep,
 	case VHOST_SET_OWNER:
 		r = vhost_vdpa_bind_mm(v);
 		if (r)
-			vhost_dev_reset_owner(d, NULL, false);
+			vhost_dev_reset_owner(d, NULL);
 		break;
 	}
 out:
@@ -1005,14 +972,20 @@ static void vhost_vdpa_pa_unmap(struct vhost_vdpa *v, struct vhost_iotlb *iotlb,
 {
 	struct vhost_dev *dev = &v->vdev;
 	struct vhost_iotlb_map *map;
+	struct page *page;
+	unsigned long pfn, pinned;
 
 	while ((map = vhost_iotlb_itree_first(iotlb, start, last)) != NULL) {
-		/* Stop device access before releasing the pinned pages. */
-		vhost_vdpa_general_unmap(v, map, asid);
-		unpin_user_page_range_dirty_lock(pfn_to_page(PFN_DOWN(map->addr)),
-						 PFN_DOWN(map->size),
-						 map->perm & VHOST_ACCESS_WO);
+		pinned = PFN_DOWN(map->size);
+		for (pfn = PFN_DOWN(map->addr);
+		     pinned > 0; pfn++, pinned--) {
+			page = pfn_to_page(pfn);
+			if (map->perm & VHOST_ACCESS_WO)
+				set_page_dirty_lock(page);
+			unpin_user_page(page);
+		}
 		atomic64_sub(PFN_DOWN(map->size), &dev->mm->pinned_vm);
+		vhost_vdpa_general_unmap(v, map, asid);
 		vhost_iotlb_map_free(iotlb, map);
 	}
 }
@@ -1024,10 +997,10 @@ static void vhost_vdpa_va_unmap(struct vhost_vdpa *v, struct vhost_iotlb *iotlb,
 	struct vdpa_map_file *map_file;
 
 	while ((map = vhost_iotlb_itree_first(iotlb, start, last)) != NULL) {
-		vhost_vdpa_general_unmap(v, map, asid);
 		map_file = (struct vdpa_map_file *)map->opaque;
 		fput(map_file->file);
 		kfree(map_file);
+		vhost_vdpa_general_unmap(v, map, asid);
 		vhost_iotlb_map_free(iotlb, map);
 	}
 }
@@ -1101,39 +1074,21 @@ static int vhost_vdpa_map(struct vhost_vdpa *v, struct vhost_iotlb *iotlb,
 	return 0;
 }
 
-static int vhost_vdpa_unmap(struct vhost_vdpa *v,
-			    struct vhost_iotlb *iotlb,
-			    u64 iova, u64 size)
+static void vhost_vdpa_unmap(struct vhost_vdpa *v,
+			     struct vhost_iotlb *iotlb,
+			     u64 iova, u64 size)
 {
 	struct vdpa_device *vdpa = v->vdpa;
 	const struct vdpa_config_ops *ops = vdpa->config;
-	struct vhost_iotlb_map *map;
-	struct vhost_iotlb new_iotlb;
 	u32 asid = iotlb_to_asid(iotlb);
-	u64 last = iova + size - 1;
-	int ret;
 
-	if (ops->set_map && !ops->dma_map) {
-		vhost_iotlb_init(&new_iotlb, iotlb->limit, iotlb->flags);
-		list_for_each_entry(map, &iotlb->list, link) {
-			if (map->start <= last && map->last >= iova)
-				continue;
-			ret = vhost_iotlb_add_range_ctx(&new_iotlb, map->start,
-							map->last, map->addr,
-							map->perm, map->opaque);
-			if (ret)
-				goto reset;
-		}
+	vhost_vdpa_iotlb_unmap(v, iotlb, iova, iova + size - 1, asid);
 
-		ret = ops->set_map(vdpa, asid, &new_iotlb);
-reset:
-		vhost_iotlb_reset(&new_iotlb);
-		if (ret)
-			return ret;
+	if (ops->set_map) {
+		if (!v->in_batch)
+			ops->set_map(vdpa, asid, iotlb);
 	}
 
-	vhost_vdpa_iotlb_unmap(v, iotlb, iova, last, asid);
-	return 0;
 }
 
 static int vhost_vdpa_va_map(struct vhost_vdpa *v,
@@ -1196,7 +1151,7 @@ static int vhost_vdpa_pa_map(struct vhost_vdpa *v,
 	unsigned long list_size = PAGE_SIZE / sizeof(struct page *);
 	unsigned int gup_flags = FOLL_LONGTERM;
 	unsigned long npages, cur_base, map_pfn, last_pfn = 0;
-	unsigned long lock_limit, sz2pin, i;
+	unsigned long lock_limit, sz2pin, nchunks, i;
 	unsigned long page_offset;
 	u64 start = iova;
 	long pinned;
@@ -1232,6 +1187,7 @@ static int vhost_vdpa_pa_map(struct vhost_vdpa *v,
 
 	cur_base = uaddr & PAGE_MASK;
 	iova &= PAGE_MASK;
+	nchunks = 0;
 
 	while (npages) {
 		sz2pin = min_t(unsigned long, npages, list_size);
@@ -1246,6 +1202,7 @@ static int vhost_vdpa_pa_map(struct vhost_vdpa *v,
 			}
 			goto out;
 		}
+		nchunks++;
 
 		if (!last_pfn)
 			map_pfn = page_to_pfn(page_list[0]);
@@ -1276,6 +1233,7 @@ static int vhost_vdpa_pa_map(struct vhost_vdpa *v,
 
 				map_pfn = this_pfn;
 				iova += csize;
+				nchunks = 0;
 			}
 
 			last_pfn = this_pfn;
@@ -1290,7 +1248,9 @@ static int vhost_vdpa_pa_map(struct vhost_vdpa *v,
 			     PFN_PHYS(map_pfn), perm, NULL);
 out:
 	if (ret) {
-		if (last_pfn) {
+		if (nchunks) {
+			unsigned long pfn;
+
 			/*
 			 * Unpin the outstanding pages which are yet to be
 			 * mapped but haven't due to vdpa_map() or
@@ -1300,9 +1260,9 @@ out:
 			 * the corresponding unpinning will be handled by
 			 * vdpa_unmap().
 			 */
-			unpin_user_page_range_dirty_lock(pfn_to_page(map_pfn),
-							 last_pfn - map_pfn + 1,
-							 false);
+			WARN_ON(!last_pfn);
+			for (pfn = map_pfn; pfn <= last_pfn; pfn++)
+				unpin_user_page(pfn_to_page(pfn));
 		}
 		vhost_vdpa_unmap(v, iotlb, start, size);
 	}
@@ -1382,11 +1342,7 @@ static int vhost_vdpa_process_iotlb_msg(struct vhost_dev *dev, u32 asid,
 		r = vhost_vdpa_process_iotlb_update(v, iotlb, msg);
 		break;
 	case VHOST_IOTLB_INVALIDATE:
-		if (!msg->size || msg->iova > U64_MAX - msg->size + 1) {
-			r = -EINVAL;
-			break;
-		}
-		r = vhost_vdpa_unmap(v, iotlb, msg->iova, msg->size);
+		vhost_vdpa_unmap(v, iotlb, msg->iova, msg->size);
 		break;
 	case VHOST_IOTLB_BATCH_BEGIN:
 		v->batch_asid = asid;
@@ -1497,7 +1453,7 @@ static void vhost_vdpa_cleanup(struct vhost_vdpa *v)
 	}
 
 	vhost_vdpa_free_domain(v);
-	vhost_dev_cleanup(&v->vdev, false);
+	vhost_dev_cleanup(&v->vdev);
 	kfree(v->vdev.vqs);
 	v->vdev.vqs = NULL;
 }
@@ -1699,7 +1655,7 @@ static int vhost_vdpa_probe(struct vdpa_device *vdpa)
 		return minor;
 	}
 
-	atomic_set(&v->opened, 1);
+	atomic_set(&v->opened, 0);
 	spin_lock_init(&v->config_lock);
 	v->minor = minor;
 	v->vdpa = vdpa;
@@ -1722,17 +1678,16 @@ static int vhost_vdpa_probe(struct vdpa_device *vdpa)
 
 	cdev_init(&v->cdev, &vhost_vdpa_fops);
 	v->cdev.owner = THIS_MODULE;
-	init_completion(&v->completion);
-	for (i = 0; i < VHOST_VDPA_IOTLB_BUCKETS; i++)
-		INIT_HLIST_HEAD(&v->as[i]);
 
 	r = cdev_device_add(&v->cdev, &v->dev);
 	if (r)
 		goto err;
 
+	init_completion(&v->completion);
 	vdpa_set_drvdata(vdpa, v);
 
-	atomic_set_release(&v->opened, 0);
+	for (i = 0; i < VHOST_VDPA_IOTLB_BUCKETS; i++)
+		INIT_HLIST_HEAD(&v->as[i]);
 
 	return 0;
 

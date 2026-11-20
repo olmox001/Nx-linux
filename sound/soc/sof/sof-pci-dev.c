@@ -208,7 +208,7 @@ int sof_pci_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 		return -ENODEV;
 	}
 
-	sof_pdata = devm_kzalloc_obj(dev, *sof_pdata);
+	sof_pdata = devm_kzalloc(dev, sizeof(*sof_pdata), GFP_KERNEL);
 	if (!sof_pdata)
 		return -ENOMEM;
 

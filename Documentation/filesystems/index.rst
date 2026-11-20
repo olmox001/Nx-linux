@@ -75,6 +75,7 @@ Documentation for filesystem implementations.
    autofs
    autofs-mount-control
    befs
+   bfs
    btrfs
    ceph
    coda
@@ -86,12 +87,10 @@ Documentation for filesystem implementations.
    ecryptfs
    efivarfs
    erofs
-   exfat
    ext2
    ext3
    ext4/index
    f2fs
-   failfs
    gfs2/index
    hfs
    hfsplus

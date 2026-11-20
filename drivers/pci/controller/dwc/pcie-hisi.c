@@ -82,7 +82,7 @@ static int hisi_pcie_init(struct pci_config_window *cfg)
 	struct resource *res;
 	int ret;
 
-	pcie = devm_kzalloc_obj(dev, *pcie);
+	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 
@@ -90,7 +90,7 @@ static int hisi_pcie_init(struct pci_config_window *cfg)
 	 * Retrieve RC base and size from a HISI0081 device with _UID
 	 * matching our segment.
 	 */
-	res = devm_kzalloc_obj(dev, *res);
+	res = devm_kzalloc(dev, sizeof(*res), GFP_KERNEL);
 	if (!res)
 		return -ENOMEM;
 
@@ -128,7 +128,7 @@ static int hisi_pcie_platform_init(struct pci_config_window *cfg)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct resource *res;
 
-	pcie = devm_kzalloc_obj(dev, *pcie);
+	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 

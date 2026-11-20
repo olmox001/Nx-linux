@@ -129,7 +129,8 @@ static int rdc321x_gpio_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	rdc321x_gpio_dev = devm_kzalloc_obj(&pdev->dev, struct rdc321x_gpio);
+	rdc321x_gpio_dev = devm_kzalloc(&pdev->dev, sizeof(struct rdc321x_gpio),
+					GFP_KERNEL);
 	if (!rdc321x_gpio_dev)
 		return -ENOMEM;
 

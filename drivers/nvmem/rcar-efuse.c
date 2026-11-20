@@ -67,7 +67,7 @@ static int rcar_fuse_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	fuse = devm_kzalloc_obj(dev, *fuse);
+	fuse = devm_kzalloc(dev, sizeof(*fuse), GFP_KERNEL);
 	if (!fuse)
 		return -ENOMEM;
 

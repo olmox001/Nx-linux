@@ -394,7 +394,8 @@ static bool uncore_discovery_msr(struct uncore_discovery_domain *domain)
 	int cpu, die;
 	u64 base;
 
-	die_mask = kzalloc_objs(unsigned long, BITS_TO_LONGS(uncore_max_dies()));
+	die_mask = kcalloc(BITS_TO_LONGS(uncore_max_dies()),
+			   sizeof(unsigned long), GFP_KERNEL);
 	if (!die_mask)
 		return false;
 

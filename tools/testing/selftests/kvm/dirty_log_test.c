@@ -44,11 +44,8 @@
 #define TEST_MIN_WRITES_PER_ITERATION	0x100
 
 /* Dirty bitmaps are always little endian, so we need to swap on big endian */
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#if defined(__s390x__)
 # define BITOP_LE_SWIZZLE	((BITS_PER_LONG-1) & ~0x7)
-#else
-# define BITOP_LE_SWIZZLE	0
-#endif
 # define test_bit_le(nr, addr) \
 	test_bit((nr) ^ BITOP_LE_SWIZZLE, addr)
 # define __set_bit_le(nr, addr) \
@@ -59,6 +56,13 @@
 	__test_and_set_bit((nr) ^ BITOP_LE_SWIZZLE, addr)
 # define __test_and_clear_bit_le(nr, addr) \
 	__test_and_clear_bit((nr) ^ BITOP_LE_SWIZZLE, addr)
+#else
+# define test_bit_le			test_bit
+# define __set_bit_le			__set_bit
+# define __clear_bit_le			__clear_bit
+# define __test_and_set_bit_le		__test_and_set_bit
+# define __test_and_clear_bit_le	__test_and_clear_bit
+#endif
 
 #define TEST_DIRTY_RING_COUNT		65536
 
@@ -117,7 +121,7 @@ static void guest_code(void)
 	while (true) {
 		while (!READ_ONCE(vcpu_stop)) {
 			addr = guest_test_virt_mem;
-			addr += (kvm_random_u64(&kvm_rng) % guest_num_pages)
+			addr += (guest_random_u64(&guest_rng) % guest_num_pages)
 				* guest_page_size;
 			addr = align_down(addr, host_page_size);
 
@@ -687,7 +691,7 @@ static void run_test(enum vm_guest_mode mode, void *arg)
 
 	TEST_ASSERT_EQ(vcpu_stop, false);
 
-	kvm_pthread_create(&vcpu_thread, NULL, vcpu_worker, vcpu);
+	pthread_create(&vcpu_thread, NULL, vcpu_worker, vcpu);
 
 	for (iteration = 1; iteration <= p->iterations; iteration++) {
 		unsigned long i, reap_i;
@@ -704,7 +708,8 @@ static void run_test(enum vm_guest_mode mode, void *arg)
 
 		sync_global_to_guest(vm, iteration);
 
-		WRITE_AND_SYNC_TO_GUEST(vm, nr_writes, 0);
+		WRITE_ONCE(nr_writes, 0);
+		sync_global_to_guest(vm, nr_writes);
 
 		dirty_ring_prev_iteration_last_page = dirty_ring_last_page;
 		WRITE_ONCE(dirty_ring_vcpu_ring_full, false);
@@ -770,14 +775,16 @@ static void run_test(enum vm_guest_mode mode, void *arg)
 		 * writing memory during verification, pages that this thread
 		 * sees as clean may be written with this iteration's value.
 		 */
-		WRITE_AND_SYNC_TO_GUEST(vm, vcpu_stop, true);
+		WRITE_ONCE(vcpu_stop, true);
+		sync_global_to_guest(vm, vcpu_stop);
 		sem_wait(&sem_vcpu_stop);
 
 		/*
 		 * Clear vcpu_stop after the vCPU thread has acknowledge the
 		 * stop request and is waiting, i.e. is definitely not running!
 		 */
-		WRITE_AND_SYNC_TO_GUEST(vm, vcpu_stop, false);
+		WRITE_ONCE(vcpu_stop, false);
+		sync_global_to_guest(vm, vcpu_stop);
 
 		/*
 		 * Sync the number of writes performed before verification, the
@@ -801,7 +808,7 @@ static void run_test(enum vm_guest_mode mode, void *arg)
 	WRITE_ONCE(host_quit, true);
 	sem_post(&sem_vcpu_cont);
 
-	kvm_pthread_join(vcpu_thread, NULL);
+	pthread_join(vcpu_thread, NULL);
 
 	pr_info("Total bits checked: dirty (%lu), clear (%lu)\n",
 		host_dirty_count, host_clear_count);

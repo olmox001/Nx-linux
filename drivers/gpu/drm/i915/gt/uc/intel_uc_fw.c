@@ -4,7 +4,6 @@
  */
 
 #include <linux/bitfield.h>
-#include <linux/error-injection.h>
 #include <linux/firmware.h>
 #include <linux/highmem.h>
 

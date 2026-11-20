@@ -112,7 +112,7 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	int on, ret;
 
 	pm_domain_cfg = of_device_get_match_data(dev);
-	pd = devm_kzalloc_obj(dev, *pd);
+	pd = devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
 	if (!pd)
 		return -ENOMEM;
 

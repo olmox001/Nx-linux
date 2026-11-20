@@ -227,9 +227,9 @@ struct typec_altmode_driver {
  * handle all SVID specific communication.
  */
 #define typec_altmode_register_driver(drv) \
-		__typec_altmode_register_driver(drv, THIS_MODULE, KBUILD_MODNAME)
+		__typec_altmode_register_driver(drv, THIS_MODULE)
 int __typec_altmode_register_driver(struct typec_altmode_driver *drv,
-				    struct module *module, const char *mod_name);
+				    struct module *module);
 /**
  * typec_altmode_unregister_driver - unregisters a USB Type-C alternate mode
  * 				     device driver

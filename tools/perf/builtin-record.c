@@ -50,6 +50,7 @@
 #include "util/pmu.h"
 #include "util/pmus.h"
 #include "util/clockid.h"
+#include "util/map.h"
 #include "util/off_cpu.h"
 #include "util/bpf-filter.h"
 #include "util/strbuf.h"
@@ -1168,21 +1169,6 @@ static int record__update_evlist_pollfd_from_thread(struct record *rec,
 	for (i = 0; i < rec->index_map_cnt; i++) {
 		int e_pos = rec->index_map[i].evlist_pollfd_index;
 		int t_pos = rec->index_map[i].thread_pollfd_index;
-
-		if (e_entries[e_pos].fd == -1 || e_entries[e_pos].events == 0) {
-			/*
-			 * If the control file descriptor was closed, then evlist__ctlfd_process()
-			 * will have called evlist__finalize_ctlfd() on the PREVIOUS loop iteration
-			 * to cleanly set the core evlist's e_entries[e_pos].fd to -1.
-			 *
-			 * Since nonfilterable items are skipped by fdarray__filter(), the
-			 * thread's local t_entries[t_pos] retains its original state.
-			 * We must explicitly propagate the finalized -1 state to t_entries
-			 * BEFORE evaluating the strict equivalence check below.
-			 */
-			t_entries[t_pos].fd = -1;
-			t_entries[t_pos].events = 0;
-		}
 
 		if (e_entries[e_pos].fd != t_entries[t_pos].fd ||
 		    e_entries[e_pos].events != t_entries[t_pos].events) {
@@ -3536,6 +3522,8 @@ static struct option __record_options[] = {
 		     &record_parse_callchain_opt),
 	OPT_INCR('v', "verbose", &verbose,
 		    "be more verbose (show counter open errors, etc)"),
+	OPT_BOOLEAN('l', "sysv-lookup", &include_sysv_lookup,
+		    "do symbol lookup in SYSV memory"),
 	OPT_BOOLEAN('q', "quiet", &quiet, "don't print any warnings or messages"),
 	OPT_BOOLEAN('s', "stat", &record.opts.inherit_stat,
 		    "per thread counts"),

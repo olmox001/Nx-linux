@@ -666,7 +666,8 @@ tca6507_led_dt_init(struct device *dev)
 	if (!count || count > NUM_LEDS)
 		return ERR_PTR(-ENODEV);
 
-	tca_leds = devm_kzalloc_objs(dev, struct led_info, NUM_LEDS);
+	tca_leds = devm_kcalloc(dev, NUM_LEDS, sizeof(struct led_info),
+				GFP_KERNEL);
 	if (!tca_leds)
 		return ERR_PTR(-ENOMEM);
 
@@ -693,7 +694,8 @@ tca6507_led_dt_init(struct device *dev)
 		tca_leds[reg] = led;
 	}
 
-	pdata = devm_kzalloc_obj(dev, struct tca6507_platform_data);
+	pdata = devm_kzalloc(dev, sizeof(struct tca6507_platform_data),
+			     GFP_KERNEL);
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
@@ -728,7 +730,7 @@ static int tca6507_probe(struct i2c_client *client)
 		dev_err(dev, "Need %d entries in platform-data list\n", NUM_LEDS);
 		return PTR_ERR(pdata);
 	}
-	tca = devm_kzalloc_obj(dev, *tca);
+	tca = devm_kzalloc(dev, sizeof(*tca), GFP_KERNEL);
 	if (!tca)
 		return -ENOMEM;
 

@@ -1127,7 +1127,7 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
 		return -EPROBE_DEFER;
 	}
 
-	tcon = devm_kzalloc_obj(dev, *tcon);
+	tcon = devm_kzalloc(dev, sizeof(*tcon), GFP_KERNEL);
 	if (!tcon)
 		return -ENOMEM;
 	dev_set_drvdata(dev, tcon);
@@ -1329,8 +1329,6 @@ static int sun4i_tcon_probe(struct platform_device *pdev)
 		ret = drm_of_find_panel_or_bridge(node, 1, 0, &panel, &bridge);
 		if (ret == -EPROBE_DEFER)
 			return ret;
-		if (panel)
-			drm_panel_put(panel);
 	}
 
 	return component_add(&pdev->dev, &sun4i_tcon_ops);

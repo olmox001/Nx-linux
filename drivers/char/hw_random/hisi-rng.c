@@ -75,7 +75,7 @@ static int hisi_rng_probe(struct platform_device *pdev)
 	struct hisi_rng *rng;
 	int ret;
 
-	rng = devm_kzalloc_obj(&pdev->dev, *rng);
+	rng = devm_kzalloc(&pdev->dev, sizeof(*rng), GFP_KERNEL);
 	if (!rng)
 		return -ENOMEM;
 

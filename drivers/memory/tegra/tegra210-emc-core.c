@@ -1816,7 +1816,7 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 	unsigned int i;
 	int err;
 
-	emc = devm_kzalloc_obj(&pdev->dev, *emc);
+	emc = devm_kzalloc(&pdev->dev, sizeof(*emc), GFP_KERNEL);
 	if (!emc)
 		return -ENOMEM;
 
@@ -1919,9 +1919,9 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 	emc->provider.dev = &pdev->dev;
 	emc->provider.set_rate = tegra210_emc_set_rate;
 
-	emc->provider.configs = devm_kzalloc_objs(&pdev->dev,
-						  *emc->provider.configs,
-						  emc->num_timings);
+	emc->provider.configs = devm_kcalloc(&pdev->dev, emc->num_timings,
+					     sizeof(*emc->provider.configs),
+					     GFP_KERNEL);
 	if (!emc->provider.configs) {
 		err = -ENOMEM;
 		goto release;

@@ -171,7 +171,8 @@ static int palmas_gpio_probe(struct platform_device *pdev)
 	if (!dev_data)
 		dev_data = &palmas_dev_data;
 
-	palmas_gpio = devm_kzalloc_obj(&pdev->dev, *palmas_gpio);
+	palmas_gpio = devm_kzalloc(&pdev->dev,
+				sizeof(*palmas_gpio), GFP_KERNEL);
 	if (!palmas_gpio)
 		return -ENOMEM;
 

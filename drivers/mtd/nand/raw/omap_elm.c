@@ -385,7 +385,7 @@ static int elm_probe(struct platform_device *pdev)
 	struct elm_info *info;
 	int irq;
 
-	info = devm_kzalloc_obj(&pdev->dev, *info);
+	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

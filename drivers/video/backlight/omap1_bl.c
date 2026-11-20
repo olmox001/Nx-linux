@@ -116,7 +116,8 @@ static int omapbl_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -ENXIO;
 
-	bl = devm_kzalloc_obj(&pdev->dev, struct omap_backlight);
+	bl = devm_kzalloc(&pdev->dev, sizeof(struct omap_backlight),
+			  GFP_KERNEL);
 	if (unlikely(!bl))
 		return -ENOMEM;
 

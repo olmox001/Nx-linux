@@ -81,7 +81,6 @@
 #include "include/file.h"
 #include "include/ipc.h"
 #include "include/match.h"
-#include "include/net.h"
 #include "include/path.h"
 #include "include/policy.h"
 #include "include/policy_ns.h"
@@ -1171,8 +1170,6 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * @label: label that is attempting to load/replace policy
  * @mask: permission mask
  * @udata: serialized data stream  (NOT NULL)
- * @compressed_profile: The userspace-provided compressed profile. May be NULL
- * @compressed_size: If compressed_data is not NULL, the compressed data size
  *
  * unpack and replace a profile on the profile list and uses of that profile
  * by any task creds via invalidating the old version of the profile, which
@@ -1182,8 +1179,7 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * Returns: size of data consumed else error code on failure.
  */
 ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
-			    u32 mask, struct aa_loaddata *udata,
-			    char *compressed_profile, size_t compressed_size)
+			    u32 mask, struct aa_loaddata *udata)
 {
 	const char *ns_name = NULL, *info = NULL;
 	struct aa_ns *ns = NULL;
@@ -1191,13 +1187,12 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 	struct aa_loaddata *rawdata_ent;
 	const char *op;
 	ssize_t count, error;
-	bool rawdata_created = false;
 	LIST_HEAD(lh);
 
 	op = mask & AA_MAY_REPLACE_POLICY ? OP_PROF_REPL : OP_PROF_LOAD;
 	aa_get_profile_loaddata(udata);
 	/* released below */
-	error = aa_unpack(udata, &lh, &ns_name, compressed_profile, compressed_size);
+	error = aa_unpack(udata, &lh, &ns_name);
 	if (error)
 		goto out;
 
@@ -1331,7 +1326,6 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 			ent = NULL;
 			goto fail_lock;
 		}
-		rawdata_created = true;
 	}
 	list_for_each_entry(ent, &lh, list) {
 		if (!ent->old) {
@@ -1427,20 +1421,6 @@ out:
 	return udata_sz;
 
 fail_lock:
-	/*
-	 * Remove fs entries created by this load. Nothing else references
-	 * them yet, and leaving them behind would leak the new profiles
-	 * (their dents pin the proxy) and make the next load at the same,
-	 * unbumped ns revision fail with -EEXIST on its raw_data dir.
-	 * ensure children (which are at the end of the list are removed
-	 * before their parent
-	 */
-	list_for_each_entry_reverse(tmp, &lh, list) {
-		if (!tmp->old)
-			__aafs_profile_rmdir(tmp->new);
-	}
-	if (rawdata_created)
-		__aa_fs_remove_rawdata(udata);
 	mutex_unlock(&ns->lock);
 
 	/* audit cause of failure */
@@ -1462,9 +1442,6 @@ fail:
 	}
 	list_for_each_entry_safe(ent, tmp, &lh, list) {
 		list_del_init(&ent->list);
-		/* new was never added to the policy tree */
-		aa_put_unpublished_profile(ent->new);
-		ent->new = NULL;
 		aa_load_ent_free(ent);
 	}
 

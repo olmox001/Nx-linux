@@ -43,18 +43,6 @@ module_param(enable_pmu, bool, 0444);
 bool __read_mostly enable_mediated_pmu;
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(enable_mediated_pmu);
 
-struct kvm_x86_pmu_event_filter {
-	__u32 action;
-	__u32 nevents;
-	__u32 fixed_counter_bitmap;
-	__u32 flags;
-	__u32 nr_includes;
-	__u32 nr_excludes;
-	__u64 *includes;
-	__u64 *excludes;
-	__u64 events[] __counted_by(nevents);
-};
-
 struct kvm_pmu_emulated_event_selectors {
 	u64 INSTRUCTIONS_RETIRED;
 	u64 BRANCH_INSTRUCTIONS_RETIRED;
@@ -415,7 +403,7 @@ void pmc_write_counter(struct kvm_pmc *pmc, u64 val)
 	 * Drop any unconsumed accumulated counts, the WRMSR is a write, not a
 	 * read-modify-write.  Adjust the counter value so that its value is
 	 * relative to the current count, as reading the current count from
-	 * perf is faster than pausing and reprogramming the event in order to
+	 * perf is faster than pausing and repgrogramming the event in order to
 	 * reset it to '0'.  Note, this very sneakily offsets the accumulated
 	 * emulated count too, by using pmc_read_counter()!
 	 */
@@ -433,6 +421,7 @@ static int filter_cmp(const void *pa, const void *pb, u64 mask)
 
 	return (a > b) - (a < b);
 }
+
 
 static int filter_sort_cmp(const void *pa, const void *pb)
 {
@@ -662,28 +651,26 @@ void kvm_pmu_handle_event(struct kvm_vcpu *vcpu)
 	DECLARE_BITMAP(bitmap, X86_PMC_IDX_MAX);
 	struct kvm_pmu *pmu = vcpu_to_pmu(vcpu);
 	struct kvm_pmc *pmc;
-	int bit, r;
+	int bit;
 
 	bitmap_copy(bitmap, pmu->reprogram_pmi, X86_PMC_IDX_MAX);
 
 	/*
 	 * The reprogramming bitmap can be written asynchronously by something
 	 * other than the task that holds vcpu->mutex, take care to clear only
-	 * the bits that will actually be processed.
+	 * the bits that will actually processed.
 	 */
 	BUILD_BUG_ON(sizeof(bitmap) != sizeof(atomic64_t));
 	atomic64_andnot(*(s64 *)bitmap, &pmu->__reprogram_pmi);
 
 	kvm_for_each_pmc(pmu, pmc, bit, bitmap) {
 		/*
-		 * If reprogramming fails on a transient condition, e.g. due to
-		 * contention, re-set the reprogram bit, i.e. opportunistically
-		 * try again on the next PMU refresh.  Don't make a new request
-		 * as doing so can stall the guest if reprogramming repeatedly
-		 * fails.
+		 * If reprogramming fails, e.g. due to contention, re-set the
+		 * regprogram bit set, i.e. opportunistically try again on the
+		 * next PMU refresh.  Don't make a new request as doing so can
+		 * stall the guest if reprogramming repeatedly fails.
 		 */
-		r = reprogram_counter(pmc);
-		if (r == -EBUSY || r == -ENOMEM)
+		if (reprogram_counter(pmc))
 			set_bit(pmc->idx, pmu->reprogram_pmi);
 	}
 
@@ -960,6 +947,7 @@ static void kvm_pmu_reset(struct kvm_vcpu *vcpu)
 
 	kvm_pmu_call(reset)(vcpu);
 }
+
 
 /*
  * Refresh the PMU configuration for the vCPU, e.g. if userspace changes CPUID

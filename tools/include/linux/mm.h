@@ -30,7 +30,11 @@ static inline void *phys_to_virt(unsigned long address)
 #define virt_to_phys virt_to_phys
 static inline phys_addr_t virt_to_phys(volatile void *address)
 {
-	return __pa(address);
+	return (phys_addr_t)address;
+}
+
+static inline void totalram_pages_inc(void)
+{
 }
 
 static inline void totalram_pages_add(long count)

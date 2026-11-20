@@ -45,7 +45,8 @@ static int opencores_kbd_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return -EINVAL;
 
-	opencores_kbd = devm_kzalloc_obj(&pdev->dev, *opencores_kbd);
+	opencores_kbd = devm_kzalloc(&pdev->dev, sizeof(*opencores_kbd),
+				     GFP_KERNEL);
 	if (!opencores_kbd)
 		return -ENOMEM;
 

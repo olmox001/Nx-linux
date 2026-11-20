@@ -142,7 +142,7 @@ int comedi_alloc_subdev_readback(struct comedi_subdevice *s)
 	if (!s->n_chan)
 		return -EINVAL;
 
-	s->readback = kzalloc_objs(*s->readback, s->n_chan);
+	s->readback = kcalloc(s->n_chan, sizeof(*s->readback), GFP_KERNEL);
 	if (!s->readback)
 		return -ENOMEM;
 

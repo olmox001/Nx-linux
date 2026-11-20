@@ -159,6 +159,12 @@ config AUDIT_COMPAT_GENERIC
 	depends on AUDIT_GENERIC && AUDIT_ARCH_COMPAT_GENERIC && COMPAT
 	default y
 
+config RANDOM32_SELFTEST
+	bool "PRNG perform self test on init"
+	help
+	  This option enables the 32 bit PRNG library functions to perform a
+	  self test on initialization.
+
 #
 # compression support is select'ed if needed
 #
@@ -219,29 +225,29 @@ source "lib/xz/Kconfig"
 #
 config DECOMPRESS_GZIP
 	select ZLIB_INFLATE
-	bool
+	tristate
 
 config DECOMPRESS_BZIP2
-	bool
+	tristate
 
 config DECOMPRESS_LZMA
-	bool
+	tristate
 
 config DECOMPRESS_XZ
 	select XZ_DEC
-	bool
+	tristate
 
 config DECOMPRESS_LZO
 	select LZO_DECOMPRESS
-	bool
+	tristate
 
 config DECOMPRESS_LZ4
 	select LZ4_DECOMPRESS
-	bool
+	tristate
 
 config DECOMPRESS_ZSTD
 	select ZSTD_DECOMPRESS
-	bool
+	tristate
 
 #
 # Generic allocator support is selected if needed
@@ -480,6 +486,17 @@ config DIMLIB
 #
 config LIBFDT
 	bool
+#
+# CTF support is select'ed if needed
+#
+config CTF
+        bool "Compact Type Format generation"
+        default y
+        depends on HAVE_CTF_TOOLCHAIN
+        help
+          Emit a compact, compressed description of the kernel's datatypes and
+          global variables into the vmlinux.ctfa archive (for in-tree modules)
+          or into .ctf sections in kernel modules (for out-of-tree modules).
 
 config OID_REGISTRY
 	tristate

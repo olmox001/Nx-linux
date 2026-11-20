@@ -29,8 +29,6 @@ struct swnode {
 	struct fwnode_handle fwnode;
 	const struct software_node *node;
 	int id;
-	/* Device the managed node's lifetime is tied to. */
-	struct device *owner;
 
 	/* hierarchy */
 	struct ida child_ids;
@@ -39,6 +37,7 @@ struct swnode {
 	struct swnode *parent;
 
 	unsigned int allocated:1;
+	unsigned int managed:1;
 };
 
 static DEFINE_IDA(swnode_root_ids);
@@ -700,62 +699,6 @@ software_node_graph_parse_endpoint(const struct fwnode_handle *fwnode,
 	return 0;
 }
 
-static int software_node_add_links(struct fwnode_handle *fwnode)
-{
-	const struct software_node_ref_args *ref, *ref_array;
-	struct swnode *swnode = to_swnode(fwnode);
-	const struct property_entry *prop;
-	struct fwnode_handle *refnode;
-	unsigned int count;
-
-	if (!swnode || !swnode->node->properties)
-		return 0;
-
-	/*
-	 * Unlike Device Tree, where phandles appear in many non-supplier
-	 * contexts and a curated allowlist is required, a software node only
-	 * carries a DEV_PROP_REF property when the author explicitly describes
-	 * a reference to another node. Every such reference is therefore an
-	 * intentional supplier dependency, so we create fwnode links for all
-	 * of them.
-	 */
-	for (prop = swnode->node->properties; prop->name; prop++) {
-		if (prop->type != DEV_PROP_REF || prop->is_inline)
-			continue;
-
-		/*
-		 * TODO: Graph "remote-endpoint" references go both ways
-		 * between endpoint child nodes and would create endpoint
-		 * cycles. Let's leave it out for now until we have potential
-		 * users.
-		 */
-		if (!strcmp(prop->name, "remote-endpoint"))
-			continue;
-
-		ref_array = prop->pointer;
-		count = prop->length / sizeof(*ref_array);
-
-		for (unsigned int i = 0; i < count; i++) {
-			ref = &ref_array[i];
-
-			if (ref->swnode)
-				refnode = software_node_fwnode(ref->swnode);
-			else if (ref->fwnode)
-				refnode = ref->fwnode;
-			else
-				continue;
-
-			/* Supplier not registered yet, or self-reference. */
-			if (!refnode || refnode == &swnode->fwnode)
-				continue;
-
-			fwnode_link_add(&swnode->fwnode, refnode, 0);
-		}
-	}
-
-	return 0;
-}
-
 static const struct fwnode_operations software_node_ops = {
 	.get = software_node_get,
 	.put = software_node_put,
@@ -773,7 +716,6 @@ static const struct fwnode_operations software_node_ops = {
 	.graph_get_remote_endpoint = software_node_graph_get_remote_endpoint,
 	.graph_get_port_parent = software_node_graph_get_port_parent,
 	.graph_parse_endpoint = software_node_graph_parse_endpoint,
-	.add_links = software_node_add_links,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -844,8 +786,6 @@ static void software_node_free(const struct software_node *node)
 static void software_node_release(struct kobject *kobj)
 {
 	struct swnode *swnode = kobj_to_swnode(kobj);
-
-	fwnode_links_purge(&swnode->fwnode);
 
 	if (swnode->parent) {
 		ida_free(&swnode->parent->child_ids, swnode->id);
@@ -1146,7 +1086,7 @@ int device_create_managed_software_node(struct device *dev,
 	if (IS_ERR(fwnode))
 		return PTR_ERR(fwnode);
 
-	to_swnode(fwnode)->owner = dev;
+	to_swnode(fwnode)->managed = true;
 	set_secondary_fwnode(dev, fwnode);
 
 	if (device_is_registered(dev))
@@ -1164,17 +1104,6 @@ void software_node_notify(struct device *dev)
 	swnode = dev_to_swnode(dev);
 	if (!swnode)
 		return;
-
-	/*
-	 * When the software node is the device's secondary firmware node,
-	 * the core only records the owning device on the primary fwnode
-	 * (see device_add()). fw_devlink resolves a supplier device through
-	 * fwnode->dev, so without this a consumer referencing the software
-	 * node could never find the supplier device and would defer forever.
-	 * Make fwnode.dev point to its owner in that case.
-	 */
-	if (!device_match_fwnode(dev, &swnode->fwnode) && !swnode->fwnode.dev)
-		swnode->fwnode.dev = dev;
 
 	swnode_get(swnode);
 	ret = sysfs_create_link(&dev->kobj, &swnode->kobj, "software_node");
@@ -1198,18 +1127,9 @@ void software_node_notify_remove(struct device *dev)
 
 	sysfs_remove_link(&swnode->kobj, dev_name(dev));
 	sysfs_remove_link(&dev->kobj, "software_node");
-
-	/*
-	 * Drop the device pointer mirrored onto a secondary software node in
-	 * software_node_notify(). For a primary software node the core owns
-	 * fwnode->dev and clears it in device_del().
-	 */
-	if (!device_match_fwnode(dev, &swnode->fwnode) && swnode->fwnode.dev == dev)
-		swnode->fwnode.dev = NULL;
-
 	swnode_put(swnode);
 
-	if (swnode->owner == dev) {
+	if (swnode->managed) {
 		set_secondary_fwnode(dev, NULL);
 		swnode_put(swnode);
 	}

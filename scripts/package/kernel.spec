@@ -68,13 +68,13 @@ This package provides debug information for the kernel image and modules from th
 %undefine _debugsource_packages
 %undefine _debuginfo_subpackages
 
-# Preserve .BTF,  .BTF.base and .BTF.inline sections in kernel modules during
-# debuginfo stripping. find-debuginfo.sh uses eu-strip which removes
-# non-allocated ELF sections like .BTF by default. .BTF.base is required for
-# BTF distillation support; without it, module BTF validation fails.
+# Preserve .BTF and .BTF.base sections in kernel modules during debuginfo
+# stripping. find-debuginfo.sh uses eu-strip which removes non-allocated ELF
+# sections like .BTF by default. .BTF.base is required for BTF distillation
+# support; without it, module BTF validation fails.
 %global with_keep_section %(%{__find_debuginfo} --help 2>&1 | grep -c keep-section)
 %if %{with_keep_section}
-%global _find_debuginfo_opts -r --keep-section .BTF --keep-section .BTF.base --keep-section .BTF.inline
+%global _find_debuginfo_opts -r --keep-section .BTF --keep-section .BTF.base
 %else
 %global _find_debuginfo_opts -r
 %endif
@@ -107,12 +107,18 @@ patch -p1 < %{SOURCE2}
 
 %build
 %{make} %{makeflags} KERNELRELEASE=%{KERNELRELEASE} KBUILD_BUILD_VERSION=%{release}
+%if %{with_ctf}
+%{make} %{makeflags} KERNELRELEASE=%{KERNELRELEASE} KBUILD_BUILD_VERSION=%{release} ctf
+%endif
 
 %install
 mkdir -p %{buildroot}/lib/modules/%{KERNELRELEASE}
 cp $(%{make} %{makeflags} -s image_name) %{buildroot}/lib/modules/%{KERNELRELEASE}/vmlinuz
 # DEPMOD=true makes depmod no-op. We do not package depmod-generated files.
 %{make} %{makeflags} INSTALL_MOD_PATH=%{buildroot} %{?install_mod_strip:INSTALL_MOD_STRIP=1} DEPMOD=true modules_install
+%if %{with_ctf}
+%{make} %{makeflags} INSTALL_MOD_PATH=%{buildroot} ctf_install
+%endif
 %{make} %{makeflags} INSTALL_HDR_PATH=%{buildroot}/usr headers_install
 cp System.map %{buildroot}/lib/modules/%{KERNELRELEASE}
 cp .config %{buildroot}/lib/modules/%{KERNELRELEASE}/config

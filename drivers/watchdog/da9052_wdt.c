@@ -17,7 +17,6 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/jiffies.h>
-#include <linux/stringify.h>
 
 #include <linux/mfd/da9052/reg.h>
 #include <linux/mfd/da9052/da9052.h>
@@ -35,13 +34,13 @@ static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		 "Watchdog cannot be stopped once started (default="
-		 __stringify(WATCHDOG_NOWAYOUT) ")");
+		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 static int timeout;
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout,
 	"Watchdog timeout in seconds. (default = "
-	__stringify(WDT_DEFAULT_TIMEOUT) ")");
+	__MODULE_STRING(WDT_DEFAULT_TIMEOUT) ")");
 
 static const struct {
 	u8 reg_val;
@@ -173,7 +172,7 @@ static int da9052_wdt_probe(struct platform_device *pdev)
 	struct watchdog_device *da9052_wdt;
 	int ret;
 
-	driver_data = devm_kzalloc_obj(dev, *driver_data);
+	driver_data = devm_kzalloc(dev, sizeof(*driver_data), GFP_KERNEL);
 	if (!driver_data)
 		return -ENOMEM;
 	driver_data->da9052 = da9052;

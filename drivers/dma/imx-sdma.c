@@ -2248,7 +2248,7 @@ static int sdma_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	sdma = devm_kzalloc_obj(&pdev->dev, *sdma);
+	sdma = devm_kzalloc(&pdev->dev, sizeof(*sdma), GFP_KERNEL);
 	if (!sdma)
 		return -ENOMEM;
 

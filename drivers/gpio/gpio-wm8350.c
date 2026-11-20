@@ -104,7 +104,8 @@ static int wm8350_gpio_probe(struct platform_device *pdev)
 	struct wm8350_platform_data *pdata = dev_get_platdata(wm8350->dev);
 	struct wm8350_gpio_data *wm8350_gpio;
 
-	wm8350_gpio = devm_kzalloc_obj(&pdev->dev, *wm8350_gpio);
+	wm8350_gpio = devm_kzalloc(&pdev->dev, sizeof(*wm8350_gpio),
+				   GFP_KERNEL);
 	if (wm8350_gpio == NULL)
 		return -ENOMEM;
 

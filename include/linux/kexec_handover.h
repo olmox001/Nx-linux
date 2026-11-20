@@ -5,8 +5,11 @@
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/types.h>
-#include <linux/mm.h>
-#include <asm-generic/kexec_handover.h>
+
+struct kho_scratch {
+	phys_addr_t addr;
+	phys_addr_t size;
+};
 
 struct kho_vmalloc;
 
@@ -34,20 +37,9 @@ void kho_remove_subtree(void *blob);
 int kho_retrieve_subtree(const char *name, phys_addr_t *phys, size_t *size);
 
 void kho_memory_init(void);
-void kho_memory_init_early(void);
 
-void kho_populate(phys_addr_t fdt_phys, u64 fdt_len, phys_addr_t bootmem_phys,
-		  u64 bootmem_len);
-
-bool kho_bootmem_overlap(phys_addr_t phys, size_t size);
-
-static inline enum migratetype kho_bootmem_migratetype(unsigned long pfn,
-						       enum migratetype mt)
-{
-	if (kho_bootmem_overlap(PFN_PHYS(pfn), pageblock_nr_pages << PAGE_SHIFT))
-		return MIGRATE_CMA;
-	return mt;
-}
+void kho_populate(phys_addr_t fdt_phys, u64 fdt_len, phys_addr_t scratch_phys,
+		  u64 scratch_len);
 #else
 static inline bool kho_is_enabled(void)
 {
@@ -120,22 +112,9 @@ static inline int kho_retrieve_subtree(const char *name, phys_addr_t *phys,
 
 static inline void kho_memory_init(void) { }
 
-static inline void kho_memory_init_early(void) { }
-
 static inline void kho_populate(phys_addr_t fdt_phys, u64 fdt_len,
-				phys_addr_t bootmem_phys, u64 bootmem_len)
+				phys_addr_t scratch_phys, u64 scratch_len)
 {
-}
-
-static inline bool kho_bootmem_overlap(phys_addr_t phys, size_t size)
-{
-	return false;
-}
-
-static inline enum migratetype kho_bootmem_migratetype(unsigned long pfn,
-						       enum migratetype mt)
-{
-	return mt;
 }
 #endif /* CONFIG_KEXEC_HANDOVER */
 

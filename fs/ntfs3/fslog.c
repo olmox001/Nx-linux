@@ -7,14 +7,12 @@
 
 #include <linux/blkdev.h>
 #include <linux/fs.h>
-#include <linux/overflow.h>
 #include <linux/random.h>
 #include <linux/slab.h>
 
 #include "debug.h"
 #include "ntfs.h"
 #include "ntfs_fs.h"
-#include <trace/events/ntfs3.h>
 
 /*
  * LOG FILE structs
@@ -2459,8 +2457,7 @@ static int find_log_rec(struct ntfs_log *log, u64 lsn, struct lcb *lcb)
 	 * Check that the length field isn't greater than the total
 	 * available space the log file.
 	 */
-	if (check_add_overflow(len, log->record_header_len, &rec_len))
-		return -EINVAL;
+	rec_len = len + log->record_header_len;
 	if (rec_len >= log->total_avail)
 		return -EINVAL;
 
@@ -2649,6 +2646,7 @@ bool check_index_header(const struct INDEX_HDR *hdr, size_t bytes)
 	const bool has_subnode = hdr_has_subnode(hdr);
 	__le16 mask;
 	u32 min_de, de_off, used, total;
+	const struct NTFS_DE *e;
 
 	if (has_subnode) {
 		min_de = sizeof(struct NTFS_DE) + sizeof(u64);
@@ -2667,8 +2665,8 @@ bool check_index_header(const struct INDEX_HDR *hdr, size_t bytes)
 		return false;
 	}
 
+	e = (const struct NTFS_DE *)((const u8 *)hdr + de_off);
 	for (;;) {
-		const struct NTFS_DE *e = Add2Ptr(hdr, de_off);
 		u16 esize = le16_to_cpu(e->size);
 		u16 key_size = le16_to_cpu(e->key_size);
 		u16 data_size;
@@ -2684,6 +2682,7 @@ bool check_index_header(const struct INDEX_HDR *hdr, size_t bytes)
 		if (de_is_last(e)) {
 			if (key_size)
 				return false;
+
 			break;
 		}
 
@@ -2692,6 +2691,7 @@ bool check_index_header(const struct INDEX_HDR *hdr, size_t bytes)
 			return false;
 
 		de_off += esize;
+		e = (const struct NTFS_DE *)((const u8 *)hdr + de_off);
 	}
 
 	return true;
@@ -2785,6 +2785,9 @@ static inline bool check_attr(const struct MFT_REC *rec,
 		    dsize > le64_to_cpu(attr->nres.alloc_size)) {
 			return false;
 		}
+
+		if (run_off > asize)
+			return false;
 
 		if (run_unpack(NULL, sbi, 0, svcn, evcn, svcn,
 			       Add2Ptr(attr, run_off), asize - run_off) < 0) {
@@ -3318,15 +3321,10 @@ skip_load_parent:
 		asize = le32_to_cpu(attr2->size);
 		used = le32_to_cpu(rec->used);
 
-		/*
-		 * attr2->size is taken from the log record and is bounded only
-		 * by the log record length, not by the MFT record.  Refuse an
-		 * attribute that does not fit, as mi_insert_attr() does.
-		 */
 		if (!check_if_attr(rec, lrh) || dlen < SIZEOF_RESIDENT ||
 		    !IS_ALIGNED(asize, 8) ||
 		    Add2Ptr(attr2, asize) > Add2Ptr(lrh, rec_len) ||
-		    dlen > record_size - used || asize > record_size - used) {
+		    dlen > record_size - used) {
 			goto dirty_vol;
 		}
 
@@ -3349,21 +3347,10 @@ skip_load_parent:
 		break;
 
 	case DeleteAttribute:
+		asize = le32_to_cpu(attr->size);
 		used = le32_to_cpu(rec->used);
 
-		/*
-		 * check_if_attr() accepts a record_off that points at the
-		 * ATTR_END marker, which is how CreateAttribute appends.  The
-		 * bytes there are not an attribute and check_attr() never
-		 * validated them, so refuse an offset that cannot hold a
-		 * resident header before reading attr->size, and then bound it
-		 * as mi_remove_attr() does.
-		 */
-		if (!check_if_attr(rec, lrh) || roff + SIZEOF_RESIDENT > used)
-			goto dirty_vol;
-
-		asize = le32_to_cpu(attr->size);
-		if (asize > used - roff)
+		if (!check_if_attr(rec, lrh))
 			goto dirty_vol;
 
 		rec->used = cpu_to_le32(used - asize);
@@ -3437,8 +3424,7 @@ move_data:
 
 		if (!check_if_attr(rec, lrh) || !attr->non_res ||
 		    aoff < le16_to_cpu(attr->nres.run_off) || aoff > asize ||
-		    (nsize > asize &&
-		     ALIGN(nsize, 8) - asize > record_size - used)) {
+		    (nsize > asize && nsize - asize > record_size - used)) {
 			goto dirty_vol;
 		}
 
@@ -3591,7 +3577,8 @@ move_data:
 		 * bound here so the memmove cannot reach past the entry.
 		 */
 		if (le16_to_cpu(e->view.data_off) > le16_to_cpu(e->size) ||
-		    le16_to_cpu(e->view.data_off) + dlen > le16_to_cpu(e->size))
+		    le16_to_cpu(e->view.data_off) + dlen >
+			    le16_to_cpu(e->size))
 			goto dirty_vol;
 
 		memmove(Add2Ptr(e, le16_to_cpu(e->view.data_off)), data, dlen);
@@ -3802,7 +3789,8 @@ move_data:
 
 		/* See UpdateRecordDataRoot for the rationale. */
 		if (le16_to_cpu(e->view.data_off) > le16_to_cpu(e->size) ||
-		    le16_to_cpu(e->view.data_off) + dlen > le16_to_cpu(e->size))
+		    le16_to_cpu(e->view.data_off) + dlen >
+			    le16_to_cpu(e->size))
 			goto dirty_vol;
 
 		memmove(Add2Ptr(e, le16_to_cpu(e->view.data_off)), data, dlen);
@@ -4703,11 +4691,11 @@ copy_lcns:
 		}
 
 		/*
-		 * find_dp() only validates that target_vcn is the first
-		 * cluster covered by dp.  The walk through lrh->lcns_follow
-		 * further entries must stay within the allocated
-		 * dp->page_lcns[] array, which is sized by dp->lcns_follow.
-		 */
+         * find_dp() only validates that target_vcn is the first
+         * cluster covered by dp.  The walk through lrh->lcns_follow
+         * further entries must stay within the allocated
+         * dp->page_lcns[] array, which is sized by dp->lcns_follow.
+         */
 		if (le64_to_cpu(lrh->target_vcn) - le64_to_cpu(dp->vcn) + t16 >
 		    le32_to_cpu(dp->lcns_follow)) {
 			err = -EINVAL;
@@ -5418,8 +5406,6 @@ out:
 		err = 0;
 	else if (log->set_dirty)
 		ntfs_set_state(sbi, NTFS_DIRTY_ERROR);
-
-	trace_ntfs3_log_replay(&ni->vfs_inode, *initialized, err);
 
 	kfree(log);
 

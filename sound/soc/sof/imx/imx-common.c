@@ -34,7 +34,6 @@ void imx8_get_registers(struct snd_sof_dev *sdev,
 
 	/* first read registers */
 	sof_mailbox_read(sdev, offset, xoops, sizeof(*xoops));
-	xoops->plat_hdr.numaregs = 0;
 
 	/* then get panic info */
 	if (xoops->arch_hdr.totalsize > EXCEPT_MAX_HDR_SIZE) {
@@ -349,7 +348,7 @@ static int imx_probe(struct snd_sof_dev *sdev)
 
 	pdev = to_platform_device(sdev->dev);
 
-	common = devm_kzalloc_obj(sdev->dev, *common);
+	common = devm_kzalloc(sdev->dev, sizeof(*common), GFP_KERNEL);
 	if (!common)
 		return -ENOMEM;
 

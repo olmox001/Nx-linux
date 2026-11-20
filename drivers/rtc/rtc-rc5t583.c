@@ -210,7 +210,8 @@ static int rc5t583_rtc_probe(struct platform_device *pdev)
 	int ret;
 	int irq;
 
-	ricoh_rtc = devm_kzalloc_obj(&pdev->dev, struct rc5t583_rtc);
+	ricoh_rtc = devm_kzalloc(&pdev->dev, sizeof(struct rc5t583_rtc),
+			GFP_KERNEL);
 	if (!ricoh_rtc)
 		return -ENOMEM;
 

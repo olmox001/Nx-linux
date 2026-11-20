@@ -29,18 +29,7 @@ properties:
     const: 1
 
   clocks:
-    minItems: 1
-    maxItems: 2
-    description:
-      The controller takes 2 crystal oscillator inputs from the board.
-      HXT is a 24 MHz crystal feeding the internal PLLs. LXT is a 32.768
-      kHz crystal, for RTC and low power operations.
-
-  clock-names:
-    minItems: 1
-    items:
-      - const: hxt
-      - const: lxt
+    maxItems: 1
 
   nuvoton,pll-mode:
     description:
@@ -69,7 +58,6 @@ examples:
         compatible = "nuvoton,ma35d1-clk";
         reg = <0x40460200 0x100>;
         #clock-cells = <1>;
-        clocks = <&clk_hxt>, <&clk_lxt>;
-        clock-names = "hxt", "lxt";
+        clocks = <&clk_hxt>;
     };
 ...

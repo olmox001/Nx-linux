@@ -276,8 +276,8 @@ static int rt1017_sdca_read_prop(struct sdw_slave *slave)
 	prop->sink_ports = BIT(1);   /* BITMAP: 00000010 */
 
 	nval = hweight32(prop->source_ports);
-	prop->src_dpn_prop = devm_kzalloc_objs(&slave->dev, *prop->src_dpn_prop,
-					       nval);
+	prop->src_dpn_prop = devm_kcalloc(&slave->dev, nval,
+		sizeof(*prop->src_dpn_prop), GFP_KERNEL);
 	if (!prop->src_dpn_prop)
 		return -ENOMEM;
 
@@ -294,8 +294,8 @@ static int rt1017_sdca_read_prop(struct sdw_slave *slave)
 
 	/* do this again for sink now */
 	nval = hweight32(prop->sink_ports);
-	prop->sink_dpn_prop = devm_kzalloc_objs(&slave->dev,
-						*prop->sink_dpn_prop, nval);
+	prop->sink_dpn_prop = devm_kcalloc(&slave->dev, nval,
+		sizeof(*prop->sink_dpn_prop), GFP_KERNEL);
 	if (!prop->sink_dpn_prop)
 		return -ENOMEM;
 
@@ -693,7 +693,7 @@ static int rt1017_sdca_init(struct device *dev, struct regmap *regmap,
 	struct rt1017_sdca_priv *rt1017;
 	int ret;
 
-	rt1017 = devm_kzalloc_obj(dev, *rt1017);
+	rt1017 = devm_kzalloc(dev, sizeof(*rt1017), GFP_KERNEL);
 	if (!rt1017)
 		return -ENOMEM;
 
@@ -773,12 +773,7 @@ static int rt1017_sdca_dev_resume(struct device *dev)
 	}
 
 	regcache_cache_only(rt1017->regmap, false);
-	ret = regcache_sync(rt1017->regmap);
-	if (ret) {
-		regcache_cache_only(rt1017->regmap, true);
-		regcache_mark_dirty(rt1017->regmap);
-		return ret;
-	}
+	regcache_sync(rt1017->regmap);
 
 	return 0;
 }

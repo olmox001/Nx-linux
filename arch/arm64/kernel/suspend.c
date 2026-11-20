@@ -5,7 +5,6 @@
 #include <linux/uaccess.h>
 #include <linux/pgtable.h>
 #include <linux/cpuidle.h>
-#include <linux/sched.h>
 #include <asm/alternative.h>
 #include <asm/cacheflush.h>
 #include <asm/cpufeature.h>
@@ -100,7 +99,7 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 	int ret = 0;
 	unsigned long flags;
 	struct sleep_stack_data state;
-	bool idle = is_idle_task(current);
+	struct arm_cpuidle_irq_context context;
 
 	/*
 	 * Some portions of CPU state (e.g. PSTATE.{PAN,DIT}) are initialized
@@ -122,9 +121,6 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 	 * Strictly speaking the trace_hardirqs_off() here is superfluous,
 	 * hardirqs should be firmly off by now. This really ought to use
 	 * something like raw_local_daif_save().
-	 *
-	 * This also unmasks interrupts in PMR in order to reliably
-	 * resume if we're using pseudo-NMIs.
 	 */
 	flags = local_daif_save();
 
@@ -135,8 +131,13 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 	 */
 	pause_graph_tracing();
 
-	if (idle)
-		ct_cpuidle_enter();
+	/*
+	 * Switch to using DAIF.IF instead of PMR in order to reliably
+	 * resume if we're using pseudo-NMIs.
+	 */
+	arm_cpuidle_save_irq_context(&context);
+
+	ct_cpuidle_enter();
 
 	if (__cpu_suspend_enter(&state)) {
 		/* Call the suspend finisher */
@@ -152,13 +153,13 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 		if (!ret)
 			ret = -EOPNOTSUPP;
 
-		if (idle)
-			ct_cpuidle_exit();
+		ct_cpuidle_exit();
 	} else {
-		if (idle)
-			ct_cpuidle_exit();
+		ct_cpuidle_exit();
 		__cpu_suspend_exit();
 	}
+
+	arm_cpuidle_restore_irq_context(&context);
 
 	unpause_graph_tracing();
 
@@ -175,7 +176,8 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 static int __init cpu_suspend_init(void)
 {
 	/* ctx_ptr is an array of physical addresses */
-	sleep_save_stash = kzalloc_objs(*sleep_save_stash, mpidr_hash_size());
+	sleep_save_stash = kcalloc(mpidr_hash_size(), sizeof(*sleep_save_stash),
+				   GFP_KERNEL);
 
 	if (WARN_ON(!sleep_save_stash))
 		return -ENOMEM;

@@ -70,7 +70,7 @@ static int gpio_extcon_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, struct gpio_extcon_data);
+	data = devm_kzalloc(dev, sizeof(struct gpio_extcon_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

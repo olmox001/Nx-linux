@@ -267,7 +267,8 @@ static int build_maps(partition_t *part)
     memset(part->VirtualBlockMap, 0xff, blocks * sizeof(uint32_t));
     part->BlocksPerUnit = (1 << header.EraseUnitSize) >> header.BlockSize;
 
-    part->bam_cache = kmalloc_objs(uint32_t, part->BlocksPerUnit);
+    part->bam_cache = kmalloc_array(part->BlocksPerUnit, sizeof(uint32_t),
+                                    GFP_KERNEL);
     if (!part->bam_cache)
 	    goto out_VirtualBlockMap;
 

@@ -6,7 +6,6 @@
 #include <linux/bitmap.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/find.h>
 #include <linux/host1x.h>
 #include <linux/lcm.h>
 #include <linux/list.h>
@@ -394,17 +393,19 @@ static int tegra_channel_enum_format(struct file *file, void *fh,
 				     struct v4l2_fmtdesc *f)
 {
 	struct tegra_vi_channel *chan = video_drvdata(file);
-	unsigned int index;
+	unsigned int index = 0, i;
 	unsigned long *fmts_bitmap = chan->tpg_fmts_bitmap;
 
 	if (!IS_ENABLED(CONFIG_VIDEO_TEGRA_TPG))
 		fmts_bitmap = chan->fmts_bitmap;
 
-	index = find_nth_bit(fmts_bitmap, MAX_FORMAT_NUM, f->index);
-	if (index >= MAX_FORMAT_NUM)
+	if (f->index >= bitmap_weight(fmts_bitmap, MAX_FORMAT_NUM))
 		return -EINVAL;
 
-	f->pixelformat = tegra_get_format_fourcc_by_idx(chan->vi, index);
+	for (i = 0; i < f->index + 1; i++, index++)
+		index = find_next_bit(fmts_bitmap, MAX_FORMAT_NUM, index);
+
+	f->pixelformat = tegra_get_format_fourcc_by_idx(chan->vi, index - 1);
 
 	return 0;
 }
@@ -476,7 +477,7 @@ static int __tegra_channel_try_format(struct tegra_vi_channel *chan,
 	ret = v4l2_subdev_call(subdev, pad, enum_frame_size, sd_state, &fse);
 	if (ret) {
 		if (!v4l2_subdev_has_op(subdev, pad, get_selection) ||
-		    v4l2_subdev_call(subdev, pad, get_selection, NULL, NULL, &sdsel)) {
+		    v4l2_subdev_call(subdev, pad, get_selection, NULL, &sdsel)) {
 			try_crop->width = 0;
 			try_crop->height = 0;
 		} else {
@@ -488,7 +489,7 @@ static int __tegra_channel_try_format(struct tegra_vi_channel *chan,
 		try_crop->height = fse.max_height;
 	}
 
-	ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, sd_state, &fmt);
+	ret = v4l2_subdev_call(subdev, pad, set_fmt, sd_state, &fmt);
 	if (ret < 0)
 		goto out_free;
 
@@ -542,7 +543,7 @@ static int tegra_channel_set_format(struct file *file, void *fh,
 	fmt.pad = 0;
 	v4l2_fill_mbus_format(&fmt.format, pix, fmtinfo->code);
 	subdev = tegra_channel_get_remote_source_subdev(chan);
-	ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, NULL, &fmt);
+	ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, &fmt);
 	if (ret < 0)
 		return ret;
 
@@ -625,7 +626,7 @@ static int tegra_channel_g_selection(struct file *file, void *priv,
 	 * Try the get selection operation and fallback to get format if not
 	 * implemented.
 	 */
-	ret = v4l2_subdev_call(subdev, pad, get_selection, NULL, NULL, &sdsel);
+	ret = v4l2_subdev_call(subdev, pad, get_selection, NULL, &sdsel);
 	if (!ret)
 		sel->r = sdsel.r;
 	if (ret != -ENOIOCTLCMD)
@@ -666,7 +667,7 @@ static int tegra_channel_s_selection(struct file *file, void *fh,
 	if (vb2_is_busy(&chan->queue))
 		return -EBUSY;
 
-	ret = v4l2_subdev_call(subdev, pad, set_selection, NULL, NULL, &sdsel);
+	ret = v4l2_subdev_call(subdev, pad, set_selection, NULL, &sdsel);
 	if (!ret) {
 		sel->r = sdsel.r;
 		/*
@@ -1246,54 +1247,17 @@ static int tegra_vi_tpg_channels_alloc(struct tegra_vi *vi)
 	return 0;
 }
 
-static int tegra_vi_port_channel_alloc(struct tegra_vi *vi,
-				       struct device_node *port)
-{
-	struct v4l2_fwnode_endpoint v4l2_ep = { .bus_type = 0 };
-	struct device_node *parent;
-	struct device_node *ep;
-	unsigned int port_num;
-	unsigned int lanes;
-	int ret;
-
-	if (!of_node_name_eq(port, "port"))
-		return 0;
-
-	if (of_property_read_u32(port, "reg", &port_num) < 0)
-		return 0;
-
-	if (port_num > vi->soc->vi_max_channels) {
-		dev_err(vi->dev, "invalid port num %d for %pOF\n",
-			port_num, port);
-		return -EINVAL;
-	}
-
-	ep = of_get_child_by_name(port, "endpoint");
-	if (!ep)
-		return 0;
-
-	parent = of_graph_get_remote_port_parent(ep);
-	of_node_put(ep);
-	if (!parent)
-		return 0;
-
-	ep = of_graph_get_endpoint_by_regs(parent, 0, 0);
-	of_node_put(parent);
-	ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(ep), &v4l2_ep);
-	of_node_put(ep);
-	if (ret)
-		return 0;
-
-	lanes = v4l2_ep.bus.mipi_csi2.num_data_lanes;
-
-	return tegra_vi_channel_alloc(vi, port_num, port, lanes);
-}
-
 static int tegra_vi_channels_alloc(struct tegra_vi *vi)
 {
 	struct device_node *node = vi->dev->of_node;
+	struct device_node *ep = NULL;
 	struct device_node *ports;
-	struct device_node *port;
+	struct device_node *port = NULL;
+	unsigned int port_num;
+	struct device_node *parent;
+	struct v4l2_fwnode_endpoint v4l2_ep = { .bus_type = 0 };
+	unsigned int lanes;
+	int err;
 	int ret = 0;
 
 	ports = of_get_child_by_name(node, "ports");
@@ -1301,15 +1265,46 @@ static int tegra_vi_channels_alloc(struct tegra_vi *vi)
 		return dev_err_probe(vi->dev, -ENODEV, "%pOF: missing 'ports' node\n", node);
 
 	for_each_child_of_node(ports, port) {
-		ret = tegra_vi_port_channel_alloc(vi, port);
-		if (ret) {
-			of_node_put(port);
-			break;
+		if (!of_node_name_eq(port, "port"))
+			continue;
+
+		err = of_property_read_u32(port, "reg", &port_num);
+		if (err < 0)
+			continue;
+
+		if (port_num > vi->soc->vi_max_channels) {
+			dev_err(vi->dev, "invalid port num %d for %pOF\n",
+				port_num, port);
+			ret = -EINVAL;
+			goto cleanup;
 		}
+
+		ep = of_get_child_by_name(port, "endpoint");
+		if (!ep)
+			continue;
+
+		parent = of_graph_get_remote_port_parent(ep);
+		of_node_put(ep);
+		if (!parent)
+			continue;
+
+		ep = of_graph_get_endpoint_by_regs(parent, 0, 0);
+		of_node_put(parent);
+		err = v4l2_fwnode_endpoint_parse(of_fwnode_handle(ep),
+						 &v4l2_ep);
+		of_node_put(ep);
+		if (err)
+			continue;
+
+		lanes = v4l2_ep.bus.mipi_csi2.num_data_lanes;
+		ret = tegra_vi_channel_alloc(vi, port_num, port, lanes);
+		if (ret < 0)
+			goto cleanup;
 	}
 
+cleanup:
+	of_node_put(port);
 	of_node_put(ports);
-
 	return ret;
 }
 
@@ -1474,6 +1469,7 @@ static int tegra_vi_graph_build(struct tegra_vi_channel *chan,
 	struct tegra_vi *vi = chan->vi;
 	struct tegra_vi_graph_entity *ent;
 	struct fwnode_handle *ep = NULL;
+	struct v4l2_fwnode_link link;
 	struct media_entity *local = entity->entity;
 	struct media_entity *remote;
 	struct media_pad *local_pad;
@@ -1483,64 +1479,70 @@ static int tegra_vi_graph_build(struct tegra_vi_channel *chan,
 
 	dev_dbg(vi->dev, "creating links for entity %s\n", local->name);
 
-	fwnode_graph_for_each_endpoint(entity->asd.match.fwnode, ep) {
-		struct fwnode_handle *remote_parent __free(fwnode_handle) = NULL;
-		struct fwnode_handle *sink_ep __free(fwnode_handle) = NULL;
-		int src_idx, sink_idx;
+	while (1) {
+		ep = fwnode_graph_get_next_endpoint(entity->asd.match.fwnode,
+						    ep);
+		if (!ep)
+			break;
 
-		src_idx = media_entity_get_fwnode_pad(local, ep,
-						      MEDIA_PAD_FL_SOURCE);
-		if (src_idx < 0) {
-			dev_dbg(vi->dev, "no source pad found for %pfw\n", ep);
+		ret = v4l2_fwnode_parse_link(ep, &link);
+		if (ret < 0) {
+			dev_err(vi->dev, "failed to parse link for %pOF: %d\n",
+				to_of_node(ep), ret);
 			continue;
 		}
 
-		remote_parent = fwnode_graph_get_remote_port_parent(ep);
-		if (!remote_parent) {
-			dev_dbg(vi->dev, "no remote parent found for %pfw\n",
-				ep);
-			continue;
+		if (link.local_port >= local->num_pads) {
+			dev_err(vi->dev, "invalid port number %u on %pOF\n",
+				link.local_port, to_of_node(link.local_node));
+			v4l2_fwnode_put_link(&link);
+			ret = -EINVAL;
+			break;
 		}
 
-		local_pad = &local->pads[src_idx];
+		local_pad = &local->pads[link.local_port];
 		/* Remote node is vi node. So use channel video entity and pad
 		 * as remote/sink.
 		 */
-		if (remote_parent == of_fwnode_handle(vi->dev->of_node)) {
+		if (link.remote_node == of_fwnode_handle(vi->dev->of_node)) {
 			remote = &chan->video.entity;
 			remote_pad = &chan->pad;
 			goto create_link;
 		}
 
+		/*
+		 * Skip sink ports, they will be processed from the other end
+		 * of the link.
+		 */
+		if (local_pad->flags & MEDIA_PAD_FL_SINK) {
+			dev_dbg(vi->dev, "skipping sink port %pOF:%u\n",
+				to_of_node(link.local_node), link.local_port);
+			v4l2_fwnode_put_link(&link);
+			continue;
+		}
+
 		/* find the remote entity from notifier list */
 		ent = tegra_vi_graph_find_entity(&chan->notifier.done_list,
-						 remote_parent);
+						 link.remote_node);
 		if (!ent) {
-			fwnode_handle_put(ep);
-			dev_err(vi->dev, "no entity found for %pfw\n",
-				remote_parent);
+			dev_err(vi->dev, "no entity found for %pOF\n",
+				to_of_node(link.remote_node));
+			v4l2_fwnode_put_link(&link);
 			ret = -ENODEV;
 			break;
 		}
 
 		remote = ent->entity;
-
-		sink_ep = fwnode_graph_get_remote_endpoint(ep);
-		if (!sink_ep) {
-			dev_dbg(vi->dev, "no sink ep found for %pfw\n",
-				ep);
-			continue;
+		if (link.remote_port >= remote->num_pads) {
+			dev_err(vi->dev, "invalid port number %u on %pOF\n",
+				link.remote_port,
+				to_of_node(link.remote_node));
+			v4l2_fwnode_put_link(&link);
+			ret = -EINVAL;
+			break;
 		}
 
-		sink_idx = media_entity_get_fwnode_pad(remote, sink_ep,
-						       MEDIA_PAD_FL_SINK);
-		if (sink_idx < 0) {
-			dev_dbg(vi->dev, "no sink pad found for %pfw\n",
-				sink_ep);
-			continue;
-		}
-
-		remote_pad = &remote->pads[sink_idx];
+		remote_pad = &remote->pads[link.remote_port];
 
 create_link:
 		dev_dbg(vi->dev, "creating %s:%u -> %s:%u link\n",
@@ -1550,8 +1552,8 @@ create_link:
 		ret = media_create_pad_link(local, local_pad->index,
 					    remote, remote_pad->index,
 					    link_flags);
+		v4l2_fwnode_put_link(&link);
 		if (ret < 0) {
-			fwnode_handle_put(ep);
 			dev_err(vi->dev,
 				"failed to create %s:%u -> %s:%u link: %d\n",
 				local->name, local_pad->index,
@@ -1560,6 +1562,7 @@ create_link:
 		}
 	}
 
+	fwnode_handle_put(ep);
 	return ret;
 }
 
@@ -1864,7 +1867,7 @@ static int tegra_vi_probe(struct platform_device *pdev)
 	struct tegra_vi *vi;
 	int ret;
 
-	vi = devm_kzalloc_obj(&pdev->dev, *vi);
+	vi = devm_kzalloc(&pdev->dev, sizeof(*vi), GFP_KERNEL);
 	if (!vi)
 		return -ENOMEM;
 

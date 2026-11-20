@@ -360,8 +360,9 @@ static int gve_tx_alloc_ring_dqo(struct gve_priv *priv,
 	/* Only alloc xsk pool for XDP queues */
 	if (idx >= cfg->qcfg->num_queues && cfg->num_xdp_rings) {
 		tx->dqo.xsk_reorder_queue =
-			kvzalloc_objs(tx->dqo.xsk_reorder_queue[0],
-				      tx->dqo.complq_mask + 1);
+			kvcalloc(tx->dqo.complq_mask + 1,
+				 sizeof(tx->dqo.xsk_reorder_queue[0]),
+				 GFP_KERNEL);
 		if (!tx->dqo.xsk_reorder_queue)
 			goto err;
 	}

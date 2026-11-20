@@ -87,27 +87,15 @@ fetch_store_symstrlen(unsigned long addr)
 static nokprobe_inline int
 fetch_store_symstring(unsigned long addr, void *dest, void *base)
 {
-	char namebuf[KSYM_SYMBOL_LEN];
 	int maxlen = get_loc_len(*(u32 *)dest);
 	void *__dest;
-	int len;
 
 	if (unlikely(!maxlen))
 		return -ENOMEM;
 
 	__dest = get_loc_data(dest, base);
-	len = sprint_symbol(namebuf, addr);
-	if (len < 0) {
-		*(u32 *)dest = make_data_loc(0, __dest - base);
-		return 0;
-	}
 
-	len = min(len, maxlen - 1);
-	memcpy(__dest, namebuf, len);
-	((char *)__dest)[len] = '\0';
-	*(u32 *)dest = make_data_loc(len + 1, __dest - base);
-
-	return len + 1;
+	return sprint_symbol(__dest, addr);
 }
 
 /* common part of process_fetch_insn*/
@@ -121,11 +109,8 @@ process_common_fetch_insn(struct fetch_insn *code, unsigned long *val)
 	case FETCH_OP_COMM:
 		*val = (unsigned long)current->comm;
 		break;
-	case FETCH_OP_IMMSTR:
+	case FETCH_OP_DATA:
 		*val = (unsigned long)code->data;
-		break;
-	case FETCH_OP_CURRENT:
-		*val = (unsigned long)current;
 		break;
 	default:
 		return -EILSEQ;
@@ -141,35 +126,25 @@ process_fetch_insn_bottom(struct fetch_insn *code, unsigned long val,
 	struct fetch_insn *s3 = NULL;
 	int total = 0, ret = 0, i = 0;
 	u32 loc = 0;
-	unsigned long lval, llval = val;
+	unsigned long lval = val;
 
 stage2:
 	/* 2nd stage: dereference memory if needed */
 	do {
-		lval = val;
-		switch (code->op) {
-		case FETCH_OP_DEREF:
+		if (code->op == FETCH_OP_DEREF) {
+			lval = val;
 			ret = probe_mem_read(&val, (void *)val + code->offset,
 					     sizeof(val));
-			break;
-		case FETCH_OP_UDEREF:
+		} else if (code->op == FETCH_OP_UDEREF) {
+			lval = val;
 			ret = probe_mem_read_user(&val,
 				 (void *)val + code->offset, sizeof(val));
+		} else
 			break;
-		case FETCH_OP_CPU_PTR:
-			val = (unsigned long)this_cpu_ptr((void __percpu *)val);
-			ret = 0;
-			break;
-		default:
-			lval = llval;
-			goto out;
-		}
 		if (ret)
 			return ret;
-		llval = lval;
 		code++;
 	} while (1);
-out:
 
 	s3 = code;
 stage3:

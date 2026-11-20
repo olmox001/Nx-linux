@@ -270,8 +270,7 @@ int pvrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 				/* set qp->sq.wqe_cnt, shift, buf_size.. */
 				qp->rumem = ib_umem_get_va(ibqp->device,
 							   ucmd.rbuf_addr,
-							   ucmd.rbuf_size,
-							   IB_ACCESS_LOCAL_WRITE);
+							   ucmd.rbuf_size, 0);
 				if (IS_ERR(qp->rumem)) {
 					ret = PTR_ERR(qp->rumem);
 					goto err_qp;
@@ -283,8 +282,7 @@ int pvrdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 			}
 
 			qp->sumem = ib_umem_get_va(ibqp->device, ucmd.sbuf_addr,
-						   ucmd.sbuf_size,
-						   IB_ACCESS_LOCAL_WRITE);
+						   ucmd.sbuf_size, 0);
 			if (IS_ERR(qp->sumem)) {
 				if (!is_srq)
 					ib_umem_release(qp->rumem);

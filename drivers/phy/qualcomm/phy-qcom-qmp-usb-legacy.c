@@ -1050,7 +1050,7 @@ static int qmp_usb_legacy_vreg_init(struct qmp_usb *qmp)
 	int num = cfg->num_vregs;
 	int i;
 
-	qmp->vregs = devm_kzalloc_objs(dev, *qmp->vregs, num);
+	qmp->vregs = devm_kcalloc(dev, num, sizeof(*qmp->vregs), GFP_KERNEL);
 	if (!qmp->vregs)
 		return -ENOMEM;
 
@@ -1067,7 +1067,8 @@ static int qmp_usb_legacy_reset_init(struct qmp_usb *qmp)
 	int i;
 	int ret;
 
-	qmp->resets = devm_kzalloc_objs(dev, *qmp->resets, cfg->num_resets);
+	qmp->resets = devm_kcalloc(dev, cfg->num_resets,
+				   sizeof(*qmp->resets), GFP_KERNEL);
 	if (!qmp->resets)
 		return -ENOMEM;
 
@@ -1088,7 +1089,7 @@ static int qmp_usb_legacy_clk_init(struct qmp_usb *qmp)
 	int num = cfg->num_clks;
 	int i;
 
-	qmp->clks = devm_kzalloc_objs(dev, *qmp->clks, num);
+	qmp->clks = devm_kcalloc(dev, num, sizeof(*qmp->clks), GFP_KERNEL);
 	if (!qmp->clks)
 		return -ENOMEM;
 
@@ -1250,7 +1251,7 @@ static int qmp_usb_legacy_probe(struct platform_device *pdev)
 	struct qmp_usb *qmp;
 	int ret;
 
-	qmp = devm_kzalloc_obj(dev, *qmp);
+	qmp = devm_kzalloc(dev, sizeof(*qmp), GFP_KERNEL);
 	if (!qmp)
 		return -ENOMEM;
 
@@ -1284,16 +1285,10 @@ static int qmp_usb_legacy_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_node_put;
 
-	/*
-	 * Enable runtime PM before creating the PHY, phy_create() only enables
-	 * it on the PHY device if already enabled on the parent. Hold a usage
-	 * reference so callbacks cannot run before qmp->phy is assigned.
-	 */
-	pm_runtime_get_noresume(dev);
 	pm_runtime_set_active(dev);
 	ret = devm_pm_runtime_enable(dev);
 	if (ret)
-		goto err_pm_put;
+		goto err_node_put;
 	/*
 	 * Prevent runtime pm from being ON by default. Users can enable
 	 * it using power/control in sysfs.
@@ -1302,31 +1297,23 @@ static int qmp_usb_legacy_probe(struct platform_device *pdev)
 
 	ret = phy_pipe_clk_register(qmp, np);
 	if (ret)
-		goto err_pm_put;
+		goto err_node_put;
 
 	qmp->phy = devm_phy_create(dev, np, &qmp_usb_legacy_phy_ops);
 	if (IS_ERR(qmp->phy)) {
 		ret = PTR_ERR(qmp->phy);
 		dev_err(dev, "failed to create PHY: %d\n", ret);
-		goto err_pm_put;
+		goto err_node_put;
 	}
 
 	phy_set_drvdata(qmp->phy, qmp);
 
-	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
-	if (IS_ERR(phy_provider)) {
-		ret = PTR_ERR(phy_provider);
-		goto err_pm_put;
-	}
-
 	of_node_put(np);
 
-	pm_runtime_put(dev);
+	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
 
-	return 0;
+	return PTR_ERR_OR_ZERO(phy_provider);
 
-err_pm_put:
-	pm_runtime_put_noidle(dev);
 err_node_put:
 	of_node_put(np);
 	return ret;

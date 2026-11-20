@@ -28,7 +28,6 @@ ldflags-y  :=
 
 subdir-asflags-y :=
 subdir-ccflags-y :=
-subdir-rustflags-y :=
 
 # Read auto.conf if it exists, otherwise ignore
 -include $(objtree)/include/config/auto.conf
@@ -160,10 +159,10 @@ targets += $(targets-for-builtin) $(targets-for-modules)
 
 # Linus' kernel sanity checking tool
 ifeq ($(KBUILD_CHECKSRC),1)
-  quiet_cmd_checksrc       = CHECK   $(patsubst $(srctree)/%,%,$<)
+  quiet_cmd_checksrc       = CHECK   $<
         cmd_checksrc       = $(CHECK) $(CHECKFLAGS) $(c_flags) $<
 else ifeq ($(KBUILD_CHECKSRC),2)
-  quiet_cmd_force_checksrc = CHECK   $(patsubst $(srctree)/%,%,$<)
+  quiet_cmd_force_checksrc = CHECK   $<
         cmd_force_checksrc = $(CHECK) $(CHECKFLAGS) $(c_flags) $<
 endif
 
@@ -305,27 +304,6 @@ quiet_cmd_cc_lst_c = MKLST   $@
 
 $(obj)/%.lst: $(obj)/%.c FORCE
 	$(call if_changed_dep,cc_lst_c)
-
-# Compile C headers (.h) for header check
-# ---------------------------------------------------------------------------
-
-# Check a header is self-contained, has header guards, and passes kernel-doc.
-#
-# This is for 'make HEADER_CHECK=(headers|dirs) headercheck'. Not to be confused
-# with CONFIG_UAPI_HEADER_TEST.
-#
-# Please do *not* plug %.header-check into any configurable targets, unless you
-# also figure out a way to completely hide the %.header-check artefacts.
-
-quiet_cmd_header_check = HDRCHK  $(patsubst %.header-check,%.h,$@)
-      cmd_header_check = \
-		$(CC) $(c_flags) -fsyntax-only -x c /dev/null -include $< -include $<; \
-		PYTHONDONTWRITEBYTECODE=1 $(PYTHON3) $(KERNELDOC) -none $(KDOCFLAGS) \
-			$(if $(findstring e, $(KBUILD_EXTRA_WARN))$(CONFIG_WERROR),-Werror) $<; \
-		touch $@
-
-$(obj)/%.header-check: $(obj)/%.h FORCE
-	$(call if_changed_dep,header_check)
 
 # Compile Rust sources (.rs)
 # ---------------------------------------------------------------------------

@@ -50,11 +50,7 @@
 /* Supports VFIO_DMA_UNMAP_FLAG_ALL */
 #define VFIO_UNMAP_ALL			9
 
-/*
- * Supports the vaddr flag for DMA map and unmap.  Not supported for mediated
- * devices, so this capability is subject to change as groups are added or
- * removed.
- */
+/* Supports the vaddr flag for DMA map and unmap */
 #define VFIO_UPDATE_VADDR		10
 
 /*
@@ -1534,27 +1530,6 @@ struct vfio_device_feature_dma_buf {
  */
 #define VFIO_DEVICE_FEATURE_MIG_PRECOPY_INFOv2  12
 
-/**
- * VFIO_DEVICE_FEATURE_ZPCI_ERROR feature provides PCI error information to
- * userspace for vfio-pci devices on s390. On s390, PCI error recovery
- * involves platform firmware and notification to operating systems is done
- * by architecture specific mechanism. Exposing this information to
- * userspace allows it to take appropriate actions to handle an
- * error on the device.
- *
- * Userspace provides an opaque buffer of fixed length, and the kernel
- * fills it with the zpci_ccdf_err data structure. The length of
- * zpci_ccdf_err is provided to userspace via the
- * VFIO_DEVICE_INFO_CAP_ZPCI_BASE capability.
- *
- * The ioctl returns -ENOMSG if there are no pending PCI errors.
- */
-struct vfio_device_feature_zpci_err {
-	__aligned_u64 data;
-};
-
-#define VFIO_DEVICE_FEATURE_ZPCI_ERROR 13
-
 /* -------- API for Type1 VFIO IOMMU -------- */
 
 /**
@@ -1643,7 +1618,8 @@ struct vfio_iommu_type1_info_dma_avail {
  * Map process virtual addresses to IO virtual addresses using the
  * provided struct vfio_dma_map. Caller sets argsz. READ &/ WRITE required.
  *
- * If flags & VFIO_DMA_MAP_FLAG_VADDR, update the base vaddr for iova. The vaddr
+ * If flags & VFIO_DMA_MAP_FLAG_VADDR, update the base vaddr for iova, and
+ * unblock translation of host virtual addresses in the iova range.  The vaddr
  * must have previously been invalidated with VFIO_DMA_UNMAP_FLAG_VADDR.  To
  * maintain memory consistency within the user application, the updated vaddr
  * must address the same memory object as originally mapped.  Failure to do so
@@ -1694,9 +1670,9 @@ struct vfio_bitmap {
  * must be 0.  This cannot be combined with the get-dirty-bitmap flag.
  *
  * If flags & VFIO_DMA_UNMAP_FLAG_VADDR, do not unmap, but invalidate host
- * virtual addresses in the iova range.  DMA to already-mapped pages continues.
- * Groups may not be added to the container while any addresses are invalid.
- * This cannot be combined with the get-dirty-bitmap flag.
+ * virtual addresses in the iova range.  Tasks that attempt to translate an
+ * iova's vaddr will block.  DMA to already-mapped pages continues.  This
+ * cannot be combined with the get-dirty-bitmap flag.
  */
 struct vfio_iommu_type1_dma_unmap {
 	__u32	argsz;

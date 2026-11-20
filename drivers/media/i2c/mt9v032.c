@@ -502,7 +502,6 @@ static unsigned int mt9v032_calc_ratio(unsigned int input, unsigned int output)
 }
 
 static int mt9v032_set_format(struct v4l2_subdev *subdev,
-			      const struct v4l2_subdev_client_info *ci,
 			      struct v4l2_subdev_state *sd_state,
 			      struct v4l2_subdev_format *format)
 {
@@ -547,7 +546,6 @@ static int mt9v032_set_format(struct v4l2_subdev *subdev,
 }
 
 static int mt9v032_get_selection(struct v4l2_subdev *subdev,
-				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_selection *sel)
 {
@@ -562,7 +560,6 @@ static int mt9v032_get_selection(struct v4l2_subdev *subdev,
 }
 
 static int mt9v032_set_selection(struct v4l2_subdev *subdev,
-				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_selection *sel)
 {
@@ -1023,7 +1020,8 @@ static int mt9v032_get_pdata(struct mt9v032 *mt9v032)
 		u64 *link_freqs;
 		size_t size = prop->length / sizeof(*link_freqs);
 
-		link_freqs = devm_kzalloc_objs(mt9v032->dev, *link_freqs, size);
+		link_freqs = devm_kcalloc(mt9v032->dev, size,
+					  sizeof(*link_freqs), GFP_KERNEL);
 		if (!link_freqs)
 			return -EINVAL;
 
@@ -1047,7 +1045,7 @@ static int mt9v032_probe(struct i2c_client *client)
 	unsigned int i;
 	int ret;
 
-	mt9v032 = devm_kzalloc_obj(&client->dev, *mt9v032);
+	mt9v032 = devm_kzalloc(&client->dev, sizeof(*mt9v032), GFP_KERNEL);
 	if (!mt9v032)
 		return -ENOMEM;
 

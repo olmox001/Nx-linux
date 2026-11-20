@@ -146,32 +146,29 @@ static int ntfs_read_ea(struct ntfs_inode *ni, struct EA_FULL **ea,
 	for (off = 0; off < size; off += ea_size) {
 		const struct EA_FULL *ef = Add2Ptr(ea_p, off);
 		u32 bytes = size - off;
-		u32 packed_size;
+		size_t need;
+
+		/* Check if we can use field ea->size. */
+		if (bytes < sizeof(ef->size))
+			goto out1;
 
 		/* Check if we can use fields ef->name_len and ef->elength. */
 		if (bytes < offsetof(struct EA_FULL, name))
 			goto out1;
 
-		/*
-		 * The name and the value have to fit in the entry whether or
-		 * not ef->size is set, because ntfs_get_ea() copies elength
-		 * bytes out of this buffer and checks them only against the
-		 * caller supplied buffer size.
-		 */
-		packed_size =
-			ALIGN(struct_size(ef, name,
-					  1 + ef->name_len +
-						  le16_to_cpu(ef->elength)),
-			      4);
+		/* Size needed to hold this record's name and value. */
+		need = struct_size(ef, name,
+				   1 + ef->name_len + le16_to_cpu(ef->elength));
 
 		if (ef->size) {
 			ea_size = le32_to_cpu(ef->size);
-			if (ea_size > bytes || packed_size > ea_size)
+			/* ef->size must fit the list and cover the record. */
+			if (ea_size > bytes || ea_size < need)
 				goto out1;
 			continue;
 		}
 
-		ea_size = packed_size;
+		ea_size = ALIGN(need, 4);
 		if (ea_size > bytes)
 			goto out1;
 	}
@@ -546,7 +543,7 @@ out:
 /*
  * ntfs_get_acl - inode_operations::get_acl
  */
-struct posix_acl *ntfs_get_acl(const struct mnt_idmap *idmap, struct dentry *dentry,
+struct posix_acl *ntfs_get_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 			       int type)
 {
 	struct inode *inode = d_inode(dentry);
@@ -598,7 +595,7 @@ struct posix_acl *ntfs_get_acl(const struct mnt_idmap *idmap, struct dentry *den
 	return acl;
 }
 
-static noinline int ntfs_set_acl_ex(const struct mnt_idmap *idmap,
+static noinline int ntfs_set_acl_ex(struct mnt_idmap *idmap,
 				    struct inode *inode, struct posix_acl *acl,
 				    int type, bool init_acl)
 {
@@ -666,6 +663,7 @@ static noinline int ntfs_set_acl_ex(const struct mnt_idmap *idmap,
 			inode->i_mode = old_mode;
 			goto out;
 		}
+		inode->i_mode = mode;
 	}
 	set_cached_acl(inode, type, acl);
 	inode_set_ctime_current(inode);
@@ -680,7 +678,7 @@ out:
 /*
  * ntfs_set_acl - inode_operations::set_acl
  */
-int ntfs_set_acl(const struct mnt_idmap *idmap, struct dentry *dentry,
+int ntfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		 struct posix_acl *acl, int type)
 {
 	return ntfs_set_acl_ex(idmap, d_inode(dentry), acl, type, false);
@@ -691,7 +689,7 @@ int ntfs_set_acl(const struct mnt_idmap *idmap, struct dentry *dentry,
  *
  * Called from ntfs_create_inode().
  */
-int ntfs_init_acl(const struct mnt_idmap *idmap, struct inode *inode,
+int ntfs_init_acl(struct mnt_idmap *idmap, struct inode *inode,
 		  struct inode *dir)
 {
 	struct posix_acl *default_acl, *acl;
@@ -725,7 +723,7 @@ int ntfs_init_acl(const struct mnt_idmap *idmap, struct inode *inode,
 /*
  * ntfs_acl_chmod - Helper for ntfs_setattr().
  */
-int ntfs_acl_chmod(const struct mnt_idmap *idmap, struct dentry *dentry)
+int ntfs_acl_chmod(struct mnt_idmap *idmap, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
 	struct super_block *sb = inode->i_sb;
@@ -786,7 +784,7 @@ static int ntfs_getxattr(const struct xattr_handler *handler, struct dentry *de,
 		if (!buffer) {
 			err = sizeof(u8);
 		} else if (size < sizeof(u8)) {
-			err = -ERANGE;
+			err = -ENODATA;
 		} else {
 			err = sizeof(u8);
 			*(u8 *)buffer = le32_to_cpu(ni->std_fa);
@@ -800,7 +798,7 @@ static int ntfs_getxattr(const struct xattr_handler *handler, struct dentry *de,
 		if (!buffer) {
 			err = sizeof(u32);
 		} else if (size < sizeof(u32)) {
-			err = -ERANGE;
+			err = -ENODATA;
 		} else {
 			err = sizeof(u32);
 			*(u32 *)buffer = le32_to_cpu(ni->std_fa);
@@ -840,7 +838,7 @@ static int ntfs_getxattr(const struct xattr_handler *handler, struct dentry *de,
 		if (!buffer) {
 			err = sd_size;
 		} else if (size < sd_size) {
-			err = -ERANGE;
+			err = -ENODATA;
 		} else {
 			err = sd_size;
 			memcpy(buffer, sd, sd_size);
@@ -866,7 +864,7 @@ static bool ntfs_is_reserved_lxattr(const char *name)
  * ntfs_setxattr - inode_operations::setxattr
  */
 static noinline int ntfs_setxattr(const struct xattr_handler *handler,
-				  const struct mnt_idmap *idmap, struct dentry *de,
+				  struct mnt_idmap *idmap, struct dentry *de,
 				  struct inode *inode, const char *name,
 				  const void *value, size_t size, int flags)
 {
@@ -979,10 +977,8 @@ set_new_fa:
 			  NULL);
 
 out:
-	if (!err) {
-		inode_set_ctime_current(inode);
-		mark_inode_dirty(inode);
-	}
+	inode_set_ctime_current(inode);
+	mark_inode_dirty(inode);
 
 	return err;
 }
@@ -997,13 +993,6 @@ int ntfs_save_wsl_perm(struct inode *inode, __le32 *ea_size)
 	int err;
 	__le32 value;
 	struct ntfs_inode *ni = ntfs_i(inode);
-
-	if (!ni->mi.sbi->options->ugm) {
-		/* Do not save uid/gid/mode/dev in xattr. */
-		if (ea_size)
-			*ea_size = 0;
-		return 0;
-	}
 
 	ni_lock(ni);
 	value = cpu_to_le32(i_uid_read(inode));

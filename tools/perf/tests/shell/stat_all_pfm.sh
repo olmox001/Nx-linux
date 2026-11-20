@@ -1,5 +1,5 @@
 #!/bin/bash
-# perf all libpfm4 events test (no_mlock)
+# perf all libpfm4 events test
 # SPDX-License-Identifier: GPL-2.0
 
 if perf version --build-options | grep HAVE_LIBPFM | grep -q OFF

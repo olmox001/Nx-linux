@@ -15,7 +15,6 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
 #include <linux/kernel.h>
-#include <linux/kstrtox.h>
 #include <linux/module.h>
 
 #include "sps30.h"
@@ -194,10 +193,7 @@ static ssize_t start_cleaning_store(struct device *dev,
 	struct sps30_state *state = iio_priv(indio_dev);
 	int val, ret;
 
-	ret = kstrtoint(buf, 0, &val);
-	if (ret)
-		return ret;
-	if (val != 1)
+	if (kstrtoint(buf, 0, &val) || val != 1)
 		return -EINVAL;
 
 	guard(mutex)(&state->lock);
@@ -234,9 +230,8 @@ static ssize_t cleaning_period_store(struct device *dev, struct device_attribute
 	struct sps30_state *state = iio_priv(indio_dev);
 	int val, ret;
 
-	ret = kstrtoint(buf, 0, &val);
-	if (ret)
-		return ret;
+	if (kstrtoint(buf, 0, &val))
+		return -EINVAL;
 
 	if ((val < SPS30_AUTO_CLEANING_PERIOD_MIN) ||
 	    (val > SPS30_AUTO_CLEANING_PERIOD_MAX))

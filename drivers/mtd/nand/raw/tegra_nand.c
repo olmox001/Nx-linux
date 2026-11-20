@@ -1096,7 +1096,7 @@ static int tegra_nand_chips_init(struct device *dev,
 		return ret;
 	}
 
-	nand = devm_kzalloc_obj(dev, *nand);
+	nand = devm_kzalloc(dev, sizeof(*nand), GFP_KERNEL);
 	if (!nand)
 		return -ENOMEM;
 
@@ -1149,7 +1149,7 @@ static int tegra_nand_probe(struct platform_device *pdev)
 	struct tegra_nand_controller *ctrl;
 	int err = 0;
 
-	ctrl = devm_kzalloc_obj(&pdev->dev, *ctrl);
+	ctrl = devm_kzalloc(&pdev->dev, sizeof(*ctrl), GFP_KERNEL);
 	if (!ctrl)
 		return -ENOMEM;
 

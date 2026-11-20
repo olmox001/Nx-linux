@@ -852,7 +852,8 @@ static int s3c_onenand_probe(struct platform_device *pdev)
 	if (!mtd)
 		return -ENOMEM;
 
-	onenand = devm_kzalloc_obj(&pdev->dev, struct s3c_onenand);
+	onenand = devm_kzalloc(&pdev->dev, sizeof(struct s3c_onenand),
+			       GFP_KERNEL);
 	if (!onenand)
 		return -ENOMEM;
 

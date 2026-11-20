@@ -133,7 +133,7 @@ static int mxs_lradc_probe(struct platform_device *pdev)
 	int ret = 0;
 	u32 ts_wires = 0;
 
-	lradc = devm_kzalloc_obj(&pdev->dev, *lradc);
+	lradc = devm_kzalloc(&pdev->dev, sizeof(*lradc), GFP_KERNEL);
 	if (!lradc)
 		return -ENOMEM;
 

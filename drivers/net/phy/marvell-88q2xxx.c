@@ -799,7 +799,7 @@ static int mv88q2xxx_probe(struct phy_device *phydev)
 	struct mv88q2xxx_priv *priv;
 	int ret;
 
-	priv = devm_kzalloc_obj(&phydev->mdio.dev, *priv);
+	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

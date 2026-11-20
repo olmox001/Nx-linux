@@ -18,7 +18,6 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 
-#include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_of.h>
 
@@ -509,9 +508,6 @@ static const struct attribute_group *lt8713sx_attr_groups[] = {
 };
 
 static const struct drm_bridge_funcs lt8713sx_bridge_funcs = {
-	.atomic_create_state = drm_atomic_helper_bridge_create_state,
-	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.attach = lt8713sx_bridge_attach,
 };
 
@@ -554,6 +550,7 @@ static int lt8713sx_probe(struct i2c_client *client)
 
 	lt8713sx_reset(lt8713sx);
 
+	lt8713sx->bridge.funcs = &lt8713sx_bridge_funcs;
 	lt8713sx->bridge.of_node = dev->of_node;
 	lt8713sx->bridge.type = DRM_MODE_CONNECTOR_DisplayPort;
 	drm_bridge_add(&lt8713sx->bridge);
@@ -571,7 +568,7 @@ static void lt8713sx_remove(struct i2c_client *client)
 }
 
 static struct i2c_device_id lt8713sx_id[] = {
-	{ .name = "lt8713sx" },
+	{ "lontium,lt8713sx", 0 },
 	{ /* sentinel */ }
 };
 

@@ -124,8 +124,7 @@ unsigned int dbs_update(struct cpufreq_policy *policy)
 	struct policy_dbs_info *policy_dbs = policy->governor_data;
 	struct dbs_data *dbs_data = policy_dbs->dbs_data;
 	unsigned int ignore_nice = dbs_data->ignore_nice_load;
-	unsigned int max_load = 0, max_sample_load = 0;
-	unsigned int idle_periods = UINT_MAX;
+	unsigned int max_load = 0, idle_periods = UINT_MAX;
 	unsigned int sampling_rate, io_busy, j;
 	u64 cur_nice;
 
@@ -148,7 +147,7 @@ unsigned int dbs_update(struct cpufreq_policy *policy)
 		struct cpu_dbs_info *j_cdbs = &per_cpu(cpu_dbs, j);
 		u64 update_time, cur_idle_time;
 		unsigned int idle_time, time_elapsed;
-		unsigned int load, sample_load;
+		unsigned int load;
 
 		cur_idle_time = get_cpu_idle_time(j, &update_time, io_busy);
 
@@ -187,20 +186,6 @@ unsigned int dbs_update(struct cpufreq_policy *policy)
 
 		j_cdbs->prev_cpu_nice = cur_nice;
 
-		/*
-		 * Compute the sample load separately from the prev_load value
-		 * that may be reused after a long idle interval. The conservative
-		 * governor uses it to decide whether to apply deferred down steps.
-		 * If no time has elapsed, retain the existing behavior and use
-		 * prev_load.
-		 */
-		if (unlikely(!time_elapsed))
-			sample_load = j_cdbs->prev_load;
-		else if (time_elapsed > idle_time)
-			sample_load = 100 * (time_elapsed - idle_time) / time_elapsed;
-		else
-			sample_load = 0;
-
 		if (unlikely(!time_elapsed)) {
 			/*
 			 * That can only happen when this function is called
@@ -235,7 +220,11 @@ unsigned int dbs_update(struct cpufreq_policy *policy)
 			load = j_cdbs->prev_load;
 			j_cdbs->prev_load = 0;
 		} else {
-			load = sample_load;
+			if (time_elapsed > idle_time)
+				load = 100 * (time_elapsed - idle_time) / time_elapsed;
+			else
+				load = 0;
+
 			j_cdbs->prev_load = load;
 		}
 
@@ -248,13 +237,9 @@ unsigned int dbs_update(struct cpufreq_policy *policy)
 
 		if (load > max_load)
 			max_load = load;
-
-		if (sample_load > max_sample_load)
-			max_sample_load = sample_load;
 	}
 
 	policy_dbs->idle_periods = idle_periods;
-	policy_dbs->max_sample_load = max_sample_load;
 
 	return max_load;
 }

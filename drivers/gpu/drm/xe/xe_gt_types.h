@@ -35,24 +35,6 @@ enum xe_gt_eu_type {
 	XE_GT_EU_TYPE_SIMD16,
 };
 
-/**
- * enum xe_gpgpu_preempt_level - Per-context GPGPU preemption override mode
- *
- * Selects the preemption granularity programmed into CS_CHICKEN1[2:1] for
- * newly created Xe2+ RCS LRCs.
- *
- * @XE_GPGPU_PREEMPT_DEFAULT: Keep platform default preemption granularity.
- * @XE_GPGPU_PREEMPT_MID_THREAD: Force mid-thread preemption level.
- * @XE_GPGPU_PREEMPT_THREAD_GROUP: Force thread-group preemption level.
- * @XE_GPGPU_PREEMPT_COMMAND: Force command-level preemption.
- */
-enum xe_gpgpu_preempt_level {
-	XE_GPGPU_PREEMPT_DEFAULT = 0,
-	XE_GPGPU_PREEMPT_MID_THREAD,
-	XE_GPGPU_PREEMPT_THREAD_GROUP,
-	XE_GPGPU_PREEMPT_COMMAND,
-};
-
 #define XE_MAX_DSS_FUSE_REGS		4
 #define XE_MAX_DSS_FUSE_BITS		(32 * XE_MAX_DSS_FUSE_REGS)
 #define XE_MAX_EU_FUSE_REGS		1
@@ -163,19 +145,12 @@ struct xe_gt {
 		/** @info.has_indirect_ring_state: GT has indirect ring state support */
 		u8 has_indirect_ring_state:1;
 		/**
-		 * @info.has_uncorrectable_error_reporting: GT has uncorrectable
-		 * error reporting support
-		 */
-		u8 has_uncorrectable_error_reporting:1;
-		/**
 		 * @info.has_xe2_blt_instructions: GT supports Xe2-style MEM_SET
 		 * and MEM_COPY blitter functionality.  Note that despite the
 		 * name, some Xe1 platforms may also support this "Xe2-style"
 		 * feature.
 		 */
 		u8 has_xe2_blt_instructions:1;
-		/** @info.has_wmtp_disabled: hardware fuse indicates WMTP is disabled */
-		u8 has_wmtp_disabled:1;
 		/**
 		 * @info.num_geometry_xecore_fuse_regs: Number of 32b-bit fuse
 		 * registers the geometry XeCore mask spans.
@@ -233,12 +208,6 @@ struct xe_gt {
 		struct work_struct worker;
 	} reset;
 
-	/** @wedge: state for GT wedge */
-	struct {
-		/** @wedge.worker: worker for GT wedge to be done async */
-		struct work_struct worker;
-	} wedge;
-
 	/** @tlb_inval: TLB invalidation state */
 	struct xe_tlb_inval tlb_inval;
 
@@ -249,15 +218,6 @@ struct xe_gt {
 	 * available compute slices are allocated to it.
 	 */
 	u32 ccs_mode;
-
-	/**
-	 * @gpgpu_preemption_level: GPGPU preemption granularity override.
-	 *
-	 * Effective only when FF_SLICE_CS_CHICKEN1[FFSC_PERCTX_PREEMPT_CTRL] is
-	 * enabled via RTP. Affects only LRCs created after the value is
-	 * changed; existing contexts keep their previously programmed value.
-	 */
-	enum xe_gpgpu_preempt_level gpgpu_preemption_level;
 
 	/** @usm: unified shared memory state */
 	struct {
@@ -270,16 +230,10 @@ struct xe_gt {
 		 */
 		struct xe_sa_manager *bb_pool;
 		/**
-		 * @usm.paging_hwe0: The first designated paging engine.
-		 * This is some reserved BCS instance used for USM operations
-		 * (e.g. migrations, fixing page tables)
+		 * @usm.reserved_bcs_instance: reserved BCS instance used for USM
+		 * operations (e.g. migrations, fixing page tables)
 		 */
-		struct xe_hw_engine *paging_hwe0;
-		/**
-		 * @usm.paging_logical_mask: logical mask of paging engines.
-		 * Should be densely populated.
-		 */
-		u32 paging_logical_mask;
+		u16 reserved_bcs_instance;
 	} usm;
 
 	/** @ordered_wq: used to serialize GT resets and TDRs */
@@ -425,9 +379,6 @@ struct xe_gt {
 
 	/** @eu_stall: EU stall counters subsystem per gt info */
 	struct xe_eu_stall_gt *eu_stall;
-
-	/** @initialized: GT is initialized */
-	bool initialized;
 };
 
 #endif

@@ -84,7 +84,8 @@ static int xgbe_dcb_ieee_setets(struct net_device *netdev,
 	}
 
 	if (!pdata->ets) {
-		pdata->ets = devm_kzalloc_obj(pdata->dev, *pdata->ets);
+		pdata->ets = devm_kzalloc(pdata->dev, sizeof(*pdata->ets),
+					  GFP_KERNEL);
 		if (!pdata->ets)
 			return -ENOMEM;
 	}
@@ -131,7 +132,8 @@ static int xgbe_dcb_ieee_setpfc(struct net_device *netdev,
 	}
 
 	if (!pdata->pfc) {
-		pdata->pfc = devm_kzalloc_obj(pdata->dev, *pdata->pfc);
+		pdata->pfc = devm_kzalloc(pdata->dev, sizeof(*pdata->pfc),
+					  GFP_KERNEL);
 		if (!pdata->pfc)
 			return -ENOMEM;
 	}

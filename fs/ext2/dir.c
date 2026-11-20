@@ -442,9 +442,6 @@ static int ext2_handle_dirsync(struct inode *dir)
 {
 	int err;
 
-	if (!IS_DIRSYNC(dir))
-		return 0;
-
 	err = filemap_write_and_wait(dir->i_mapping);
 	if (!err)
 		err = sync_inode_metadata(dir, 1);
@@ -737,6 +734,6 @@ const struct file_operations ext2_dir_operations = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= ext2_compat_ioctl,
 #endif
-	.fsync		= simple_fsync,
+	.fsync		= ext2_fsync,
 	.setlease	= generic_setlease,
 };

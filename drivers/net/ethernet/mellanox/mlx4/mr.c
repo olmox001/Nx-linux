@@ -106,8 +106,10 @@ static int mlx4_buddy_init(struct mlx4_buddy *buddy, int max_order)
 	buddy->max_order = max_order;
 	spin_lock_init(&buddy->lock);
 
-	buddy->bits = kzalloc_objs(*buddy->bits, buddy->max_order + 1);
-	buddy->num_free = kzalloc_objs(*buddy->num_free, buddy->max_order + 1);
+	buddy->bits = kcalloc(buddy->max_order + 1, sizeof(*buddy->bits),
+			      GFP_KERNEL);
+	buddy->num_free = kcalloc(buddy->max_order + 1, sizeof(*buddy->num_free),
+				  GFP_KERNEL);
 	if (!buddy->bits || !buddy->num_free)
 		goto err_out;
 
@@ -155,8 +157,15 @@ u32 __mlx4_alloc_mtt_range(struct mlx4_dev *dev, int order)
 	seg_order = max_t(int, order - log_mtts_per_seg, 0);
 
 	seg = mlx4_buddy_alloc(&mr_table->mtt_buddy, seg_order);
-	if (seg == -1)
+	if (seg == -1) {
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		printk_once(KERN_NOTICE
+				"[%d]: Exhausted MTT entries, current size=%u. "
+				"Try updating log_num_mtt module parameter\n",
+				task_pid_nr(current), mr_table->mtt_buddy.max_order);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		return -1;
+	}
 
 	offset = seg * (1 << log_mtts_per_seg);
 
@@ -205,8 +214,13 @@ int mlx4_mtt_init(struct mlx4_dev *dev, int npages, int page_shift,
 		++mtt->order;
 
 	mtt->offset = mlx4_alloc_mtt_range(dev, mtt->order);
-	if (mtt->offset == -1)
+	if (mtt->offset == -1) {
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		mlx4_err(dev, "Failed to allocate mtts for %d pages(order %d)\n",
+			 npages, mtt->order);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		return -ENOMEM;
+	}
 
 	return 0;
 }
@@ -438,7 +452,19 @@ int __mlx4_mpt_reserve(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	return mlx4_bitmap_alloc(&priv->mr_table.mpt_bitmap);
+#else
+	int ret = mlx4_bitmap_alloc(&priv->mr_table.mpt_bitmap);
+
+	if (ret == -1)
+		printk_once(KERN_NOTICE
+				"[%d]: MR: Exhausted MPT entries, current size=%u. "
+				"Try updating log_num_mpt module parameter\n",
+				task_pid_nr(current), priv->mr_table.mpt_bitmap.max);
+
+	return ret;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 }
 
 static int mlx4_mpt_reserve(struct mlx4_dev *dev)
@@ -459,7 +485,11 @@ void __mlx4_mpt_release(struct mlx4_dev *dev, u32 index)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	mlx4_bitmap_free(&priv->mr_table.mpt_bitmap, index, MLX4_NO_RR);
+#else
+	mlx4_bitmap_free(&priv->mr_table.mpt_bitmap, index, MLX4_USE_RR);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 }
 
 static void mlx4_mpt_release(struct mlx4_dev *dev, u32 index)
@@ -792,7 +822,7 @@ int mlx4_buf_write_mtt(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 	int err;
 	int i;
 
-	page_list = kzalloc_objs(*page_list, buf->npages);
+	page_list = kcalloc(buf->npages, sizeof(*page_list), GFP_KERNEL);
 	if (!page_list)
 		return -ENOMEM;
 
@@ -922,7 +952,11 @@ int mlx4_init_mr_table(struct mlx4_dev *dev)
 		return err;
 
 	err = mlx4_buddy_init(&mr_table->mtt_buddy,
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 			      ilog2((u32)dev->caps.num_mtts /
+#else
+			      ilog2(dev->caps.num_mtts /
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 			      (1 << log_mtts_per_seg)));
 	if (err)
 		goto err_buddy;

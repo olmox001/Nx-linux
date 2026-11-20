@@ -1830,9 +1830,9 @@ static int intel_pt_synth_branch_sample(struct intel_pt_queue *ptq)
 		ptq->last_br_cyc_cnt = ptq->ipc_cyc_cnt;
 	}
 
+	perf_sample__exit(&sample);
 	ret = intel_pt_deliver_synth_event(pt, event, &sample,
 					    pt->branches_sample_type);
-	perf_sample__exit(&sample);
 	return ret;
 }
 
@@ -1967,7 +1967,6 @@ static int intel_pt_synth_ptwrite_sample(struct intel_pt_queue *ptq)
 	union perf_event *event = ptq->event_buf;
 	struct perf_sample sample = { .ip = 0, };
 	struct perf_synth_intel_ptwrite raw;
-	int ret;
 
 	if (intel_pt_skip_event(pt))
 		return 0;
@@ -1984,9 +1983,8 @@ static int intel_pt_synth_ptwrite_sample(struct intel_pt_queue *ptq)
 	sample.raw_size = perf_synth__raw_size(raw);
 	sample.raw_data = perf_synth__raw_data(&raw);
 
-	ret = intel_pt_deliver_synth_event(pt, event, &sample, pt->ptwrites_sample_type);
-	perf_sample__exit(&sample);
-	return ret;
+	return intel_pt_deliver_synth_event(pt, event, &sample,
+					    pt->ptwrites_sample_type);
 }
 
 static int intel_pt_synth_cbr_sample(struct intel_pt_queue *ptq)
@@ -4463,8 +4461,7 @@ int intel_pt_process_auxtrace_info(union perf_event *event,
 	} else {
 		struct itrace_synth_opts *opts = session->itrace_synth_opts;
 
-		itrace_synth_opts__set_default(&pt->synth_opts,
-					opts->default_no_sample, false);
+		itrace_synth_opts__set_default(&pt->synth_opts, opts->default_no_sample);
 		if (!opts->default_no_sample && !opts->inject) {
 			pt->synth_opts.branches = false;
 			pt->synth_opts.callchain = true;

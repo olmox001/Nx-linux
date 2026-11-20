@@ -377,7 +377,7 @@ static struct clk_hw *raspberrypi_clk_register(struct raspberrypi_clk *rpi,
 	u32 min_rate, max_rate;
 	int ret;
 
-	data = devm_kzalloc_obj(rpi->dev, *data);
+	data = devm_kzalloc(rpi->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return ERR_PTR(-ENOMEM);
 	data->rpi = rpi;
@@ -459,7 +459,9 @@ static int raspberrypi_discover_clocks(struct raspberrypi_clk *rpi,
 	 * RPI_FIRMWARE_GET_CLOCKS is zeroed. So allocate an additional
 	 * zero element as sentinel.
 	 */
-	clks = devm_kzalloc_objs(rpi->dev, *clks, RPI_FIRMWARE_NUM_CLK_ID + 1);
+	clks = devm_kcalloc(rpi->dev,
+			    RPI_FIRMWARE_NUM_CLK_ID + 1, sizeof(*clks),
+			    GFP_KERNEL);
 	if (!clks)
 		return -ENOMEM;
 
@@ -526,7 +528,7 @@ static int raspberrypi_clk_probe(struct platform_device *pdev)
 	if (!firmware)
 		return -EPROBE_DEFER;
 
-	rpi = devm_kzalloc_obj(dev, *rpi);
+	rpi = devm_kzalloc(dev, sizeof(*rpi), GFP_KERNEL);
 	if (!rpi)
 		return -ENOMEM;
 
@@ -534,8 +536,9 @@ static int raspberrypi_clk_probe(struct platform_device *pdev)
 	rpi->firmware = firmware;
 	platform_set_drvdata(pdev, rpi);
 
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws,
-				     RPI_FIRMWARE_NUM_CLK_ID);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws,
+						 RPI_FIRMWARE_NUM_CLK_ID),
+				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
@@ -550,8 +553,6 @@ static int raspberrypi_clk_probe(struct platform_device *pdev)
 
 	rpi->cpufreq = platform_device_register_data(dev, "raspberrypi-cpufreq",
 						     -1, NULL, 0);
-	if (IS_ERR(rpi->cpufreq))
-		return PTR_ERR(rpi->cpufreq);
 
 	return 0;
 }

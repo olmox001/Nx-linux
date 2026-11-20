@@ -27,7 +27,6 @@
 #include "dm_services_types.h"
 
 #include "virtual_link_encoder.h"
-#include "stream_encoder.h"
 
 static bool virtual_link_encoder_validate_output_with_stream(
 	struct link_encoder *enc,
@@ -167,8 +166,6 @@ bool virtual_link_encoder_construct(
 	enc->output_signals = SIGNAL_TYPE_VIRTUAL;
 
 	enc->preferred_engine = ENGINE_ID_VIRTUAL;
-
-	enc->inst = 0;
 
 	return true;
 }

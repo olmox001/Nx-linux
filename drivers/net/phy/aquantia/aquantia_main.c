@@ -1168,7 +1168,8 @@ static int aqr107_probe(struct phy_device *phydev)
 {
 	int ret;
 
-	phydev->priv = devm_kzalloc_obj(&phydev->mdio.dev, struct aqr107_priv);
+	phydev->priv = devm_kzalloc(&phydev->mdio.dev,
+				    sizeof(struct aqr107_priv), GFP_KERNEL);
 	if (!phydev->priv)
 		return -ENOMEM;
 

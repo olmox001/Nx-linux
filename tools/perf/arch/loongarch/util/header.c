@@ -26,7 +26,7 @@
 
 static char *_get_field(const char *line)
 {
-	const char *line2, *nl;
+	char *line2, *nl;
 
 	line2 = strrchr(line, ' ');
 	if (!line2)

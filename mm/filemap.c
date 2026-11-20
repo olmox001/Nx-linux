@@ -227,6 +227,18 @@ void __filemap_remove_folio(struct folio *folio, void *shadow)
 	page_cache_delete(mapping, folio, shadow);
 }
 
+static void filemap_free_folio(const struct address_space *mapping,
+		struct folio *folio)
+{
+	void (*free_folio)(struct folio *);
+
+	free_folio = mapping->a_ops->free_folio;
+	if (free_folio)
+		free_folio(folio);
+
+	folio_put_refs(folio, folio_nr_pages(folio));
+}
+
 /**
  * filemap_remove_folio - Remove folio from page cache.
  * @folio: The folio.
@@ -238,7 +250,6 @@ void __filemap_remove_folio(struct folio *folio, void *shadow)
 void filemap_remove_folio(struct folio *folio)
 {
 	struct address_space *mapping = folio->mapping;
-	void (*free_folio)(struct folio *folio);
 
 	BUG_ON(!folio_test_locked(folio));
 	spin_lock(&mapping->host->i_lock);
@@ -247,12 +258,9 @@ void filemap_remove_folio(struct folio *folio)
 	xa_unlock_irq(&mapping->i_pages);
 	if (mapping_shrinkable(mapping))
 		inode_lru_list_add(mapping->host);
-	free_folio = mapping->a_ops->free_folio;
 	spin_unlock(&mapping->host->i_lock);
 
-	if (free_folio)
-		free_folio(folio);
-	folio_put_refs(folio, folio_nr_pages(folio));
+	filemap_free_folio(mapping, folio);
 }
 
 /*
@@ -312,7 +320,6 @@ static void page_cache_delete_batch(struct address_space *mapping,
 void delete_from_page_cache_batch(struct address_space *mapping,
 				  struct folio_batch *fbatch)
 {
-	void (*free_folio)(struct folio *folio);
 	int i;
 
 	if (!folio_batch_count(fbatch))
@@ -330,16 +337,10 @@ void delete_from_page_cache_batch(struct address_space *mapping,
 	xa_unlock_irq(&mapping->i_pages);
 	if (mapping_shrinkable(mapping))
 		inode_lru_list_add(mapping->host);
-	free_folio = mapping->a_ops->free_folio;
 	spin_unlock(&mapping->host->i_lock);
 
-	for (i = 0; i < folio_batch_count(fbatch); i++) {
-		struct folio *folio = fbatch->folios[i];
-
-		if (free_folio)
-			free_folio(folio);
-		folio_put_refs(folio, folio_nr_pages(folio));
-	}
+	for (i = 0; i < folio_batch_count(fbatch); i++)
+		filemap_free_folio(mapping, fbatch->folios[i]);
 }
 
 int filemap_check_errors(struct address_space *mapping)
@@ -917,6 +918,14 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 
 		mapping->nrpages += nr;
 
+		/* hugetlb pages do not participate in page cache accounting */
+		if (!huge) {
+			lruvec_stat_mod_folio(folio, NR_FILE_PAGES, nr);
+			if (folio_test_pmd_mappable(folio))
+				lruvec_stat_mod_folio(folio,
+						NR_FILE_THPS, nr);
+		}
+
 unlock:
 		xas_unlock_irq(&xas);
 
@@ -932,13 +941,6 @@ unlock:
 
 	if (xas_error(&xas))
 		goto error;
-
-	/* hugetlb pages do not participate in page cache accounting */
-	if (!huge) {
-		lruvec_stat_mod_folio(folio, NR_FILE_PAGES, nr);
-		if (folio_test_pmd_mappable(folio))
-			lruvec_stat_mod_folio(folio, NR_FILE_THPS, nr);
-	}
 
 	trace_mm_filemap_add_to_page_cache(folio);
 	return 0;
@@ -1373,22 +1375,10 @@ repeat:
 	 * return value based on that state without races.
 	 *
 	 * Also note that WQ_FLAG_WOKEN is sufficient for a non-exclusive
-	 * waiter, but an exclusive one must also acquire the bit.
+	 * waiter, but an exclusive one requires WQ_FLAG_DONE.
 	 */
-	if (behavior == EXCLUSIVE) {
-		if (wait->flags & WQ_FLAG_DONE)
-			return 0;
-		/*
-		 * We might have just been woken up and the waker will not
-		 * wake up anybody else. If we ignore that now, the remaining
-		 * waiters may not get woken up: take the bit now if it is
-		 * still free.
-		 */
-		if ((wait->flags & WQ_FLAG_WOKEN) &&
-		    !test_and_set_bit(bit_nr, folio_flags(folio, 0)))
-			return 0;
-		return -EINTR;
-	}
+	if (behavior == EXCLUSIVE)
+		return wait->flags & WQ_FLAG_DONE ? 0 : -EINTR;
 
 	return wait->flags & WQ_FLAG_WOKEN ? 0 : -EINTR;
 }
@@ -1696,8 +1686,6 @@ EXPORT_SYMBOL_GPL(folio_end_writeback_no_dropbehind);
  */
 void folio_end_writeback(struct folio *folio)
 {
-	bool swap_dropbehind;
-
 	VM_BUG_ON_FOLIO(!folio_test_writeback(folio), folio);
 
 	/*
@@ -1707,24 +1695,7 @@ void folio_end_writeback(struct folio *folio)
 	 * reused before the folio_wake_bit().
 	 */
 	folio_get(folio);
-
-	/*
-	 * Sample this before folio_end_writeback_no_dropbehind() clears
-	 * PG_writeback: until then a racing swapin cannot remove the folio from
-	 * the swap cache. Afterwards it can, and the drop below then finds a
-	 * non-swapcache folio and puts it back on the LRU instead. The
-	 * reference taken above keeps the folio alive across that window.
-	 */
-	swap_dropbehind = folio_test_swapcache(folio) &&
-			  folio_test_dropbehind(folio);
-
 	folio_end_writeback_no_dropbehind(folio);
-
-	if (swap_dropbehind) {
-		swap_writeback_dropbehind_folio(folio);
-		return;
-	}
-
 	folio_end_dropbehind(folio);
 	folio_put(folio);
 }
@@ -2305,11 +2276,10 @@ unsigned filemap_get_folios_contig(struct address_space *mapping,
 	unsigned long nr;
 	struct folio *folio;
 
-	if (*start > end)
-		return 0;
-
 	rcu_read_lock();
-	for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
+
+	for (folio = xas_load(&xas); folio && xas.xa_index <= end;
+			folio = xas_next(&xas)) {
 		if (xas_retry(&xas, folio))
 			continue;
 		/*
@@ -2317,11 +2287,11 @@ unsigned filemap_get_folios_contig(struct address_space *mapping,
 		 * No current caller is looking for DAX entries.
 		 */
 		if (xa_is_value(folio))
-			break;
+			goto update_start;
 
 		/* If we landed in the middle of a THP, continue at its end. */
 		if (xa_is_sibling(folio))
-			break;
+			goto update_start;
 
 		if (!folio_try_get(folio))
 			goto retry;
@@ -2329,27 +2299,29 @@ unsigned filemap_get_folios_contig(struct address_space *mapping,
 		if (unlikely(folio != xas_reload(&xas)))
 			goto put_folio;
 
-		if (!folio_batch_add(fbatch, folio))
-			break;
-
+		if (!folio_batch_add(fbatch, folio)) {
+			*start = folio_next_index(folio);
+			goto out;
+		}
 		xas_advance(&xas, folio_next_index(folio) - 1);
-		if (xas.xa_index >= end)
-			break;
 		continue;
-
 put_folio:
 		folio_put(folio);
+
 retry:
 		xas_reset(&xas);
 	}
-	rcu_read_unlock();
 
+update_start:
 	nr = folio_batch_count(fbatch);
+
 	if (nr) {
 		folio = fbatch->folios[nr - 1];
 		*start = folio_next_index(folio);
 	}
-	return nr;
+out:
+	rcu_read_unlock();
+	return folio_batch_count(fbatch);
 }
 EXPORT_SYMBOL(filemap_get_folios_contig);
 
@@ -2501,14 +2473,11 @@ static void filemap_get_read_batch(struct address_space *mapping,
 	XA_STATE(xas, &mapping->i_pages, index);
 	struct folio *folio;
 
-	if (index > max)
-		return;
-
 	rcu_read_lock();
 	for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
 		if (xas_retry(&xas, folio))
 			continue;
-		if (xa_is_value(folio))
+		if (xas.xa_index > max || xa_is_value(folio))
 			break;
 		if (xa_is_sibling(folio))
 			break;
@@ -2525,8 +2494,6 @@ static void filemap_get_read_batch(struct address_space *mapping,
 		if (folio_test_readahead(folio))
 			break;
 		xas_advance(&xas, folio_next_index(folio) - 1);
-		if (xas.xa_index >= max)
-			break;
 		continue;
 put_folio:
 		folio_put(folio);
@@ -3047,11 +3014,10 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 EXPORT_SYMBOL(generic_file_read_iter);
 
 /*
- * Splice subpages from a folio into a pipe. Return the number of bytes spliced,
- * or -EFAULT if we cannot splice from the folio.
+ * Splice subpages from a folio into a pipe.
  */
-ssize_t splice_folio_into_pipe(struct pipe_inode_info *pipe,
-			       struct folio *folio, loff_t fpos, size_t size)
+size_t splice_folio_into_pipe(struct pipe_inode_info *pipe,
+			      struct folio *folio, loff_t fpos, size_t size)
 {
 	struct page *page;
 	size_t spliced = 0, offset = offset_in_folio(folio, fpos);
@@ -3064,15 +3030,13 @@ ssize_t splice_folio_into_pipe(struct pipe_inode_info *pipe,
 		struct pipe_buffer *buf = pipe_head_buf(pipe);
 		size_t part = min_t(size_t, PAGE_SIZE - offset, size - spliced);
 
-		if (!folio_get_checked(folio))
-			return spliced ? spliced : -EFAULT;
-
 		*buf = (struct pipe_buffer) {
 			.ops	= &page_cache_pipe_buf_ops,
 			.page	= page,
 			.offset	= offset,
 			.len	= part,
 		};
+		folio_get(folio);
 		pipe->head++;
 		page++;
 		spliced += part;
@@ -3097,10 +3061,9 @@ ssize_t splice_folio_into_pipe(struct pipe_inode_info *pipe,
  * Return: On success, the number of bytes read will be returned and *@ppos
  * will be updated if appropriate; 0 will be returned if there is no more data
  * to be read; -EAGAIN will be returned if the pipe had no space, and some
- * other negative error code will be returned on error; -EFAULT will be returned
- * if acquiring a folio reference fails and no data has been spliced.
- * A short read may occur if the pipe has insufficient space, we reach the
- * end of the data, hit a hole or hit a folio refcount limit.
+ * other negative error code will be returned on error.  A short read may occur
+ * if the pipe has insufficient space, we reach the end of the data or we hit a
+ * hole.
  */
 ssize_t filemap_splice_read(struct file *in, loff_t *ppos,
 			    struct pipe_inode_info *pipe,
@@ -3158,7 +3121,7 @@ ssize_t filemap_splice_read(struct file *in, loff_t *ppos,
 
 		for (i = 0; i < folio_batch_count(&fbatch); i++) {
 			struct folio *folio = fbatch.folios[i];
-			ssize_t n;
+			size_t n;
 
 			if (folio_pos(folio) >= end_offset)
 				goto out;
@@ -3174,15 +3137,13 @@ ssize_t filemap_splice_read(struct file *in, loff_t *ppos,
 
 			n = min_t(loff_t, len, isize - *ppos);
 			n = splice_folio_into_pipe(pipe, folio, *ppos, n);
-			if (n <= 0) {
-				error = n;
+			if (!n)
 				goto out;
-			}
 			len -= n;
 			total_spliced += n;
 			*ppos += n;
 			in->f_ra.prev_pos = *ppos;
-			if (pipe_is_full(pipe) || *ppos < folio_next_pos(folio))
+			if (pipe_is_full(pipe))
 				goto out;
 		}
 
@@ -3270,7 +3231,6 @@ loff_t mapping_seek_hole_data(struct address_space *mapping, loff_t start,
 	while ((folio = find_get_entry(&xas, max, XA_PRESENT))) {
 		loff_t pos = (u64)xas.xa_index << PAGE_SHIFT;
 		size_t seek_size;
-		u64 next;
 
 		if (start < pos) {
 			if (!seek_data)
@@ -3279,11 +3239,7 @@ loff_t mapping_seek_hole_data(struct address_space *mapping, loff_t start,
 		}
 
 		seek_size = seek_folio_size(&xas, folio);
-		next = round_up((u64)pos + 1, seek_size);
-		if (next > (u64)end)
-			pos = end;
-		else
-			pos = next;
+		pos = round_up((u64)pos + 1, seek_size);
 		start = folio_seek_hole_data(&xas, mapping, folio, start, pos,
 				seek_data);
 		if (start < pos)
@@ -3314,11 +3270,11 @@ unlock:
  * @folio - the folio to lock.
  * @fpin - the pointer to the file we may pin (or is already pinned).
  *
- * Returns 1 with the folio locked, or 0 if locking failed.
- *
- * On both entry and return, a non-NULL *fpin means the fault lock has
- * already been dropped and the caller must eventually fput() the file.
- * Otherwise the fault lock is still held, including on failure.
+ * This works similar to lock_folio_or_retry in that it can drop the
+ * mmap_lock.  It differs in that it actually returns the folio locked
+ * if it returns 1 and 0 if it couldn't lock the folio.  If we did have
+ * to drop the mmap_lock then fpin will point to the pinned file and
+ * needs to be fput()'ed at a later point.
  */
 static int lock_folio_maybe_drop_mmap(struct vm_fault *vmf, struct folio *folio,
 				     struct file **fpin)
@@ -3335,9 +3291,21 @@ static int lock_folio_maybe_drop_mmap(struct vm_fault *vmf, struct folio *folio,
 		return 0;
 
 	*fpin = maybe_unlock_mmap_for_io(vmf, *fpin);
-	if (vmf->flags & FAULT_FLAG_KILLABLE)
-		return !__folio_lock_killable(folio);
-	__folio_lock(folio);
+	if (vmf->flags & FAULT_FLAG_KILLABLE) {
+		if (__folio_lock_killable(folio)) {
+			/*
+			 * We didn't have the right flags to drop the
+			 * fault lock, but all fault_handlers only check
+			 * for fatal signals if we return VM_FAULT_RETRY,
+			 * so we need to drop the fault lock here and
+			 * return 0 if we don't have a fpin.
+			 */
+			if (*fpin == NULL)
+				release_fault_lock(vmf);
+			return 0;
+		}
+	} else
+		__folio_lock(folio);
 
 	return 1;
 }
@@ -3440,8 +3408,8 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 		 * of memory.
 		 */
 		struct vm_area_struct *vma = vmf->vma;
-		const unsigned long start = vma_start_pgoff(vma);
-		const unsigned long end = vma_end_pgoff(vma);
+		unsigned long start = vma->vm_pgoff;
+		unsigned long end = start + vma_pages(vma);
 		unsigned long ra_end;
 
 		ra->order = exec_folio_order();
@@ -3566,7 +3534,7 @@ static vm_fault_t filemap_fault_recheck_pte_none(struct vm_fault *vmf)
  * vma->vm_mm->mmap_lock must be held on entry.
  *
  * If our return value has VM_FAULT_RETRY set, it's because the mmap_lock
- * may be dropped before doing I/O or when aborting an interrupted wait.
+ * may be dropped before doing I/O or by lock_folio_maybe_drop_mmap().
  *
  * If our return value does not have VM_FAULT_RETRY set, the mmap_lock
  * has not been released.
@@ -3722,8 +3690,9 @@ page_not_uptodate:
 
 out_retry:
 	/*
-	 * With fpin set, the fault lock was already dropped. Otherwise it is
-	 * still held. Release invalidate_lock before dropping either protection.
+	 * We dropped the mmap_lock, we need to return to the fault handler to
+	 * re-find the vma and come back and find our hopefully still populated
+	 * page.
 	 */
 	if (!IS_ERR(folio))
 		folio_put(folio);
@@ -3731,8 +3700,6 @@ out_retry:
 		filemap_invalidate_unlock_shared(mapping);
 	if (fpin)
 		fput(fpin);
-	else if (!(vmf->flags & FAULT_FLAG_RETRY_NOWAIT))
-		release_fault_lock(vmf);
 	return ret | VM_FAULT_RETRY;
 }
 EXPORT_SYMBOL(filemap_fault);
@@ -3780,8 +3747,6 @@ static struct folio *next_uptodate_folio(struct xa_state *xas,
 			continue;
 		if (!folio_try_get(folio))
 			continue;
-		if (unlikely(folio_ref_count_over_limit(folio)))
-			goto skip;
 		if (folio_test_locked(folio))
 			goto skip;
 		/* Has the page moved or been split? */
@@ -3962,8 +3927,7 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 		goto out;
 	}
 
-	addr = vma->vm_start +
-		((start_pgoff - vma_start_pgoff(vma)) << PAGE_SHIFT);
+	addr = vma->vm_start + ((start_pgoff - vma->vm_pgoff) << PAGE_SHIFT);
 	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, addr, &vmf->ptl);
 	if (!vmf->pte) {
 		folio_unlock(folio);
@@ -3975,13 +3939,6 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 	do {
 		unsigned long end;
 		vm_fault_t map_ret;
-
-		/* A lower index could move vmf->pte out of its page table. */
-		if (unlikely(xas.xa_index < last_pgoff)) {
-			folio_unlock(folio);
-			folio_put(folio);
-			break;
-		}
 
 		addr += (xas.xa_index - last_pgoff) << PAGE_SHIFT;
 		vmf->pte += xas.xa_index - last_pgoff;

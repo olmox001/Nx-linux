@@ -358,8 +358,11 @@ static irqreturn_t nvvrs_rtc_irq_handler(int irq, void *data)
 	if (ret < 0)
 		return IRQ_NONE;
 
-	if (ret & NVVRS_INT_SRC1_RTC_MASK)
+	if (ret & NVVRS_INT_SRC1_RTC_MASK) {
+		rtc_lock(info->rtc);
 		rtc_update_irq(info->rtc, 1, RTC_IRQF | RTC_AF);
+		rtc_unlock(info->rtc);
+	}
 
 	/* Clear all interrupts */
 	if (nvvrs_pseq_irq_clear(info) < 0)
@@ -423,7 +426,7 @@ static int nvvrs_rtc_probe(struct i2c_client *client)
 	struct nvvrs_rtc_info *info;
 	int ret;
 
-	info = devm_kzalloc_obj(&client->dev, *info);
+	info = devm_kzalloc(&client->dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

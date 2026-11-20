@@ -283,8 +283,9 @@ static struct mlx5dr_qp *dr_create_rc_qp(struct mlx5_core_dev *mdev,
 		goto err_wq;
 	}
 
-	dr_qp->sq.wqe_head = kzalloc_objs(dr_qp->sq.wqe_head[0],
-					  dr_qp->sq.wqe_cnt);
+	dr_qp->sq.wqe_head = kcalloc(dr_qp->sq.wqe_cnt,
+				     sizeof(dr_qp->sq.wqe_head[0]),
+				     GFP_KERNEL);
 
 	if (!dr_qp->sq.wqe_head) {
 		mlx5_core_warn(mdev, "Can't allocate wqe head\n");

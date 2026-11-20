@@ -528,14 +528,7 @@ mptcp_lib_check_tools() {
 				exit ${KSFT_SKIP}
 			fi
 			;;
-		"nft")
-			if ! nft --version &> /dev/null || \
-			   ! nft -j list ruleset &> /dev/null; then
-				mptcp_lib_pr_skip "Could not run all tests without nft -j"
-				exit ${KSFT_SKIP}
-			fi
-			;;
-		"jq")
+		"iptables"* | "ip6tables"*)
 			if ! "${tool}" -V &> /dev/null; then
 				mptcp_lib_pr_skip "Could not run all tests without ${tool}"
 				exit ${KSFT_SKIP}

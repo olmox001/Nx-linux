@@ -671,9 +671,10 @@ int rmi_read_register_desc(struct rmi_device *d, u16 addr,
 	rdesc->num_registers = bitmap_weight(presence_map,
 						RMI_REG_DESC_PRESENCE_BITS);
 
-	rdesc->registers = devm_kzalloc_objs(&d->dev,
-					     struct rmi_register_desc_item,
-					     rdesc->num_registers);
+	rdesc->registers = devm_kcalloc(&d->dev,
+					rdesc->num_registers,
+					sizeof(struct rmi_register_desc_item),
+					GFP_KERNEL);
 	if (!rdesc->registers)
 		return -ENOMEM;
 
@@ -1184,7 +1185,7 @@ static int rmi_driver_probe(struct device *dev)
 			return retval;
 	}
 
-	data = devm_kzalloc_obj(dev, struct rmi_driver_data);
+	data = devm_kzalloc(dev, sizeof(struct rmi_driver_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

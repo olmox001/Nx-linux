@@ -206,7 +206,8 @@ static int tps68470_clk_probe(struct platform_device *pdev)
 	int ret;
 	int i;
 
-	tps68470_clkdata = devm_kzalloc_obj(&pdev->dev, *tps68470_clkdata);
+	tps68470_clkdata = devm_kzalloc(&pdev->dev, sizeof(*tps68470_clkdata),
+					GFP_KERNEL);
 	if (!tps68470_clkdata)
 		return -ENOMEM;
 

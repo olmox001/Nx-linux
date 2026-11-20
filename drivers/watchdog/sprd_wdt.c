@@ -267,7 +267,7 @@ static int sprd_wdt_probe(struct platform_device *pdev)
 	struct sprd_wdt *wdt;
 	int ret;
 
-	wdt = devm_kzalloc_obj(dev, *wdt);
+	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
 
@@ -293,8 +293,10 @@ static int sprd_wdt_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(dev, wdt->irq, sprd_wdt_isr, IRQF_NO_SUSPEND,
 			       "sprd-wdt", (void *)wdt);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "failed to register irq\n");
 		return ret;
+	}
 
 	wdt->wdd.info = &sprd_wdt_info;
 	wdt->wdd.ops = &sprd_wdt_ops;

@@ -466,9 +466,6 @@ static int simple_io(
 	int			retval = 0;
 	unsigned long		expire;
 
-	if (vary && !max)
-		return -EINVAL;
-
 	urb->context = &completion;
 	while (retval == 0 && iterations-- > 0) {
 		init_completion(&completion);

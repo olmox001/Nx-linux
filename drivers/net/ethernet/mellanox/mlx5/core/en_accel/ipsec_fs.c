@@ -720,16 +720,6 @@ static void ipsec_rx_sa_selector_destroy(struct mlx5_core_dev *mdev,
 	mlx5_destroy_flow_table(rx->ft.sa_sel);
 }
 
-static void
-ipsec_rx_status_pass_dest_put(struct mlx5e_ipsec *ipsec,
-			      struct mlx5e_ipsec_rx *rx,
-			      u32 family)
-{
-	mlx5_ipsec_fs_roce_rx_destroy(ipsec->roce, family, ipsec->mdev);
-	if (rx == ipsec->rx_esw)
-		mlx5_esw_ipsec_rx_status_pass_dest_put(ipsec);
-}
-
 static void rx_destroy(struct mlx5_core_dev *mdev, struct mlx5e_ipsec *ipsec,
 		       struct mlx5e_ipsec_rx *rx, u32 family)
 {
@@ -749,7 +739,13 @@ static void rx_destroy(struct mlx5_core_dev *mdev, struct mlx5e_ipsec *ipsec,
 
 	ipsec_rx_policy_destroy(rx);
 
-	ipsec_rx_status_pass_dest_put(ipsec, rx, family);
+	mlx5_ipsec_fs_roce_rx_destroy(ipsec->roce, family, mdev);
+
+#ifdef CONFIG_MLX5_ESWITCH
+	if (rx == ipsec->rx_esw)
+		mlx5_chains_put_table(esw_chains(ipsec->mdev->priv.eswitch),
+				      0, 1, 0);
+#endif
 }
 
 static void ipsec_rx_create_attr_set(struct mlx5e_ipsec *ipsec,
@@ -1072,12 +1068,9 @@ static int rx_create(struct mlx5_core_dev *mdev, struct mlx5e_ipsec *ipsec,
 		goto err_fs_ft_sa_sel;
 
 	/* Create FT */
-	if (mlx5_ipsec_device_caps(mdev) & MLX5_IPSEC_CAP_TUNNEL) {
-		err = mlx5_eswitch_block_encap(mdev, rx == ipsec->rx_esw);
-		if (err < 0)
-			goto err_fs_ft;
-		rx->allow_tunnel_mode = err;
-	}
+	if (mlx5_ipsec_device_caps(mdev) & MLX5_IPSEC_CAP_TUNNEL)
+		rx->allow_tunnel_mode =
+			mlx5_eswitch_block_encap(mdev, rx == ipsec->rx_esw);
 
 	if (rx->allow_tunnel_mode)
 		flags = MLX5_FLOW_TABLE_TUNNEL_EN_REFORMAT;
@@ -1122,7 +1115,7 @@ err_fs_ft:
 err_fs_ft_sa_sel:
 	mlx5_destroy_flow_table(rx->ft.status);
 err_fs_ft_status:
-	ipsec_rx_status_pass_dest_put(ipsec, rx, family);
+	mlx5_ipsec_fs_roce_rx_destroy(ipsec->roce, family, mdev);
 	return err;
 }
 
@@ -1134,7 +1127,7 @@ static int rx_get(struct mlx5_core_dev *mdev, struct mlx5e_ipsec *ipsec,
 	if (rx->ft.refcnt)
 		goto skip;
 
-	err = mlx5_eswitch_block_mode(mdev, true);
+	err = mlx5_eswitch_block_mode(mdev);
 	if (err)
 		return err;
 
@@ -1318,12 +1311,9 @@ static int tx_create(struct mlx5e_ipsec *ipsec, struct mlx5e_ipsec_tx *tx,
 	if (err)
 		goto err_status_rule;
 
-	if (mlx5_ipsec_device_caps(mdev) & MLX5_IPSEC_CAP_TUNNEL) {
-		err = mlx5_eswitch_block_encap(mdev, tx == ipsec->tx_esw);
-		if (err < 0)
-			goto err_encap;
-		tx->allow_tunnel_mode = err;
-	}
+	if (mlx5_ipsec_device_caps(mdev) & MLX5_IPSEC_CAP_TUNNEL)
+		tx->allow_tunnel_mode =
+			mlx5_eswitch_block_encap(mdev, tx == ipsec->tx_esw);
 
 	if (tx->allow_tunnel_mode)
 		flags = MLX5_FLOW_TABLE_TUNNEL_EN_REFORMAT;
@@ -1393,7 +1383,6 @@ err_sa_miss:
 err_sa_ft:
 	if (tx->allow_tunnel_mode)
 		mlx5_eswitch_unblock_encap(mdev);
-err_encap:
 	mlx5_del_flow_rules(tx->status.rule);
 err_status_rule:
 	mlx5_destroy_flow_table(tx->ft.status);
@@ -1427,7 +1416,7 @@ static int tx_get(struct mlx5_core_dev *mdev, struct mlx5e_ipsec *ipsec,
 	if (tx->ft.refcnt)
 		goto skip;
 
-	err = mlx5_eswitch_block_mode(mdev, true);
+	err = mlx5_eswitch_block_mode(mdev);
 	if (err)
 		return err;
 
@@ -2194,6 +2183,7 @@ static int tx_add_rule(struct mlx5e_ipsec_sa_entry *sa_entry)
 	}
 
 	setup_fte_no_frags(spec);
+	setup_fte_upper_proto_match(spec, &attrs->upspec);
 
 	switch (attrs->type) {
 	case XFRM_DEV_OFFLOAD_CRYPTO:
@@ -2206,7 +2196,6 @@ static int tx_add_rule(struct mlx5e_ipsec_sa_entry *sa_entry)
 		setup_fte_reg_a(spec);
 		break;
 	case XFRM_DEV_OFFLOAD_PACKET:
-		setup_fte_upper_proto_match(spec, &attrs->upspec);
 		setup_fte_reg_c4(spec, attrs->reqid);
 		err = setup_pkt_reformat(ipsec, attrs, &flow_act);
 		if (err)
@@ -2585,26 +2574,45 @@ void mlx5e_accel_ipsec_fs_read_stats(struct mlx5e_priv *priv, void *ipsec_stats)
 	}
 }
 
+#ifdef CONFIG_MLX5_ESWITCH
 static int mlx5e_ipsec_block_tc_offload(struct mlx5_core_dev *mdev)
 {
-	int ret = 0;
+	struct mlx5_eswitch *esw = mdev->priv.eswitch;
+	int err = 0;
 
-	spin_lock_bh(&mdev->offload_block.lock);
-	if (mdev->offload_block.num_block_ipsec)
-		ret = -EBUSY;
-	else
-		mdev->offload_block.num_block_tc++;
-	spin_unlock_bh(&mdev->offload_block.lock);
+	if (esw) {
+		err = mlx5_esw_lock(esw);
+		if (err)
+			return err;
+	}
 
-	return ret;
+	if (mdev->num_block_ipsec) {
+		err = -EBUSY;
+		goto unlock;
+	}
+
+	mdev->num_block_tc++;
+
+unlock:
+	if (esw)
+		mlx5_esw_unlock(esw);
+
+	return err;
 }
+#else
+static int mlx5e_ipsec_block_tc_offload(struct mlx5_core_dev *mdev)
+{
+	if (mdev->num_block_ipsec)
+		return -EBUSY;
+
+	mdev->num_block_tc++;
+	return 0;
+}
+#endif
 
 static void mlx5e_ipsec_unblock_tc_offload(struct mlx5_core_dev *mdev)
 {
-	spin_lock_bh(&mdev->offload_block.lock);
-	if (!WARN_ON_ONCE(!mdev->offload_block.num_block_tc))
-		mdev->offload_block.num_block_tc--;
-	spin_unlock_bh(&mdev->offload_block.lock);
+	mdev->num_block_tc--;
 }
 
 int mlx5e_accel_ipsec_fs_add_rule(struct mlx5e_ipsec_sa_entry *sa_entry)
@@ -2842,7 +2850,7 @@ void mlx5e_accel_ipsec_fs_modify(struct mlx5e_ipsec_sa_entry *sa_entry)
 	memcpy(sa_entry, &sa_entry_shadow, sizeof(*sa_entry));
 }
 
-int mlx5e_ipsec_fs_tunnel_allowed(struct mlx5e_ipsec_sa_entry *sa_entry)
+bool mlx5e_ipsec_fs_tunnel_allowed(struct mlx5e_ipsec_sa_entry *sa_entry)
 {
 	struct mlx5e_ipsec *ipsec = sa_entry->ipsec;
 	struct xfrm_state *x = sa_entry->x;

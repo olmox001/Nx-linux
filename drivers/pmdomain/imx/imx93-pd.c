@@ -100,7 +100,7 @@ static int imx93_pd_probe(struct platform_device *pdev)
 	bool init_off;
 	int ret;
 
-	domain = devm_kzalloc_obj(dev, *domain);
+	domain = devm_kzalloc(dev, sizeof(*domain), GFP_KERNEL);
 	if (!domain)
 		return -ENOMEM;
 

@@ -172,7 +172,8 @@ static int __init check_nmi_watchdog(void)
 	if (!atomic_read(&nmi_active))
 		return 0;
 
-	prev_nmi_count = kmalloc_objs(unsigned int, nr_cpu_ids);
+	prev_nmi_count = kmalloc_array(nr_cpu_ids, sizeof(unsigned int),
+				       GFP_KERNEL);
 	if (!prev_nmi_count) {
 		err = -ENOMEM;
 		goto error;

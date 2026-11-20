@@ -85,6 +85,7 @@ static int rcvbuf; /* Default: autotuning.  Can be set with -r <integer> option 
 static int sndbuf; /* Default: autotuning.  Can be set with -w <integer> option */
 static int zflg; /* zero copy option. (MSG_ZEROCOPY for sender, mmap() for receiver */
 static int xflg; /* hash received data (simple xor) (-h option) */
+static int keepflag; /* -k option: receiver shall keep all received file in memory (no munmap() calls) */
 static int integrity; /* -i option: sender and receiver compute sha256 over the data.*/
 
 static size_t chunk_size  = 512*1024;
@@ -140,12 +141,12 @@ static void *mmap_large_buffer(size_t need, size_t *allocated)
 	buffer = mmap(NULL, sz, PROT_READ | PROT_WRITE,
 		      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 
-	if (buffer == MAP_FAILED) {
+	if (buffer == (void *)-1) {
 		sz = need;
 		buffer = mmap(NULL, sz, PROT_READ | PROT_WRITE,
 			      MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
 			      -1, 0);
-		if (buffer != MAP_FAILED)
+		if (buffer != (void *)-1)
 			fprintf(stderr, "MAP_HUGETLB attempt failed, look at /sys/kernel/mm/hugepages for optimal performance\n");
 	}
 	*allocated = sz;
@@ -188,13 +189,13 @@ void *child_thread(void *arg)
 
 	fcntl(fd, F_SETFL, O_NDELAY);
 	buffer = mmap_large_buffer(chunk_size, &buffer_sz);
-	if (buffer == MAP_FAILED) {
+	if (buffer == (void *)-1) {
 		perror("mmap");
 		goto error;
 	}
 	if (zflg) {
 		raddr = mmap(NULL, chunk_size + map_align, PROT_READ, flags, fd, 0);
-		if (raddr == MAP_FAILED) {
+		if (raddr == (void *)-1) {
 			perror("mmap");
 			zflg = 0;
 		} else {
@@ -455,7 +456,7 @@ int main(int argc, char *argv[])
 	int sflg = 0;
 	int mss = 0;
 
-	while ((c = getopt(argc, argv, "46p:svr:w:H:zxP:M:C:a:i")) != -1) {
+	while ((c = getopt(argc, argv, "46p:svr:w:H:zxkP:M:C:a:i")) != -1) {
 		switch (c) {
 		case '4':
 			cfg_family = PF_INET;
@@ -488,6 +489,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'x':
 			xflg = 1;
+			break;
+		case 'k':
+			keepflag = 1;
 			break;
 		case 'P':
 			max_pacing_rate = atoi(optarg) ;
@@ -543,7 +547,7 @@ int main(int argc, char *argv[])
 	}
 
 	buffer = mmap_large_buffer(chunk_size, &buffer_sz);
-	if (buffer == MAP_FAILED) {
+	if (buffer == (unsigned char *)-1) {
 		perror("mmap");
 		exit(1);
 	}

@@ -8,7 +8,6 @@
 // Author: Weidong Wang <wangweidong.a@awinic.com>
 //
 
-#include <linux/cleanup.h>
 #include <linux/i2c.h>
 #include <linux/firmware.h>
 #include <linux/bitops.h>
@@ -853,13 +852,13 @@ static int aw88261_set_tdm_slot(struct snd_soc_dai *dai,
 			return -EINVAL;
 
 		aw88261->rxl_slotvld_mask = chan << AW88261_I2S_RXL_SLOTVLD_START_BIT;
+	}
 
-		if ((rx_mask & ~BIT(chan)) != 0) {
-			if ((chan = __ffs(rx_mask & ~BIT(chan))) > 16)
-				return -EINVAL;
+	if ((rx_mask & ~BIT(chan)) != 0) {
+		if ((chan = __ffs(rx_mask & ~BIT(chan))) > 16)
+			return -EINVAL;
 
-			aw88261->rxr_slotvld_mask = chan << AW88261_I2S_RXR_SLOTVLD_START_BIT;
-		}
+		aw88261->rxr_slotvld_mask = chan << AW88261_I2S_RXR_SLOTVLD_START_BIT;
 	}
 
 	return 0;
@@ -961,10 +960,11 @@ static int aw88261_profile_set(struct snd_kcontrol *kcontrol,
 	int ret;
 
 	/* pa stop or stopping just set profile */
-	guard(mutex)(&aw88261->lock);
+	mutex_lock(&aw88261->lock);
 	ret = aw88261_dev_set_profile_index(aw88261->aw_pa, ucontrol->value.integer.value[0]);
 	if (ret) {
 		dev_dbg(codec->dev, "profile index does not change");
+		mutex_unlock(&aw88261->lock);
 		return 0;
 	}
 
@@ -972,6 +972,8 @@ static int aw88261_profile_set(struct snd_kcontrol *kcontrol,
 		aw88261_dev_stop(aw88261->aw_pa);
 		aw88261_start(aw88261);
 	}
+
+	mutex_unlock(&aw88261->lock);
 
 	return 1;
 }
@@ -1014,33 +1016,6 @@ static int aw88261_volume_set(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int aw88261_mute_get(struct snd_kcontrol *kcontrol,
-				struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *codec = snd_kcontrol_chip(kcontrol);
-	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(codec);
-
-	ucontrol->value.integer.value[0] = !aw88261->mute_st;
-	return 0;
-}
-
-static int aw88261_mute_put(struct snd_kcontrol *kcontrol,
-				struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *codec = snd_kcontrol_chip(kcontrol);
-	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(codec);
-	bool mute = !ucontrol->value.integer.value[0];
-
-	if (aw88261->mute_st == mute)
-		return 0;
-
-	aw88261->mute_st = mute;
-	if (aw88261->aw_pa->status == AW88261_DEV_PW_ON)
-		aw88261_dev_mute(aw88261->aw_pa, mute);
-
-	return 1;
-}
-
 /*
  * The field contains 4 bits in units of 6dB + 6 bits in units of 0.125dB
  * which is too precise for TLV (!) so we have to multiply the scale by 2.
@@ -1053,8 +1028,6 @@ static const struct snd_kcontrol_new aw88261_controls[] = {
 	SOC_SINGLE_EXT_TLV("PCM Playback Volume", AW88261_SYSCTRL2_REG,
 		6, AW88261_CTL_MAX_VOL, 1,
 		aw88261_volume_get, aw88261_volume_set, volume_tlv),
-	SOC_SINGLE_EXT("Playback Switch", 0, 0, 1, 0,
-		aw88261_mute_get, aw88261_mute_put),
 	AW88261_PROFILE_EXT("Profile Set", aw88261_profile_info,
 		aw88261_profile_get, aw88261_profile_set),
 };
@@ -1065,7 +1038,7 @@ static int aw88261_playback_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
 	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(component);
 
-	guard(mutex)(&aw88261->lock);
+	mutex_lock(&aw88261->lock);
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		aw88261_start(aw88261);
@@ -1076,6 +1049,7 @@ static int aw88261_playback_event(struct snd_soc_dapm_widget *w,
 	default:
 		break;
 	}
+	mutex_unlock(&aw88261->lock);
 
 	return 0;
 }
@@ -1178,7 +1152,7 @@ static int aw88261_dev_init(struct aw88261 *aw88261, struct aw_container *aw_cfg
 
 static int aw88261_request_firmware_file(struct aw88261 *aw88261)
 {
-	const struct firmware *cont __free(firmware) = NULL;
+	const struct firmware *cont = NULL;
 	struct aw_container *aw_cfg;
 	const char *fw_name;
 	int ret;
@@ -1197,13 +1171,14 @@ static int aw88261_request_firmware_file(struct aw88261 *aw88261)
 	dev_info(aw88261->aw_pa->dev, "loaded %s - size: %zu\n",
 			fw_name, cont ? cont->size : 0);
 
-	aw_cfg = devm_kzalloc_flex(aw88261->aw_pa->dev, *aw_cfg, data,
-				   cont->size);
-	if (!aw_cfg)
+	aw_cfg = devm_kzalloc(aw88261->aw_pa->dev, struct_size(aw_cfg, data, cont->size), GFP_KERNEL);
+	if (!aw_cfg) {
+		release_firmware(cont);
 		return -ENOMEM;
-
+	}
 	aw_cfg->len = (int)cont->size;
 	memcpy(aw_cfg->data, cont->data, cont->size);
+	release_firmware(cont);
 
 	aw88261->aw_cfg = aw_cfg;
 
@@ -1213,12 +1188,12 @@ static int aw88261_request_firmware_file(struct aw88261 *aw88261)
 		return ret;
 	}
 
-	scoped_guard(mutex, &aw88261->lock) {
-		/* aw device init */
-		ret = aw88261_dev_init(aw88261, aw88261->aw_cfg);
-		if (ret)
-			dev_err(aw88261->aw_pa->dev, "dev init failed");
-	}
+	mutex_lock(&aw88261->lock);
+	/* aw device init */
+	ret = aw88261_dev_init(aw88261, aw88261->aw_cfg);
+	if (ret)
+		dev_err(aw88261->aw_pa->dev, "dev init failed");
+	mutex_unlock(&aw88261->lock);
 
 	return ret;
 }
@@ -1291,7 +1266,7 @@ static int aw88261_init(struct aw88261 *aw88261, struct i2c_client *i2c, struct 
 
 	dev_info(&i2c->dev, "chip id = %x\n", chip_id);
 
-	aw_dev = devm_kzalloc_obj(&i2c->dev, *aw_dev);
+	aw_dev = devm_kzalloc(&i2c->dev, sizeof(*aw_dev), GFP_KERNEL);
 	if (!aw_dev)
 		return -ENOMEM;
 
@@ -1321,7 +1296,7 @@ static int aw88261_i2c_probe(struct i2c_client *i2c)
 	if (!i2c_check_functionality(i2c->adapter, I2C_FUNC_I2C))
 		return dev_err_probe(&i2c->dev, -ENXIO, "check_functionality failed");
 
-	aw88261 = devm_kzalloc_obj(&i2c->dev, *aw88261);
+	aw88261 = devm_kzalloc(&i2c->dev, sizeof(*aw88261), GFP_KERNEL);
 	if (!aw88261)
 		return -ENOMEM;
 

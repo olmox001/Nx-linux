@@ -39,6 +39,7 @@
 
 #include <linux/mlx4/cmd.h>
 #include <linux/cpu_rmap.h>
+#include <rdma/ib_verbs.h>
 
 #include "mlx4.h"
 #include "fw.h"
@@ -994,7 +995,7 @@ static int mlx4_create_eq(struct mlx4_dev *dev, int nent,
 	for (i = 0; i < npages; ++i)
 		eq->page_list[i].buf = NULL;
 
-	dma_list = kmalloc_objs(*dma_list, npages);
+	dma_list = kmalloc_array(npages, sizeof(*dma_list), GFP_KERNEL);
 	if (!dma_list)
 		goto err_out_free;
 
@@ -1176,6 +1177,9 @@ int mlx4_init_eq_table(struct mlx4_dev *dev)
 	int err;
 	int i;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	spin_lock_init(&dev->eq_accounting_lock);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	priv->eq_table.uar_map = kzalloc_objs(*priv->eq_table.uar_map,
 					      mlx4_num_eq_uar(dev));
 	if (!priv->eq_table.uar_map) {
@@ -1560,3 +1564,38 @@ void mlx4_release_eq(struct mlx4_dev *dev, int vec)
 }
 EXPORT_SYMBOL(mlx4_release_eq);
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+int mlx4_choose_vector(struct mlx4_dev *dev, u32 vector, int num_comp)
+{
+	struct mlx4_eq *chosen;
+	int k;
+
+	if ((int)vector >= 0 && (int)vector < num_comp) {
+		spin_lock(&dev->eq_accounting_lock);
+		mlx4_priv(dev)->eq_table.eq[vector].ncqs++;
+		spin_unlock(&dev->eq_accounting_lock);
+	} else {
+		spin_lock(&dev->eq_accounting_lock);
+		chosen = &mlx4_priv(dev)->eq_table.eq[0];
+		for (k = 0; k < num_comp; k++) {
+			if (mlx4_priv(dev)->eq_table.eq[k].ncqs < chosen->ncqs) {
+				chosen = &mlx4_priv(dev)->eq_table.eq[k];
+				vector = k;
+			}
+		}
+		chosen->ncqs++;
+		spin_unlock(&dev->eq_accounting_lock);
+	}
+
+	return vector;
+}
+EXPORT_SYMBOL(mlx4_choose_vector);
+
+void mlx4_release_vector(struct mlx4_dev *dev, u32 vector)
+{
+	spin_lock(&dev->eq_accounting_lock);
+	mlx4_priv(dev)->eq_table.eq[vector].ncqs--;
+	spin_unlock(&dev->eq_accounting_lock);
+}
+EXPORT_SYMBOL(mlx4_release_vector);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */

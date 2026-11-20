@@ -107,12 +107,6 @@ static void iomap_set_range_uptodate(struct folio *folio, size_t off,
 		folio_mark_uptodate(folio);
 }
 
-void iomap_folio_mark_uptodate(struct folio *folio)
-{
-	iomap_set_range_uptodate(folio, 0, folio_size(folio));
-}
-EXPORT_SYMBOL_GPL(iomap_folio_mark_uptodate);
-
 /*
  * Find the next dirty block in the folio. end_blk is inclusive.
  * If no dirty block is found, this will return end_blk + 1.
@@ -143,8 +137,8 @@ static unsigned ifs_next_clean_block(struct folio *folio,
 			blks + start_blk) - blks;
 }
 
-static unsigned ifs_find_dirty_range(struct folio *folio, u64 *range_start,
-		u64 range_end)
+static unsigned ifs_find_dirty_range(struct folio *folio,
+		struct iomap_folio_state *ifs, u64 *range_start, u64 range_end)
 {
 	struct inode *inode = folio->mapping->host;
 	unsigned start_blk =
@@ -176,7 +170,7 @@ static unsigned iomap_find_dirty_range(struct folio *folio, u64 *range_start,
 		return 0;
 
 	if (ifs)
-		return ifs_find_dirty_range(folio, range_start, range_end);
+		return ifs_find_dirty_range(folio, ifs, range_start, range_end);
 	return range_end - *range_start;
 }
 
@@ -648,8 +642,8 @@ static int iomap_read_folio_iter(struct iomap_iter *iter,
 	return 0;
 }
 
-void iomap_read_folio(iomap_iter_next_fn next, struct iomap_read_folio_ctx *ctx,
-		void *private)
+void iomap_read_folio(const struct iomap_ops *ops,
+		struct iomap_read_folio_ctx *ctx, void *private)
 {
 	struct folio *folio = ctx->cur_folio;
 	struct iomap_iter iter = {
@@ -672,7 +666,7 @@ void iomap_read_folio(iomap_iter_next_fn next, struct iomap_read_folio_ctx *ctx,
 		fsverity_readahead(ctx->vi, folio->index,
 				   folio_nr_pages(folio));
 
-	while ((ret = iomap_iter(&iter, next)) > 0) {
+	while ((ret = iomap_iter(&iter, ops)) > 0) {
 		iter.status = iomap_read_folio_iter(&iter, ctx,
 				&bytes_submitted);
 		if (ctx->read_ctx && ctx->ops->submit_read)
@@ -711,22 +705,22 @@ static int iomap_readahead_iter(struct iomap_iter *iter,
 
 /**
  * iomap_readahead - Attempt to read pages from a file.
- * @next: The iomap iteration function for the filesystem.
+ * @ops: The operations vector for the filesystem.
  * @ctx: The ctx used for issuing readahead.
  * @private: The filesystem-specific information for issuing iomap_iter.
  *
  * This function is for filesystems to call to implement their readahead
  * address_space operation.
  *
- * Context: The @next callback may submit I/O (eg to read the addresses of
+ * Context: The @ops callbacks may submit I/O (eg to read the addresses of
  * blocks from disc), and may wait for it.  The caller may be trying to
  * access a different page, and so sleeping excessively should be avoided.
  * It may allocate memory, but should avoid costly allocations.  This
  * function is called with memalloc_nofs set, so allocations will not cause
  * the filesystem to be reentered.
  */
-void iomap_readahead(iomap_iter_next_fn next, struct iomap_read_folio_ctx *ctx,
-		void *private)
+void iomap_readahead(const struct iomap_ops *ops,
+		struct iomap_read_folio_ctx *ctx, void *private)
 {
 	struct readahead_control *rac = ctx->rac;
 	struct iomap_iter iter = {
@@ -748,7 +742,7 @@ void iomap_readahead(iomap_iter_next_fn next, struct iomap_read_folio_ctx *ctx,
 		fsverity_readahead(ctx->vi, readahead_index(rac),
 				readahead_count(rac));
 
-	while (iomap_iter(&iter, next) > 0) {
+	while (iomap_iter(&iter, ops) > 0) {
 		iter.status = iomap_readahead_iter(&iter, ctx,
 					&cur_bytes_submitted);
 		if (ctx->read_ctx && ctx->ops->submit_read)
@@ -798,7 +792,7 @@ EXPORT_SYMBOL_GPL(iomap_is_partially_uptodate);
  */
 struct folio *iomap_get_folio(struct iomap_iter *iter, loff_t pos, size_t len)
 {
-	fgf_t fgp = FGP_WRITEBEGIN;
+	fgf_t fgp = FGP_WRITEBEGIN | FGP_NOFS;
 
 	if (iter->flags & IOMAP_NOWAIT)
 		fgp |= FGP_NOWAIT;
@@ -920,7 +914,6 @@ static int __iomap_write_begin(const struct iomap_iter *iter,
 		if (iomap_block_needs_zeroing(iter, block_start)) {
 			if (WARN_ON_ONCE(iter->flags & IOMAP_UNSHARE))
 				return -EIO;
-			/* uptodate once copied, see __iomap_write_end() */
 			folio_zero_segments(folio, poff, from, to, poff + plen);
 		} else {
 			const struct iomap *iomap = iomap_iter_srcmap(iter);
@@ -944,8 +937,8 @@ static int __iomap_write_begin(const struct iomap_iter *iter,
 
 			if (iomap->flags & IOMAP_F_ZERO_TAIL)
 				folio_zero_segment(folio, to, poff + plen);
-			iomap_set_range_uptodate(folio, poff, plen);
 		}
+		iomap_set_range_uptodate(folio, poff, plen);
 	} while ((block_start += plen) < block_end);
 
 	return 0;
@@ -1189,6 +1182,7 @@ static bool iomap_write_end(struct iomap_iter *iter, size_t len, size_t copied,
 static int iomap_write_iter(struct iomap_iter *iter, struct iov_iter *i,
 		const struct iomap_write_ops *write_ops)
 {
+	ssize_t total_written = 0;
 	int status = 0;
 	struct address_space *mapping = iter->inode->i_mapping;
 	size_t chunk = mapping_max_folio_size(mapping);
@@ -1284,16 +1278,17 @@ retry:
 				goto retry;
 			}
 		} else {
+			total_written += written;
 			iomap_iter_advance(iter, written);
 		}
 	} while (iov_iter_count(i) && iomap_length(iter));
 
-	return status;
+	return total_written ? 0 : status;
 }
 
 ssize_t
 iomap_file_buffered_write(struct kiocb *iocb, struct iov_iter *i,
-		iomap_iter_next_fn next,
+		const struct iomap_ops *ops,
 		const struct iomap_write_ops *write_ops, void *private)
 {
 	struct iomap_iter iter = {
@@ -1305,16 +1300,12 @@ iomap_file_buffered_write(struct kiocb *iocb, struct iov_iter *i,
 	};
 	ssize_t ret;
 
-	/* Buffered atomic writes are not supported */
-	if (iocb->ki_flags & IOCB_ATOMIC)
-		return -EOPNOTSUPP;
-
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		iter.flags |= IOMAP_NOWAIT;
 	if (iocb->ki_flags & IOCB_DONTCACHE)
 		iter.flags |= IOMAP_DONTCACHE;
 
-	while ((ret = iomap_iter(&iter, next)) > 0)
+	while ((ret = iomap_iter(&iter, ops)) > 0)
 		iter.status = iomap_write_iter(&iter, i, write_ops);
 
 	if (unlikely(iter.pos == iocb->ki_pos))
@@ -1326,7 +1317,7 @@ iomap_file_buffered_write(struct kiocb *iocb, struct iov_iter *i,
 EXPORT_SYMBOL_GPL(iomap_file_buffered_write);
 
 int iomap_fsverity_write(struct file *file, loff_t pos, size_t length,
-		const void *buf, iomap_iter_next_fn next,
+		const void *buf, const struct iomap_ops *ops,
 		const struct iomap_write_ops *write_ops)
 {
 	int			ret;
@@ -1343,7 +1334,7 @@ int iomap_fsverity_write(struct file *file, loff_t pos, size_t length,
 
 	iov_iter_kvec(&iiter, WRITE, &kvec, 1, length);
 
-	ret = iomap_file_buffered_write(&iocb, &iiter, next, write_ops, NULL);
+	ret = iomap_file_buffered_write(&iocb, &iiter, ops, write_ops, NULL);
 	if (ret < 0)
 		return ret;
 	return ret == length ? 0 : -EIO;
@@ -1615,7 +1606,7 @@ static int iomap_unshare_iter(struct iomap_iter *iter,
 
 int
 iomap_file_unshare(struct inode *inode, loff_t pos, loff_t len,
-		iomap_iter_next_fn next,
+		const struct iomap_ops *ops,
 		const struct iomap_write_ops *write_ops)
 {
 	struct iomap_iter iter = {
@@ -1630,7 +1621,7 @@ iomap_file_unshare(struct inode *inode, loff_t pos, loff_t len,
 		return 0;
 
 	iter.len = min(len, size - pos);
-	while ((ret = iomap_iter(&iter, next)) > 0)
+	while ((ret = iomap_iter(&iter, ops)) > 0)
 		iter.status = iomap_unshare_iter(&iter, write_ops);
 	return ret;
 }
@@ -1713,7 +1704,7 @@ static int iomap_zero_iter(struct iomap_iter *iter, bool *did_zero,
  * @iomap_flags: Flags to set on the associated iomap to track the batch.
  *
  * Returns the folio count directly. Also returns the associated control flag if
- * the batch lookup is performed and the expected offset of a subsequent
+ * the the batch lookup is performed and the expected offset of a subsequent
  * lookup via out params. The caller is responsible to set the flag on the
  * associated iomap.
  */
@@ -1743,7 +1734,7 @@ EXPORT_SYMBOL_GPL(iomap_fill_dirty_folios);
 
 int
 iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
-		iomap_iter_next_fn next,
+		const struct iomap_ops *ops,
 		const struct iomap_write_ops *write_ops, void *private)
 {
 	struct folio_batch fbatch;
@@ -1768,7 +1759,7 @@ iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
 	 */
 	range_dirty = filemap_range_needs_writeback(mapping, iter.pos,
 					iter.pos + iter.len - 1);
-	while ((ret = iomap_iter(&iter, next)) > 0) {
+	while ((ret = iomap_iter(&iter, ops)) > 0) {
 		const struct iomap *srcmap = iomap_iter_srcmap(&iter);
 
 		if (!(iter.iomap.flags & IOMAP_F_FOLIO_BATCH) &&
@@ -1794,7 +1785,7 @@ EXPORT_SYMBOL_GPL(iomap_zero_range);
 
 int
 iomap_truncate_page(struct inode *inode, loff_t pos, bool *did_zero,
-		iomap_iter_next_fn next,
+		const struct iomap_ops *ops,
 		const struct iomap_write_ops *write_ops, void *private)
 {
 	unsigned int blocksize = i_blocksize(inode);
@@ -1803,7 +1794,7 @@ iomap_truncate_page(struct inode *inode, loff_t pos, bool *did_zero,
 	/* Block boundary? Nothing to do */
 	if (!off)
 		return 0;
-	return iomap_zero_range(inode, pos, blocksize - off, did_zero, next,
+	return iomap_zero_range(inode, pos, blocksize - off, did_zero, ops,
 			write_ops, private);
 }
 EXPORT_SYMBOL_GPL(iomap_truncate_page);
@@ -1828,7 +1819,7 @@ static int iomap_folio_mkwrite_iter(struct iomap_iter *iter,
 	return iomap_iter_advance(iter, length);
 }
 
-vm_fault_t iomap_page_mkwrite(struct vm_fault *vmf, iomap_iter_next_fn next,
+vm_fault_t iomap_page_mkwrite(struct vm_fault *vmf, const struct iomap_ops *ops,
 		void *private)
 {
 	struct iomap_iter iter = {
@@ -1845,7 +1836,7 @@ vm_fault_t iomap_page_mkwrite(struct vm_fault *vmf, iomap_iter_next_fn next,
 		goto out_unlock;
 	iter.pos = folio_pos(folio);
 	iter.len = ret;
-	while ((ret = iomap_iter(&iter, next)) > 0)
+	while ((ret = iomap_iter(&iter, ops)) > 0)
 		iter.status = iomap_folio_mkwrite_iter(&iter, folio);
 
 	if (ret < 0)
@@ -2082,7 +2073,8 @@ iomap_writepages(struct iomap_writepage_ctx *wpc)
 	 * Writeback from reclaim context should never happen except in the case
 	 * of a VM regression so warn about it and refuse to write the data.
 	 */
-	if (WARN_ON_ONCE((current->flags & PF_MEMALLOC)))
+	if (WARN_ON_ONCE((current->flags & (PF_MEMALLOC | PF_KSWAPD)) ==
+			PF_MEMALLOC))
 		return -EIO;
 
 	while ((folio = writeback_iter(mapping, wpc->wbc, folio, &error))) {

@@ -29,7 +29,7 @@
 
 #include "internal.h"
 
-int simple_getattr(const struct mnt_idmap *idmap, const struct path *path,
+int simple_getattr(struct mnt_idmap *idmap, const struct path *path,
 		   struct kstat *stat, u32 request_mask,
 		   unsigned int query_flags)
 {
@@ -263,18 +263,17 @@ static long dentry2offset(struct dentry *dentry)
 	return (long)dentry->d_fsdata;
 }
 
+static struct lock_class_key simple_offset_lock_class;
+
 /**
  * simple_offset_init - initialize an offset_ctx
  * @octx: directory offset map to be initialized
- * @dir: the directory @octx belongs to
  *
- * The directory's i_rwsem is the lock of the offset map. Writers hold it
- * exclusive, offset_readdir() holds it shared.
  */
-void simple_offset_init(struct offset_ctx *octx, struct inode *dir)
+void simple_offset_init(struct offset_ctx *octx)
 {
-	mt_init_flags(&octx->mt, MT_FLAGS_ALLOC_RANGE | MT_FLAGS_LOCK_EXTERN);
-	mt_set_external_lock(&octx->mt, &dir->i_rwsem);
+	mt_init_flags(&octx->mt, MT_FLAGS_ALLOC_RANGE);
+	lockdep_set_class(&octx->mt.ma_lock, &simple_offset_lock_class);
 	octx->next_offset = DIR_OFFSET_MIN;
 }
 
@@ -282,12 +281,6 @@ void simple_offset_init(struct offset_ctx *octx, struct inode *dir)
  * simple_offset_add - Add an entry to a directory's offset map
  * @octx: directory offset ctx to be updated
  * @dentry: new dentry being added
- *
- * The offset map holds no reference to @dentry. Once positive, @dentry
- * must be pinned with d_make_persistent() for as long as it is in the
- * map, and entries may only be added, removed or renamed with the
- * directory's i_rwsem held exclusive: offset_readdir() emits straight
- * from the map under the shared lock.
  *
  * Returns zero on success. @octx and the dentry's offset are updated.
  * Otherwise, a negative errno value is returned.
@@ -297,13 +290,12 @@ int simple_offset_add(struct offset_ctx *octx, struct dentry *dentry)
 	unsigned long offset;
 	int ret;
 
-	MA_STATE(mas, &octx->mt, 0, 0);
-
 	if (dentry2offset(dentry) != 0)
 		return -EBUSY;
 
-	ret = mas_alloc_cyclic(&mas, &offset, dentry, DIR_OFFSET_MIN,
-			       DIR_OFFSET_MAX, &octx->next_offset, GFP_KERNEL);
+	ret = mtree_alloc_cyclic(&octx->mt, &offset, dentry, DIR_OFFSET_MIN,
+				 DIR_OFFSET_MAX, &octx->next_offset,
+				 GFP_KERNEL);
 	if (unlikely(ret < 0))
 		return ret == -EBUSY ? -ENOSPC : ret;
 
@@ -316,9 +308,7 @@ static int simple_offset_replace(struct offset_ctx *octx, struct dentry *dentry,
 {
 	int ret;
 
-	MA_STATE(mas, &octx->mt, offset, offset);
-
-	ret = mas_store_gfp(&mas, dentry, GFP_KERNEL);
+	ret = mtree_store(&octx->mt, offset, dentry, GFP_KERNEL);
 	if (ret)
 		return ret;
 	offset_set(dentry, offset);
@@ -333,14 +323,13 @@ static int simple_offset_replace(struct offset_ctx *octx, struct dentry *dentry,
  */
 void simple_offset_remove(struct offset_ctx *octx, struct dentry *dentry)
 {
-	long offset = dentry2offset(dentry);
+	long offset;
 
-	MA_STATE(mas, &octx->mt, offset, offset);
-
+	offset = dentry2offset(dentry);
 	if (offset == 0)
 		return;
 
-	mas_erase(&mas);
+	mtree_erase(&octx->mt, offset);
 	offset_set(dentry, 0);
 }
 
@@ -398,20 +387,16 @@ int simple_offset_rename_exchange(struct inode *old_dir,
 	long new_index = dentry2offset(new_dentry);
 	int ret;
 
-	MA_STATE(old_mas, &old_ctx->mt, old_index, old_index);
-	MA_STATE(new_mas, &new_ctx->mt, new_index, new_index);
-
 	if (WARN_ON(!old_index || !new_index))
 		return -EINVAL;
 
-	ret = mas_store_gfp(&new_mas, old_dentry, GFP_KERNEL);
+	ret = mtree_store(&new_ctx->mt, new_index, old_dentry, GFP_KERNEL);
 	if (WARN_ON(ret))
 		return ret;
 
-	ret = mas_store_gfp(&old_mas, new_dentry, GFP_KERNEL);
+	ret = mtree_store(&old_ctx->mt, old_index, new_dentry, GFP_KERNEL);
 	if (WARN_ON(ret)) {
-		mas_set(&new_mas, new_index);
-		mas_store_gfp(&new_mas, new_dentry, GFP_KERNEL);
+		mtree_store(&new_ctx->mt, new_index, new_dentry, GFP_KERNEL);
 		return ret;
 	}
 
@@ -426,14 +411,11 @@ int simple_offset_rename_exchange(struct inode *old_dir,
  * @octx: directory offset ctx that is about to be destroyed
  *
  * During fs teardown (eg. umount), a directory's offset map might still
- * contain entries. __mt_destroy() cleans out anything that remains.
- * Nothing can reach the map of a directory that is being destroyed, so
- * this runs without the directory's i_rwsem.
+ * contain entries. xa_destroy() cleans out anything that remains.
  */
 void simple_offset_destroy(struct offset_ctx *octx)
 {
-	mt_on_stack(octx->mt);
-	__mt_destroy(&octx->mt);
+	mtree_destroy(&octx->mt);
 }
 
 /**
@@ -464,6 +446,51 @@ static loff_t offset_dir_llseek(struct file *file, loff_t offset, int whence)
 	return vfs_setpos(file, offset, LONG_MAX);
 }
 
+static struct dentry *find_positive_dentry(struct dentry *parent,
+					   struct dentry *dentry,
+					   bool next)
+{
+	struct dentry *found = NULL;
+
+	spin_lock(&parent->d_lock);
+	if (next)
+		dentry = d_next_sibling(dentry);
+	else if (!dentry)
+		dentry = d_first_child(parent);
+	hlist_for_each_entry_from(dentry, d_sib) {
+		if (!simple_positive(dentry))
+			continue;
+		spin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);
+		if (simple_positive(dentry))
+			found = dget_dlock(dentry);
+		spin_unlock(&dentry->d_lock);
+		if (likely(found))
+			break;
+	}
+	spin_unlock(&parent->d_lock);
+	return found;
+}
+
+static noinline_for_stack struct dentry *
+offset_dir_lookup(struct dentry *parent, loff_t offset)
+{
+	struct inode *inode = d_inode(parent);
+	struct offset_ctx *octx = inode->i_op->get_offset_ctx(inode);
+	struct dentry *child, *found = NULL;
+
+	MA_STATE(mas, &octx->mt, offset, offset);
+
+	if (offset == DIR_OFFSET_FIRST)
+		found = find_positive_dentry(parent, NULL, false);
+	else {
+		rcu_read_lock();
+		child = mas_find_rev(&mas, DIR_OFFSET_MIN);
+		found = find_positive_dentry(parent, child, false);
+		rcu_read_unlock();
+	}
+	return found;
+}
+
 static bool offset_dir_emit(struct dir_context *ctx, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
@@ -472,30 +499,32 @@ static bool offset_dir_emit(struct dir_context *ctx, struct dentry *dentry)
 			inode->i_ino, fs_umode_to_dtype(inode->i_mode));
 }
 
-/*
- * Emit entries in descending offset order. The directory's i_rwsem is the
- * lock of the offset tree and the persistent dentries in it only change
- * with it held exclusive. We hold it shared, so @mas stays valid across
- * dir_emit() and the dentries need no references.
- */
 static void offset_iterate_dir(struct file *file, struct dir_context *ctx)
 {
-	struct inode *inode = file_inode(file);
-	struct offset_ctx *octx = inode->i_op->get_offset_ctx(inode);
-	loff_t start = ctx->pos == DIR_OFFSET_FIRST ? DIR_OFFSET_MAX : ctx->pos;
+	struct dentry *dir = file->f_path.dentry;
 	struct dentry *dentry;
 
-	MA_STATE(mas, &octx->mt, start, start);
+	dentry = offset_dir_lookup(dir, ctx->pos);
+	if (!dentry)
+		goto out_eod;
+	while (true) {
+		struct dentry *next;
 
-	for (;;) {
-		dentry = mas_find_rev(&mas, DIR_OFFSET_MIN);
-		if (!dentry)
-			break;
-		VFS_WARN_ON_ONCE(!(dentry->d_flags & DCACHE_PERSISTENT));
 		ctx->pos = dentry2offset(dentry);
 		if (!offset_dir_emit(ctx, dentry))
-			return;
+			break;
+
+		next = find_positive_dentry(dir, dentry, true);
+		dput(dentry);
+
+		if (!next)
+			goto out_eod;
+		dentry = next;
 	}
+	dput(dentry);
+	return;
+
+out_eod:
 	ctx->pos = DIR_OFFSET_EOD;
 }
 
@@ -530,7 +559,7 @@ static int offset_readdir(struct file *file, struct dir_context *ctx)
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
-	if (ctx->pos < DIR_OFFSET_EOD)
+	if (ctx->pos != DIR_OFFSET_EOD)
 		offset_iterate_dir(file, ctx);
 	return 0;
 }
@@ -838,7 +867,7 @@ int simple_rename_exchange(struct inode *old_dir, struct dentry *old_dentry,
 }
 EXPORT_SYMBOL_GPL(simple_rename_exchange);
 
-int simple_rename(const struct mnt_idmap *idmap, struct inode *old_dir,
+int simple_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 		  struct dentry *old_dentry, struct inode *new_dir,
 		  struct dentry *new_dentry, unsigned int flags)
 {
@@ -884,7 +913,7 @@ EXPORT_SYMBOL(simple_rename);
  * on simple regular filesystems.  Anything that needs to change on-disk
  * or wire state on size changes needs its own setattr method.
  */
-int simple_setattr(const struct mnt_idmap *idmap, struct dentry *dentry,
+int simple_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		   struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
@@ -1074,11 +1103,10 @@ int simple_pin_fs(struct file_system_type *type, struct vfsmount **mount, int *c
 		if (IS_ERR(mnt))
 			return PTR_ERR(mnt);
 		spin_lock(&pin_fs_lock);
-		if (!*mount) {
+		if (!*mount)
 			*mount = mnt;
-			mnt = NULL;
-		}
 	}
+	mntget(*mount);
 	++*count;
 	spin_unlock(&pin_fs_lock);
 	mntput(mnt);
@@ -1088,12 +1116,11 @@ EXPORT_SYMBOL(simple_pin_fs);
 
 void simple_release_fs(struct vfsmount **mount, int *count)
 {
-	struct vfsmount *mnt = NULL;
+	struct vfsmount *mnt;
 	spin_lock(&pin_fs_lock);
-	if (!--*count) {
-		mnt = *mount;
+	mnt = *mount;
+	if (!--*count)
 		*mount = NULL;
-	}
 	spin_unlock(&pin_fs_lock);
 	mntput(mnt);
 }
@@ -1532,12 +1559,9 @@ int simple_fsync_noflush(struct file *file, loff_t start, loff_t end,
 	if (err)
 		return err;
 
-	if (!(inode_state_read_once(inode) &
-			(I_DIRTY_ALL | I_SYNC | I_METADATA_WRITEBACK)))
+	if (!(inode_state_read_once(inode) & I_DIRTY_ALL))
 		goto out;
-	if (datasync &&
-	    !(inode_state_read_once(inode) &
-			(I_DIRTY_DATASYNC | I_SYNC | I_METADATA_WRITEBACK)))
+	if (datasync && !(inode_state_read_once(inode) & I_DIRTY_DATASYNC))
 		goto out;
 
 	ret = sync_inode_metadata(inode, 1);
@@ -1700,7 +1724,7 @@ static struct dentry *empty_dir_lookup(struct inode *dir, struct dentry *dentry,
 	return ERR_PTR(-ENOENT);
 }
 
-static int empty_dir_setattr(const struct mnt_idmap *idmap,
+static int empty_dir_setattr(struct mnt_idmap *idmap,
 			     struct dentry *dentry, struct iattr *attr)
 {
 	return -EPERM;

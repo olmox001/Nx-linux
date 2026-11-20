@@ -1044,7 +1044,8 @@ static int mlxbf_i2c_init_resource(struct platform_device *pdev,
 	if (!res || *res || type >= MLXBF_I2C_END_RES)
 		return -EINVAL;
 
-	tmp_res = devm_kzalloc_obj(dev, struct mlxbf_i2c_resource);
+	tmp_res = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_resource),
+			       GFP_KERNEL);
 	if (!tmp_res)
 		return -ENOMEM;
 
@@ -2197,10 +2198,10 @@ static struct i2c_adapter_quirks mlxbf_i2c_quirks = {
 };
 
 static const struct acpi_device_id mlxbf_i2c_acpi_ids[] = {
-	{ .id = "MLNXBF03", .driver_data = (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_1] },
-	{ .id = "MLNXBF23", .driver_data = (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_2] },
-	{ .id = "MLNXBF31", .driver_data = (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_3] },
-	{ }
+	{ "MLNXBF03", (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_1] },
+	{ "MLNXBF23", (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_2] },
+	{ "MLNXBF31", (kernel_ulong_t)&mlxbf_i2c_chip[MLXBF_I2C_CHIP_TYPE_3] },
+	{},
 };
 
 MODULE_DEVICE_TABLE(acpi, mlxbf_i2c_acpi_ids);
@@ -2239,7 +2240,7 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	u32 resource_version;
 	int irq, ret;
 
-	priv = devm_kzalloc_obj(dev, struct mlxbf_i2c_priv);
+	priv = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -2258,15 +2259,15 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	priv->resource_version = resource_version;
 
 	if (priv->chip->type < MLXBF_I2C_CHIP_TYPE_3 && resource_version == 0) {
-		priv->timer = devm_kzalloc_obj(dev, struct mlxbf_i2c_resource);
+		priv->timer = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_resource), GFP_KERNEL);
 		if (!priv->timer)
 			return -ENOMEM;
 
-		priv->mst = devm_kzalloc_obj(dev, struct mlxbf_i2c_resource);
+		priv->mst = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_resource), GFP_KERNEL);
 		if (!priv->mst)
 			return -ENOMEM;
 
-		priv->slv = devm_kzalloc_obj(dev, struct mlxbf_i2c_resource);
+		priv->slv = devm_kzalloc(dev, sizeof(struct mlxbf_i2c_resource), GFP_KERNEL);
 		if (!priv->slv)
 			return -ENOMEM;
 
@@ -2349,7 +2350,7 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 			       IRQF_SHARED | IRQF_PROBE_SHARED,
 			       dev_name(dev), priv);
 	if (ret < 0)
-		return ret;
+		return dev_err_probe(dev, ret, "Cannot get irq %d\n", irq);
 
 	priv->irq = irq;
 

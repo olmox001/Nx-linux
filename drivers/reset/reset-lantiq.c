@@ -168,7 +168,7 @@ static int lantiq_rcu_reset_probe(struct platform_device *pdev)
 	struct lantiq_rcu_reset_priv *priv;
 	int err;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

@@ -419,14 +419,18 @@ static int msiof_open(struct snd_soc_component *component,
 		return PTR_ERR(chan);
 
 	ret = snd_dmaengine_pcm_open(substream, chan);
-	if (ret < 0) {
-		dma_release_channel(chan);
-		return ret;
-	}
+	if (ret < 0)
+		goto open_err_dma;
 
 	snd_soc_set_runtime_hwparams(substream, &msiof_pcm_hardware);
 
-	return 0;
+	ret = snd_pcm_hw_constraint_integer(substream->runtime, SNDRV_PCM_HW_PARAM_PERIODS);
+
+open_err_dma:
+	if (ret < 0)
+		dma_release_channel(chan);
+
+	return ret;
 }
 
 static int msiof_close(struct snd_soc_component *component,
@@ -567,7 +571,7 @@ static int msiof_probe(struct platform_device *pdev)
 	if (irq <= 0)
 		return irq;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

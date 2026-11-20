@@ -12,6 +12,7 @@
 #include "fw-api.h"
 #include "time-event.h"
 #include "mvm.h"
+#include "iwl-io.h"
 #include "iwl-prph.h"
 
 /*

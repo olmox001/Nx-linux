@@ -361,7 +361,7 @@ static void *cps_gen_entry_code(unsigned cpu, enum cps_pm_state state)
 	};
 
 	/* Allocate a buffer to hold the generated code */
-	p = buf = kzalloc_objs(u32, max_instrs);
+	p = buf = kcalloc(max_instrs, sizeof(u32), GFP_KERNEL);
 	if (!buf)
 		return NULL;
 

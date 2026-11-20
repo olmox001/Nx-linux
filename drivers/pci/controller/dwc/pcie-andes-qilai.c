@@ -146,7 +146,7 @@ static int qilai_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	pcie = devm_kzalloc_obj(&pdev->dev, *pcie);
+	pcie = devm_kzalloc(&pdev->dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 

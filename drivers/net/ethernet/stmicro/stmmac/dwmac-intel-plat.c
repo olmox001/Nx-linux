@@ -57,7 +57,7 @@ static int intel_eth_plat_probe(struct platform_device *pdev)
 		return PTR_ERR(plat_dat);
 	}
 
-	dwmac = devm_kzalloc_obj(&pdev->dev, *dwmac);
+	dwmac = devm_kzalloc(&pdev->dev, sizeof(*dwmac), GFP_KERNEL);
 	if (!dwmac)
 		return -ENOMEM;
 

@@ -258,7 +258,7 @@ static ssize_t tad_pmu_cpumask_show(struct device *dev,
 {
 	struct tad_pmu *tad_pmu = to_tad_pmu(dev_get_drvdata(dev));
 
-	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(cpumask_of(tad_pmu->cpu)));
+	return cpumap_print_to_pagebuf(true, buf, cpumask_of(tad_pmu->cpu));
 }
 
 static DEVICE_ATTR(cpumask, 0444, tad_pmu_cpumask_show, NULL);
@@ -300,7 +300,7 @@ static int tad_pmu_probe(struct platform_device *pdev)
 	int i, ret;
 	char *name;
 
-	tad_pmu = devm_kzalloc_obj(&pdev->dev, *tad_pmu);
+	tad_pmu = devm_kzalloc(&pdev->dev, sizeof(*tad_pmu), GFP_KERNEL);
 	if (!tad_pmu)
 		return -ENOMEM;
 
@@ -339,7 +339,8 @@ static int tad_pmu_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	regions = devm_kzalloc_objs(&pdev->dev, *regions, tad_cnt);
+	regions = devm_kcalloc(&pdev->dev, tad_cnt,
+			       sizeof(*regions), GFP_KERNEL);
 	if (!regions)
 		return -ENOMEM;
 
@@ -423,7 +424,6 @@ static const struct of_device_id tad_pmu_of_match[] = {
 	{ .compatible = "marvell,cn10k-tad-pmu", .data = &tad_pmu_data },
 	{},
 };
-MODULE_DEVICE_TABLE(of, tad_pmu_of_match);
 #endif
 
 #ifdef CONFIG_ACPI

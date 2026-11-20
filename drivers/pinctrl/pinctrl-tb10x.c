@@ -479,7 +479,7 @@ struct tb10x_port {
  */
 struct tb10x_pinctrl {
 	struct pinctrl_dev *pctl;
-	void __iomem *base;
+	void *base;
 	const struct tb10x_pinfuncgrp *pingroups;
 	unsigned int pinfuncgrpcnt;
 	unsigned int pinfuncnt;
@@ -749,8 +749,9 @@ static int tb10x_pinctrl_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	state = devm_kzalloc_flex(dev, *state, pinfuncs,
-				  of_get_child_count(of_node));
+	state = devm_kzalloc(dev, struct_size(state, pinfuncs,
+					      of_get_child_count(of_node)),
+			     GFP_KERNEL);
 	if (!state)
 		return -ENOMEM;
 

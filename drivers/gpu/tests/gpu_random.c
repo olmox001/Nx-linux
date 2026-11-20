@@ -31,7 +31,7 @@ unsigned int *gpu_random_order(unsigned int count, struct rnd_state *state)
 {
 	unsigned int *order, i;
 
-	order = kmalloc_objs(*order, count);
+	order = kmalloc_array(count, sizeof(*order), GFP_KERNEL);
 	if (!order)
 		return order;
 

@@ -332,7 +332,8 @@ static void __init cpg_div6_clock_init(struct device_node *np)
 		return;
 	}
 
-	parent_names = kmalloc_objs(*parent_names, num_parents);
+	parent_names = kmalloc_array(num_parents, sizeof(*parent_names),
+				GFP_KERNEL);
 	if (!parent_names)
 		return;
 

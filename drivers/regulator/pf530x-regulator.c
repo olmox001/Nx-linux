@@ -308,7 +308,7 @@ static int pf530x_i2c_probe(struct i2c_client *client)
 	struct regulator_dev *rdev;
 	struct regulator_init_data *init_data;
 
-	chip = devm_kzalloc_obj(&client->dev, *chip);
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -353,10 +353,10 @@ static const struct of_device_id pf530x_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, pf530x_dt_ids);
 
 static const struct i2c_device_id pf530x_i2c_id[] = {
-	{ .name = "pf5300" },
-	{ .name = "pf5301" },
-	{ .name = "pf5302" },
-	{ }
+	{ "pf5300", 0 },
+	{ "pf5301", 0 },
+	{ "pf5302", 0 },
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, pf530x_i2c_id);
 

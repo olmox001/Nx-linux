@@ -388,7 +388,7 @@ static int extcon_cros_ec_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	int numports, ret;
 
-	info = devm_kzalloc_obj(dev, *info);
+	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

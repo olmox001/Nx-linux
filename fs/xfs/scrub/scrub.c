@@ -229,8 +229,8 @@ xchk_teardown(
 	struct xfs_scrub	*sc,
 	int			error)
 {
-	xchk_ag_free(sc);
-	xchk_rtgroup_btcur_free(sc);
+	xchk_ag_free(sc, &sc->sa);
+	xchk_rtgroup_btcur_free(&sc->sr);
 
 	if (sc->tp) {
 		if (error == 0 && (sc->sm->sm_flags & XFS_SCRUB_IFLAG_REPAIR))
@@ -240,7 +240,7 @@ xchk_teardown(
 		sc->tp = NULL;
 	}
 	if (sc->sr.rtg)
-		xchk_rtgroup_free(sc);
+		xchk_rtgroup_free(sc, &sc->sr);
 	if (sc->ip) {
 		if (sc->ilock_flags)
 			xchk_iunlock(sc, sc->ilock_flags);

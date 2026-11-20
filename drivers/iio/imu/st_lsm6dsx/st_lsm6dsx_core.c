@@ -2852,8 +2852,11 @@ static int st_lsm6dsx_irq_setup(struct st_lsm6dsx_hw *hw)
 					st_lsm6dsx_handler_thread,
 					irq_type | IRQF_ONESHOT,
 					"lsm6dsx", hw);
-	if (err)
+	if (err) {
+		dev_err(hw->dev, "failed to request trigger irq %d\n",
+			hw->irq);
 		return err;
+	}
 
 	return 0;
 }
@@ -2923,7 +2926,7 @@ int st_lsm6dsx_probe(struct device *dev, int irq, int hw_id,
 	const char *name = NULL;
 	int i, err;
 
-	hw = devm_kzalloc_obj(dev, *hw);
+	hw = devm_kzalloc(dev, sizeof(*hw), GFP_KERNEL);
 	if (!hw)
 		return -ENOMEM;
 

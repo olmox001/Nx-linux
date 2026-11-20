@@ -27,6 +27,7 @@
 
 extern bool pciehp_poll_mode;
 extern int pciehp_poll_time;
+extern bool pciehp_user_ledctrl;
 
 /*
  * Set CONFIG_DYNAMIC_DEBUG=y and boot with 'dyndbg="file pciehp* +p"' to
@@ -149,9 +150,13 @@ struct controller {
  *	hotplug port was inaccessible when the interrupt occurred, requiring
  *	that the IRQ handler is rerun by the IRQ thread after it has made the
  *	hotplug port accessible by runtime resuming its parents to D0
+ * %IGNORE_EVENTS: Ignore all HP events. Used when we force power off to a slot
+ *	via pciehp_force_power_slot. This could cause link state change which
+ *	we want to ignore
  */
 #define DISABLE_SLOT		(1 << 16)
 #define RERUN_ISR		(1 << 17)
+#define IGNORE_EVENTS		(1 << 18)
 
 #define ATTN_BUTTN(ctrl)	((ctrl)->slot_cap & PCI_EXP_SLTCAP_ABP)
 #define POWER_CTRL(ctrl)	((ctrl)->slot_cap & PCI_EXP_SLTCAP_PCP)
@@ -193,9 +198,12 @@ void pciehp_release_ctrl(struct controller *ctrl);
 int pciehp_sysfs_enable_slot(struct hotplug_slot *hotplug_slot);
 int pciehp_sysfs_disable_slot(struct hotplug_slot *hotplug_slot);
 int pciehp_reset_slot(struct hotplug_slot *hotplug_slot, bool probe);
+int pciehp_force_power_slot(struct hotplug_slot *slot, int probe);
 int pciehp_get_attention_status(struct hotplug_slot *hotplug_slot, u8 *status);
 int pciehp_set_raw_indicator_status(struct hotplug_slot *h_slot, u8 status);
 int pciehp_get_raw_indicator_status(struct hotplug_slot *h_slot, u8 *status);
+u32 pci_aer_mask_cto(struct pci_dev *dev);
+void pci_aer_restore_cto(struct pci_dev *dev, u32 mask);
 
 int pciehp_slot_reset(struct pcie_device *dev);
 

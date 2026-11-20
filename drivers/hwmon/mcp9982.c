@@ -624,7 +624,6 @@ static int mcp9982_write(struct device *dev, enum hwmon_sensor_types type, u32 a
 {
 	struct mcp9982_priv *priv = dev_get_drvdata(dev);
 	unsigned int idx;
-	int ret;
 	u8 addr;
 
 	switch (type) {
@@ -641,13 +640,9 @@ static int mcp9982_write(struct device *dev, enum hwmon_sensor_types type, u32 a
 
 			idx = find_closest_descending(val, mcp9982_update_interval,
 						      ARRAY_SIZE(mcp9982_update_interval));
-			ret = regmap_write(priv->regmap, MCP9982_CONV_ADDR, idx);
-			if (ret)
-				return ret;
-
 			priv->interval_idx = idx;
 
-			return 0;
+			return regmap_write(priv->regmap, MCP9982_CONV_ADDR, idx);
 		default:
 			return -EINVAL;
 		}
@@ -923,7 +918,7 @@ static int mcp9982_probe(struct i2c_client *client)
 	struct device *hwmon_dev;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, struct mcp9982_priv);
+	priv = devm_kzalloc(dev, sizeof(struct mcp9982_priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

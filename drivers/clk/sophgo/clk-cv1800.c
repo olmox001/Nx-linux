@@ -1504,7 +1504,7 @@ static int cv1800_clk_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	ctrl = devm_kzalloc_obj(dev, *ctrl);
+	ctrl = devm_kzalloc(dev, sizeof(*ctrl), GFP_KERNEL);
 	if (!ctrl)
 		return -ENOMEM;
 

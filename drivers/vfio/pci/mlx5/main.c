@@ -21,9 +21,6 @@
 
 #include "cmd.h"
 
-VFIO_PCI_CORE_DEFINE_CALLBACKS(mlx5vf, struct mlx5vf_pci_core_device,
-			       core_device)
-
 /* Device specification max LOAD size */
 #define MAX_LOAD_SIZE (BIT_ULL(__mlx5_bit_sz(load_vhca_state_in, size)) - 1)
 
@@ -31,7 +28,10 @@ VFIO_PCI_CORE_DEFINE_CALLBACKS(mlx5vf, struct mlx5vf_pci_core_device,
 
 static struct mlx5vf_pci_core_device *mlx5vf_drvdata(struct pci_dev *pdev)
 {
-	return pci_get_drvdata(pdev);
+	struct vfio_pci_core_device *core_device = dev_get_drvdata(&pdev->dev);
+
+	return container_of(core_device, struct mlx5vf_pci_core_device,
+			    core_device);
 }
 
 static void mlx5vf_disable_fd(struct mlx5_vf_migration_file *migf)
@@ -1415,7 +1415,7 @@ static int mlx5vf_pci_probe(struct pci_dev *pdev,
 	if (IS_ERR(mvdev))
 		return PTR_ERR(mvdev);
 
-	dev_set_drvdata(&pdev->dev, mvdev);
+	dev_set_drvdata(&pdev->dev, &mvdev->core_device);
 	ret = vfio_pci_core_register_device(&mvdev->core_device);
 	if (ret)
 		goto out_put_vdev;
@@ -1443,7 +1443,7 @@ MODULE_DEVICE_TABLE(pci, mlx5vf_pci_table);
 
 static const struct pci_error_handlers mlx5vf_err_handlers = {
 	.reset_done = mlx5vf_pci_aer_reset_done,
-	.error_detected = mlx5vf_aer_err_detected,
+	.error_detected = vfio_pci_core_aer_err_detected,
 };
 
 static struct pci_driver mlx5vf_pci_driver = {
@@ -1451,7 +1451,6 @@ static struct pci_driver mlx5vf_pci_driver = {
 	.id_table = mlx5vf_pci_table,
 	.probe = mlx5vf_pci_probe,
 	.remove = mlx5vf_pci_remove,
-	.driver	= { .pm = pm_ptr(&mlx5vf_pm_ops) },
 	.err_handler = &mlx5vf_err_handlers,
 	.driver_managed_dma = true,
 };

@@ -152,7 +152,7 @@ static int ttl_probe(struct platform_device *pdev)
 		return -ENXIO;
 	}
 
-	mod = devm_kzalloc_obj(&pdev->dev, *mod);
+	mod = devm_kzalloc(&pdev->dev, sizeof(*mod), GFP_KERNEL);
 	if (!mod)
 		return -ENOMEM;
 

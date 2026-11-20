@@ -34,6 +34,7 @@
 
 #include "../stackglue.h"
 #include "userdlm.h"
+#include "dlmfsver.h"
 
 #define MLOG_MASK_PREFIX ML_DLMFS
 #include "../cluster/masklog.h"
@@ -188,7 +189,7 @@ static int dlmfs_file_release(struct inode *inode,
  * We do ->setattr() just to override size changes.  Our size is the size
  * of the LVB and nothing else.
  */
-static int dlmfs_file_setattr(const struct mnt_idmap *idmap,
+static int dlmfs_file_setattr(struct mnt_idmap *idmap,
 			      struct dentry *dentry, struct iattr *attr)
 {
 	int error;
@@ -402,7 +403,7 @@ static struct inode *dlmfs_get_inode(struct inode *parent,
  * File creation. Allocate an inode, and we're done..
  */
 /* SMP-safe */
-static struct dentry *dlmfs_mkdir(const struct mnt_idmap * idmap,
+static struct dentry *dlmfs_mkdir(struct mnt_idmap * idmap,
 				  struct inode * dir,
 				  struct dentry * dentry,
 				  umode_t mode)
@@ -422,7 +423,7 @@ static struct dentry *dlmfs_mkdir(const struct mnt_idmap * idmap,
 		goto bail;
 	}
 
-	inode = dlmfs_get_inode(dir, dentry, mode);
+	inode = dlmfs_get_inode(dir, dentry, mode | S_IFDIR);
 	if (!inode) {
 		status = -ENOMEM;
 		mlog_errno(status);
@@ -450,10 +451,11 @@ bail:
 	return ERR_PTR(status);
 }
 
-static int dlmfs_create(const struct mnt_idmap *idmap,
+static int dlmfs_create(struct mnt_idmap *idmap,
 			struct inode *dir,
 			struct dentry *dentry,
-			umode_t mode)
+			umode_t mode,
+			bool excl)
 {
 	int status = 0;
 	struct inode *inode;
@@ -581,6 +583,7 @@ static int __init init_dlmfs_fs(void)
 	int status;
 	int cleanup_inode = 0, cleanup_worker = 0;
 
+	dlmfs_print_version();
 	dlmfs_inode_cache = kmem_cache_create("dlmfs_inode_cache",
 				sizeof(struct dlmfs_inode_private),
 				0, (SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|
@@ -630,7 +633,6 @@ static void __exit exit_dlmfs_fs(void)
 
 MODULE_AUTHOR("Oracle");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("OCFS2 DLM-Filesystem");
 
 module_init(init_dlmfs_fs)
 module_exit(exit_dlmfs_fs)

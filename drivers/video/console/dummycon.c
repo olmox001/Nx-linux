@@ -86,11 +86,6 @@ static bool dummycon_blank(struct vc_data *vc, enum vesa_blank_mode blank,
 	return true;
 }
 
-static bool dummycon_unblank(struct vc_data *vc, bool mode_switch)
-{
-	return true;
-}
-
 static bool dummycon_switch(struct vc_data *vc)
 {
 	/*
@@ -109,12 +104,6 @@ static bool dummycon_blank(struct vc_data *vc, enum vesa_blank_mode blank,
 {
 	return false;
 }
-
-static bool dummycon_unblank(struct vc_data *vc, bool mode_switch)
-{
-	return false;
-}
-
 static bool dummycon_switch(struct vc_data *vc)
 {
 	return false;
@@ -166,6 +155,5 @@ const struct consw dummy_con = {
 	.con_scroll =	dummycon_scroll,
 	.con_switch =	dummycon_switch,
 	.con_blank =	dummycon_blank,
-	.con_unblank =	dummycon_unblank,
 };
 EXPORT_SYMBOL_GPL(dummy_con);

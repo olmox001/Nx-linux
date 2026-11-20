@@ -208,7 +208,7 @@ void emit_mov_r(struct jit_context *ctx, u8 dst, u8 src)
 }
 
 /* Validate ALU immediate range */
-bool valid_alu_i(u8 op, s32 imm, s16 off)
+bool valid_alu_i(u8 op, s32 imm)
 {
 	switch (BPF_OP(op)) {
 	case BPF_NEG:
@@ -237,9 +237,6 @@ bool valid_alu_i(u8 op, s32 imm, s16 off)
 		return imm == 0 || (imm > 0 && is_power_of_2(imm));
 	case BPF_DIV:
 	case BPF_MOD:
-		/* Do not use unsigned shift/mask rewrites for signed div/mod. */
-		if (off == 1)
-			return false;
 		/* imm must be an 17-bit power of two */
 		return (u32)imm <= 0x10000 && is_power_of_2((u32)imm);
 	}
@@ -341,42 +338,8 @@ void emit_alu_i(struct jit_context *ctx, u8 dst, s32 imm, u8 op)
 	clobber_reg(ctx, dst);
 }
 
-/* ALU division operation (32-bit) */
-static void emit_div(struct jit_context *ctx, u8 dst, u8 src, s16 off)
-{
-	if (cpu_has_mips32r6) {
-		if (off == 1)
-			emit(ctx, div_r6, dst, dst, src);
-		else
-			emit(ctx, divu_r6, dst, dst, src);
-	} else {
-		if (off == 1)
-			emit(ctx, div, dst, src);
-		else
-			emit(ctx, divu, dst, src);
-		emit(ctx, mflo, dst);
-	}
-}
-
-/* ALU modulo operation (32-bit) */
-static void emit_mod(struct jit_context *ctx, u8 dst, u8 src, s16 off)
-{
-	if (cpu_has_mips32r6) {
-		if (off == 1)
-			emit(ctx, mod, dst, dst, src);
-		else
-			emit(ctx, modu, dst, dst, src);
-	} else {
-		if (off == 1)
-			emit(ctx, div, dst, src);
-		else
-			emit(ctx, divu, dst, src);
-		emit(ctx, mfhi, dst);
-	}
-}
-
 /* ALU register operation (32-bit) */
-void emit_alu_r(struct jit_context *ctx, u8 dst, u8 src, u8 op, s16 off)
+void emit_alu_r(struct jit_context *ctx, u8 dst, u8 src, u8 op)
 {
 	switch (BPF_OP(op)) {
 	/* dst = dst & src */
@@ -422,11 +385,21 @@ void emit_alu_r(struct jit_context *ctx, u8 dst, u8 src, u8 op, s16 off)
 		break;
 	/* dst = dst / src */
 	case BPF_DIV:
-		emit_div(ctx, dst, src, off);
+		if (cpu_has_mips32r6) {
+			emit(ctx, divu_r6, dst, dst, src);
+		} else {
+			emit(ctx, divu, dst, src);
+			emit(ctx, mflo, dst);
+		}
 		break;
 	/* dst = dst % src */
 	case BPF_MOD:
-		emit_mod(ctx, dst, src, off);
+		if (cpu_has_mips32r6) {
+			emit(ctx, modu, dst, dst, src);
+		} else {
+			emit(ctx, divu, dst, src);
+			emit(ctx, mfhi, dst);
+		}
 		break;
 	}
 	clobber_reg(ctx, dst);
@@ -850,7 +823,7 @@ void emit_jmp_r(struct jit_context *ctx, u8 dst, u8 src, s32 off, u8 op)
 }
 
 /* Jump always */
-int emit_ja(struct jit_context *ctx, s32 off)
+int emit_ja(struct jit_context *ctx, s16 off)
 {
 	int target = get_target(ctx, ctx->bpf_index + off + 1);
 
@@ -959,7 +932,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_verifier_env *env, struct bpf_pr
 	 * Not able to allocate memory for descriptors[], then
 	 * we must fall back to the interpreter
 	 */
-	ctx.descriptors = kzalloc_objs(*ctx.descriptors, prog->len + 1);
+	ctx.descriptors = kcalloc(prog->len + 1, sizeof(*ctx.descriptors),
+				  GFP_KERNEL);
 	if (ctx.descriptors == NULL)
 		goto out_err;
 

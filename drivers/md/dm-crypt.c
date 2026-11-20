@@ -182,7 +182,7 @@ struct crypt_config {
 	} iv_gen_private;
 	u64 iv_offset;
 	unsigned int iv_size;
-	unsigned int sector_size;
+	unsigned short sector_size;
 	unsigned char sector_shift;
 
 	union {
@@ -240,24 +240,6 @@ struct crypt_config {
 #define MIN_IOS		64
 #define MAX_TAG_SIZE	480
 #define POOL_ENTRY_SIZE	512
-
-/*
- * Largest encryption sector size that can be requested with the
- * "sector_size:<bytes>" option.
- *
- * A sector is handed to the crypto API as a single scatterlist entry, so it
- * has to be covered by one bio_vec.  bio_iter_iovec() never returns more than
- * PAGE_SIZE bytes, and crypt_alloc_buffer() may fall back to order-0 pages
- * for the write bounce buffer, so PAGE_SIZE is the ceiling.
- *
- * crypt_io_hints() announces the sector size as the logical block size, which
- * the block layer caps at BLK_MAX_BLOCK_SIZE.  That cap is never below
- * PAGE_SIZE in any configuration today, so it does not lower the limit; take
- * the minimum anyway so that this target cannot announce a block size
- * blk_validate_limits() would reject.
- */
-#define DM_CRYPT_MAX_SECTOR_SIZE	MIN_T(unsigned int, PAGE_SIZE, \
-					      BLK_MAX_BLOCK_SIZE)
 
 static DEFINE_SPINLOCK(dm_crypt_clients_lock);
 static unsigned int dm_crypt_clients_n;
@@ -405,6 +387,16 @@ static int crypt_iv_plain64be_gen(struct crypt_config *cc, u8 *iv,
 	return 0;
 }
 
+static int crypt_iv_plain64me_gen(struct crypt_config *cc, u8 *iv,
+				  struct dm_crypt_request *dmreq)
+{
+	memset(iv, 0, cc->iv_size);
+	/* iv_size is at least of size u64; usually it is 16 bytes */
+	*(__be64 *)&iv[0] = cpu_to_be64(dmreq->iv_sector);
+
+	return 0;
+}
+
 static int crypt_iv_essiv_gen(struct crypt_config *cc, u8 *iv,
 			      struct dm_crypt_request *dmreq)
 {
@@ -531,7 +523,7 @@ static void crypt_iv_lmk_wipe(struct crypt_config *cc)
 	struct iv_lmk_private *lmk = &cc->iv_gen_private.lmk;
 
 	if (lmk->seed)
-		memzero_explicit(lmk->seed, LMK_SEED_SIZE);
+		memset(lmk->seed, 0, LMK_SEED_SIZE);
 }
 
 static void crypt_iv_lmk_one(struct crypt_config *cc, u8 *iv,
@@ -648,8 +640,8 @@ static void crypt_iv_tcw_wipe(struct crypt_config *cc)
 {
 	struct iv_tcw_private *tcw = &cc->iv_gen_private.tcw;
 
-	memzero_explicit(tcw->iv_seed, cc->iv_size);
-	memzero_explicit(tcw->whitening, TCW_WHITENING_SIZE);
+	memset(tcw->iv_seed, 0, cc->iv_size);
+	memset(tcw->whitening, 0, TCW_WHITENING_SIZE);
 }
 
 static void crypt_iv_tcw_whitening(struct crypt_config *cc,
@@ -1043,6 +1035,10 @@ static const struct crypt_iv_operations crypt_iv_plain64be_ops = {
 	.generator = crypt_iv_plain64be_gen
 };
 
+static struct crypt_iv_operations crypt_iv_plain64me_ops = {
+	.generator = crypt_iv_plain64me_gen
+};
+
 static const struct crypt_iv_operations crypt_iv_essiv_ops = {
 	.generator = crypt_iv_essiv_gen
 };
@@ -1367,6 +1363,23 @@ static int crypt_convert_block_aead(struct crypt_config *cc,
 	return r;
 }
 
+static int build_split_sg(struct scatterlist *sg, struct bio_vec *bvec,
+			  struct bio *bio, struct bvec_iter *iter,
+			  unsigned short int sector_size)
+{
+	int bytes_first_page;
+
+	bytes_first_page = bvec->bv_len;
+	sg_set_page(sg, bvec->bv_page, bvec->bv_len, bvec->bv_offset);
+	bio_advance_iter(bio, iter, bvec->bv_len);
+	*bvec = bio_iter_iovec(bio, *iter);
+	sg++;
+	sg_set_page(sg, bvec->bv_page, sector_size - bytes_first_page,
+		    bvec->bv_offset);
+
+	return bytes_first_page;
+}
+
 static int crypt_convert_block_skcipher(struct crypt_config *cc,
 					struct convert_context *ctx,
 					struct skcipher_request *req,
@@ -1375,14 +1388,11 @@ static int crypt_convert_block_skcipher(struct crypt_config *cc,
 	struct bio_vec bv_in = bio_iter_iovec(ctx->bio_in, ctx->iter_in);
 	struct bio_vec bv_out = bio_iter_iovec(ctx->bio_out, ctx->iter_out);
 	struct scatterlist *sg_in, *sg_out;
+	int src_split = 0, dst_split = 0;
 	struct dm_crypt_request *dmreq;
 	u8 *iv, *org_iv, *tag_iv;
 	__le64 *sector;
 	int r = 0;
-
-	/* Reject unexpected unaligned bio. */
-	if (unlikely(bv_in.bv_len & (cc->sector_size - 1)))
-		return -EIO;
 
 	dmreq = dmreq_of_req(cc, req);
 	dmreq->iv_sector = ctx->cc_sector;
@@ -1403,11 +1413,25 @@ static int crypt_convert_block_skcipher(struct crypt_config *cc,
 	sg_in  = &dmreq->sg_in[0];
 	sg_out = &dmreq->sg_out[0];
 
-	sg_init_table(sg_in, 1);
-	sg_set_page(sg_in, bv_in.bv_page, cc->sector_size, bv_in.bv_offset);
+	if (unlikely(bv_in.bv_len < cc->sector_size)) {
+		sg_init_table(sg_in, 2);
+		src_split = build_split_sg(sg_in, &bv_in, ctx->bio_in,
+					   &ctx->iter_in, cc->sector_size);
+	} else {
+		sg_init_table(sg_in, 1);
+		sg_set_page(sg_in, bv_in.bv_page, cc->sector_size,
+			    bv_in.bv_offset);
+	}
 
-	sg_init_table(sg_out, 1);
-	sg_set_page(sg_out, bv_out.bv_page, cc->sector_size, bv_out.bv_offset);
+	if (unlikely(bv_out.bv_len < cc->sector_size)) {
+		sg_init_table(sg_out, 2);
+		dst_split = build_split_sg(sg_out, &bv_out, ctx->bio_out,
+					   &ctx->iter_out, cc->sector_size);
+	} else {
+		sg_init_table(sg_out, 1);
+		sg_set_page(sg_out, bv_out.bv_page, cc->sector_size,
+			    bv_out.bv_offset);
+	}
 
 	if (cc->iv_gen_ops) {
 		/* For READs use IV stored in integrity metadata */
@@ -1438,8 +1462,10 @@ static int crypt_convert_block_skcipher(struct crypt_config *cc,
 	if (!r && cc->iv_gen_ops && cc->iv_gen_ops->post)
 		cc->iv_gen_ops->post(cc, org_iv, dmreq);
 
-	bio_advance_iter(ctx->bio_in, &ctx->iter_in, cc->sector_size);
-	bio_advance_iter(ctx->bio_out, &ctx->iter_out, cc->sector_size);
+	bio_advance_iter(ctx->bio_in, &ctx->iter_in,
+			 cc->sector_size - src_split);
+	bio_advance_iter(ctx->bio_out, &ctx->iter_out,
+			 cc->sector_size - dst_split);
 
 	return r;
 }
@@ -1982,9 +2008,8 @@ static void kcryptd_crypt_write_io_submit(struct dm_crypt_io *io, int async)
 	/* crypt_convert should have filled the clone bio */
 	BUG_ON(io->ctx.iter_out.bi_size);
 
-	if (likely(!async) &&
-	    (test_bit(DM_CRYPT_NO_OFFLOAD, &cc->flags) ||
-	     test_bit(DM_CRYPT_NO_WRITE_WORKQUEUE, &cc->flags))) {
+	if ((likely(!async) && test_bit(DM_CRYPT_NO_OFFLOAD, &cc->flags)) ||
+	    test_bit(DM_CRYPT_NO_WRITE_WORKQUEUE, &cc->flags)) {
 		dm_submit_bio_remap(io->base_bio, clone);
 		return;
 	}
@@ -2384,7 +2409,7 @@ static unsigned int crypt_authenckey_size(struct crypt_config *cc)
 /*
  * If AEAD is composed like authenc(hmac(sha256),xts(aes)),
  * the key must be for some reason in special format.
- * This function converts cc->key to this special format.
+ * This funcion converts cc->key to this special format.
  */
 static void crypt_copy_authenckey(char *p, const void *key,
 				  unsigned int enckeylen, unsigned int authkeylen)
@@ -2614,7 +2639,7 @@ static int get_key_size(char **key_string)
 static int crypt_set_key(struct crypt_config *cc, char *key)
 {
 	int r = -EINVAL;
-	size_t key_string_len = strlen(key);
+	int key_string_len = strlen(key);
 
 	/* Hyphen (which gives a key_size of zero) means there is no key. */
 	if (!cc->key_size && strcmp(key, "-"))
@@ -2633,9 +2658,6 @@ static int crypt_set_key(struct crypt_config *cc, char *key)
 	kfree_sensitive(cc->key_string);
 	cc->key_string = NULL;
 
-	if (cc->key_size && key_string_len != cc->key_size * 2)
-		goto out;
-
 	/* Decode key from its hex representation. */
 	if (cc->key_size && hex2bin(cc->key, key, cc->key_size) < 0)
 		goto out;
@@ -2646,7 +2668,7 @@ static int crypt_set_key(struct crypt_config *cc, char *key)
 
 out:
 	/* Hex key string not needed after here, so wipe it. */
-	memzero_explicit(key, key_string_len);
+	memset(key, '0', key_string_len);
 
 	return r;
 }
@@ -2665,7 +2687,7 @@ static int crypt_wipe_key(struct crypt_config *cc)
 	kfree_sensitive(cc->key_string);
 	cc->key_string = NULL;
 	r = crypt_setkey(cc);
-	memzero_explicit(cc->key, cc->key_size);
+	memset(&cc->key, 0, cc->key_size * sizeof(u8));
 
 	return r;
 }
@@ -2793,6 +2815,8 @@ static int crypt_ctr_ivmode(struct dm_target *ti, const char *ivmode)
 		cc->iv_gen_ops = &crypt_iv_plain_ops;
 	else if (strcmp(ivmode, "plain64") == 0)
 		cc->iv_gen_ops = &crypt_iv_plain64_ops;
+	else if (strcmp(ivmode, "plain64me") == 0)
+		cc->iv_gen_ops = &crypt_iv_plain64me_ops;
 	else if (strcmp(ivmode, "plain64be") == 0)
 		cc->iv_gen_ops = &crypt_iv_plain64be_ops;
 	else if (strcmp(ivmode, "essiv") == 0)
@@ -2848,11 +2872,8 @@ static int crypt_ctr_auth_cipher(struct crypt_config *cc, char *cipher_api)
 	char *start, *end, *mac_alg = NULL;
 	struct crypto_ahash *mac;
 
-	if (!strstarts(cipher_api, "authenc(")) {
-		if (test_bit(CRYPT_KEY_MAC_SIZE_SET, &cc->cipher_flags))
-			return -EINVAL;
+	if (!strstarts(cipher_api, "authenc("))
 		return 0;
-	}
 
 	start = strchr(cipher_api, '(');
 	end = strchr(cipher_api, ',');
@@ -3094,7 +3115,7 @@ static int crypt_ctr_cipher(struct dm_target *ti, char *cipher_in, char *key)
 
 	/* wipe the kernel key payload copy */
 	if (cc->key_string)
-		memzero_explicit(cc->key, cc->key_size);
+		memset(cc->key, 0, cc->key_size * sizeof(u8));
 
 	return ret;
 }
@@ -3164,9 +3185,9 @@ static int crypt_ctr_optional(struct dm_target *ti, unsigned int argc, char **ar
 			}
 			cc->key_mac_size = val;
 			set_bit(CRYPT_KEY_MAC_SIZE_SET, &cc->cipher_flags);
-		} else if (sscanf(opt_string, "sector_size:%u%c", &cc->sector_size, &dummy) == 1) {
+		} else if (sscanf(opt_string, "sector_size:%hu%c", &cc->sector_size, &dummy) == 1) {
 			if (cc->sector_size < (1 << SECTOR_SHIFT) ||
-			    cc->sector_size > DM_CRYPT_MAX_SECTOR_SIZE ||
+			    cc->sector_size > 4096 ||
 			    (cc->sector_size & (cc->sector_size - 1))) {
 				ti->error = "Invalid feature value for sector_size";
 				return -EINVAL;
@@ -3233,14 +3254,6 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		ti->error = "Cannot allocate encryption context";
 		return -ENOMEM;
 	}
-
-	ret = percpu_counter_init(&cc->n_allocated_pages, 0, GFP_KERNEL);
-	if (ret < 0) {
-		ti->error = "Cannot initialize page counter";
-		kfree_sensitive(cc);
-		return ret;
-	}
-
 	cc->key_size = key_size;
 	cc->sector_size = (1 << SECTOR_SHIFT);
 	cc->sector_shift = 0;
@@ -3251,6 +3264,10 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dm_crypt_clients_n++;
 	crypt_calculate_pages_per_client();
 	spin_unlock(&dm_crypt_clients_lock);
+
+	ret = percpu_counter_init(&cc->n_allocated_pages, 0, GFP_KERNEL);
+	if (ret < 0)
+		goto bad;
 
 	/* Optional parameters need to be read before cipher constructor */
 	if (argc > 5) {
@@ -3590,7 +3607,7 @@ static void crypt_status(struct dm_target *ti, status_type_t type,
 			if (cc->used_tag_size)
 				DMEMIT(" integrity:%u:%s", cc->used_tag_size, cc->cipher_auth);
 			if (cc->sector_size != (1 << SECTOR_SHIFT))
-				DMEMIT(" sector_size:%u", cc->sector_size);
+				DMEMIT(" sector_size:%d", cc->sector_size);
 			if (test_bit(CRYPT_IV_LARGE_SECTORS, &cc->cipher_flags))
 				DMEMIT(" iv_large_sectors");
 			if (test_bit(CRYPT_KEY_MAC_SIZE_SET, &cc->cipher_flags))
@@ -3616,7 +3633,7 @@ static void crypt_status(struct dm_target *ti, status_type_t type,
 			DMEMIT(",integrity_tag_size=%u,cipher_auth=%s",
 			       cc->used_tag_size, cc->cipher_auth);
 		if (cc->sector_size != (1 << SECTOR_SHIFT))
-			DMEMIT(",sector_size=%u", cc->sector_size);
+			DMEMIT(",sector_size=%d", cc->sector_size);
 		if (cc->cipher_string)
 			DMEMIT(",cipher_string=%s", cc->cipher_string);
 
@@ -3677,7 +3694,7 @@ static int crypt_message(struct dm_target *ti, unsigned int argc, char **argv,
 			/* The key size may not be changed. */
 			key_size = get_key_size(&argv[2]);
 			if (key_size < 0 || cc->key_size != key_size) {
-				memzero_explicit(argv[2], strlen(argv[2]));
+				memset(argv[2], '0', strlen(argv[2]));
 				return -EINVAL;
 			}
 
@@ -3688,7 +3705,7 @@ static int crypt_message(struct dm_target *ti, unsigned int argc, char **argv,
 				ret = cc->iv_gen_ops->init(cc);
 			/* wipe the kernel key payload copy */
 			if (cc->key_string)
-				memzero_explicit(cc->key, cc->key_size);
+				memset(cc->key, 0, cc->key_size * sizeof(u8));
 			return ret;
 		}
 		if (argc == 2 && !strcasecmp(argv[1], "wipe"))
@@ -3734,7 +3751,7 @@ static void crypt_io_hints(struct dm_target *ti, struct queue_limits *limits)
 
 static struct target_type crypt_target = {
 	.name   = "crypt",
-	.version = {1, 30, 0},
+	.version = {1, 29, 0},
 	.module = THIS_MODULE,
 	.ctr    = crypt_ctr,
 	.dtr    = crypt_dtr,

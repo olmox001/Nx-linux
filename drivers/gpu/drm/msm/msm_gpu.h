@@ -392,8 +392,8 @@ msm_gpu_sysprof_no_ifpc(struct msm_gpu *gpu)
  * struct msm_context - per-drm_file context
  */
 struct msm_context {
-	/** @ctxlock: synchronizes access to submitqueues list, etc */
-	struct rw_semaphore ctxlock;
+	/** @queuelock: synchronizes access to submitqueues list */
+	rwlock_t queuelock;
 	/** @submitqueues: list of &msm_gpu_submitqueue created by userspace */
 	struct list_head submitqueues;
 	/**

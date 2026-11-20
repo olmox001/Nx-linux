@@ -779,7 +779,8 @@ static int asb100_probe(struct i2c_client *client)
 	int err;
 	struct asb100_data *data;
 
-	data = devm_kzalloc_obj(&client->dev, struct asb100_data);
+	data = devm_kzalloc(&client->dev, sizeof(struct asb100_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

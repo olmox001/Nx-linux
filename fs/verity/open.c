@@ -236,8 +236,9 @@ struct fsverity_info *fsverity_create_info(struct inode *inode,
 			vi->tree_params.tree_pages <<
 			vi->tree_params.log_blocks_per_page;
 
-		vi->hash_block_verified = kvzalloc_objs(unsigned long,
-							BITS_TO_LONGS(num_bits));
+		vi->hash_block_verified = kvcalloc(BITS_TO_LONGS(num_bits),
+						   sizeof(unsigned long),
+						   GFP_KERNEL);
 		if (!vi->hash_block_verified) {
 			err = -ENOMEM;
 			goto fail;
@@ -269,6 +270,12 @@ static bool validate_fsverity_descriptor(struct inode *inode,
 					 const struct fsverity_descriptor *desc,
 					 size_t desc_size)
 {
+	if (desc_size < sizeof(*desc)) {
+		fsverity_err(inode, "Unrecognized descriptor size: %zu bytes",
+			     desc_size);
+		return false;
+	}
+
 	if (desc->version != 1) {
 		fsverity_err(inode, "Unrecognized descriptor version: %u",
 			     desc->version);
@@ -307,37 +314,31 @@ static bool validate_fsverity_descriptor(struct inode *inode,
 int fsverity_get_descriptor(struct inode *inode,
 			    struct fsverity_descriptor **desc_ret)
 {
-	int size, res;
+	int res;
 	struct fsverity_descriptor *desc;
 
-	size = inode->i_sb->s_vop->get_verity_descriptor(inode, NULL, 0);
-	if (size < 0) {
-		fsverity_err(inode, "Error %d getting verity descriptor size",
-			     size);
-		return size;
-	}
-	if (size < sizeof(*desc) || size > FS_VERITY_MAX_DESCRIPTOR_SIZE) {
+	res = inode->i_sb->s_vop->get_verity_descriptor(inode, NULL, 0);
+	if (res < 0) {
 		fsverity_err(inode,
-			     "Verity descriptor has invalid size (%d bytes)",
-			     size);
+			     "Error %d getting verity descriptor size", res);
+		return res;
+	}
+	if (res > FS_VERITY_MAX_DESCRIPTOR_SIZE) {
+		fsverity_err(inode, "Verity descriptor is too large (%d bytes)",
+			     res);
 		return -EMSGSIZE;
 	}
-	desc = kmalloc(size, GFP_KERNEL);
+	desc = kmalloc(res, GFP_KERNEL);
 	if (!desc)
 		return -ENOMEM;
-	res = inode->i_sb->s_vop->get_verity_descriptor(inode, desc, size);
+	res = inode->i_sb->s_vop->get_verity_descriptor(inode, desc, res);
 	if (res < 0) {
 		fsverity_err(inode, "Error %d reading verity descriptor", res);
 		kfree(desc);
 		return res;
 	}
-	if (res != size) {
-		fsverity_err(inode, "Verity descriptor size changed (%d => %d)",
-			     size, res);
-		kfree(desc);
-		return -EINVAL;
-	}
-	if (!validate_fsverity_descriptor(inode, desc, size)) {
+
+	if (!validate_fsverity_descriptor(inode, desc, res)) {
 		kfree(desc);
 		return -EINVAL;
 	}
@@ -346,28 +347,7 @@ int fsverity_get_descriptor(struct inode *inode,
 	return 0;
 }
 
-/**
- * fsverity_ensure_verity_info() - cache verity info if it's not already cached
- * @inode: the inode for which verity info should be cached
- *
- * Ensure this inode has verity info attached to it, it's assumed the inode
- * already has fsverity enabled. Read fsverity descriptor and creates verity
- * based on that.
- *
- * This needs to be called at least once before any of the inode's data
- * can be verified (and thus read at all) or the inode's fsverity digest
- * retrieved.  fsverity_file_open() calls this already, which handles
- * normal file accesses.  If a filesystem does any internal (i.e. not
- * associated with a file descriptor) reads of the file's data or
- * fsverity digest, it must call this explicitly before doing so.
- *
- * In case filesystem supports both fscrypt and fsverity, this should be called
- * after fscrypt's encryption key is set up. Otherwise, the fsverity metadata is
- * still encrypted. See fscrypt_file_open().
- *
- * Return: 0 on success, -errno on failure
- */
-int fsverity_ensure_verity_info(struct inode *inode)
+static int ensure_verity_info(struct inode *inode)
 {
 	struct fsverity_info *vi = fsverity_get_info(inode), *found;
 	struct fsverity_descriptor *desc;
@@ -387,15 +367,6 @@ int fsverity_ensure_verity_info(struct inode *inode)
 	}
 
 	/*
-	 * Now that the signature (if any) has been verified, report it to LSMs.
-	 * Do this before inserting the fsverity_info into the hashtable, so
-	 * that anyone who concurrently retrieves the fsverity_info for the same
-	 * inode is guaranteed to see the LSM's signature status populated.
-	 */
-	fsverity_report_valid_sig(inode, desc->signature,
-				  le32_to_cpu(desc->sig_size));
-
-	/*
 	 * Multiple tasks may race to set the inode's verity info, in which case
 	 * we might find an existing fsverity_info in the hash table.
 	 */
@@ -412,13 +383,12 @@ out_free_desc:
 	kfree(desc);
 	return err;
 }
-EXPORT_SYMBOL_GPL(fsverity_ensure_verity_info);
 
 int __fsverity_file_open(struct inode *inode, struct file *filp)
 {
 	if (filp->f_mode & FMODE_WRITE)
 		return -EPERM;
-	return fsverity_ensure_verity_info(inode);
+	return ensure_verity_info(inode);
 }
 EXPORT_SYMBOL_GPL(__fsverity_file_open);
 

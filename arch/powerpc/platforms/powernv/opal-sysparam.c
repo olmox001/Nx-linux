@@ -185,14 +185,14 @@ void __init opal_sys_param_init(void)
 		goto out_param_buf;
 	}
 
-	id = kzalloc_objs(*id, count);
+	id = kcalloc(count, sizeof(*id), GFP_KERNEL);
 	if (!id) {
 		pr_err("SYSPARAM: Failed to allocate memory to read parameter "
 				"id\n");
 		goto out_param_buf;
 	}
 
-	size = kzalloc_objs(*size, count);
+	size = kcalloc(count, sizeof(*size), GFP_KERNEL);
 	if (!size) {
 		pr_err("SYSPARAM: Failed to allocate memory to read parameter "
 				"size\n");

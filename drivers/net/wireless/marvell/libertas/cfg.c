@@ -1508,8 +1508,7 @@ static int lbs_cfg_set_default_key(struct wiphy *wiphy,
 
 
 static int lbs_cfg_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
-			   int link_id, u8 idx,
-			   enum nl80211_key_type type,
+			   int link_id, u8 idx, bool pairwise,
 			   const u8 *mac_addr, struct key_params *params)
 {
 	struct lbs_private *priv = wiphy_priv(wiphy);
@@ -1570,8 +1569,7 @@ static int lbs_cfg_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
 
 
 static int lbs_cfg_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
-			   int link_id, u8 key_index,
-			   enum nl80211_key_type type,
+			   int link_id, u8 key_index, bool pairwise,
 			   const u8 *mac_addr)
 {
 

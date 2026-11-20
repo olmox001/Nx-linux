@@ -367,7 +367,8 @@ static int ar724x_pci_probe(struct platform_device *pdev)
 	if (id == -1)
 		id = 0;
 
-	apc = devm_kzalloc_obj(&pdev->dev, struct ar724x_pci_controller);
+	apc = devm_kzalloc(&pdev->dev, sizeof(struct ar724x_pci_controller),
+			    GFP_KERNEL);
 	if (!apc)
 		return -ENOMEM;
 

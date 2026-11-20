@@ -14,7 +14,6 @@
 #include <linux/acpi.h>
 #include <linux/bits.h>
 #include <linux/err.h>
-#include <linux/firmware_attributes.h>
 #include <linux/i8042.h>
 #include <linux/init.h>
 #include <linux/input.h>
@@ -29,6 +28,7 @@
 #include <linux/uuid.h>
 #include <linux/workqueue.h>
 #include <acpi/battery.h>
+#include "firmware_attributes_class.h"
 
 #define DRIVER_NAME "samsung-galaxybook"
 
@@ -1003,12 +1003,12 @@ static int galaxybook_fw_attr_init(struct samsung_galaxybook *galaxybook,
 	struct galaxybook_fw_attr *fw_attr;
 	struct attribute **attrs;
 
-	fw_attr = devm_kzalloc_obj(&galaxybook->platform->dev, *fw_attr);
+	fw_attr = devm_kzalloc(&galaxybook->platform->dev, sizeof(*fw_attr), GFP_KERNEL);
 	if (!fw_attr)
 		return -ENOMEM;
 
-	attrs = devm_kzalloc_objs(&galaxybook->platform->dev, *attrs,
-				  NUM_FW_ATTR_ENUM_ATTRS + 1);
+	attrs = devm_kcalloc(&galaxybook->platform->dev, NUM_FW_ATTR_ENUM_ATTRS + 1,
+			     sizeof(*attrs), GFP_KERNEL);
 	if (!attrs)
 		return -ENOMEM;
 
@@ -1375,7 +1375,7 @@ static int galaxybook_probe(struct platform_device *pdev)
 	if (!adev)
 		return -ENODEV;
 
-	galaxybook = devm_kzalloc_obj(&pdev->dev, *galaxybook);
+	galaxybook = devm_kzalloc(&pdev->dev, sizeof(*galaxybook), GFP_KERNEL);
 	if (!galaxybook)
 		return -ENOMEM;
 
@@ -1438,7 +1438,6 @@ static const struct acpi_device_id galaxybook_device_ids[] = {
 	{ "SAM0428" },
 	{ "SAM0429" },
 	{ "SAM0430" },
-	{ "SAMB430" },
 	{}
 };
 MODULE_DEVICE_TABLE(acpi, galaxybook_device_ids);

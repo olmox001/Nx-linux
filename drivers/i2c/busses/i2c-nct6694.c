@@ -149,7 +149,7 @@ static int nct6694_i2c_probe(struct platform_device *pdev)
 	struct nct6694_i2c_data *data;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

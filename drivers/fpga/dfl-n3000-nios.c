@@ -529,7 +529,7 @@ static int n3000_nios_probe(struct dfl_device *ddev)
 	struct n3000_nios *nn;
 	int ret;
 
-	nn = devm_kzalloc_obj(dev, *nn);
+	nn = devm_kzalloc(dev, sizeof(*nn), GFP_KERNEL);
 	if (!nn)
 		return -ENOMEM;
 

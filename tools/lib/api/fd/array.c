@@ -31,8 +31,7 @@ int fdarray__grow(struct fdarray *fda, int nr)
 
 	priv = realloc(fda->priv, psize);
 	if (priv == NULL) {
-		/* this will be freed by fdarray__exit() */
-		fda->entries = entries;
+		free(entries);
 		return -ENOMEM;
 	}
 
@@ -51,7 +50,7 @@ struct fdarray *fdarray__new(int nr_alloc, int nr_autogrow)
 
 	if (fda != NULL) {
 		if (fdarray__grow(fda, nr_alloc)) {
-			fdarray__delete(fda);
+			free(fda);
 			fda = NULL;
 		} else {
 			fda->nr_autogrow = nr_autogrow;
@@ -116,10 +115,6 @@ int fdarray__filter(struct fdarray *fda, short revents,
 		return 0;
 
 	for (fd = 0; fd < fda->nr; ++fd) {
-		/*
-		 * Explicitly bypass nonfilterable items (e.g. control descriptors).
-		 * This ensures their fd, events, and revents remain completely untouched.
-		 */
 		if (fda->priv[fd].flags & fdarray_flag__nonfilterable)
 			continue;
 

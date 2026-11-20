@@ -94,8 +94,6 @@ static int iterate_subleds(struct device *dev, struct pwm_mc_led *priv,
 		}
 
 		subled[priv->mc_cdev.num_colors].color_index = color;
-		fwnode_property_read_u32(fwnode, "default-intensity",
-					 &subled[priv->mc_cdev.num_colors].intensity);
 		priv->mc_cdev.num_colors++;
 	}
 
@@ -124,14 +122,15 @@ static int led_pwm_mc_probe(struct platform_device *pdev)
 	/* count the nodes inside the multi-led node */
 	count = fwnode_get_child_node_count(mcnode);
 
-	priv = devm_kzalloc_flex(&pdev->dev, *priv, leds, count);
+	priv = devm_kzalloc(&pdev->dev, struct_size(priv, leds, count),
+			    GFP_KERNEL);
 	if (!priv) {
 		ret = -ENOMEM;
 		goto release_mcnode;
 	}
 	mutex_init(&priv->lock);
 
-	subled = devm_kzalloc_objs(&pdev->dev, *subled, count);
+	subled = devm_kcalloc(&pdev->dev, count, sizeof(*subled), GFP_KERNEL);
 	if (!subled) {
 		ret = -ENOMEM;
 		goto release_mcnode;

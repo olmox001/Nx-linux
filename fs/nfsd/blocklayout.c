@@ -9,7 +9,6 @@
 
 #include <linux/nfsd/debug.h>
 
-#include "nfserr.h"
 #include "blocklayoutxdr.h"
 #include "pnfs.h"
 #include "filecache.h"

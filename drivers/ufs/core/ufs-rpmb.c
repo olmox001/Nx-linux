@@ -10,7 +10,6 @@
  *	Can Guo <can.guo@oss.qualcomm.com>
  */
 
-#include <crypto/blake2b.h>
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
@@ -22,8 +21,6 @@
 #include <linux/unaligned.h>
 #include "ufshcd-priv.h"
 
-#define UFS_RPMB_ID_LEN			16	/* Match eMMC CID Length */
-#define UFS_RPMB_UA_RETRIES		3	/* Retries for the power-on UNIT ATTENTION */
 #define UFS_RPMB_SEC_PROTOCOL		0xEC	/* JEDEC UFS application */
 #define UFS_RPMB_SEC_PROTOCOL_ID	0x01	/* JEDEC UFS RPMB protocol ID, CDB byte3 */
 
@@ -43,23 +40,6 @@ struct ufs_rpmb_dev {
 static int ufs_sec_submit(struct ufs_hba *hba, u16 spsp, void *buffer, size_t len, bool send)
 {
 	struct scsi_device *sdev = hba->ufs_rpmb_wlun;
-	struct scsi_failure failure_defs[] = {
-		{
-			.sense_key = UNIT_ATTENTION,
-			.sense_code =
-				scsi_sense_code(ASC_POWER_ON_RESET_OR_BUS_DEVICE_RESET_OCCURRED,
-						SCMD_FAILURE_ASCQ_ANY),
-			.allowed = UFS_RPMB_UA_RETRIES,
-			.result = SAM_STAT_CHECK_CONDITION,
-		},
-		{}
-	};
-	struct scsi_failures failures = {
-		.failure_definitions = failure_defs,
-	};
-	const struct scsi_exec_args exec_args = {
-		.failures = &failures,
-	};
 	u8 cdb[12] = { };
 
 	cdb[0] = send ? SECURITY_PROTOCOL_OUT : SECURITY_PROTOCOL_IN;
@@ -68,8 +48,7 @@ static int ufs_sec_submit(struct ufs_hba *hba, u16 spsp, void *buffer, size_t le
 	put_unaligned_be32(len, &cdb[6]);
 
 	return scsi_execute_cmd(sdev, cdb, send ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN,
-				buffer, len, /*timeout=*/30 * HZ, /*retries=*/0,
-				&exec_args);
+				buffer, len, /*timeout=*/30 * HZ, 0, NULL);
 }
 
 /* UFS RPMB route frames implementation */
@@ -94,7 +73,7 @@ static int ufs_rpmb_route_frames(struct device *dev, u8 *req, unsigned int req_l
 	if (req_len < sizeof(*frm_out))
 		return -EINVAL;
 
-	req_type = get_unaligned_be16(&frm_out->req_resp);
+	req_type = be16_to_cpu(frm_out->req_resp);
 
 	switch (req_type) {
 	case RPMB_PROGRAM_KEY:
@@ -132,7 +111,7 @@ static int ufs_rpmb_route_frames(struct device *dev, u8 *req, unsigned int req_l
 		struct rpmb_frame *frm_resp = (struct rpmb_frame *)resp;
 
 		memset(frm_resp, 0, sizeof(*frm_resp));
-		put_unaligned_be16(RPMB_RESULT_READ, &frm_resp->req_resp);
+		frm_resp->req_resp = cpu_to_be16(RPMB_RESULT_READ);
 		ret = ufs_sec_submit(hba, protocol_id, resp, resp_len, true);
 		if (ret) {
 			dev_err(dev, "Result read request failed with ret=%d\n", ret);
@@ -160,7 +139,6 @@ static void ufs_rpmb_device_release(struct device *dev)
 int ufs_rpmb_probe(struct ufs_hba *hba)
 {
 	struct ufs_rpmb_dev *ufs_rpmb, *it, *tmp;
-	u8 dev_id[UFS_RPMB_ID_LEN];
 	struct rpmb_dev *rdev;
 	char *cid = NULL;
 	int region;
@@ -189,7 +167,7 @@ int ufs_rpmb_probe(struct ufs_hba *hba)
 		if (!cap)
 			continue;
 
-		ufs_rpmb = devm_kzalloc_obj(hba->dev, *ufs_rpmb);
+		ufs_rpmb = devm_kzalloc(hba->dev, sizeof(*ufs_rpmb), GFP_KERNEL);
 		if (!ufs_rpmb) {
 			ret = -ENOMEM;
 			goto err_out;
@@ -219,10 +197,8 @@ int ufs_rpmb_probe(struct ufs_hba *hba)
 			goto err_out;
 		}
 
-		blake2b(NULL, 0, cid, strlen(cid), dev_id, UFS_RPMB_ID_LEN);
-
-		descr.dev_id = dev_id;
-		descr.dev_id_len = UFS_RPMB_ID_LEN;
+		descr.dev_id = cid;
+		descr.dev_id_len = strlen(cid);
 		descr.capacity = cap;
 
 		/* Register RPMB device */

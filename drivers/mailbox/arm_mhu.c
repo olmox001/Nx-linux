@@ -118,7 +118,7 @@ static int mhu_probe(struct amba_device *adev, const struct amba_id *id)
 		return -ENODEV;
 
 	/* Allocate memory for device */
-	mhu = devm_kzalloc_obj(dev, *mhu);
+	mhu = devm_kzalloc(dev, sizeof(*mhu), GFP_KERNEL);
 	if (!mhu)
 		return -ENOMEM;
 

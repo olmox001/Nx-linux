@@ -88,7 +88,7 @@ static int bcmbca_nand_probe(struct platform_device *pdev)
 	struct bcmbca_nand_soc *priv;
 	struct brcmnand_soc *soc;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 	soc = &priv->soc;

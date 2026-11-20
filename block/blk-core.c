@@ -40,7 +40,6 @@
 #include <linux/part_stat.h>
 #include <linux/sched/sysctl.h>
 #include <linux/blk-crypto.h>
-#include <linux/error-injection.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
@@ -584,10 +583,11 @@ static inline void bio_check_ro(struct bio *bio)
 	}
 }
 
-int should_fail_bio(struct bio *bio)
+noinline int should_fail_bio(struct bio *bio)
 {
 	if (should_fail_request(bdev_whole(bio->bi_bdev), bio->bi_iter.bi_size))
 		return -EIO;
+	asm(""); /* prevent calls to the function optimized out */
 	return 0;
 }
 ALLOW_ERROR_INJECTION(should_fail_bio, ERRNO);
@@ -898,17 +898,10 @@ void submit_bio_noacct(struct bio *bio)
 		if (!q->limits.max_write_zeroes_sectors)
 			goto not_supported;
 		break;
+	case REQ_OP_ZONE_RESET:
 	case REQ_OP_ZONE_OPEN:
 	case REQ_OP_ZONE_CLOSE:
-	case REQ_OP_ZONE_RESET:
 	case REQ_OP_ZONE_FINISH:
-		/*
-		 * Zone management operations require sequential zones that are
-		 * not offline nor read-only.
-		 */
-		if (!bdev_zone_mgmt_allowed(bdev, bio->bi_iter.bi_sector))
-			goto end_io;
-		break;
 	case REQ_OP_ZONE_RESET_ALL:
 		if (!bdev_is_zoned(bio->bi_bdev))
 			goto not_supported;

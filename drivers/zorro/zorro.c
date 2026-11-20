@@ -103,7 +103,10 @@ static void __init mark_region(unsigned long start, unsigned long end,
 	while (start < end) {
 		u32 chunk = start>>Z2RAM_CHUNKSHIFT;
 
-		assign_bit(chunk, zorro_unused_z2ram, flag);
+		if (flag)
+			set_bit(chunk, zorro_unused_z2ram);
+		else
+			clear_bit(chunk, zorro_unused_z2ram);
 		start += Z2RAM_CHUNKSIZE;
 	}
 }

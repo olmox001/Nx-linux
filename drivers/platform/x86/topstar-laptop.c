@@ -287,13 +287,9 @@ static const struct dmi_system_id topstar_dmi_ids[] = {
 
 static int topstar_acpi_probe(struct platform_device *pdev)
 {
-	struct acpi_device *device;
+	struct acpi_device *device = ACPI_COMPANION(&pdev->dev);
 	struct topstar_laptop *topstar;
 	int err;
-
-	device = ACPI_COMPANION(&pdev->dev);
-	if (!device)
-		return -ENODEV;
 
 	dmi_check_system(topstar_dmi_ids);
 
@@ -303,6 +299,8 @@ static int topstar_acpi_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, topstar);
 
+	strscpy(acpi_device_name(device), "Topstar TPSACPI");
+	strscpy(acpi_device_class(device), TOPSTAR_LAPTOP_CLASS);
 	topstar->device = device;
 
 	err = topstar_acpi_init(topstar);

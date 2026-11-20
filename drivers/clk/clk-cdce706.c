@@ -641,7 +641,7 @@ static int cdce706_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -EIO;
 
-	cdce = devm_kzalloc_obj(&client->dev, *cdce);
+	cdce = devm_kzalloc(&client->dev, sizeof(*cdce), GFP_KERNEL);
 	if (!cdce)
 		return -ENOMEM;
 
@@ -679,7 +679,7 @@ MODULE_DEVICE_TABLE(of, cdce706_dt_match);
 #endif
 
 static const struct i2c_device_id cdce706_id[] = {
-	{ .name = "cdce706" },
+	{ "cdce706" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, cdce706_id);

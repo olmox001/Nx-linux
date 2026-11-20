@@ -513,7 +513,6 @@ static int brcmstb_gpio_irq_setup(struct platform_device *pdev,
 
 out_free_domain:
 	irq_domain_remove(priv->irq_domain);
-	priv->irq_domain = NULL;
 
 	return err;
 }
@@ -639,7 +638,7 @@ static int brcmstb_gpio_probe(struct platform_device *pdev)
 	unsigned long flags = 0;
 	bool need_wakeup_event = false;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, priv);
@@ -691,7 +690,7 @@ static int brcmstb_gpio_probe(struct platform_device *pdev)
 			continue;
 		}
 
-		bank = devm_kzalloc_obj(dev, *bank);
+		bank = devm_kzalloc(dev, sizeof(*bank), GFP_KERNEL);
 		if (!bank) {
 			err = -ENOMEM;
 			goto fail;

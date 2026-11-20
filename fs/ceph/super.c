@@ -177,8 +177,6 @@ enum {
 	Opt_wsync,
 	Opt_pagecache,
 	Opt_sparseread,
-	Opt_nearfull_sync,
-	Opt_lazyio,
 };
 
 enum ceph_recover_session_mode {
@@ -205,10 +203,8 @@ static const struct fs_parameter_spec ceph_mount_parameters[] = {
 	fsparam_flag_no	("fsc",				Opt_fscache), // fsc|nofsc
 	fsparam_string	("fsc",				Opt_fscache), // fsc=...
 	fsparam_flag_no ("ino32",			Opt_ino32),
-	fsparam_flag_no	("lazyio",			Opt_lazyio),
 	fsparam_string	("mds_namespace",		Opt_mds_namespace),
 	fsparam_string	("mon_addr",			Opt_mon_addr),
-	fsparam_flag_no	("nearfull_sync",		Opt_nearfull_sync),
 	fsparam_flag_no ("poolperm",			Opt_poolperm),
 	fsparam_flag_no ("quotadf",			Opt_quotadf),
 	fsparam_u32	("rasize",			Opt_rasize),
@@ -396,18 +392,13 @@ static int ceph_parse_mon_addr(struct fs_parameter *param,
 {
 	struct ceph_parse_opts_ctx *pctx = fc->fs_private;
 	struct ceph_mount_options *fsopt = pctx->opts;
-	int ret;
-
-	ret = ceph_parse_mon_ips(param->string, strlen(param->string),
-				 pctx->copts, fc->log.log, '/');
-	if (ret)
-		return ret;
 
 	kfree(fsopt->mon_addr);
 	fsopt->mon_addr = param->string;
 	param->string = NULL;
 
-	return 0;
+	return ceph_parse_mon_ips(fsopt->mon_addr, strlen(fsopt->mon_addr),
+				  pctx->copts, fc->log.log, '/');
 }
 
 static int ceph_parse_mount_param(struct fs_context *fc,
@@ -602,18 +593,6 @@ static int ceph_parse_mount_param(struct fs_context *fc,
 		else
 			fsopt->flags |= CEPH_MOUNT_OPT_SPARSEREAD;
 		break;
-	case Opt_nearfull_sync:
-		if (result.negated)
-			fsopt->flags &= ~CEPH_MOUNT_OPT_NEARFULL_SYNC;
-		else
-			fsopt->flags |= CEPH_MOUNT_OPT_NEARFULL_SYNC;
-		break;
-	case Opt_lazyio:
-		if (result.negated)
-			fsopt->flags &= ~CEPH_MOUNT_OPT_LAZYIO;
-		else
-			fsopt->flags |= CEPH_MOUNT_OPT_LAZYIO;
-		break;
 	case Opt_test_dummy_encryption:
 #ifdef CONFIG_FS_ENCRYPTION
 		fscrypt_free_dummy_policy(&fsopt->dummy_enc_policy);
@@ -770,10 +749,6 @@ static int ceph_show_options(struct seq_file *m, struct dentry *root)
 		seq_puts(m, ",nopagecache");
 	if (fsopt->flags & CEPH_MOUNT_OPT_SPARSEREAD)
 		seq_puts(m, ",sparseread");
-	if (fsopt->flags & CEPH_MOUNT_OPT_NEARFULL_SYNC)
-		seq_puts(m, ",nearfull_sync");
-	if (fsopt->flags & CEPH_MOUNT_OPT_LAZYIO)
-		seq_puts(m, ",lazyio");
 
 	fscrypt_show_test_dummy_encryption(m, ',', root->d_sb);
 
@@ -1064,7 +1039,7 @@ static const struct super_operations ceph_super_ops = {
 	.alloc_inode	= ceph_alloc_inode,
 	.free_inode	= ceph_free_inode,
 	.write_inode    = ceph_write_inode,
-	.drop_inode	= ceph_drop_inode,
+	.drop_inode	= inode_just_drop,
 	.evict_inode	= ceph_evict_inode,
 	.sync_fs        = ceph_sync_fs,
 	.put_super	= ceph_put_super,
@@ -1383,15 +1358,6 @@ static int ceph_get_tree(struct fs_context *fc)
 	doutc(fsc->client, "root %p inode %p ino %llx.%llx\n", res,
 		    d_inode(res), ceph_vinop(d_inode(res)));
 	fc->root = fsc->sb->s_root;
-
-	/*
-	 * The mount is up.  sget_fc() leaves SB_ACTIVE unset, and, unlike
-	 * filesystems that go through vfs_get_super(), nothing else sets
-	 * it here, so iput_final() would always evict an inode whose
-	 * ->drop_inode() asks to retain it.  Set it like nfs_get_tree()
-	 * does.
-	 */
-	sb->s_flags |= SB_ACTIVE;
 	return 0;
 
 out_splat:
@@ -1443,16 +1409,6 @@ static int ceph_reconfigure_fc(struct fs_context *fc)
 		ceph_set_mount_opt(fsc, SPARSEREAD);
 	else
 		ceph_clear_mount_opt(fsc, SPARSEREAD);
-
-	if (fsopt->flags & CEPH_MOUNT_OPT_NEARFULL_SYNC)
-		ceph_set_mount_opt(fsc, NEARFULL_SYNC);
-	else
-		ceph_clear_mount_opt(fsc, NEARFULL_SYNC);
-
-	if (fsopt->flags & CEPH_MOUNT_OPT_LAZYIO)
-		ceph_set_mount_opt(fsc, LAZYIO);
-	else
-		ceph_clear_mount_opt(fsc, LAZYIO);
 
 	if (strcmp_null(fsc->mount_options->mon_addr, fsopt->mon_addr)) {
 		kfree(fsc->mount_options->mon_addr);

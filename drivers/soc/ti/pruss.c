@@ -325,7 +325,8 @@ static int pruss_clk_mux_setup(struct pruss *pruss, struct clk *clk_mux,
 		goto put_clk_mux_np;
 	}
 
-	parent_names = devm_kzalloc_objs(dev, *parent_names, num_parents);
+	parent_names = devm_kcalloc(dev, sizeof(*parent_names), num_parents,
+				    GFP_KERNEL);
 	if (!parent_names) {
 		ret = -ENOMEM;
 		goto put_clk_mux_np;
@@ -509,7 +510,7 @@ static int pruss_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	pruss = devm_kzalloc_obj(dev, *pruss);
+	pruss = devm_kzalloc(dev, sizeof(*pruss), GFP_KERNEL);
 	if (!pruss)
 		return -ENOMEM;
 

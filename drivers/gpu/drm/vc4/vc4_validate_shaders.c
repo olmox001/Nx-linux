@@ -799,8 +799,8 @@ vc4_validate_shader(struct drm_gem_dma_object *shader_obj)
 	reset_validation_state(&validation_state);
 
 	validation_state.branch_targets =
-		kzalloc_objs(unsigned long,
-			     BITS_TO_LONGS(validation_state.max_ip));
+		kcalloc(BITS_TO_LONGS(validation_state.max_ip),
+			sizeof(unsigned long), GFP_KERNEL);
 	if (!validation_state.branch_targets)
 		goto fail;
 

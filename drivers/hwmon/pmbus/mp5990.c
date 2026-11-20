@@ -161,7 +161,8 @@ static int mp5990_probe(struct i2c_client *client)
 	enum chips chip;
 	int ret;
 
-	data = devm_kzalloc_obj(&client->dev, struct mp5990_data);
+	data = devm_kzalloc(&client->dev, sizeof(struct mp5990_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

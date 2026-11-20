@@ -432,7 +432,7 @@ static int grvga_probe(struct platform_device *dev)
 			retval = -ENOMEM;
 			goto dealloc_cmap;
 		}
-	} else {	/* Allocate framebuffer memory */
+	} else {	/* Allocate frambuffer memory */
 
 		unsigned long page;
 

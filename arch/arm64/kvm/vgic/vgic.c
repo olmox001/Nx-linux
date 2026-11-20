@@ -86,32 +86,19 @@ static struct vgic_irq *vgic_get_lpi(struct kvm *kvm, u32 intid)
  */
 struct vgic_irq *vgic_get_irq(struct kvm *kvm, u32 intid)
 {
-	enum kvm_device_type type = kvm->arch.vgic.vgic_model;
+	/* Non-private IRQs are not yet implemented for GICv5 */
+	if (vgic_is_v5(kvm))
+		return NULL;
 
 	/* SPIs */
-	if (__irq_is_spi(type, intid)) {
-		switch (type) {
-		case KVM_DEV_TYPE_ARM_VGIC_V5:
-			intid = vgic_v5_get_hwirq_id(intid);
-
-			if (intid >= kvm->arch.vgic.nr_spis)
-				return NULL;
-
-			intid = array_index_nospec(intid, kvm->arch.vgic.nr_spis);
-			return &kvm->arch.vgic.spis[intid];
-		default: {
-			u32 max_intid = kvm->arch.vgic.nr_spis + VGIC_NR_PRIVATE_IRQS;
-
-			if (intid < max_intid) {
-				intid -= VGIC_NR_PRIVATE_IRQS;
-				intid = array_index_nospec(intid, kvm->arch.vgic.nr_spis);
-				return &kvm->arch.vgic.spis[intid];
-			}
-		}}
+	if (intid >= VGIC_NR_PRIVATE_IRQS &&
+	    intid < (kvm->arch.vgic.nr_spis + VGIC_NR_PRIVATE_IRQS)) {
+		intid = array_index_nospec(intid, kvm->arch.vgic.nr_spis + VGIC_NR_PRIVATE_IRQS);
+		return &kvm->arch.vgic.spis[intid - VGIC_NR_PRIVATE_IRQS];
 	}
 
 	/* LPIs */
-	if (__irq_is_lpi(type, intid))
+	if (irq_is_lpi(kvm, intid))
 		return vgic_get_lpi(kvm, intid);
 
 	return NULL;
@@ -130,8 +117,6 @@ struct vgic_irq *vgic_get_vcpu_irq(struct kvm_vcpu *vcpu, u32 intid)
 		switch (type) {
 		case KVM_DEV_TYPE_ARM_VGIC_V5:
 			intid = vgic_v5_get_hwirq_id(intid);
-			if (intid >= VGIC_V5_NR_PRIVATE_IRQS)
-				return NULL;
 			intid = array_index_nospec(intid, VGIC_V5_NR_PRIVATE_IRQS);
 			break;
 		default:
@@ -576,9 +561,6 @@ int kvm_vgic_inject_irq(struct kvm *kvm, struct kvm_vcpu *vcpu,
 		irq->line_level = level;
 	else
 		irq->pending_latch = true;
-
-	if (irq->ops && irq->ops->set_pending_state)
-		WARN_ON_ONCE(!irq->ops->set_pending_state(vcpu, irq));
 
 	vgic_queue_irq_unlock(kvm, irq, flags);
 	vgic_put_irq(kvm, irq);
@@ -1071,10 +1053,11 @@ static void vgic_flush_lr_state(struct kvm_vcpu *vcpu)
 static inline bool can_access_vgic_from_kernel(void)
 {
 	/*
-	 * GICv2 is memory-mapped. Every other CPU interface uses EL2 system
-	 * registers, which only VHE can access from the kernel.
+	 * GICv2 can always be accessed from the kernel because it is
+	 * memory-mapped, and VHE systems can access GICv3 EL2 system
+	 * registers.
 	 */
-	return has_vhe() || kvm_vgic_global_state.type == VGIC_V2;
+	return !static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif) || has_vhe();
 }
 
 static inline void vgic_save_state(struct kvm_vcpu *vcpu)
@@ -1166,7 +1149,7 @@ void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu)
 	 *
 	 *   We do that by placing a request to ourselves which will
 	 *   abort the entry procedure and inject the exception at the
-	 *   beginning of the run loop (see kvm_nested_flush_hwstate()).
+	 *   beginning of the run loop.
 	 *
 	 * - Otherwise, do exactly *NOTHING* apart from enabling the virtual
 	 *   CPU interface. The guest state is already loaded, and we can
@@ -1176,9 +1159,15 @@ void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu)
 	 * maintenance interrupt state, as it may fire.
 	 */
 	if (vgic_state_is_nested(vcpu)) {
+		if (kvm_vgic_vcpu_pending_irq(vcpu))
+			kvm_make_request(KVM_REQ_GUEST_HYP_IRQ_PENDING, vcpu);
+
 		vgic_v3_flush_nested(vcpu);
 		return;
 	}
+
+	if (vcpu_has_nv(vcpu))
+		vgic_v3_nested_update_mi(vcpu);
 
 	DEBUG_SPINLOCK_BUG_ON(!irqs_disabled());
 
@@ -1255,12 +1244,8 @@ int kvm_vgic_vcpu_pending_irq(struct kvm_vcpu *vcpu)
 	unsigned long flags;
 	struct vgic_vmcr vmcr;
 
-	if (vgic_is_v5(vcpu->kvm)) {
-		if (READ_ONCE(vcpu->arch.vgic_cpu.vgic_v5.gicv5_vpe.db_fired))
-			return true;
-
+	if (vgic_is_v5(vcpu->kvm))
 		return vgic_v5_has_pending_ppi(vcpu);
-	}
 
 	if (!vcpu->kvm->arch.vgic.enabled)
 		return false;

@@ -121,11 +121,6 @@ DEFINE_EVENT(edma_log_tcd, edma_fill_tcd,
 	TP_ARGS(chan, tcd)
 );
 
-DEFINE_EVENT(edma_log_tcd, edma_link_sg,
-	     TP_PROTO(struct fsl_edma_chan *chan, void *tcd),
-	     TP_ARGS(chan, tcd)
-);
-
 #endif
 
 /* this part must be outside header guard */

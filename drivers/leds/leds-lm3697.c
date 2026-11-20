@@ -305,7 +305,7 @@ static int lm3697_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	led = devm_kzalloc_flex(dev, *led, leds, count);
+	led = devm_kzalloc(dev, struct_size(led, leds, count), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 

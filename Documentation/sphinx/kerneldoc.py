@@ -38,7 +38,6 @@ from docutils.statemachine import ViewList
 from docutils.parsers.rst import directives, Directive
 import sphinx
 from sphinx.util.docutils import switch_source_input
-from sphinx.util.nodes import nested_parse_with_titles
 from sphinx.util import logging
 from pprint import pformat
 
@@ -253,7 +252,7 @@ class KernelDocDirective(Directive):
 
     def do_parse(self, result, node):
         with switch_source_input(self.state, result):
-            nested_parse_with_titles(self.state, result, node)
+            self.state.nested_parse(result, 0, node, match_titles=1)
 
 def setup_kfiles(app):
     global kfiles

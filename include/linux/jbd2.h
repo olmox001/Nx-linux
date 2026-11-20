@@ -510,12 +510,11 @@ struct jbd2_journal_handle
 	int			h_err;
 
 	/* Flags [no locking] */
-	unsigned char	h_sync:		1;
-	unsigned char	h_reserved:	1;
-	unsigned char	h_aborted:	1;
-	unsigned char	h_invalid:	1;
-	unsigned char	h_type;
-	unsigned short	h_line_no;
+	unsigned int	h_sync:		1;
+	unsigned int	h_reserved:	1;
+	unsigned int	h_aborted:	1;
+	unsigned int	h_type:		8;
+	unsigned int	h_line_no:	16;
 
 	unsigned long		h_start_jiffies;
 	unsigned int		h_requested_credits;
@@ -795,7 +794,7 @@ struct journal_s
 	/**
 	 * @j_state_lock: Protect the various scalars in the journal.
 	 */
-	rwlock_t		j_state_lock ____cacheline_aligned_in_smp;
+	rwlock_t		j_state_lock;
 
 	/**
 	 * @j_barrier_count:

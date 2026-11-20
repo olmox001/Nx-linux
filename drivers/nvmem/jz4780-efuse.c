@@ -148,7 +148,7 @@ static int jz4780_efuse_probe(struct platform_device *pdev)
 	void __iomem *regs;
 	int ret;
 
-	efuse = devm_kzalloc_obj(dev, *efuse);
+	efuse = devm_kzalloc(dev, sizeof(*efuse), GFP_KERNEL);
 	if (!efuse)
 		return -ENOMEM;
 

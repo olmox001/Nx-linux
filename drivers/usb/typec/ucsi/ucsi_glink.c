@@ -398,7 +398,7 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 	const struct of_device_id *match;
 	int ret;
 
-	ucsi = devm_kzalloc_obj(dev, *ucsi);
+	ucsi = devm_kzalloc(dev, sizeof(*ucsi), GFP_KERNEL);
 	if (!ucsi)
 		return -ENOMEM;
 

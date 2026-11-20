@@ -433,11 +433,12 @@ nct6683_create_attr_group(struct device *dev,
 	if (count == 0)
 		return ERR_PTR(-EINVAL);
 
-	group = devm_kzalloc_obj(dev, *group);
+	group = devm_kzalloc(dev, sizeof(*group), GFP_KERNEL);
 	if (group == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	attrs = devm_kzalloc_objs(dev, *attrs, repeat * count + 1);
+	attrs = devm_kcalloc(dev, repeat * count + 1, sizeof(*attrs),
+			     GFP_KERNEL);
 	if (attrs == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -919,7 +920,7 @@ static ssize_t
 show_pwm(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct nct6683_data *data = nct6683_update_device(dev);
-	struct sensor_device_attribute *sattr = to_sensor_dev_attr(attr);
+	struct sensor_device_attribute_2 *sattr = to_sensor_dev_attr_2(attr);
 	int index = sattr->index;
 
 	return sprintf(buf, "%d\n", data->pwm[index]);
@@ -929,7 +930,7 @@ static ssize_t
 store_pwm(struct device *dev, struct device_attribute *attr, const char *buf,
 	  size_t count)
 {
-	struct sensor_device_attribute *sattr = to_sensor_dev_attr(attr);
+	struct sensor_device_attribute_2 *sattr = to_sensor_dev_attr_2(attr);
 	struct nct6683_data *data = dev_get_drvdata(dev);
 	int index = sattr->index;
 	unsigned long val;
@@ -1208,7 +1209,7 @@ static int nct6683_probe(struct platform_device *pdev)
 	if (!devm_request_region(dev, res->start, IOREGION_LENGTH, DRVNAME))
 		return -EBUSY;
 
-	data = devm_kzalloc_obj(dev, struct nct6683_data);
+	data = devm_kzalloc(dev, sizeof(struct nct6683_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

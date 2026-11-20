@@ -1039,7 +1039,7 @@ static int __init imxdma_probe(struct platform_device *pdev)
 	int ret, i;
 	int irq, irq_err;
 
-	imxdma = devm_kzalloc_obj(&pdev->dev, *imxdma);
+	imxdma = devm_kzalloc(&pdev->dev, sizeof(*imxdma), GFP_KERNEL);
 	if (!imxdma)
 		return -ENOMEM;
 

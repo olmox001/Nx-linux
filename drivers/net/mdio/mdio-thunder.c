@@ -27,7 +27,7 @@ static int thunder_mdiobus_pci_probe(struct pci_dev *pdev,
 	int err;
 	int i;
 
-	nexus = devm_kzalloc_obj(&pdev->dev, *nexus);
+	nexus = devm_kzalloc(&pdev->dev, sizeof(*nexus), GFP_KERNEL);
 	if (!nexus)
 		return -ENOMEM;
 

@@ -340,8 +340,7 @@ static int gsc_er_complete(struct xe_gt *gt)
 		 * declare the device as wedged.
 		 */
 		xe_gt_err(gt, "GSC ER timed out!\n");
-		xe_device_declare_wedged(gt_to_xe(gt),
-					 DRM_WEDGE_RECOVERY_REBIND | DRM_WEDGE_RECOVERY_BUS_RESET);
+		xe_device_declare_wedged(gt_to_xe(gt));
 		return -EIO;
 	}
 
@@ -479,7 +478,8 @@ int xe_gsc_init_post_hwconfig(struct xe_gsc *gsc)
 
 	q = xe_exec_queue_create(xe, NULL,
 				 BIT(hwe->logical_instance), 1, hwe,
-				 EXEC_QUEUE_FLAG_KERNEL, 0);
+				 EXEC_QUEUE_FLAG_KERNEL |
+				 EXEC_QUEUE_FLAG_PERMANENT, 0);
 	if (IS_ERR(q)) {
 		xe_gt_err(gt, "Failed to create queue for GSC submission\n");
 		return PTR_ERR(q);

@@ -332,17 +332,20 @@ static void rzg2l_du_crtc_atomic_destroy_state(struct drm_crtc *crtc,
 	kfree(to_rzg2l_crtc_state(state));
 }
 
-static struct drm_crtc_state *rzg2l_du_crtc_create_state(struct drm_crtc *crtc)
+static void rzg2l_du_crtc_reset(struct drm_crtc *crtc)
 {
 	struct rzg2l_du_crtc_state *state;
 
+	if (crtc->state) {
+		rzg2l_du_crtc_atomic_destroy_state(crtc, crtc->state);
+		crtc->state = NULL;
+	}
+
 	state = kzalloc_obj(*state);
 	if (!state)
-		return ERR_PTR(-ENOMEM);
+		return;
 
-	__drm_atomic_helper_crtc_state_init(&state->state, crtc);
-
-	return &state->state;
+	__drm_atomic_helper_crtc_reset(crtc, &state->state);
 }
 
 static int rzg2l_du_crtc_enable_vblank(struct drm_crtc *crtc)
@@ -362,7 +365,7 @@ static void rzg2l_du_crtc_disable_vblank(struct drm_crtc *crtc)
 }
 
 static const struct drm_crtc_funcs crtc_funcs_rz = {
-	.atomic_create_state = rzg2l_du_crtc_create_state,
+	.reset = rzg2l_du_crtc_reset,
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
 	.atomic_duplicate_state = rzg2l_du_crtc_atomic_duplicate_state,

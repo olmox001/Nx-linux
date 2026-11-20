@@ -1,5 +1,5 @@
 #!/bin/bash
-# perf ftrace tests (no_mlock)
+# perf ftrace tests
 # SPDX-License-Identifier: GPL-2.0
 
 set -e

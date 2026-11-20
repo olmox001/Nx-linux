@@ -148,10 +148,6 @@ static inline int userfaultfd_unmap_prep(struct vm_area_struct *vma,
 	return 0;
 }
 
-static inline void userfaultfd_unmap_abort(struct list_head *uf)
-{
-}
-
 static inline void mmap_write_downgrade(struct mm_struct *mm)
 {
 }
@@ -197,7 +193,7 @@ static inline bool mapping_can_writeback(struct address_space *mapping)
 	return true;
 }
 
-static inline bool vma_is_hugetlb(struct vm_area_struct *vma)
+static inline bool is_vm_hugetlb_page(struct vm_area_struct *vma)
 {
 	return false;
 }
@@ -261,25 +257,13 @@ static inline void vm_acct_memory(long pages)
 {
 }
 
-static inline void mapping_rmap_tree_insert(struct vm_area_struct *vma,
-					    struct address_space *mapping)
+static inline void vma_interval_tree_insert(struct vm_area_struct *vma,
+					    struct rb_root_cached *rb)
 {
 }
 
-static inline void mapping_rmap_tree_remove(struct vm_area_struct *vma,
-					    struct address_space *mapping)
-{
-}
-
-static inline void mapping_rmap_tree_pre_update(struct vm_area_struct *vma,
-						struct address_space *mapping,
-						bool pgoff_unchanged)
-{
-}
-
-static inline void mapping_rmap_tree_post_update(struct vm_area_struct *vma,
-						 struct address_space *mapping,
-						 bool pgoff_unchanged)
+static inline void vma_interval_tree_remove(struct vm_area_struct *vma,
+					    struct rb_root_cached *rb)
 {
 }
 
@@ -287,23 +271,13 @@ static inline void flush_dcache_mmap_unlock(struct address_space *mapping)
 {
 }
 
-static inline void anon_rmap_tree_insert(struct anon_vma_chain *avc,
-					 struct anon_vma *anon_vma)
+static inline void anon_vma_interval_tree_insert(struct anon_vma_chain *avc,
+						 struct rb_root_cached *rb)
 {
 }
 
-static inline void anon_rmap_tree_remove(struct anon_vma_chain *avc,
-					 struct anon_vma *anon_vma)
-{
-}
-
-static inline void anon_rmap_tree_pre_update_vma(struct vm_area_struct *vma,
-						 bool anon_pgoff_unchanged)
-{
-}
-
-static inline void anon_rmap_tree_post_update_vma(struct vm_area_struct *vma,
-						  bool anon_pgoff_unchanged)
+static inline void anon_vma_interval_tree_remove(struct anon_vma_chain *avc,
+						 struct rb_root_cached *rb)
 {
 }
 
@@ -324,11 +298,7 @@ static inline void anon_vma_lock_write(struct anon_vma *anon_vma)
 {
 }
 
-static inline void vma_assert_write_locked(const struct vm_area_struct *vma)
-{
-}
-
-static inline void vma_assert_stabilised(const struct vm_area_struct *vma)
+static inline void vma_assert_write_locked(struct vm_area_struct *vma)
 {
 }
 
@@ -359,10 +329,6 @@ static inline void vma_close(struct vm_area_struct *vma)
 {
 }
 
-static inline void zap_vma(struct vm_area_struct *vma)
-{
-}
-
 static inline int mmap_file(struct file *file, struct vm_area_struct *vma)
 {
 	return 0;
@@ -388,11 +354,6 @@ static inline bool is_mergeable_vm_userfaultfd_ctx(struct vm_area_struct *vma,
 					struct vm_userfaultfd_ctx vm_ctx)
 {
 	return true;
-}
-
-static inline bool vma_has_uffd_without_event_remap(struct vm_area_struct *vma)
-{
-	return false;
 }
 
 static inline bool anon_vma_name_eq(struct anon_vma_name *anon_name1,
@@ -468,7 +429,31 @@ static inline void vma_adjust_trans_huge(struct vm_area_struct *vma,
 
 static inline void hugetlb_split(struct vm_area_struct *, unsigned long) {}
 
+static inline bool vma_is_rsvd_va(const struct vm_area_struct *vma)
+{
+	return false;
+}
+
 static inline bool vma_supports_mlock(const struct vm_area_struct *vma)
 {
 	return false;
+}
+
+static inline bool vma_supports_exec_keep(struct vm_area_struct *vma)
+{
+	return false;
+}
+
+#define NULL_VM_UFFD_CTX ((struct vm_userfaultfd_ctx) {})
+
+static inline int anon_vma_fork(struct vm_area_struct *vma,
+				struct vm_area_struct *pvma)
+{
+	return 0;
+}
+
+static inline int copy_page_range_exec(struct vm_area_struct *dst_vma,
+				       struct vm_area_struct *src_vma)
+{
+	return 0;
 }

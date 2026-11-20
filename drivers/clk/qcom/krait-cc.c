@@ -92,7 +92,7 @@ krait_add_div(struct device *dev, int id, const char *s, unsigned int offset)
 	char *parent_name;
 	int cpu, ret;
 
-	div = devm_kzalloc_obj(dev, *div);
+	div = devm_kzalloc(dev, sizeof(*div), GFP_KERNEL);
 	if (!div)
 		return ERR_PTR(-ENOMEM);
 
@@ -158,7 +158,7 @@ krait_add_sec_mux(struct device *dev, int id, const char *s,
 	struct clk_hw *clk;
 	char *parent_name;
 
-	mux = devm_kzalloc_obj(dev, *mux);
+	mux = devm_kzalloc(dev, sizeof(*mux), GFP_KERNEL);
 	if (!mux)
 		return ERR_PTR(-ENOMEM);
 
@@ -239,7 +239,7 @@ krait_add_pri_mux(struct device *dev, struct clk_hw *hfpll_div, struct clk_hw *s
 	struct clk_hw *clk;
 	char *hfpll_name;
 
-	mux = devm_kzalloc_obj(dev, *mux);
+	mux = devm_kzalloc(dev, sizeof(*mux), GFP_KERNEL);
 	if (!mux)
 		return ERR_PTR(-ENOMEM);
 
@@ -365,7 +365,7 @@ static int krait_cc_probe(struct platform_device *pdev)
 	}
 
 	/* Krait configurations have at most 4 CPUs and one L2 */
-	clks = devm_kzalloc_objs(dev, *clks, clks_max);
+	clks = devm_kcalloc(dev, clks_max, sizeof(*clks), GFP_KERNEL);
 	if (!clks)
 		return -ENOMEM;
 

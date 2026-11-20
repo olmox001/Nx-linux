@@ -44,7 +44,7 @@ static int ecc_register(struct platform_device *pdev)
 {
 	struct sifive_edac_priv *p;
 
-	p = devm_kzalloc_obj(&pdev->dev, *p);
+	p = devm_kzalloc(&pdev->dev, sizeof(*p), GFP_KERNEL);
 	if (!p)
 		return -ENOMEM;
 

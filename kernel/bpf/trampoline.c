@@ -475,11 +475,18 @@ static int register_fentry(struct bpf_trampoline *tr, struct bpf_tramp_image *im
 			   void *data __maybe_unused)
 {
 	void *new_addr = im->image;
+	void *ip = tr->func.addr;
+	unsigned long faddr;
 	int ret;
 
-	if (tr->func.ftrace_managed) {
+	faddr = ftrace_location((unsigned long)ip);
+	if (faddr) {
 		if (!tr->fops)
 			return -ENOTSUPP;
+		tr->func.ftrace_managed = true;
+	}
+
+	if (tr->func.ftrace_managed) {
 		ret = direct_ops_add(tr, new_addr);
 	} else {
 		ret = bpf_trampoline_update_fentry(tr, 0, NULL, new_addr);
@@ -521,36 +528,6 @@ bpf_trampoline_get_progs(const struct bpf_trampoline *tr, int *total, bool *ip_a
 		}
 	}
 	return tnodes;
-}
-
-/*
- * The arena base against which save_args() converts the arguments marked
- * with BTF_FMODEL_ARENA_ARG. Only the struct_ops indirect trampoline
- * converts: it dispatches to a single prog whose arena is known at
- * generation time. Return 0 when there is nothing to convert.
- */
-u64 bpf_tramp_arena_base(const struct btf_func_model *m,
-			 struct bpf_tramp_nodes *tnodes, u32 flags)
-{
-	const struct bpf_prog *prog;
-	int i;
-
-	if (!(flags & BPF_TRAMP_F_INDIRECT) ||
-	    tnodes[BPF_TRAMP_FENTRY].nr_nodes != 1)
-		return 0;
-
-	for (i = 0; i < m->nr_args; i++)
-		if (m->arg_flags[i] & BTF_FMODEL_ARENA_ARG)
-			break;
-	if (i == m->nr_args)
-		return 0;
-
-	/* Verification rejects an arena argument without an arena. */
-	prog = tnodes[BPF_TRAMP_FENTRY].nodes[0]->link->prog;
-	if (WARN_ON_ONCE(!prog->aux->arena))
-		return 0;
-
-	return bpf_arena_get_kern_vm_start(prog->aux->arena);
 }
 
 static void bpf_tramp_image_free(struct bpf_tramp_image *im)
@@ -852,7 +829,7 @@ static enum bpf_tramp_prog_type bpf_attach_type_to_tramp(struct bpf_prog *prog)
 	}
 }
 
-static int bpf_freplace_link_tgt_prog(struct bpf_prog *tgt_prog)
+static int bpf_freplace_check_tgt_prog(struct bpf_prog *tgt_prog)
 {
 	struct bpf_prog_aux *aux = tgt_prog->aux;
 
@@ -866,7 +843,7 @@ static int bpf_freplace_link_tgt_prog(struct bpf_prog *tgt_prog)
 		 */
 		return -EBUSY;
 
-	aux->freplace_link_cnt++;
+	aux->is_extended = true;
 	return 0;
 }
 
@@ -996,13 +973,6 @@ static int __bpf_trampoline_link_prog(struct bpf_tramp_node *node,
 	int cnt = 0, i;
 
 	kind = bpf_attach_type_to_tramp(node->link->prog);
-	/*
-	 * Arena ctx args are converted only by struct_ops indirect
-	 * trampolines. They must never be attached to a generic trampoline.
-	 */
-	if (WARN_ON_ONCE(bpf_prog_has_arena_ctx_arg(node->link->prog)))
-		return -ENOTSUPP;
-
 	if (tr->extension_prog)
 		/* cannot attach fentry/fexit if extension prog is attached.
 		 * cannot overwrite extension prog either.
@@ -1016,20 +986,13 @@ static int __bpf_trampoline_link_prog(struct bpf_tramp_node *node,
 		/* Cannot attach extension if fentry/fexit are in use. */
 		if (cnt)
 			return -EBUSY;
-		err = bpf_freplace_link_tgt_prog(tgt_prog);
+		err = bpf_freplace_check_tgt_prog(tgt_prog);
 		if (err)
 			return err;
-		err = bpf_arch_text_poke(tr->func.addr, BPF_MOD_NOP,
-					 BPF_MOD_JUMP, NULL,
-					 node->link->prog->bpf_func);
-		if (err) {
-			/* Undo the claim from bpf_freplace_link_tgt_prog(). */
-			guard(mutex)(&tgt_prog->aux->ext_mutex);
-			tgt_prog->aux->freplace_link_cnt--;
-			return err;
-		}
 		tr->extension_prog = node->link->prog;
-		return 0;
+		return bpf_arch_text_poke(tr->func.addr, BPF_MOD_NOP,
+					  BPF_MOD_JUMP, NULL,
+					  node->link->prog->bpf_func);
 	}
 	err = bpf_trampoline_add_prog(tr, node, cnt);
 	if (err)
@@ -1069,7 +1032,7 @@ static int __bpf_trampoline_unlink_prog(struct bpf_tramp_node *node,
 					 tr->extension_prog->bpf_func, NULL);
 		tr->extension_prog = NULL;
 		guard(mutex)(&tgt_prog->aux->ext_mutex);
-		tgt_prog->aux->freplace_link_cnt--;
+		tgt_prog->aux->is_extended = false;
 		return err;
 	}
 	bpf_trampoline_remove_prog(tr, node);
@@ -1094,15 +1057,12 @@ static void bpf_shim_tramp_link_release(struct bpf_link *link)
 {
 	struct bpf_shim_tramp_link *shim_link =
 		container_of(link, struct bpf_shim_tramp_link, link.link);
-	int err;
 
 	/* paired with 'shim_link->trampoline = tr' in bpf_trampoline_link_cgroup_shim */
 	if (!shim_link->trampoline)
 		return;
 
-	err = bpf_trampoline_unlink_prog(&shim_link->link.node, shim_link->trampoline, NULL);
-	WARN_ONCE(err, "bpf_trampoline_unlink_prog failed: %d\n", err);
-
+	WARN_ON_ONCE(bpf_trampoline_unlink_prog(&shim_link->link.node, shim_link->trampoline, NULL));
 	bpf_trampoline_put(shim_link->trampoline);
 }
 
@@ -1279,7 +1239,6 @@ struct bpf_trampoline *bpf_trampoline_get(u64 key,
 
 	memcpy(&tr->func.model, &tgt_info->fmodel, sizeof(tgt_info->fmodel));
 	tr->func.addr = (void *)tgt_info->tgt_addr;
-	tr->func.ftrace_managed = tr->ip != 0;
 out:
 	trampoline_unlock(tr);
 	return tr;
@@ -1629,20 +1588,13 @@ static void ftrace_hash_add(struct ftrace_hash *hash, struct ftrace_func_entry *
 static int register_fentry_multi(struct bpf_trampoline *tr, struct bpf_tramp_image *im, void *ptr)
 {
 	unsigned long addr = (unsigned long) im->image;
+	unsigned long ip = ftrace_location(tr->ip);
 	struct bpf_tracing_multi_data *data = ptr;
-	unsigned long ip = tr->ip;
-
-	/*
-	 * Different BTF ids get different trampolines, but they can still
-	 * resolve to the same address (aliases, functions of the same name).
-	 * There's only one call site to attach to.
-	 */
-	if (ftrace_lookup_ip(data->reg, ip))
-		return -EINVAL;
 
 	if (bpf_trampoline_use_jmp(tr->flags))
 		addr = ftrace_jmp_set(addr);
 
+	tr->func.ftrace_managed = true;
 	ftrace_hash_add(data->reg, data->entry, ip, addr);
 	tr->cur_image = im;
 	return 0;
@@ -1651,12 +1603,13 @@ static int register_fentry_multi(struct bpf_trampoline *tr, struct bpf_tramp_ima
 static int unregister_fentry_multi(struct bpf_trampoline *tr, u32 orig_flags, void *ptr)
 {
 	unsigned long addr = (unsigned long) tr->cur_image->image;
+	unsigned long ip = ftrace_location(tr->ip);
 	struct bpf_tracing_multi_data *data = ptr;
 
 	if (bpf_trampoline_use_jmp(tr->flags))
 		addr = ftrace_jmp_set(addr);
 
-	ftrace_hash_add(data->unreg, data->entry, tr->ip, addr);
+	ftrace_hash_add(data->unreg, data->entry, ip, addr);
 	tr->cur_image = NULL;
 	return 0;
 }
@@ -1665,12 +1618,13 @@ static int modify_fentry_multi(struct bpf_trampoline *tr, u32 orig_flags, struct
 			       bool lock_direct_mutex, void *ptr)
 {
 	unsigned long addr = (unsigned long) im->image;
+	unsigned long ip = ftrace_location(tr->ip);
 	struct bpf_tracing_multi_data *data = ptr;
 
 	if (bpf_trampoline_use_jmp(tr->flags))
 		addr = ftrace_jmp_set(addr);
 
-	ftrace_hash_add(data->modify, data->entry, tr->ip, addr);
+	ftrace_hash_add(data->modify, data->entry, ip, addr);
 	tr->cur_image = im;
 	return 0;
 }
@@ -1823,21 +1777,19 @@ rollback_put:
 	return err;
 }
 
-void bpf_trampoline_multi_detach(struct bpf_prog *prog,
-				 struct bpf_tracing_multi_link *link)
+int bpf_trampoline_multi_detach(struct bpf_prog *prog, struct bpf_tracing_multi_link *link)
 {
 	struct bpf_tracing_multi_data *data = &link->data;
 	struct bpf_tracing_multi_node *mnode;
-	int i, err;
+	int i;
 
 	trampoline_lock_all();
 
 	for_each_mnode(mnode, link) {
 		data->entry = &mnode->entry;
 		bpf_trampoline_multi_attach_init(mnode->trampoline);
-		err = __bpf_trampoline_unlink_prog(&mnode->node, mnode->trampoline, NULL,
-					&trampoline_multi_ops, data);
-		WARN_ONCE(err, "__bpf_trampoline_unlink_prog failed: %d\n", err);
+		WARN_ON_ONCE(__bpf_trampoline_unlink_prog(&mnode->node, mnode->trampoline,
+					NULL, &trampoline_multi_ops, data));
 	}
 
 	if (ftrace_hash_count(data->unreg))
@@ -1854,6 +1806,7 @@ void bpf_trampoline_multi_detach(struct bpf_prog *prog,
 		bpf_trampoline_put(mnode->trampoline);
 
 	clear_tracing_multi_data(data);
+	return 0;
 }
 
 #undef for_each_mnode_cnt

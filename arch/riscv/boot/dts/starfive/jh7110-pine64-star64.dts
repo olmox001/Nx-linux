@@ -95,11 +95,7 @@
 	motorcomm,tx-clk-100-inverted;
 };
 
-&pwm0 {
-	status = "okay";
-};
-
-&pwm1 {
+&pwm {
 	status = "okay";
 };
 

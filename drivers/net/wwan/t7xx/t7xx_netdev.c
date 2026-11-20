@@ -493,7 +493,7 @@ int t7xx_ccmni_init(struct t7xx_pci_dev *t7xx_dev)
 	struct t7xx_ccmni_ctrl *ctlb;
 	int ret;
 
-	ctlb = devm_kzalloc_obj(dev, *ctlb);
+	ctlb = devm_kzalloc(dev, sizeof(*ctlb), GFP_KERNEL);
 	if (!ctlb)
 		return -ENOMEM;
 

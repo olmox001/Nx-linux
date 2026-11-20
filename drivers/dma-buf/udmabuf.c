@@ -20,9 +20,9 @@ static int list_limit = 1024;
 module_param(list_limit, int, 0644);
 MODULE_PARM_DESC(list_limit, "udmabuf_create_list->count limit. Default is 1024.");
 
-static int size_limit_mb = INT_MAX;
+static int size_limit_mb = 64;
 module_param(size_limit_mb, int, 0644);
-MODULE_PARM_DESC(size_limit_mb, "Max size of a dmabuf, in megabytes. Default is INT_MAX.");
+MODULE_PARM_DESC(size_limit_mb, "Max size of a dmabuf, in megabytes. Default is 64.");
 
 struct udmabuf {
 	pgoff_t pagecount;
@@ -359,7 +359,7 @@ static long udmabuf_create(struct miscdevice *device,
 	long ret = -EINVAL;
 	u32 i, flags;
 
-	ubuf = kzalloc_obj(*ubuf);
+	ubuf = kzalloc(sizeof(*ubuf), GFP_KERNEL);
 	if (!ubuf)
 		return -ENOMEM;
 
@@ -387,7 +387,7 @@ static long udmabuf_create(struct miscdevice *device,
 	if (ret)
 		goto err;
 
-	folios = kvmalloc_objs(*folios, max_nr_folios);
+	folios = kvmalloc_array(max_nr_folios, sizeof(*folios), GFP_KERNEL);
 	if (!folios) {
 		ret = -ENOMEM;
 		goto err;

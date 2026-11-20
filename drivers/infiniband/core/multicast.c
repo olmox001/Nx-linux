@@ -189,10 +189,7 @@ static void release_group(struct mcast_group *group)
 
 	spin_lock_irqsave(&port->lock, flags);
 	if (atomic_dec_and_test(&group->refcount)) {
-
-		if (!RB_EMPTY_NODE(&group->node))
-			rb_erase(&group->node, &port->table);
-
+		rb_erase(&group->node, &port->table);
 		spin_unlock_irqrestore(&port->lock, flags);
 		kfree(group);
 		deref_port(port);
@@ -536,8 +533,6 @@ static void join_handler(int status, struct ib_sa_mcmember_rec *rec,
 		group->rec = *rec;
 		if (mgids_changed) {
 			rb_erase(&group->node, &group->port->table);
-
-			RB_CLEAR_NODE(&group->node);
 			is_mgid0 = !memcmp(&mgid0, &group->rec.mgid,
 					   sizeof(mgid0));
 			mcast_insert(group->port, group, is_mgid0);

@@ -47,9 +47,6 @@ struct ism_vfio_pci_core_device {
 	struct kmem_cache *store_block_cache;
 };
 
-VFIO_PCI_CORE_DEFINE_CALLBACKS(ism_vfio, struct ism_vfio_pci_core_device,
-			       core_device)
-
 static int ism_vfio_pci_open_device(struct vfio_device *core_vdev)
 {
 	struct ism_vfio_pci_core_device *ivpcd;
@@ -366,7 +363,7 @@ static int ism_vfio_pci_probe(struct pci_dev *pdev,
 	if (IS_ERR(ivpcd))
 		return PTR_ERR(ivpcd);
 
-	dev_set_drvdata(&pdev->dev, ivpcd);
+	dev_set_drvdata(&pdev->dev, &ivpcd->core_device);
 
 	ret = vfio_pci_core_register_device(&ivpcd->core_device);
 	if (ret)
@@ -377,7 +374,12 @@ static int ism_vfio_pci_probe(struct pci_dev *pdev,
 
 static void ism_vfio_pci_remove(struct pci_dev *pdev)
 {
-	struct ism_vfio_pci_core_device *ivpcd = pci_get_drvdata(pdev);
+	struct vfio_pci_core_device *core_device;
+	struct ism_vfio_pci_core_device *ivpcd;
+
+	core_device = dev_get_drvdata(&pdev->dev);
+	ivpcd = container_of(core_device, struct ism_vfio_pci_core_device,
+			     core_device);
 
 	vfio_pci_core_unregister_device(&ivpcd->core_device);
 	vfio_put_device(&ivpcd->core_device.vdev);
@@ -390,17 +392,12 @@ static const struct pci_device_id ism_device_table[] = {
 };
 MODULE_DEVICE_TABLE(pci, ism_device_table);
 
-static const struct pci_error_handlers ism_vfio_err_handlers = {
-	.error_detected = ism_vfio_aer_err_detected,
-};
-
 static struct pci_driver ism_vfio_pci_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = ism_device_table,
 	.probe = ism_vfio_pci_probe,
 	.remove = ism_vfio_pci_remove,
-	.driver	= { .pm = pm_ptr(&ism_vfio_pm_ops) },
-	.err_handler = &ism_vfio_err_handlers,
+	.err_handler = &vfio_pci_core_err_handlers,
 	.driver_managed_dma = true,
 };
 

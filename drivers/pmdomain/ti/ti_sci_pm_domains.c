@@ -228,7 +228,7 @@ static int ti_sci_pm_domain_probe(struct platform_device *pdev)
 	u32 max_id = 0;
 	int index;
 
-	pd_provider = devm_kzalloc_obj(dev, *pd_provider);
+	pd_provider = devm_kzalloc(dev, sizeof(*pd_provider), GFP_KERNEL);
 	if (!pd_provider)
 		return -ENOMEM;
 
@@ -261,7 +261,7 @@ static int ti_sci_pm_domain_probe(struct platform_device *pdev)
 					}
 				}
 
-				pd = devm_kzalloc_obj(dev, *pd);
+				pd = devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
 				if (!pd)
 					return -ENOMEM;
 
@@ -299,7 +299,9 @@ static int ti_sci_pm_domain_probe(struct platform_device *pdev)
 	}
 
 	pd_provider->data.domains =
-		devm_kzalloc_objs(dev, *pd_provider->data.domains, max_id + 1);
+		devm_kcalloc(dev, max_id + 1,
+			     sizeof(*pd_provider->data.domains),
+			     GFP_KERNEL);
 	if (!pd_provider->data.domains)
 		return -ENOMEM;
 

@@ -600,8 +600,7 @@ static int dmm32at_attach(struct comedi_device *dev,
 		return ret;
 	}
 
-	/* only ISA interrupts are valid on this board */
-	if (it->options[1] >= 1 && it->options[1] <= 15) {
+	if (it->options[1]) {
 		ret = request_irq(it->options[1], dmm32at_isr, 0,
 				  dev->board_name, dev);
 		if (ret == 0)

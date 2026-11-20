@@ -51,7 +51,6 @@ static inline void iomap_iter_done(struct iomap_iter *iter)
  * @iter: iteration structure
  * @iomap: the mapping that was just processed
  * @srcmap: the source mapping that was just processed
- * @ret: return value from the previous mapping's ->end() callback
  *
  * Helper normally called via iomap_iter_next(). Called after the previous
  * mapping has been finished to determine whether there is more of the file
@@ -101,7 +100,7 @@ EXPORT_SYMBOL_GPL(iomap_iter_continue);
 /**
  * iomap_iter - iterate over ranges in a file
  * @iter: iteration structure
- * @next: the iomap iteration function for the filesystem
+ * @ops: iomap ops provided by the filesystem
  *
  * Iterate over filesystem-provided space mappings for the provided file range.
  *
@@ -113,13 +112,18 @@ EXPORT_SYMBOL_GPL(iomap_iter_continue);
  * of the loop body:  leave @iter.status unchanged, or set it to a negative
  * errno.
  */
-int iomap_iter(struct iomap_iter *iter, iomap_iter_next_fn next)
+int iomap_iter(struct iomap_iter *iter, const struct iomap_ops *ops)
 {
 	int ret;
 
-	trace_iomap_iter(iter, next, _RET_IP_);
+	trace_iomap_iter(iter, ops, _RET_IP_);
 
-	ret = next(iter, &iter->iomap, &iter->srcmap);
+	if (ops->iomap_next)
+		ret = ops->iomap_next(iter, &iter->iomap, &iter->srcmap);
+	else
+		ret = iomap_iter_next(iter, &iter->iomap, &iter->srcmap,
+				ops->iomap_begin, ops->iomap_end);
+
 	iter->status = 0;
 	if (ret > 0)
 		iomap_iter_done(iter);

@@ -43,21 +43,19 @@ struct zone *next_zone(struct zone *zone)
 	return zone;
 }
 
-/* A NULL zone terminates the zonelist, so it ends the search. */
-static inline bool zone_in_nodemask(const struct zone *zone,
-				    const nodemask_t *nodes)
+static inline int zref_in_nodemask(struct zoneref *zref, nodemask_t *nodes)
 {
 #ifdef CONFIG_NUMA
-	return !zone || node_isset(zone_to_nid(zone), *nodes);
+	return node_isset(zonelist_node_idx(zref), *nodes);
 #else
-	return true;
+	return 1;
 #endif /* CONFIG_NUMA */
 }
 
 /* Returns the next zone at or below highest_zoneidx in a zonelist */
 struct zoneref *__next_zones_zonelist(struct zoneref *z,
 					enum zone_type highest_zoneidx,
-					const nodemask_t *nodes)
+					nodemask_t *nodes)
 {
 	/*
 	 * Find the next suitable zone to use for the allocation.
@@ -68,7 +66,7 @@ struct zoneref *__next_zones_zonelist(struct zoneref *z,
 			z++;
 	else
 		while (zonelist_zone_idx(z) > highest_zoneidx ||
-		       !zone_in_nodemask(zonelist_zone(z), nodes))
+				(zonelist_zone(z) && !zref_in_nodemask(z, nodes)))
 			z++;
 
 	return z;
@@ -80,7 +78,6 @@ void lruvec_init(struct lruvec *lruvec)
 
 	memset(lruvec, 0, sizeof(struct lruvec));
 	spin_lock_init(&lruvec->lru_lock);
-	spin_lock_init(&lruvec->cost_lock);
 	zswap_lruvec_state_init(lruvec);
 
 	for_each_lru(lru)

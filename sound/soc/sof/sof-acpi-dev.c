@@ -62,7 +62,7 @@ int sof_acpi_probe(struct platform_device *pdev, const struct sof_dev_desc *desc
 
 	dev_dbg(dev, "ACPI DSP detected");
 
-	sof_pdata = devm_kzalloc_obj(dev, *sof_pdata);
+	sof_pdata = devm_kzalloc(dev, sizeof(*sof_pdata), GFP_KERNEL);
 	if (!sof_pdata)
 		return -ENOMEM;
 

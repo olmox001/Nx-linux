@@ -34,11 +34,11 @@ static void fuse_add_dirent_to_cache(struct file *file,
 	struct fuse_inode *fi = get_fuse_inode(file_inode(file));
 	size_t reclen = FUSE_DIRENT_SIZE(dirent);
 	pgoff_t index;
-	struct folio *folio;
+	struct page *page;
 	loff_t size;
 	u64 version;
 	unsigned int offset;
-	size_t folio_offset;
+	void *addr;
 
 	/* Dirent doesn't fit in readdir cache page?  Skip caching. */
 	if (reclen > PAGE_SIZE)
@@ -64,11 +64,13 @@ static void fuse_add_dirent_to_cache(struct file *file,
 	}
 	spin_unlock(&fi->rdc.lock);
 
-	if (offset)
-		folio = filemap_lock_folio(file->f_mapping, index);
-	else
-		folio = filemap_grab_folio(file->f_mapping, index);
-	if (IS_ERR(folio))
+	if (offset) {
+		page = find_lock_page(file->f_mapping, index);
+	} else {
+		page = find_or_create_page(file->f_mapping, index,
+					   mapping_gfp_mask(file->f_mapping));
+	}
+	if (!page)
 		return;
 
 	spin_lock(&fi->rdc.lock);
@@ -77,21 +79,19 @@ static void fuse_add_dirent_to_cache(struct file *file,
 	    WARN_ON(fi->rdc.pos != pos))
 		goto unlock;
 
-	folio_offset = offset_in_folio(folio, (index << PAGE_SHIFT) + offset);
+	addr = kmap_local_page(page);
 	if (!offset) {
-		folio_fill_tail(folio, folio_offset, (const char *)dirent,
-				reclen);
-		folio_mark_uptodate(folio);
-	} else {
-		memcpy_to_folio(folio, folio_offset, (const char *)dirent,
-				reclen);
+		clear_page(addr);
+		SetPageUptodate(page);
 	}
+	memcpy(addr + offset, dirent, reclen);
+	kunmap_local(addr);
 	fi->rdc.size = (index << PAGE_SHIFT) + offset + reclen;
 	fi->rdc.pos = dirent->off;
 unlock:
 	spin_unlock(&fi->rdc.lock);
-	folio_unlock(folio);
-	folio_put(folio);
+	unlock_page(page);
+	put_page(page);
 }
 
 static void fuse_readdir_cache_end(struct file *file, loff_t pos)
@@ -336,7 +336,7 @@ static int parse_dirplusfile(char *buf, size_t nbytes, struct file *file,
 static struct page **fuse_readdir_alloc_buf(struct fuse_args_pages *ap, size_t *bufsize)
 {
 	unsigned int i, nr_alloc, nr_pages = DIV_ROUND_UP(*bufsize, PAGE_SIZE);
-	struct page **pages = kzalloc_objs(*pages, nr_pages);
+	struct page **pages = kcalloc(nr_pages, sizeof(*pages), GFP_KERNEL);
 
 	if (!pages)
 		return NULL;
@@ -502,7 +502,7 @@ static int fuse_readdir_cached(struct file *file, struct dir_context *ctx)
 	enum fuse_parse_result res;
 	pgoff_t index;
 	unsigned int size;
-	struct folio *folio;
+	struct page *page;
 	void *addr;
 
 	/* Seeked?  If so, reset the cache stream */
@@ -580,44 +580,42 @@ retry_locked:
 	if (offset_in_page(ff->readdir.cache_off) == size)
 		return 0;
 
-	folio = __filemap_get_folio(file->f_mapping, index,
-				    FGP_ACCESSED | FGP_LOCK, 0);
-	if (IS_ERR(folio))
-		folio = NULL;
-	/* Folio gone missing, then re-added to cache, but not initialized? */
-	if (folio && !folio_test_uptodate(folio)) {
-		folio_unlock(folio);
-		folio_put(folio);
-		folio = NULL;
+	page = find_get_page_flags(file->f_mapping, index,
+				   FGP_ACCESSED | FGP_LOCK);
+	/* Page gone missing, then re-added to cache, but not initialized? */
+	if (page && !PageUptodate(page)) {
+		unlock_page(page);
+		put_page(page);
+		page = NULL;
 	}
 	spin_lock(&fi->rdc.lock);
-	if (!folio) {
+	if (!page) {
 		/*
-		 * Uh-oh: folio gone missing, cache is useless
+		 * Uh-oh: page gone missing, cache is useless
 		 */
 		if (fi->rdc.version == ff->readdir.version)
 			fuse_rdc_reset(inode);
 		goto retry_locked;
 	}
 
-	/* Make sure it's still the same version after getting the folio. */
+	/* Make sure it's still the same version after getting the page. */
 	if (ff->readdir.version != fi->rdc.version) {
 		spin_unlock(&fi->rdc.lock);
-		folio_unlock(folio);
-		folio_put(folio);
+		unlock_page(page);
+		put_page(page);
 		goto retry;
 	}
 	spin_unlock(&fi->rdc.lock);
 
 	/*
-	 * Contents of the folio are now protected against changing by holding
-	 * the folio lock.
+	 * Contents of the page are now protected against changing by holding
+	 * the page lock.
 	 */
-	addr = kmap_local_folio(folio, 0);
+	addr = kmap_local_page(page);
 	res = fuse_parse_cache(ff, addr, size, ctx);
 	kunmap_local(addr);
-	folio_unlock(folio);
-	folio_put(folio);
+	unlock_page(page);
+	put_page(page);
 
 	if (res == FOUND_ERR)
 		return -EIO;

@@ -185,9 +185,10 @@ static int set_freq_table(struct devfreq *devfreq)
 		return -EINVAL;
 
 	devfreq->max_state = count;
-	devfreq->freq_table = devm_kzalloc_objs(devfreq->dev.parent,
-						*devfreq->freq_table,
-						devfreq->max_state);
+	devfreq->freq_table = devm_kcalloc(devfreq->dev.parent,
+					   devfreq->max_state,
+					   sizeof(*devfreq->freq_table),
+					   GFP_KERNEL);
 	if (!devfreq->freq_table)
 		return -ENOMEM;
 
@@ -892,9 +893,10 @@ struct devfreq *devfreq_add_device(struct device *dev,
 		goto err_devfreq;
 	}
 
-	devfreq->stats.time_in_state = devm_kzalloc_objs(&devfreq->dev,
-							 *devfreq->stats.time_in_state,
-							 devfreq->max_state);
+	devfreq->stats.time_in_state = devm_kcalloc(&devfreq->dev,
+			devfreq->max_state,
+			sizeof(*devfreq->stats.time_in_state),
+			GFP_KERNEL);
 	if (!devfreq->stats.time_in_state) {
 		mutex_unlock(&devfreq->lock);
 		err = -ENOMEM;

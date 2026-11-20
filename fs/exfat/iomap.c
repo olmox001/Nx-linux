@@ -46,7 +46,6 @@ static int __exfat_iomap_begin(struct inode *inode, loff_t offset, loff_t length
 	struct exfat_inode_info *ei = EXFAT_I(inode);
 	unsigned int cluster, num_clusters;
 	loff_t cluster_offset, cluster_length;
-	loff_t valid_size = exfat_get_valid_size(ei);
 	int err;
 	bool balloc = false;
 
@@ -75,17 +74,6 @@ static int __exfat_iomap_begin(struct inode *inode, loff_t offset, loff_t length
 
 	err = exfat_map_cluster(inode, exfat_bytes_to_cluster(sbi, offset),
 			&cluster, &num_clusters, may_alloc, &balloc);
-	if (err == -ENOSPC && !(flags & IOMAP_DIRECT)) {
-		/*
-		 * There are not enough free clusters for the whole range. A
-		 * buffered write can be short, so map what still fits.
-		 */
-		num_clusters = 1;
-		err = exfat_map_cluster(inode,
-					exfat_bytes_to_cluster(sbi, offset),
-					&cluster, &num_clusters, may_alloc,
-					&balloc);
-	}
 	if (err)
 		goto out;
 
@@ -100,7 +88,7 @@ static int __exfat_iomap_begin(struct inode *inode, loff_t offset, loff_t length
 	if (may_alloc || flags & IOMAP_ZERO) {
 		if (balloc)
 			iomap->flags |= IOMAP_F_NEW;
-		else if (iomap->offset + iomap->length >= valid_size) {
+		else if (iomap->offset + iomap->length >= ei->valid_size) {
 			/*
 			 * This is a write that starts at or extends beyond
 			 * the current valid_size. The region between the old
@@ -112,36 +100,12 @@ static int __exfat_iomap_begin(struct inode *inode, loff_t offset, loff_t length
 			iomap->flags |= IOMAP_F_ZERO_TAIL;
 		}
 	} else {
-		/*
-		 * valid_size is tracked in byte granularity and
-		 * marks the exact boundary between valid data and
-		 * holes (or unwritten space).
-		 *
-		 * When IOMAP_REPORT is set (used by lseek(SEEK_HOLE)
-		 * and SEEK_DATA), we return IOMAP_HOLE. This allows
-		 * iomap_seek_hole_iter() to directly return the
-		 * precise byte position.
-		 *
-		 * For normal I/O paths (without IOMAP_REPORT) we
-		 * return IOMAP_UNWRITTEN so the write path can
-		 * distinguish it from a real hole.
-		 */
-		if (offset >= valid_size) {
-			iomap->type = flags & IOMAP_REPORT ?
-				IOMAP_HOLE : IOMAP_UNWRITTEN;
-		} else if (offset + iomap->length > valid_size) {
-			if (flags & IOMAP_REPORT) {
-				/*
-				 * For SEEK_HOLE/SEEK_DATA, clip the length
-				 * to the exact byte boundary (valid_size).
-				 * This ensures the caller gets the precise
-				 * hole position in byte units.
-				 */
-				iomap->length = valid_size - iomap->offset;
-			} else
-				iomap->length = round_up(valid_size,
-							 i_blocksize(inode)) -
-								iomap->offset;
+		if (offset >= ei->valid_size) {
+			iomap->type = IOMAP_UNWRITTEN;
+		} else if (offset + iomap->length > ei->valid_size) {
+			iomap->length = round_up(ei->valid_size,
+						 i_blocksize(inode)) -
+							iomap->offset;
 		}
 	}
 
@@ -160,47 +124,12 @@ static int exfat_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 static int exfat_write_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 		unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
-	struct exfat_inode_info *ei = EXFAT_I(inode);
-	loff_t valid_size = exfat_get_valid_size(ei);
-	loff_t end;
-	int err;
-
-	err = __exfat_iomap_begin(inode, offset, length, flags, iomap, true);
-	if (err || flags & (IOMAP_DIRECT | IOMAP_FAULT) ||
-	    iomap->flags & IOMAP_F_NEW)
-		return err;
-
-	end = iomap->offset + iomap->length;
-	if (end >= valid_size ||
-	    round_up(end, i_blocksize(inode)) <= valid_size)
-		return 0;
-
-	/*
-	 * Zero the invalid bytes from valid_size to the end of the block
-	 * to prevent stale data from being exposed through the page cache.
-	 */
-	return iomap_truncate_page(inode, valid_size, NULL, exfat_iomap_next,
-				   NULL, NULL);
+	return __exfat_iomap_begin(inode, offset, length, flags, iomap, true);
 }
 
-DEFINE_IOMAP_ITER_NEXT(exfat_iomap_next, exfat_iomap_begin);
-
-#ifdef CONFIG_SWAP
-static int exfat_swap_iomap_begin(struct inode *inode, loff_t offset,
-		loff_t length, unsigned int flags, struct iomap *iomap,
-		struct iomap *srcmap)
-{
-	/*
-	 * Swap activation needs the physical mappings of preallocated
-	 * ranges. Do not report the VDL tail as a hole.
-	 */
-	return __exfat_iomap_begin(inode, offset, length,
-			flags & ~IOMAP_REPORT, iomap, false);
-}
-
-static DEFINE_IOMAP_ITER_NEXT(exfat_swap_iomap_next,
-		exfat_swap_iomap_begin);
-#endif
+const struct iomap_ops exfat_iomap_ops = {
+	.iomap_begin = exfat_iomap_begin,
+};
 
 /*
  * exfat_write_iomap_end - Update the state after write
@@ -220,8 +149,10 @@ static int exfat_write_iomap_end(struct inode *inode, loff_t pos, loff_t length,
 
 	end = pos + written;
 
-	if (exfat_advance_valid_size(ei, end))
+	if (ei->valid_size < end) {
+		ei->valid_size = end;
 		dirtied = true;
+	}
 
 	/*
 	 * IOMAP_F_ZERO_TAIL zeroes the remainder of the last block. Track that
@@ -229,7 +160,8 @@ static int exfat_write_iomap_end(struct inode *inode, loff_t pos, loff_t length,
 	 */
 	if (iomap->flags & IOMAP_F_ZERO_TAIL)
 		end = round_up(end, i_blocksize(inode));
-	exfat_advance_zeroed_size(ei, end);
+	if (ei->zeroed_size < end)
+		ei->zeroed_size = end;
 
 	if (dirtied || iomap->flags & IOMAP_F_SIZE_CHANGED)
 		mark_inode_dirty(inode);
@@ -237,8 +169,10 @@ static int exfat_write_iomap_end(struct inode *inode, loff_t pos, loff_t length,
 	return written;
 }
 
-DEFINE_IOMAP_ITER_NEXT_END(exfat_write_iomap_next, exfat_write_iomap_begin,
-		exfat_write_iomap_end);
+const struct iomap_ops exfat_write_iomap_ops = {
+	.iomap_begin	= exfat_write_iomap_begin,
+	.iomap_end	= exfat_write_iomap_end,
+};
 
 /*
  * exfat_writeback_range - Map folio during writeback
@@ -288,7 +222,7 @@ static void exfat_iomap_read_end_io(struct bio *bio)
 		s64 valid_size;
 		loff_t pos = folio_pos(folio);
 
-		valid_size = exfat_get_valid_size(ei);
+		valid_size = ei->valid_size;
 		if (pos + iter.offset < valid_size &&
 		    pos + iter.offset + iter.length > valid_size)
 			folio_zero_segment(folio, offset_in_folio(folio, valid_size),
@@ -313,10 +247,5 @@ const struct iomap_read_ops exfat_iomap_bio_read_ops = {
 int exfat_iomap_swap_activate(struct swap_info_struct *sis,
 			       struct file *file, sector_t *span)
 {
-#ifdef CONFIG_SWAP
-	return iomap_swapfile_activate(sis, file, span,
-				       exfat_swap_iomap_next);
-#else
-	return -EIO;
-#endif
+	return iomap_swapfile_activate(sis, file, span, &exfat_iomap_ops);
 }

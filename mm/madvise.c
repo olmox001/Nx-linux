@@ -25,14 +25,14 @@
 #include <linux/ksm.h>
 #include <linux/fs.h>
 #include <linux/file.h>
-#include <linux/blk_plug.h>
+#include <linux/blkdev.h>
 #include <linux/backing-dev.h>
 #include <linux/pagewalk.h>
 #include <linux/swap.h>
 #include <linux/leafops.h>
 #include <linux/shmem_fs.h>
 #include <linux/mmu_notifier.h>
-#include <linux/swap_ops.h>
+#include <linux/sysctl.h>
 
 #include <asm/tlb.h>
 
@@ -158,7 +158,7 @@ static int madvise_update_vma(vm_flags_t new_flags,
 	bool set_new_anon_name = madv_behavior->behavior == __MADV_SET_ANON_VMA_NAME;
 	VMA_ITERATOR(vmi, madv_behavior->mm, range->start);
 
-	if (vma_flags_same_pair(&vma->flags, &new_vma_flags) &&
+	if (vma_flags_same_mask(&vma->flags, new_vma_flags) &&
 	    (!set_new_anon_name ||
 	     anon_vma_name_eq(anon_vma_name(vma), anon_name)))
 		return 0;
@@ -177,10 +177,7 @@ static int madvise_update_vma(vm_flags_t new_flags,
 
 	/* vm_flags is protected by the mmap_lock held in write mode. */
 	vma_start_write(vma);
-	if (set_new_anon_name)
-		return replace_anon_vma_name(vma, anon_name);
-
-	vma_overwrite_flags(vma, new_vma_flags);
+	vma->flags = new_vma_flags;
 	/*
 	 * If the vma become good for khugepaged to scan,
 	 * register it here without waiting a page fault that
@@ -188,6 +185,9 @@ static int madvise_update_vma(vm_flags_t new_flags,
 	 */
 	if (vma_flags_test(&new_vma_flags, VMA_HUGEPAGE_BIT))
 		khugepaged_enter_vma(vma, vma_flags_to_legacy(new_vma_flags));
+
+	if (set_new_anon_name)
+		return replace_anon_vma_name(vma, anon_name);
 
 	return 0;
 }
@@ -197,7 +197,7 @@ static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 		unsigned long end, struct mm_walk *walk)
 {
 	struct vm_area_struct *vma = walk->private;
-	struct swap_io_ctx ctx = {};
+	struct swap_iocb *splug = NULL;
 	pte_t *ptep = NULL;
 	spinlock_t *ptl;
 	unsigned long addr;
@@ -221,15 +221,15 @@ static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 		pte_unmap_unlock(ptep, ptl);
 		ptep = NULL;
 
-		folio = read_swap_cache_async(&ctx, entry, GFP_HIGHUSER_MOVABLE,
-					vma, addr);
+		folio = read_swap_cache_async(entry, GFP_HIGHUSER_MOVABLE,
+					     vma, addr, &splug);
 		if (folio)
 			folio_put(folio);
 	}
 
 	if (ptep)
 		pte_unmap_unlock(ptep, ptl);
-	swap_read_submit(&ctx);
+	swap_read_unplug(splug);
 	cond_resched();
 
 	return 0;
@@ -247,7 +247,7 @@ static void shmem_swapin_range(struct vm_area_struct *vma,
 	XA_STATE(xas, &mapping->i_pages, linear_page_index(vma, start));
 	pgoff_t end_index = linear_page_index(vma, end) - 1;
 	struct folio *folio;
-	struct swap_io_ctx ctx = {};
+	struct swap_iocb *splug = NULL;
 
 	rcu_read_lock();
 	xas_for_each(&xas, folio, end_index) {
@@ -262,19 +262,19 @@ static void shmem_swapin_range(struct vm_area_struct *vma,
 			continue;
 
 		addr = vma->vm_start +
-			((xas.xa_index - vma_start_pgoff(vma)) << PAGE_SHIFT);
+			((xas.xa_index - vma->vm_pgoff) << PAGE_SHIFT);
 		xas_pause(&xas);
 		rcu_read_unlock();
 
-		folio = read_swap_cache_async(&ctx, entry,
-				mapping_gfp_mask(mapping), vma, addr);
+		folio = read_swap_cache_async(entry, mapping_gfp_mask(mapping),
+					     vma, addr, &splug);
 		if (folio)
 			folio_put(folio);
 
 		rcu_read_lock();
 	}
 	rcu_read_unlock();
-	swap_read_submit(&ctx);
+	swap_read_unplug(splug);
 }
 #endif		/* CONFIG_SWAP */
 
@@ -297,12 +297,11 @@ static long madvise_willneed(struct madvise_behavior *madv_behavior)
 	loff_t offset;
 
 #ifdef CONFIG_SWAP
-	if (vma_is_cow_mapping(vma) && vma->anon_vma) {
+	if (!file) {
 		walk_page_range_vma(vma, start, end, &swapin_walk_ops, vma);
 		lru_add_drain(); /* Push any new pages onto the LRU now */
-	}
-	if (!file)
 		return 0;
+	}
 
 	if (shmem_mapping(file->f_mapping)) {
 		shmem_swapin_range(vma, start, end, file->f_mapping);
@@ -328,7 +327,7 @@ static long madvise_willneed(struct madvise_behavior *madv_behavior)
 	mark_mmap_lock_dropped(madv_behavior);
 	get_file(file);
 	offset = (loff_t)(start - vma->vm_start)
-			+ ((loff_t)vma_start_pgoff(vma) << PAGE_SHIFT);
+			+ ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
 	mmap_read_unlock(mm);
 	vfs_fadvise(file, offset, end - start, POSIX_FADV_WILLNEED);
 	fput(file);
@@ -394,18 +393,16 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 			return 0;
 
 		orig_pmd = *pmd;
+		if (is_huge_zero_pmd(orig_pmd))
+			goto huge_unlock;
+
 		if (unlikely(!pmd_present(orig_pmd))) {
 			VM_WARN_ON_ONCE(!pmd_is_migration_entry(orig_pmd) &&
 					!pmd_is_device_private_entry(orig_pmd));
 			goto huge_unlock;
 		}
 
-		folio = vm_normal_folio_pmd(vma, addr, orig_pmd);
-		if (!folio)
-			goto huge_unlock;
-
-		if (folio_is_zone_device(folio))
-			goto huge_unlock;
+		folio = pmd_folio(orig_pmd);
 
 		/* Do not interfere with other mappings of this folio */
 		if (folio_maybe_mapped_shared(folio))
@@ -417,10 +414,9 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 		if (next - addr != HPAGE_PMD_SIZE) {
 			int err;
 
-			if (!folio_trylock(folio))
-				goto huge_unlock;
 			folio_get(folio);
 			spin_unlock(ptl);
+			folio_lock(folio);
 			err = split_folio(folio);
 			folio_unlock(folio);
 			folio_put(folio);
@@ -430,7 +426,10 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 		}
 
 		if (!pageout && pmd_young(orig_pmd)) {
-			pmdp_test_and_clear_young(vma, addr, pmd);
+			pmdp_invalidate(vma, addr, pmd);
+			orig_pmd = pmd_mkold(orig_pmd);
+
+			set_pmd_at(mm, addr, pmd, orig_pmd);
 			tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
 		}
 
@@ -451,7 +450,6 @@ huge_unlock:
 		spin_unlock(ptl);
 		if (pageout)
 			reclaim_pages(&folio_list);
-		cond_resched();
 		return 0;
 	}
 
@@ -461,7 +459,7 @@ regular_folio:
 restart:
 	start_pte = pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (!start_pte)
-		goto out;
+		return 0;
 	flush_tlb_batched_pending(mm);
 	lazy_mmu_mode_enable();
 	for (; addr < end; pte += nr, addr += nr * PAGE_SIZE) {
@@ -565,7 +563,6 @@ restart:
 			folio_deactivate(folio);
 	}
 
-out:
 	if (start_pte) {
 		lazy_mmu_mode_disable();
 		pte_unmap_unlock(start_pte, ptl);
@@ -706,10 +703,10 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 				nr = swap_pte_batch(pte, max_nr, ptent);
 				nr_swap -= nr;
 				swap_put_entries_direct(entry, nr);
-				clear_nonpresent_ptes(mm, addr, pte, nr);
+				clear_not_present_full_ptes(mm, addr, pte, nr, tlb->fullmm);
 			} else if (softleaf_is_hwpoison(entry) ||
 				   softleaf_is_poison_marker(entry)) {
-				pte_clear(mm, addr, pte);
+				pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
 			}
 			continue;
 		}
@@ -756,15 +753,6 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		if (folio_test_swapcache(folio) || folio_test_dirty(folio)) {
 			if (!folio_trylock(folio))
 				continue;
-			/*
-			 * KSM folios can gain new mappings at any time, so we must
-			 * not clear their dirty flag.
-			 */
-			if (folio_test_ksm(folio)) {
-				folio_unlock(folio);
-				continue;
-			}
-
 			/*
 			 * If we have a large folio at this point, we know it is
 			 * fully mapped so if its mapcount is the same as its
@@ -889,7 +877,7 @@ bool madvise_dontneed_free_valid_vma(struct madvise_behavior *madv_behavior)
 	int behavior = madv_behavior->behavior;
 	struct madvise_behavior_range *range = &madv_behavior->range;
 
-	if (!vma_is_hugetlb(vma)) {
+	if (!is_vm_hugetlb_page(vma)) {
 		unsigned int forbidden = VM_PFNMAP;
 
 		if (behavior != MADV_DONTNEED_LOCKED)
@@ -1043,7 +1031,7 @@ static long madvise_remove(struct madvise_behavior *madv_behavior)
 		return -EACCES;
 
 	offset = (loff_t)(start - vma->vm_start)
-			+ ((loff_t)vma_start_pgoff(vma) << PAGE_SHIFT);
+			+ ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
 
 	/*
 	 * Filesystem's fallocate may need to take i_rwsem.  We need to
@@ -1064,25 +1052,19 @@ static long madvise_remove(struct madvise_behavior *madv_behavior)
 	return error;
 }
 
-static bool is_valid_guard_vma(const struct vm_area_struct *vma,
-			       bool allow_locked)
+static bool is_valid_guard_vma(struct vm_area_struct *vma, bool allow_locked)
 {
+	vm_flags_t disallowed = VM_SPECIAL | VM_HUGETLB;
+
 	/*
-	 * A user could lock after setting a guard range but that's fine as
+	 * A user could lock after setting a guard range but that's fine, as
 	 * they'd not be able to fault in. The issue arises when we try to zap
 	 * existing locked VMAs. We don't want to do that.
 	 */
-	if (!allow_locked && vma_test(vma, VMA_LOCKED_BIT))
-		return false;
-	/*
-	 * Guard regions require a VMA whose page tables are managed solely by
-	 * core mm, so the VMA must be mm-backed (excluding hugetlb, in which
-	 * guard markers cannot be installed).
-	 */
-	if (!vma_is_mm_backed(vma) || vma_is_hugetlb(vma))
-		return false;
+	if (!allow_locked)
+		disallowed |= VM_LOCKED;
 
-	return true;
+	return !(vma->vm_flags & disallowed);
 }
 
 static bool is_guard_pte_marker(pte_t ptent)
@@ -1165,13 +1147,13 @@ static long madvise_guard_install(struct madvise_behavior *madv_behavior)
 
 	/*
 	 * If anonymous and we are establishing page tables the VMA ought to
-	 * have an anon rmap associated with it.
+	 * have an anon_vma associated with it.
 	 *
 	 * We will hold an mmap read lock if this is necessary, this is checked
 	 * as part of the VMA lock logic.
 	 */
 	if (vma_is_anonymous(vma)) {
-		VM_WARN_ON_ONCE(!vma_has_anon_rmap(vma) &&
+		VM_WARN_ON_ONCE(!vma->anon_vma &&
 				madv_behavior->lock_mode != MADVISE_MMAP_READ_LOCK);
 
 		err = anon_vma_prepare(vma);
@@ -1260,7 +1242,7 @@ static int guard_remove_pte_entry(pte_t *pte, unsigned long addr,
 
 	if (is_guard_pte_marker(ptent)) {
 		/* Simply clear the PTE marker. */
-		pte_clear(walk->mm, addr, pte);
+		pte_clear_not_present_full(walk->mm, addr, pte, false);
 		update_mmu_cache(walk->vma, addr, pte);
 	}
 
@@ -1311,7 +1293,7 @@ static bool is_discard(int behavior)
  * We are restricted from madvise()'ing mseal()'d VMAs only in very particular
  * circumstances - discarding of data from read-only anonymous SEALED mappings.
  *
- * This is because users cannot trivially discard data from these VMAs, and may
+ * This is because users cannot trivally discard data from these VMAs, and may
  * only do so via an appropriate madvise() call.
  */
 static bool can_madvise_modify(struct madvise_behavior *madv_behavior)
@@ -1409,7 +1391,7 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
 		new_flags |= VM_DONTCOPY;
 		break;
 	case MADV_DOFORK:
-		if (!vma_is_mm_backed(vma) || vma_is_hugetlb(vma))
+		if (new_flags & VM_SPECIAL)
 			return -EINVAL;
 		new_flags &= ~VM_DONTCOPY;
 		break;
@@ -1424,15 +1406,27 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
 			return -EINVAL;
 		new_flags &= ~VM_WIPEONFORK;
 		break;
+	case MADV_DOEXEC:
+		if (!vma_supports_exec_keep(vma)) {
+			error = -EINVAL;
+			goto out;
+		}
+		new_flags = (new_flags & ~VM_MAYEXEC) | VM_EXEC_KEEP;
+		break;
+	case MADV_DONTEXEC:
+		if (!vma_supports_exec_keep(vma)) {
+			error = -EINVAL;
+			goto out;
+		}
+		if (new_flags & VM_EXEC_KEEP)
+			new_flags = (new_flags & ~VM_EXEC_KEEP) | VM_MAYEXEC;
+		break;
 	case MADV_DONTDUMP:
 		new_flags |= VM_DONTDUMP;
 		break;
 	case MADV_DODUMP:
-		/* Only mm-backed memory can be meaningfully dumped. */
-		if (!vma_is_mm_backed(vma))
-			return -EINVAL;
-		/* Core mm may discard droppable memory at any time. */
-		if (new_flags & VM_DROPPABLE)
+		if ((!is_vm_hugetlb_page(vma) && (new_flags & VM_SPECIAL)) ||
+		    (new_flags & VM_DROPPABLE))
 			return -EINVAL;
 		new_flags &= ~VM_DONTDUMP;
 		break;
@@ -1581,6 +1575,8 @@ madvise_behavior_valid(int behavior)
 	case MADV_SOFT_OFFLINE:
 	case MADV_HWPOISON:
 #endif
+	case MADV_DOEXEC:
+	case MADV_DONTEXEC:
 		return true;
 
 	default:
@@ -1633,11 +1629,11 @@ static bool is_vma_lock_sufficient(struct vm_area_struct *vma,
 	 * anon_vma_prepare() explicitly requires an mmap lock for
 	 * serialisation, so we cannot use a VMA lock in this case.
 	 *
-	 * Note we might race with the anon rmap being assigned, however this
-	 * makes this check overly paranoid which is safe.
+	 * Note we might race with anon_vma being set, however this makes this
+	 * check overly paranoid which is safe.
 	 */
 	if (vma_is_anonymous(vma) &&
-	    prepares_anon_vma(madv_behavior->behavior) && !vma_has_anon_rmap(vma))
+	    prepares_anon_vma(madv_behavior->behavior) && !vma->anon_vma)
 		return false;
 
 	return true;
@@ -1996,6 +1992,9 @@ static int madvise_do_behavior(unsigned long start, size_t len_in,
  *		triggering read faults if required
  *  MADV_POPULATE_WRITE - populate (prefault) page tables writable by
  *		triggering write faults if required
+ *  MADV_DOEXEC - On exec, preserve and duplicate this area in the new process
+ *		if the new process allows it.
+ *  MADV_DONTEXEC - Undo the effect of MADV_DOEXEC.
  *
  * return values:
  *  zero    - success
@@ -2264,4 +2263,25 @@ int set_anon_vma_name(unsigned long addr, unsigned long size,
 
 	return error;
 }
+#endif
+
+#ifdef CONFIG_SYSCTL
+static int madv_doexec_flag = MADV_DOEXEC;
+
+static const struct ctl_table madv_table[] = {
+	{
+		.procname	= "madv_doexec_flag",
+		.data		= &madv_doexec_flag,
+		.maxlen		= sizeof(int),
+		.mode		= 0444,
+		.proc_handler	= proc_dointvec,
+	},
+};
+
+static int __init init_vm_madv_sysctl(void)
+{
+	register_sysctl_init("vm", madv_table);
+	return 0;
+}
+subsys_initcall(init_vm_madv_sysctl);
 #endif

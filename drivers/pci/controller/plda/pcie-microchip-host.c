@@ -744,7 +744,7 @@ static int mc_host_probe(struct platform_device *pdev)
 	int ret;
 	u32 val;
 
-	port = devm_kzalloc_obj(dev, *port);
+	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
 	if (!port)
 		return -ENOMEM;
 

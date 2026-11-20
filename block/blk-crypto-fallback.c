@@ -496,7 +496,8 @@ bool blk_crypto_fallback_bio_prep(struct bio *bio)
 		return false;
 	}
 
-	if (bc->bc_key->crypto_cfg.key_type != BLK_CRYPTO_KEY_TYPE_RAW) {
+	if (!__blk_crypto_cfg_supported(blk_crypto_fallback_profile,
+					&bc->bc_key->crypto_cfg)) {
 		bio_endio_status(bio, BLK_STS_NOTSUPP);
 		return false;
 	}
@@ -524,12 +525,6 @@ bool blk_crypto_fallback_bio_prep(struct bio *bio)
 
 int blk_crypto_fallback_evict_key(const struct blk_crypto_key *key)
 {
-	/*
-	 * Pairs with smp_store_release() in
-	 * blk_crypto_fallback_start_using_mode()
-	 */
-	if (!smp_load_acquire(&tfms_inited[key->crypto_cfg.crypto_mode]))
-		return 0;
 	return __blk_crypto_evict_key(blk_crypto_fallback_profile, key);
 }
 

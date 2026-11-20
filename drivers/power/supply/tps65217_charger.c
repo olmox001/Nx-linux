@@ -190,7 +190,7 @@ static int tps65217_charger_probe(struct platform_device *pdev)
 	int ret;
 	int i;
 
-	charger = devm_kzalloc_obj(&pdev->dev, *charger);
+	charger = devm_kzalloc(&pdev->dev, sizeof(*charger), GFP_KERNEL);
 	if (!charger)
 		return -ENOMEM;
 
@@ -239,8 +239,12 @@ static int tps65217_charger_probe(struct platform_device *pdev)
 						tps65217_charger_irq,
 						IRQF_SHARED, "tps65217-charger",
 						charger);
-		if (ret)
+		if (ret) {
+			dev_err(charger->dev,
+				"Unable to register irq %d err %d\n", irq[i],
+				ret);
 			return ret;
+		}
 
 		/* Check current state */
 		tps65217_charger_irq(-1, charger);

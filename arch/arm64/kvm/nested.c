@@ -5,7 +5,6 @@
  */
 
 #include <linux/bitfield.h>
-#include <linux/interval_tree.h>
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
 
@@ -17,7 +16,6 @@
 #include <asm/sysreg.h>
 
 #include "sys_regs.h"
-#include "vgic/vgic.h"
 
 struct vncr_tlb {
 	/* The guest's VNCR_EL2 */
@@ -45,16 +43,13 @@ struct vncr_tlb {
  * will invalidate them more often).
  */
 #define S2_MMU_PER_VCPU		2
-#define S2_MMU_PER_VM		(KVM_MAX_VCPUS * S2_MMU_PER_VCPU)
 
 int kvm_init_nested(struct kvm *kvm)
 {
 	kvm->arch.nested_mmus = kvmalloc_objs(struct kvm_s2_mmu *,
-					      S2_MMU_PER_VM,
+					      KVM_MAX_VCPUS * S2_MMU_PER_VCPU,
 					      GFP_KERNEL_ACCOUNT);
 	kvm->arch.nested_mmus_size = 0;
-	atomic_set(&kvm->arch.vncr_tlb_count, 0);
-	spin_lock_init(&kvm->arch.guest_s2_tracking_lock);
 
 	return kvm->arch.nested_mmus ? 0 : -ENOMEM;
 }
@@ -107,7 +102,7 @@ int kvm_vcpu_init_nested(struct kvm_vcpu *vcpu)
 		struct kvm_s2_mmu *tmp;
 		int i, ret = 0;
 
-		tmp = kvzalloc_objs(*tmp, S2_MMU_PER_VCPU, GFP_KERNEL_ACCOUNT);
+		tmp = kvcalloc(S2_MMU_PER_VCPU, sizeof(*tmp), GFP_KERNEL_ACCOUNT);
 		if (!tmp)
 			ret = -ENOMEM;
 
@@ -127,15 +122,10 @@ int kvm_vcpu_init_nested(struct kvm_vcpu *vcpu)
 			return ret;
 		}
 
-		for (i = 0; i < S2_MMU_PER_VCPU; i++)
-			kvm_nested_s2_ptdump_create_debugfs(&tmp[i], i + kvm->arch.nested_mmus_size);
-
 		guard(write_lock)(&kvm->mmu_lock);
 
-		for (i = 0; i < S2_MMU_PER_VCPU; i++) {
-			tmp[i].s2_mmu_idx = i + kvm->arch.nested_mmus_size;
+		for (i = 0; i < S2_MMU_PER_VCPU; i++)
 			kvm->arch.nested_mmus[i + kvm->arch.nested_mmus_size] = &tmp[i];
-		}
 
 		kvm->arch.nested_mmus_size += S2_MMU_PER_VCPU;
 	}
@@ -665,7 +655,7 @@ again:
 		return 0;
 
 	tmp &= ~(sz - 1);
-	if (kvm_pgtable_get_leaf(mmu->pgt, tmp, &pte, NULL, 0))
+	if (kvm_pgtable_get_leaf(mmu->pgt, tmp, &pte, NULL))
 		goto again;
 	if (!(pte & PTE_VALID))
 		goto again;
@@ -777,7 +767,7 @@ struct kvm_s2_mmu *lookup_s2_mmu(struct kvm_vcpu *vcpu)
 	vtcr = vcpu_read_sys_reg(vcpu, VTCR_EL2);
 	hcr = vcpu_read_sys_reg(vcpu, HCR_EL2);
 
-	nested_stage2_enabled = hcr & HCR_EL2_VM;
+	nested_stage2_enabled = hcr & HCR_VM;
 
 	/* Don't consider the CnP bit for the vttbr match */
 	vttbr &= ~VTTBR_CNP_BIT;
@@ -845,8 +835,10 @@ static struct kvm_s2_mmu *get_s2_mmu_nested(struct kvm_vcpu *vcpu)
 	kvm->arch.nested_mmus_next = (i + 1) % kvm->arch.nested_mmus_size;
 
 	/* Make sure we don't forget to do the laundry */
-	if (kvm_s2_mmu_valid(s2_mmu))
+	if (kvm_s2_mmu_valid(s2_mmu)) {
+		kvm_nested_s2_ptdump_remove_debugfs(s2_mmu);
 		s2_mmu->pending_unmap = true;
+	}
 
 	/*
 	 * The virtual VMID (modulo CnP) will be used as a key when matching
@@ -858,7 +850,9 @@ static struct kvm_s2_mmu *get_s2_mmu_nested(struct kvm_vcpu *vcpu)
 	 */
 	s2_mmu->tlb_vttbr = vcpu_read_sys_reg(vcpu, VTTBR_EL2) & ~VTTBR_CNP_BIT;
 	s2_mmu->tlb_vtcr = vcpu_read_sys_reg(vcpu, VTCR_EL2);
-	s2_mmu->nested_stage2_enabled = vcpu_read_sys_reg(vcpu, HCR_EL2) & HCR_EL2_VM;
+	s2_mmu->nested_stage2_enabled = vcpu_read_sys_reg(vcpu, HCR_EL2) & HCR_VM;
+
+	kvm_nested_s2_ptdump_create_debugfs(s2_mmu);
 
 out:
 	atomic_inc(&s2_mmu->refcnt);
@@ -873,87 +867,6 @@ out:
 		kvm_make_request(KVM_REQ_NESTED_S2_UNMAP, vcpu);
 
 	return s2_mmu;
-}
-
-#define S2_MMU_IDX_MASK	GENMASK_ULL(11, 0)
-
-static void tag_s2_mapping_mmu(struct kvm_guest_s2_mapping *mapping,
-			       struct kvm_s2_mmu *mmu)
-{
-	BUILD_BUG_ON(S2_MMU_PER_VM > SZ_4K);
-	mapping->nested.start &= ~S2_MMU_IDX_MASK;
-	mapping->nested.start |= mmu->s2_mmu_idx;
-}
-
-static struct kvm_s2_mmu *s2_mapping_to_mmu(struct kvm *kvm,
-					    struct kvm_guest_s2_mapping *mapping)
-{
-	return kvm->arch.nested_mmus[mapping->nested.start & S2_MMU_IDX_MASK];
-}
-
-static unsigned long s2_mapping_to_nested_start(struct kvm_guest_s2_mapping *mapping)
-{
-	return mapping->nested.start & ~S2_MMU_IDX_MASK;
-}
-
-void kvm_record_guest_s2_mapping(struct kvm_s2_mmu *mmu, gpa_t canonical_ipa,
-				 gpa_t nested_ipa, size_t map_size,
-				 struct kvm_guest_s2_mapping *mapping)
-{
-	struct kvm *kvm = kvm_s2_mmu_to_kvm(mmu);
-
-	lockdep_assert_held_read(&kvm->mmu_lock);
-
-	canonical_ipa = ALIGN_DOWN(canonical_ipa, map_size);
-	nested_ipa = ALIGN_DOWN(nested_ipa, map_size);
-
-	mapping->canonical.start = canonical_ipa;
-	mapping->canonical.last  = canonical_ipa + map_size - 1;
-
-	mapping->nested.start    = nested_ipa;
-	mapping->nested.last     = nested_ipa + map_size - 1;
-
-	tag_s2_mapping_mmu(mapping, mmu);
-
-	guard(spinlock)(&kvm->arch.guest_s2_tracking_lock);
-	interval_tree_insert(&mapping->nested, &mmu->guest_s2_mappings);
-	interval_tree_insert(&mapping->canonical, &kvm->arch.mmu.guest_s2_mappings);
-}
-
-void kvm_remove_guest_s2_mappings(struct kvm_s2_mmu *mmu, gpa_t nipa,
-				  size_t size)
-{
-	struct kvm *kvm = kvm_s2_mmu_to_kvm(mmu);
-	struct interval_tree_node *node, *next;
-	struct kvm_guest_s2_mapping *mapping;
-	gpa_t nipa_end = nipa + size - 1;
-
-	/*
-	 * See kvm_nested_unmap_cipa_range() for why guest_s2_tracking_lock
-	 * isn't taken here.
-	 */
-	lockdep_assert_held_write(&kvm->mmu_lock);
-
-	node = interval_tree_iter_first(&mmu->guest_s2_mappings, nipa, nipa_end);
-	while (node) {
-		unsigned long nested_start;
-
-		next = interval_tree_iter_next(node, nipa, nipa_end);
-		mapping = container_of(node, struct kvm_guest_s2_mapping,
-				       nested);
-		/*
-		 * Tracking must be conservative on removal, only remove
-		 * mappings that are within the unmap range.
-		 */
-		nested_start = s2_mapping_to_nested_start(mapping);
-		if (nipa <= nested_start && nipa_end >= mapping->nested.last) {
-			interval_tree_remove(&mapping->nested, &mmu->guest_s2_mappings);
-			interval_tree_remove(&mapping->canonical,
-					     &kvm->arch.mmu.guest_s2_mappings);
-			kfree(mapping);
-		}
-		node = next;
-	}
 }
 
 void kvm_init_nested_s2_mmu(struct kvm_s2_mmu *mmu)
@@ -979,7 +892,7 @@ void kvm_vcpu_load_hw_mmu(struct kvm_vcpu *vcpu)
 				vcpu->arch.hw_mmu = get_s2_mmu_nested(vcpu);
 		}
 
-		if (__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_EL2_NV)
+		if (__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_NV)
 			kvm_make_request(KVM_REQ_MAP_L1_VNCR_EL2, vcpu);
 	}
 }
@@ -1106,12 +1019,10 @@ u16 get_asid_by_regime(struct kvm_vcpu *vcpu, enum trans_regime regime)
 	return asid;
 }
 
-static void invalidate_vncr(struct kvm *kvm, struct vncr_tlb *vt)
+static void invalidate_vncr(struct vncr_tlb *vt)
 {
-	BUG_ON(!vt->valid);
 	vt->valid = false;
 	unmap_l1_vncr(vt);
-	atomic_dec(&kvm->arch.vncr_tlb_count);
 }
 
 static bool vncr_tlb_intersects(struct vncr_tlb *vt, u64 addr,
@@ -1158,7 +1069,7 @@ static void kvm_invalidate_vncr_ipa(struct kvm *kvm, u64 start, u64 end)
 	 */
 	kvm_for_each_vncr_tlb(i, vcpu, vt, kvm)
 		if (vncr_tlb_intersects(vt, vt->wr.pa, start, end - start))
-			invalidate_vncr(kvm, vt);
+			invalidate_vncr(vt);
 }
 
 struct s1e2_tlbi_scope {
@@ -1215,7 +1126,7 @@ static void invalidate_vncr_va(struct kvm *kvm,
 			break;
 		}
 
-		invalidate_vncr(kvm, vt);
+		invalidate_vncr(vt);
 	}
 }
 
@@ -1378,56 +1289,6 @@ void kvm_nested_s2_wp(struct kvm *kvm)
 	kvm_invalidate_vncr_ipa_all(kvm);
 }
 
-void kvm_nested_unmap_cipa_range(struct kvm *kvm, gpa_t cipa, size_t unmap_size,
-				 bool may_block)
-{
-	gpa_t cipa_end = cipa + unmap_size - 1;
-	struct kvm_guest_s2_mapping *mapping;
-	struct interval_tree_node *node;
-	size_t mapping_size;
-
-	/*
-	 * Guest s2 tracking interval trees are only accessed while holding the
-	 * mmu_lock, hence we don't have to take guest_s2_tracking_lock if the
-	 * mmu_lock is held for write. This saves us from having to manually
-	 * lock/unlock guest_s2_tracking_lock below around
-	 * cond_resched_rwlock_write().
-	 */
-	lockdep_assert_held_write(&kvm->mmu_lock);
-
-	if (!kvm->arch.nested_mmus_size)
-		return;
-
-	while ((node = interval_tree_iter_first(&kvm->arch.mmu.guest_s2_mappings,
-						cipa, cipa_end))) {
-		unsigned long nested_start;
-		struct kvm_s2_mmu *mmu;
-
-		mapping = container_of(node, struct kvm_guest_s2_mapping,
-				       canonical);
-		nested_start = s2_mapping_to_nested_start(mapping);
-		mmu = s2_mapping_to_mmu(kvm, mapping);
-
-		/* We could race against MMU teardown, which frees mmu->pgt. */
-		if (mmu->pgt) {
-			mapping_size = mapping->nested.last - nested_start + 1;
-
-			if (WARN_ON_ONCE(kvm_pgtable_stage2_unmap(mmu->pgt, nested_start,
-								  mapping_size)))
-				return;
-
-			interval_tree_remove(&mapping->nested, &mmu->guest_s2_mappings);
-		}
-		interval_tree_remove(node, &kvm->arch.mmu.guest_s2_mappings);
-		kfree(mapping);
-
-		if (may_block)
-			cond_resched_rwlock_write(&kvm->mmu_lock);
-	}
-
-	kvm_invalidate_vncr_ipa(kvm, cipa, cipa + unmap_size);
-}
-
 void kvm_nested_s2_unmap(struct kvm *kvm, bool may_block)
 {
 	int i;
@@ -1507,20 +1368,13 @@ void kvm_arch_flush_shadow_all(struct kvm *kvm)
  *   intersects with the TLBI request, invalidate it, and unmap the page
  *   from the fixmap. Because we need to look at all the vcpu-private TLBs,
  *   this requires some wide-ranging locking to ensure that nothing races
- *   against it. This requires some refcounting to avoid the search when
- *   no such TLB is present (see below).
+ *   against it. This may require some refcounting to avoid the search when
+ *   no such TLB is present.
  *
  * - On MMU notifiers, we must invalidate our TLB in a similar way, but
  *   looking at the IPA instead. The funny part is that there may not be a
  *   stage-2 mapping for this page if L1 hasn't accessed it using LD/ST
  *   instructions.
- *
- * - vncr_tlb_count tracks the number of valid VNCR TLBs VM-wide. This isn't
- *   the number of *mapped* L1 VNCR pages, which is likely be a subset (and
- *   by definition, a TLBI handled from L1 runs with the canonical VNCR
- *   page, not the L1's). The innermost trap handling code checks this to
- *   find out whether to return to the guest ASAP (no L1 TLBs) or to visit
- *   this part of the world for some extra invalidation work.
  */
 
 int kvm_vcpu_allocate_vncr_tlb(struct kvm_vcpu *vcpu)
@@ -1559,7 +1413,7 @@ static int kvm_translate_vncr(struct kvm_vcpu *vcpu, bool *is_gmem)
 	bool write_fault, writable;
 	unsigned long mmu_seq;
 	struct vncr_tlb *vt;
-	struct page *page = NULL;
+	struct page *page;
 	u64 va, pfn, gfn;
 	int ret;
 
@@ -1575,8 +1429,7 @@ static int kvm_translate_vncr(struct kvm_vcpu *vcpu, bool *is_gmem)
 	 */
 	scoped_guard(write_lock, &vcpu->kvm->mmu_lock) {
 		this_cpu_reset_vncr_fixmap(vcpu);
-		if (vt->valid)
-			invalidate_vncr(vcpu->kvm, vt);
+		vt->valid = false;
 
 		vt->wi = (struct s1_walk_info) {
 			.regime	= TR_EL20,
@@ -1615,7 +1468,7 @@ static int kvm_translate_vncr(struct kvm_vcpu *vcpu, bool *is_gmem)
 			return -EFAULT;
 		}
 	} else {
-		ret = kvm_gmem_get_pfn(vcpu->kvm, memslot, gfn, &pfn, NULL);
+		ret = kvm_gmem_get_pfn(vcpu->kvm, memslot, gfn, &pfn, &page, NULL);
 		if (ret) {
 			kvm_prepare_memory_fault_exit(vcpu, vt->wr.pa, PAGE_SIZE,
 					      write_fault, false, false);
@@ -1701,20 +1554,7 @@ int kvm_handle_vncr_abort(struct kvm_vcpu *vcpu)
 		return -EIO;
 	}
 
-	/*
-	 * Speculatively increment the TLB count to make sure concurrent
-	 * TLBIs will take the slow path, and will interact with the retry
-	 * mechanism. Drop it again on error.
-	 */
-	atomic_inc(&vcpu->kvm->arch.vncr_tlb_count);
-	smp_mb__after_atomic();
-
 	ret = kvm_translate_vncr(vcpu, &is_gmem);
-	if (ret) {
-		smp_mb__before_atomic();
-		atomic_dec(&vcpu->kvm->arch.vncr_tlb_count);
-	}
-
 	switch (ret) {
 	case -EAGAIN:
 		/* Let's try again... */
@@ -1942,7 +1782,7 @@ u64 limit_nv_id_reg(struct kvm *kvm, u32 reg, u64 val)
 		 * You get EITHER
 		 *
 		 * - FEAT_VHE without FEAT_E2H0
-		 * - FEAT_NV limited to FEAT_NV2(p1)/NV3
+		 * - FEAT_NV limited to FEAT_NV2
 		 * - HCR_EL2.NV1 being RES0
 		 *
 		 * OR
@@ -1954,13 +1794,7 @@ u64 limit_nv_id_reg(struct kvm *kvm, u32 reg, u64 val)
 		if (test_bit(KVM_ARM_VCPU_HAS_EL2_E2H0, kvm->arch.vcpu_features)) {
 			val = 0;
 		} else {
-			val &= ID_AA64MMFR4_EL1_NV_frac;
-			if (cpus_have_final_cap(ARM64_HAS_NV3))
-				val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64MMFR4_EL1, NV_frac, NV3);
-			else if (cpus_have_final_cap(ARM64_HAS_NV2P1))
-				val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64MMFR4_EL1, NV_frac, NV2P1);
-			else
-				val = SYS_FIELD_PREP_ENUM(ID_AA64MMFR4_EL1, NV_frac, NV2_ONLY);
+			val = SYS_FIELD_PREP_ENUM(ID_AA64MMFR4_EL1, NV_frac, NV2_ONLY);
 			val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR4_EL1, E2H0, NI_NV1);
 		}
 		break;
@@ -2046,10 +1880,6 @@ int kvm_init_nv_sysregs(struct kvm_vcpu *vcpu)
 	resx = get_reg_fixed_bits(kvm, HCR_EL2);
 	set_sysreg_masks(kvm, HCR_EL2, resx);
 
-	/* NVHCR_EL2 */
-	resx = get_reg_fixed_bits(kvm, NVHCR_EL2);
-	set_sysreg_masks(kvm, NVHCR_EL2, resx);
-
 	/* HCRX_EL2 */
 	resx = get_reg_fixed_bits(kvm, HCRX_EL2);
 	set_sysreg_masks(kvm, HCRX_EL2, resx);
@@ -2130,7 +1960,7 @@ int kvm_init_nv_sysregs(struct kvm_vcpu *vcpu)
 	/* ICH_HCR_EL2 */
 	resx.res0 = ICH_HCR_EL2_RES0;
 	resx.res1 = ICH_HCR_EL2_RES1;
-	if (!(vgic_ich_vtr() & ICH_VTR_EL2_TDS))
+	if (!(kvm_vgic_global_state.ich_vtr_el2 & ICH_VTR_EL2_TDS))
 		resx.res0 |= ICH_HCR_EL2_TDIR;
 	/* No GICv4 is presented to the guest */
 	resx.res0 |= ICH_HCR_EL2_DVIM | ICH_HCR_EL2_vSGIEOICount;
@@ -2181,9 +2011,6 @@ void check_nested_vcpu_requests(struct kvm_vcpu *vcpu)
  *
  * What follows is some slop to (1) react to exception routing / masking and (2)
  * preserve the pending SError state across translation regimes.
- *
- * Also generate the maintenance interrupt state, and finally check that if
- * we need to take an interrupt targetting the guest hypervisor.
  */
 void kvm_nested_flush_hwstate(struct kvm_vcpu *vcpu)
 {
@@ -2192,11 +2019,6 @@ void kvm_nested_flush_hwstate(struct kvm_vcpu *vcpu)
 
 	if (unlikely(vcpu_test_and_clear_flag(vcpu, NESTED_SERROR_PENDING)))
 		kvm_inject_serror_esr(vcpu, vcpu_get_vsesr(vcpu));
-
-	vgic_v3_nested_update_mi(vcpu);
-
-	if (vgic_state_is_nested(vcpu) && kvm_vgic_vcpu_pending_irq(vcpu))
-		kvm_make_request(KVM_REQ_GUEST_HYP_IRQ_PENDING, vcpu);
 }
 
 void kvm_nested_sync_hwstate(struct kvm_vcpu *vcpu)
@@ -2210,7 +2032,7 @@ void kvm_nested_sync_hwstate(struct kvm_vcpu *vcpu)
 	 * We previously decided that an SError was deliverable to the guest.
 	 * Reap the pending state from HCR_EL2 and...
 	 */
-	if (unlikely(__test_and_clear_bit(__ffs(HCR_EL2_VSE), hcr)))
+	if (unlikely(__test_and_clear_bit(__ffs(HCR_VSE), hcr)))
 		vcpu_set_flag(vcpu, NESTED_SERROR_PENDING);
 
 	/*

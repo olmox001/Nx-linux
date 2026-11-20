@@ -4,7 +4,6 @@
  */
 
 #include <linux/circ_buf.h>
-#include <linux/error-injection.h>
 #include <linux/ktime.h>
 #include <linux/string_helpers.h>
 #include <linux/time64.h>

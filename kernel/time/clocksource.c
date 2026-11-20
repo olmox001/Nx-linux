@@ -123,6 +123,7 @@ static atomic_t watchdog_reset_pending;
 
 /* Watchdog interval: 0.5sec. */
 #define WATCHDOG_INTERVAL		(HZ >> 1)
+#define WATCHDOG_INTERVAL_NS		(WATCHDOG_INTERVAL * (NSEC_PER_SEC / HZ))
 
 /* Maximum time between two reference watchdog readouts */
 #define WATCHDOG_READOUT_MAX_NS		(50U * NSEC_PER_USEC)
@@ -673,7 +674,7 @@ static void clocksource_watchdog(struct timer_list *unused)
 
 	/* Could have been rearmed by a stop/start cycle */
 	if (!timer_pending(&watchdog_timer)) {
-		watchdog_timer.expires = jiffies + WATCHDOG_INTERVAL;
+		watchdog_timer.expires += WATCHDOG_INTERVAL;
 		add_timer_local(&watchdog_timer);
 	}
 }

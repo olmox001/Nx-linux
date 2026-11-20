@@ -26,7 +26,6 @@
 #include "dccg.h"
 #include "rn_clk_mgr.h"
 
-#include "dcn10/dcn10_clk_mgr.h"
 #include "dcn20/dcn20_clk_mgr.h"
 #include "dml/dcn20/dcn20_fpu.h"
 
@@ -566,7 +565,7 @@ static void rn_notify_link_rate_change(struct clk_mgr *clk_mgr_base, struct dc_l
 }
 
 static struct clk_mgr_funcs dcn21_funcs = {
-	.get_dp_ref_clk_frequency = dcn10_get_dp_ref_freq_khz,
+	.get_dp_ref_clk_frequency = dce12_get_dp_ref_freq_khz,
 	.update_clocks = rn_update_clocks,
 	.init_clocks = rn_init_clocks,
 	.enable_pme_wa = rn_enable_pme_wa,
@@ -771,7 +770,7 @@ void rn_clk_mgr_construct(
 	rn_dump_clk_registers(&clk_mgr->base.boot_snapshot, &clk_mgr->base, &log_info);
 
 	clk_mgr->base.dprefclk_khz = 600000;
-	dcn10_clock_read_ss_info(clk_mgr);
+	dce_clock_read_ss_info(clk_mgr);
 
 
 	clk_mgr->base.bw_params = &rn_bw_params;

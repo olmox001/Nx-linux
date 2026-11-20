@@ -77,7 +77,8 @@ static int sgi_w1_probe(struct platform_device *pdev)
 	struct sgi_w1_device *sdev;
 	struct sgi_w1_platform_data *pdata;
 
-	sdev = devm_kzalloc_obj(&pdev->dev, struct sgi_w1_device);
+	sdev = devm_kzalloc(&pdev->dev, sizeof(struct sgi_w1_device),
+			    GFP_KERNEL);
 	if (!sdev)
 		return -ENOMEM;
 

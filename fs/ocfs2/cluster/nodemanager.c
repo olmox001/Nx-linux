@@ -12,9 +12,9 @@
 #include "tcp.h"
 #include "nodemanager.h"
 #include "heartbeat.h"
-#include "quorum.h"
 #include "masklog.h"
 #include "sys.h"
+#include "ver.h"
 
 /* for now we operate under the assertion that there can be only one
  * cluster active at a time.  Changing this will require trickling
@@ -627,11 +627,8 @@ static void o2nm_node_group_drop_item(struct config_group *group,
 
 	write_lock(&cluster->cl_nodes_lock);
 
-	/*
-	 * 0.0.0.0 is a valid configured address, so nd_ipv4_address does
-	 * not tell us whether nd_ip_node was published in the IP tree.
-	 */
-	if (test_bit(O2NM_NODE_ATTR_ADDRESS, &node->nd_set_attributes))
+	/* XXX sloppy */
+	if (node->nd_ipv4_address)
 		rb_erase(&node->nd_ip_node, &cluster->cl_node_ip_tree);
 
 	/* nd_num might be 0 if the node number hasn't been set.. */
@@ -744,8 +741,6 @@ static void o2nm_cluster_group_drop_item(struct config_group *group, struct conf
 	struct o2nm_cluster *cluster = to_o2nm_cluster(item);
 
 	BUG_ON(o2nm_single_cluster != cluster);
-	/* Drain quorum work before it loses access to the cluster. */
-	o2quo_flush_work();
 	o2nm_single_cluster = NULL;
 
 	configfs_remove_default_groups(&cluster->cl_group);
@@ -854,6 +849,8 @@ static int __init init_o2nm(void)
 {
 	int ret;
 
+	cluster_print_version();
+
 	o2hb_init();
 
 	ret = o2net_init();
@@ -889,7 +886,6 @@ out:
 
 MODULE_AUTHOR("Oracle");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("OCFS2 cluster management");
 
 module_init(init_o2nm)
 module_exit(exit_o2nm)

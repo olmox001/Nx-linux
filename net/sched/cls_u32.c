@@ -1482,8 +1482,7 @@ static int u32_dump(struct net *net, struct tcf_proto *tp, void *fh,
 #endif
 	}
 
-	if (nla_nest_end_safe(skb, nest) < 0)
-		goto nla_put_failure;
+	nla_nest_end(skb, nest);
 
 	if (TC_U32_KEY(n->handle))
 		if (tcf_exts_dump_stats(skb, &n->exts) < 0)

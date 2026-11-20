@@ -579,11 +579,11 @@ int audio_graph_parse_of(struct simple_util_priv *priv, struct device *dev)
 		goto end;
 	}
 
-	ret = simple_util_parse_widgets(priv, NULL);
+	ret = simple_util_parse_widgets(card, NULL);
 	if (ret < 0)
 		goto end;
 
-	ret = simple_util_parse_routing(priv, NULL);
+	ret = simple_util_parse_routing(card, NULL);
 	if (ret < 0)
 		goto end;
 
@@ -594,7 +594,6 @@ int audio_graph_parse_of(struct simple_util_priv *priv, struct device *dev)
 	if (ret < 0)
 		goto err;
 
-	/* Card name should be set after graph_for_each_link() */
 	ret = simple_util_parse_card_name(priv, NULL);
 	if (ret < 0)
 		goto err;
@@ -604,13 +603,14 @@ int audio_graph_parse_of(struct simple_util_priv *priv, struct device *dev)
 	simple_util_debug_info(priv);
 
 	ret = devm_snd_soc_register_card(dev, card);
+	if (ret < 0)
+		goto err;
+
+	return 0;
 err:
-	if (ret < 0) {
-		simple_util_clean_reference(priv);
-		return dev_err_probe(dev, ret, "parse error\n");
-	}
+	simple_util_clean_reference(card);
 end:
-	return graph_ret(priv, ret);
+	return dev_err_probe(dev, ret, "parse error\n");
 }
 EXPORT_SYMBOL_GPL(audio_graph_parse_of);
 
@@ -621,7 +621,7 @@ static int graph_probe(struct platform_device *pdev)
 	struct snd_soc_card *card;
 
 	/* Allocate the private data and the DAI link array */
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -629,7 +629,6 @@ static int graph_probe(struct platform_device *pdev)
 	card->dapm_widgets	= graph_dapm_widgets;
 	card->num_dapm_widgets	= ARRAY_SIZE(graph_dapm_widgets);
 	card->probe		= graph_util_card_probe;
-	card->remove		= graph_util_card_remove;
 
 	if (of_device_get_match_data(dev))
 		priv->dpcm_selectable = 1;

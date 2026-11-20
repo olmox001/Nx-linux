@@ -544,7 +544,7 @@ static int ucs1002_probe(struct i2c_client *client)
 	struct ucs1002_info *info;
 	unsigned int regval;
 
-	info = devm_kzalloc_obj(dev, *info);
+	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
@@ -651,15 +651,21 @@ static int ucs1002_probe(struct i2c_client *client)
 						ucs1002_charger_irq,
 						IRQF_ONESHOT,
 						"ucs1002-a_det", info);
-		if (ret)
+		if (ret) {
+			dev_err(dev, "Failed to request A_DET threaded irq: %d\n",
+				ret);
 			return ret;
+		}
 	}
 
 	if (irq_alert > 0) {
 		ret = devm_request_irq(dev, irq_alert, ucs1002_alert_irq,
 				       0,"ucs1002-alert", info);
-		if (ret)
+		if (ret) {
+			dev_err(dev, "Failed to request ALERT threaded irq: %d\n",
+				ret);
 			return ret;
+		}
 	}
 
 	return 0;

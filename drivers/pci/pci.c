@@ -17,7 +17,6 @@
 #include <linux/lockdep.h>
 #include <linux/msi.h>
 #include <linux/of.h>
-#include <linux/of_pci.h>
 #include <linux/pci.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
@@ -714,28 +713,6 @@ u16 pci_find_dvsec_capability(struct pci_dev *dev, u16 vendor, u16 dvsec)
 }
 EXPORT_SYMBOL_GPL(pci_find_dvsec_capability);
 
-static bool pci_dev_config_accessible(struct pci_dev *dev, char *msg)
-{
-	u32 val;
-
-	/*
-	 * If a device's config space is inaccessible, reads typically
-	 * return ~0.  Since Device and Vendor ID are always ~0 for VFs,
-	 * check the Command and Status registers instead.
-	 *
-	 * N.B. This is racy because the device may become inaccessible
-	 * before the next access.
-	 */
-	pci_read_config_dword(dev, PCI_COMMAND, &val);
-	if (PCI_POSSIBLE_ERROR(val)) {
-		pci_warn(dev, "Device config space inaccessible; unable to %s\n",
-				msg);
-		return false;
-	}
-
-	return true;
-}
-
 /**
  * pci_find_parent_resource - return resource region of parent bus of given
  *			      region
@@ -1135,16 +1112,6 @@ static inline bool platform_pci_bridge_d3(struct pci_dev *dev)
 		return false;
 
 	return acpi_pci_bridge_d3(dev);
-}
-
-void platform_pci_configure_wake(struct pci_dev *dev)
-{
-	pci_configure_of_wake_gpio(dev);
-}
-
-void platform_pci_remove_wake(struct pci_dev *dev)
-{
-	pci_remove_of_wake_gpio(dev);
 }
 
 /**
@@ -1741,24 +1708,6 @@ static void pci_restore_pcie_state(struct pci_dev *dev)
 	pcie_capability_write_word(dev, PCI_EXP_DEVCTL2, cap[i++]);
 	pcie_capability_write_word(dev, PCI_EXP_LNKCTL2, cap[i++]);
 	pcie_capability_write_word(dev, PCI_EXP_SLTCTL2, cap[i++]);
-}
-
-/*
- * Update the saved copy of the Device Control register after changing it, so
- * that pci_restore_state() doesn't put back a stale value.  Device Control is
- * the first register saved by pci_save_pcie_state().
- */
-static void pcie_update_saved_devctl(struct pci_dev *dev, u16 clear, u16 set)
-{
-	struct pci_cap_saved_state *save_state;
-	u16 *devctl;
-
-	save_state = pci_find_saved_cap(dev, PCI_CAP_ID_EXP);
-	if (!save_state)
-		return;
-
-	devctl = (u16 *)&save_state->cap.data[0];
-	*devctl = (*devctl & ~clear) | set;
 }
 
 static int pci_save_pcix_state(struct pci_dev *dev)
@@ -3078,11 +3027,11 @@ bool pci_bridge_d3_possible(struct pci_dev *bridge)
 			return true;
 
 		/*
-		 * Hotplug ports handled natively by the OS on x86 platforms
-		 * were not validated by vendors for runtime D3 at least until
-		 * 2018 because there was no OS support.
+		 * Hotplug ports handled natively by the OS were not validated
+		 * by vendors for runtime D3 at least until 2018 because there
+		 * was no OS support.
 		 */
-		if (IS_ENABLED(CONFIG_X86) && bridge->is_pciehp)
+		if (bridge->is_pciehp)
 			return false;
 
 		if (dmi_check_system(bridge_d3_blacklist))
@@ -3280,15 +3229,7 @@ void pci_pm_init(struct pci_dev *dev)
 	}
 
 poweron:
-	pci_update_current_state(dev, PCI_UNKNOWN);
-	if (dev->current_state == PCI_D0) {
-		/* No need for full power-up, just sync-up platform state */
-		platform_pci_set_power_state(dev, PCI_D0);
-	} else {
-		/* Power up the device and restore BARs if necessary */
-		pci_set_full_power_state(dev, false);
-	}
-	pci_update_current_state(dev, PCI_D0);
+	pci_pm_power_up_and_verify_state(dev);
 	pm_runtime_forbid(&dev->dev);
 
 	/*
@@ -4442,9 +4383,6 @@ int pcie_flr(struct pci_dev *dev)
 {
 	int ret;
 
-	if (!pci_dev_config_accessible(dev, "FLR"))
-		return -ENOTTY;
-
 	if (!pci_wait_for_pending_transaction(dev))
 		pci_err(dev, "timed out waiting for pending transaction; performing function level reset anyway\n");
 
@@ -4923,19 +4861,6 @@ void pci_reset_secondary_bus(struct pci_dev *dev)
 
 void __weak pcibios_reset_secondary_bus(struct pci_dev *dev)
 {
-	struct pci_host_bridge *host = pci_find_host_bridge(dev->bus);
-	int ret;
-
-	if (pci_is_root_bus(dev->bus) && host->reset_root_port) {
-		ret = host->reset_root_port(host, dev);
-		if (ret)
-			pci_err(dev, "Failed to reset Root Port: %d\n", ret);
-		else
-			pci_restore_state(dev);
-
-		return;
-	}
-
 	pci_reset_secondary_bus(dev);
 }
 
@@ -5153,9 +5078,6 @@ static void pci_dev_save_and_disable(struct pci_dev *dev)
 	 * to a non-D0 state anyway.
 	 */
 	pci_set_power_state(dev, PCI_D0);
-
-	if (!pci_dev_config_accessible(dev, "save state"))
-		return;
 
 	pci_save_state(dev);
 	/*
@@ -5786,7 +5708,6 @@ int pci_bus_error_reset(struct pci_dev *bridge)
 {
 	return pci_reset_bridge(bridge, PCI_RESET_NO_RESTORE);
 }
-EXPORT_SYMBOL_GPL(pci_bus_error_reset);
 
 int pci_try_reset_bridge(struct pci_dev *bridge)
 {
@@ -6016,12 +5937,8 @@ int pcie_set_mps(struct pci_dev *dev, int mps)
 
 	ret = pcie_capability_clear_and_set_word(dev, PCI_EXP_DEVCTL,
 						  PCI_EXP_DEVCTL_PAYLOAD, v);
-	if (ret)
-		return pcibios_err_to_errno(ret);
 
-	pcie_update_saved_devctl(dev, PCI_EXP_DEVCTL_PAYLOAD, v);
-
-	return 0;
+	return pcibios_err_to_errno(ret);
 }
 EXPORT_SYMBOL(pcie_set_mps);
 
@@ -6030,31 +5947,18 @@ static enum pci_bus_speed to_pcie_link_speed(u16 lnksta)
 	return pcie_link_speed[FIELD_GET(PCI_EXP_LNKSTA_CLS, lnksta)];
 }
 
-/**
- * pcie_link_bandwidth_mbps - get the current bandwidth of a single PCIe link
- * @pdev: PCI device to query
- *
- * The bandwidth includes all negotiated lanes and does not account for
- * encoding overhead. A negotiated width of zero gives zero bandwidth.
- *
- * Return: Bandwidth in Mb/s, or a negative errno on failure.
- */
-int pcie_link_bandwidth_mbps(struct pci_dev *pdev)
+int pcie_link_speed_mbps(struct pci_dev *pdev)
 {
 	u16 lnksta;
-	int speed, err;
+	int err;
 
 	err = pcie_capability_read_word(pdev, PCI_EXP_LNKSTA, &lnksta);
 	if (err)
-		return pcibios_err_to_errno(err);
+		return err;
 
-	speed = pcie_dev_speed_mbps(to_pcie_link_speed(lnksta));
-	if (speed < 0)
-		return speed;
-
-	return speed * FIELD_GET(PCI_EXP_LNKSTA_NLW, lnksta);
+	return pcie_dev_speed_mbps(to_pcie_link_speed(lnksta));
 }
-EXPORT_SYMBOL(pcie_link_bandwidth_mbps);
+EXPORT_SYMBOL(pcie_link_speed_mbps);
 
 /**
  * pcie_bandwidth_available - determine minimum link settings of a PCIe

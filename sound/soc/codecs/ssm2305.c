@@ -59,7 +59,7 @@ static int ssm2305_probe(struct platform_device *pdev)
 	struct ssm2305 *priv;
 
 	/* Allocate the private data */
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

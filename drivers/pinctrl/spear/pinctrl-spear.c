@@ -360,7 +360,7 @@ int spear_pinctrl_probe(struct platform_device *pdev,
 	if (!machdata)
 		return -ENODEV;
 
-	pmx = devm_kzalloc_obj(&pdev->dev, *pmx);
+	pmx = devm_kzalloc(&pdev->dev, sizeof(*pmx), GFP_KERNEL);
 	if (!pmx)
 		return -ENOMEM;
 

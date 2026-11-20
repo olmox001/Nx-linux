@@ -306,7 +306,7 @@ nouveau_abi16_ioctl_getparam(ABI16_IOCTL_ARGS)
 		getparam->value = 1;
 		break;
 	case NOUVEAU_GETPARAM_GRAPH_UNITS:
-		getparam->value = gr ? nvkm_gr_units(gr) : 0;
+		getparam->value = nvkm_gr_units(gr);
 		break;
 	case NOUVEAU_GETPARAM_EXEC_PUSH_MAX: {
 		int ib_max = getparam_dma_ib_max(device);
@@ -408,9 +408,6 @@ nouveau_abi16_ioctl_channel_alloc(ABI16_IOCTL_ARGS)
 			case NOUVEAU_FIFO_ENGINE_CE:
 				engine = NV_DEVICE_HOST_RUNLIST_ENGINES_CE;
 				break;
-			case NOUVEAU_FIFO_ENGINE_NVDEC:
-				engine = NV_DEVICE_HOST_RUNLIST_ENGINES_NVDEC;
-				break;
 			default:
 				return nouveau_abi16_put(abi16, -ENOSYS);
 			}
@@ -488,13 +485,10 @@ nouveau_abi16_ioctl_channel_alloc(ABI16_IOCTL_ARGS)
 			goto done;
 		break;
 	case NV_DEVICE_INFO_V0_TURING:
-		if (engine == NV_DEVICE_HOST_RUNLIST_ENGINES_GR) {
-			ret = nvif_object_ctor(&chan->chan->user, "abi16CeWar",
-					       0, TURING_DMA_COPY_A, NULL, 0,
-					       &chan->ce);
-			if (ret)
-				goto done;
-		}
+		ret = nvif_object_ctor(&chan->chan->user, "abi16CeWar", 0, TURING_DMA_COPY_A,
+				       NULL, 0, &chan->ce);
+		if (ret)
+			goto done;
 		break;
 	default:
 		break;
@@ -664,10 +658,6 @@ nouveau_abi16_ioctl_notifierobj_alloc(ABI16_IOCTL_ARGS)
 
 	/* completely unnecessary for these chipsets... */
 	if (unlikely(device->info.family >= NV_DEVICE_INFO_V0_FERMI))
-		return nouveau_abi16_put(abi16, -EINVAL);
-
-	/* zero size yields a zero-length node, underflowing args.limit */
-	if (unlikely(!info->size))
 		return nouveau_abi16_put(abi16, -EINVAL);
 
 	chan = nouveau_abi16_chan(abi16, info->channel);

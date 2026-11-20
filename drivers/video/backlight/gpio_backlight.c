@@ -53,7 +53,7 @@ static int gpio_backlight_probe(struct platform_device *pdev)
 	struct gpio_backlight *gbl;
 	int ret, init_brightness, def_value;
 
-	gbl = devm_kzalloc_obj(dev, *gbl);
+	gbl = devm_kzalloc(dev, sizeof(*gbl), GFP_KERNEL);
 	if (gbl == NULL)
 		return -ENOMEM;
 

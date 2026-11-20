@@ -47,6 +47,21 @@ static int ext2_release_file (struct inode * inode, struct file * filp)
 	return 0;
 }
 
+int ext2_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+{
+	int ret;
+	struct inode *inode = file->f_mapping->host;
+	struct super_block *sb = inode->i_sb;
+
+	ret = mmb_fsync(file, &EXT2_I(inode)->i_metadata_bhs,
+			start, end, datasync);
+	if (ret == -EIO)
+		/* We don't really know where the IO error happened... */
+		ext2_error(sb, __func__,
+			   "detected IO error when writing metadata buffers");
+	return ret;
+}
+
 static ssize_t ext2_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct file *file = iocb->ki_filp;
@@ -55,7 +70,7 @@ static ssize_t ext2_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
 	trace_ext2_dio_read_begin(iocb, to, 0);
 	inode_lock_shared(inode);
-	ret = iomap_dio_rw(iocb, to, ext2_iomap_next, NULL, 0, NULL, 0);
+	ret = iomap_dio_rw(iocb, to, &ext2_iomap_ops, NULL, 0, NULL, 0);
 	inode_unlock_shared(inode);
 	trace_ext2_dio_read_end(iocb, to, ret);
 
@@ -119,7 +134,7 @@ static ssize_t ext2_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	   (!IS_ALIGNED(iocb->ki_pos | iov_iter_alignment(from), blocksize)))
 		flags |= IOMAP_DIO_FORCE_WAIT;
 
-	ret = iomap_dio_rw(iocb, from, ext2_iomap_next, &ext2_dio_write_ops,
+	ret = iomap_dio_rw(iocb, from, &ext2_iomap_ops, &ext2_dio_write_ops,
 			   flags, NULL, 0);
 
 	/* ENOTBLK is magic return value for fallback to buffered-io */
@@ -135,18 +150,10 @@ static ssize_t ext2_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		int ret2;
 
 		iocb->ki_flags &= ~IOCB_DIRECT;
-
-		/*
-		 * Prevent concurrent direct I/O and buffered I/O to the same file
-		 * range. Wait for in-flight DIO to finish before dirtying pages.
-		 */
-		inode_dio_wait(inode);
-
 		pos = iocb->ki_pos;
 		status = generic_perform_write(iocb, from);
 		if (unlikely(status < 0)) {
-			if (!ret)
-				ret = status;
+			ret = status;
 			goto out_unlock;
 		}
 
@@ -206,7 +213,7 @@ const struct file_operations ext2_file_operations = {
 	.mmap_prepare	= generic_file_mmap_prepare,
 	.open		= ext2_file_open,
 	.release	= ext2_release_file,
-	.fsync		= simple_fsync,
+	.fsync		= ext2_fsync,
 	.get_unmapped_area = thp_get_unmapped_area,
 	.splice_read	= filemap_splice_read,
 	.splice_write	= iter_file_splice_write,

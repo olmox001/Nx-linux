@@ -286,7 +286,7 @@ static int letsketch_probe(struct hid_device *hdev, const struct hid_device_id *
 	if (ret)
 		return ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

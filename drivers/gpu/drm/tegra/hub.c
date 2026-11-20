@@ -759,7 +759,6 @@ struct drm_plane *tegra_shared_plane_create(struct drm_device *drm,
 					    unsigned int index,
 					    enum drm_plane_type type)
 {
-	unsigned int blend_caps = BIT(DRM_MODE_BLEND_COVERAGE);
 	struct tegra_drm *tegra = drm->dev_private;
 	struct tegra_display_hub *hub = tegra->hub;
 	struct tegra_shared_plane *plane;
@@ -798,7 +797,6 @@ struct drm_plane *tegra_shared_plane_create(struct drm_device *drm,
 	}
 
 	drm_plane_helper_add(p, &tegra_shared_plane_helper_funcs);
-	drm_plane_create_blend_mode_property(p, blend_caps);
 	drm_plane_create_zpos_property(p, 0, 0, 255);
 
 	return p;
@@ -1074,7 +1072,7 @@ static int tegra_display_hub_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	hub = devm_kzalloc_obj(&pdev->dev, *hub);
+	hub = devm_kzalloc(&pdev->dev, sizeof(*hub), GFP_KERNEL);
 	if (!hub)
 		return -ENOMEM;
 
@@ -1106,8 +1104,8 @@ static int tegra_display_hub_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	hub->wgrps = devm_kzalloc_objs(&pdev->dev, *hub->wgrps,
-				       hub->soc->num_wgrps);
+	hub->wgrps = devm_kcalloc(&pdev->dev, hub->soc->num_wgrps,
+				  sizeof(*hub->wgrps), GFP_KERNEL);
 	if (!hub->wgrps)
 		return -ENOMEM;
 
@@ -1131,7 +1129,8 @@ static int tegra_display_hub_probe(struct platform_device *pdev)
 
 	hub->num_heads = of_get_child_count(pdev->dev.of_node);
 
-	hub->clk_heads = devm_kzalloc_objs(&pdev->dev, clk, hub->num_heads);
+	hub->clk_heads = devm_kcalloc(&pdev->dev, hub->num_heads, sizeof(clk),
+				      GFP_KERNEL);
 	if (!hub->clk_heads)
 		return -ENOMEM;
 

@@ -103,7 +103,7 @@ static int ltq_mm_probe(struct platform_device *pdev)
 	struct ltq_mm *chip;
 	u32 shadow;
 
-	chip = devm_kzalloc_obj(&pdev->dev, *chip);
+	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

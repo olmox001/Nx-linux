@@ -238,7 +238,7 @@ static int dio48e_probe(struct device *dev, unsigned int id)
 		return -EBUSY;
 	}
 
-	dio48egpio = devm_kzalloc_obj(dev, *dio48egpio);
+	dio48egpio = devm_kzalloc(dev, sizeof(*dio48egpio), GFP_KERNEL);
 	if (!dio48egpio)
 		return -ENOMEM;
 
@@ -290,7 +290,7 @@ static int dio48e_probe(struct device *dev, unsigned int id)
 		return dev_err_probe(dev, PTR_ERR(pit_config.map),
 				     "Unable to initialize i8254 register map\n");
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

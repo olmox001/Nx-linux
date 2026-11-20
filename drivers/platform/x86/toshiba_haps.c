@@ -136,7 +136,9 @@ static void toshiba_haps_notify(acpi_handle handle, u32 event, void *data)
 
 	pr_debug("Received event: 0x%x\n", event);
 
-	acpi_bus_generate_netlink_event("", dev_name(&device->dev), event, 0);
+	acpi_bus_generate_netlink_event(device->pnp.device_class,
+					dev_name(&device->dev),
+					event, 0);
 }
 
 static void toshiba_haps_remove(struct platform_device *pdev)
@@ -196,7 +198,7 @@ static int toshiba_haps_probe(struct platform_device *pdev)
 
 	pr_info("Toshiba HDD Active Protection Sensor device\n");
 
-	haps = devm_kzalloc_obj(&pdev->dev, *haps);
+	haps = devm_kzalloc(&pdev->dev, sizeof(*haps), GFP_KERNEL);
 	if (!haps)
 		return -ENOMEM;
 
@@ -244,13 +246,18 @@ static int toshiba_haps_suspend(struct device *device)
 static int toshiba_haps_resume(struct device *device)
 {
 	struct toshiba_haps_dev *haps = dev_get_drvdata(device);
+	int ret;
 
 	/* Set the stored protection level */
-	toshiba_haps_protection_level(haps->acpi_dev->handle,
-				      haps->protection_level);
+	ret = toshiba_haps_protection_level(haps->acpi_dev->handle,
+					    haps->protection_level);
 
 	/* Reset the protection on resume */
-	return toshiba_haps_reset_protection(haps->acpi_dev->handle);
+	ret = toshiba_haps_reset_protection(haps->acpi_dev->handle);
+	if (ret != 0)
+		return ret;
+
+	return ret;
 }
 #endif
 

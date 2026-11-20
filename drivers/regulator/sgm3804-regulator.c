@@ -231,7 +231,7 @@ static int sgm3804_probe(struct i2c_client *i2c)
 	struct sgm3804_data *ctx;
 	int ret, i;
 
-	ctx = devm_kzalloc_obj(dev, *ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -285,7 +285,7 @@ static int sgm3804_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id sgm3804_id[] = {
-	{ .name = "sgm3804" },
+	{ "sgm3804" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, sgm3804_id);

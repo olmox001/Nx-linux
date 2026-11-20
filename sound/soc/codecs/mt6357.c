@@ -1808,7 +1808,7 @@ static int mt6357_platform_driver_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "Failed to enable vaud28 regulator\n");
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -1834,8 +1834,8 @@ static int mt6357_platform_driver_probe(struct platform_device *pdev)
 }
 
 static const struct platform_device_id mt6357_platform_ids[] = {
-	{ .name = "mt6357-sound" },
-	{ /* sentinel */ }
+	{"mt6357-sound", 0},
+	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(platform, mt6357_platform_ids);
 

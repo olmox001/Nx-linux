@@ -240,7 +240,8 @@ static int max77826_i2c_probe(struct i2c_client *client)
 	struct regmap *regmap;
 	int i;
 
-	info = devm_kzalloc_obj(dev, struct max77826_regulator_info);
+	info = devm_kzalloc(dev, sizeof(struct max77826_regulator_info),
+				GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
@@ -277,7 +278,7 @@ static const struct of_device_id __maybe_unused max77826_of_match[] = {
 MODULE_DEVICE_TABLE(of, max77826_of_match);
 
 static const struct i2c_device_id max77826_id[] = {
-	{ .name = "max77826-regulator" },
+	{ "max77826-regulator" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, max77826_id);

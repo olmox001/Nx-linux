@@ -635,7 +635,8 @@ static int make_resync_request(struct drbd_peer_device *const peer_device, int c
 			int sndbuf = sk->sk_sndbuf;
 			if (queued > sndbuf / 2) {
 				requeue = 1;
-				sk_set_nospace(sk);
+				if (sk->sk_socket)
+					set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 			}
 		} else
 			requeue = 1;

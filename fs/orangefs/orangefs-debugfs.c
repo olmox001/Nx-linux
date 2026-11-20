@@ -238,7 +238,7 @@ void orangefs_debugfs_init(int debug_mask)
 static void orangefs_kernel_debug_init(void)
 {
 	static char k_buffer[ORANGEFS_MAX_DEBUG_STRING_LEN] = { };
-	ssize_t len =
+	size_t len =
 		strscpy(k_buffer, kernel_debug_string, sizeof(k_buffer) - 1);
 
 	if (len > 0) {
@@ -246,8 +246,7 @@ static void orangefs_kernel_debug_init(void)
 		k_buffer[len + 1] = '\0';
 	} else {
 		strscpy(k_buffer, "none\n");
-		if (len <0)
-			pr_info("%s: overflow 1!\n", __func__);
+		pr_info("%s: overflow 1!\n", __func__);
 	}
 
 	debugfs_create_file_aux_num(ORANGEFS_KMOD_DEBUG_FILE, 0444, debug_dir, k_buffer,
@@ -338,7 +337,7 @@ static int help_show(struct seq_file *m, void *v)
 static void orangefs_client_debug_init(void)
 {
 	static char c_buffer[ORANGEFS_MAX_DEBUG_STRING_LEN] = { };
-	ssize_t len =
+	size_t len =
 		strscpy(c_buffer, client_debug_string, sizeof(c_buffer) - 1);
 
 	if (len > 0) {
@@ -346,8 +345,7 @@ static void orangefs_client_debug_init(void)
 		c_buffer[len + 1] = '\0';
 	} else {
 		strscpy(c_buffer, "none\n");
-		if (len <0)
-			pr_info("%s: overflow! 2\n", __func__);
+		pr_info("%s: overflow! 2\n", __func__);
 	}
 
 	client_debug_dentry = debugfs_create_file_aux_num(

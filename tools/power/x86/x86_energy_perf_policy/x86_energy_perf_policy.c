@@ -9,22 +9,17 @@
  */
 
 #define _GNU_SOURCE
-/*
- * MSRHEADER macro should be defined by the build system to include the
- * appropriate MSR definitions header file. Typical usage:
- * gcc -DMSRHEADER=\"msr-index.h\" or similar platform-specific MSR header
- */
-#include MSRHEADER  /* e.g., msr-index.h with MSR_* constant definitions */
+#include MSRHEADER
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sched.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <sys/resource.h>
 #include <getopt.h>
 #include <err.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/time.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -37,13 +32,6 @@
 #define	OPTARG_BALANCE_POWER		(INT_MAX - 3)
 #define	OPTARG_BALANCE_PERFORMANCE	(INT_MAX - 4)
 #define	OPTARG_PERFORMANCE		(INT_MAX - 5)
-
-/* Maximum HWP activity window duration in microseconds */
-#define HWP_WINDOW_MAX_USEC 1270000000U
-
-/* Nominal bus clock frequency in MHz - assumed for all HWP systems */
-#define BCLK_MHZ 100
-#define KHZ_PER_MHZ 1000
 
 struct msr_hwp_cap {
 	unsigned char highest;
@@ -110,7 +98,6 @@ unsigned char update_platform_profile;
 int soc_slider_balance;
 int soc_slider_offset;
 char platform_profile[64];
-char msr_path[64];
 
 #define PATH_TO_CPU "/sys/devices/system/cpu/"
 #define SYSFS_PATH_MAX 255
@@ -152,13 +139,11 @@ void usage(void)
 int ratio_2_msr_perf(int ratio)
 {
 	int msr_perf;
-	unsigned long long temp;
 
 	if (!bdx_highest_ratio)
 		return ratio;
 
-	temp = (unsigned long long)ratio * 255;
-	msr_perf = temp / bdx_highest_ratio;
+	msr_perf = ratio * 255 / bdx_highest_ratio;
 
 	if (debug)
 		fprintf(stderr, "%d = ratio_to_msr_perf(%d)\n", msr_perf, ratio);
@@ -204,7 +189,7 @@ int parse_cmdline_epb(int i)
 		return ENERGY_PERF_BIAS_PERFORMANCE;
 	}
 	if (i < 0 || i > ENERGY_PERF_BIAS_POWERSAVE)
-		errx(1, "--epb must be 0 through 15");
+		errx(1, "--epb must be from 0 to 15");
 	return i;
 }
 
@@ -270,7 +255,7 @@ int parse_cmdline_hwp_desired(int i)
 	return i;
 }
 
-unsigned int parse_cmdline_hwp_window(unsigned int i)
+int parse_cmdline_hwp_window(int i)
 {
 	unsigned int exponent;
 
@@ -284,13 +269,13 @@ unsigned int parse_cmdline_hwp_window(unsigned int i)
 	case OPTARG_PERFORMANCE:
 		return 0;
 	}
-	if (i > HWP_WINDOW_MAX_USEC) {
-		fprintf(stderr, "--hwp-window: 0 for auto; 1 - %u usec for window duration\n", HWP_WINDOW_MAX_USEC);
+	if (i < 0 || i > 1270000000) {
+		fprintf(stderr, "--hwp-window: 0 for auto; 1 - 1270000000 usec for window duration\n");
 		usage();
 	}
 	for (exponent = 0;; ++exponent) {
 		if (debug)
-			printf("%u 10^%d\n", i, exponent);
+			printf("%d 10^%d\n", i, exponent);
 
 		if (i <= 127)
 			break;
@@ -298,7 +283,7 @@ unsigned int parse_cmdline_hwp_window(unsigned int i)
 		i = i / 10;
 	}
 	if (debug)
-		fprintf(stderr, "%u*10^%d: 0x%x\n", i, exponent, (exponent << 7) | i);
+		fprintf(stderr, "%d*10^%d: 0x%x\n", i, exponent, (exponent << 7) | i);
 
 	return (exponent << 7) | i;
 }
@@ -318,8 +303,8 @@ int parse_cmdline_hwp_epp(int i)
 	case OPTARG_PERFORMANCE:
 		return HWP_EPP_PERFORMANCE;
 	}
-	if (i < 0 || i > 255) {
-		fprintf(stderr, "--hwp-epp must be 0 through 255\n");
+	if (i < 0 || i > 0xff) {
+		fprintf(stderr, "--hwp-epp must be from 0 to 0xff\n");
 		usage();
 	}
 	return i;
@@ -345,36 +330,42 @@ int parse_cmdline_turbo(int i)
 	return i;
 }
 
-long parse_optarg_string(const char *s)
+int parse_optarg_string(char *s)
 {
-	long i;
+	int i;
 	char *endptr;
 
-	if (strcmp(s, "default") == 0)
+	if (!strncmp(s, "default", 7))
 		return OPTARG_NORMAL;
 
-	if (strcmp(s, "normal") == 0)
+	if (!strncmp(s, "normal", 6))
 		return OPTARG_NORMAL;
 
-	if (strcmp(s, "power") == 0)
+	if (!strncmp(s, "power", 9))
 		return OPTARG_POWER;
 
-	if (strcmp(s, "balance-power") == 0)
+	if (!strncmp(s, "balance-power", 17))
 		return OPTARG_BALANCE_POWER;
 
-	if (strcmp(s, "balance-performance") == 0)
+	if (!strncmp(s, "balance-performance", 19))
 		return OPTARG_BALANCE_PERFORMANCE;
 
-	if (strcmp(s, "performance") == 0)
+	if (!strncmp(s, "performance", 11))
 		return OPTARG_PERFORMANCE;
 
-	errno = 0;
 	i = strtol(s, &endptr, 0);
-	if (endptr == s || errno == ERANGE || i < 0 || i > 255) {
-		warnx("bad value \"%s\"", s);
+	if (s == endptr) {
+		fprintf(stderr, "no digits in \"%s\"\n", s);
 		usage();
 	}
+	if (i == LONG_MIN || i == LONG_MAX)
+		errx(-1, "%s", s);
 
+	if (i > 0xFF)
+		errx(-1, "%d (0x%x) must be < 256", i, i);
+
+	if (i < 0)
+		errx(-1, "%d (0x%x) must be >= 0", i, i);
 	return i;
 }
 
@@ -431,10 +422,9 @@ void parse_cmdline_cpu(char *s)
 			int end_cpu;
 
 			startp++;
-			errno = 0;
 			end_cpu = strtol(startp, &endp, 10);
-			if (startp == endp || errno == ERANGE)
-				errx(1, "Confused by end_cpu '%s'", startp);
+			if (startp == endp)
+				continue;
 
 			while (cpu <= end_cpu) {
 				if (cpu > max_cpu_num)
@@ -477,11 +467,11 @@ void parse_cmdline_cpu(char *s)
 				break;
 		}
 
-		errno = 0;
 		cpu = strtol(startp, &endp, 10);
-		if (startp == endp || errno == ERANGE || cpu < 0 || cpu > max_cpu_num)
+		if (startp == endp)
 			errx(1, "--cpu cpu-set: confused by '%s'", startp);
-
+		if (cpu > max_cpu_num)
+			errx(1, "Requested cpu%d exceeds max cpu%d", cpu, max_cpu_num);
 		CPU_SET_S(cpu, cpu_setsize, cpu_selected_set);
 		startp = endp;
 	}
@@ -512,15 +502,14 @@ void parse_cmdline_pkg(char *s)
 			int end_pkg;
 
 			startp++;
-			errno = 0;
 			end_pkg = strtol(startp, &endp, 10);
-			if (startp == endp || errno == ERANGE)
-				errx(1, "Confused by end_pkg '%s'", startp);
+			if (startp == endp)
+				continue;
 
 			while (pkg <= end_pkg) {
 				if (pkg > max_pkg_num)
 					errx(1, "Requested pkg%d exceeds max pkg%d", pkg, max_pkg_num);
-				pkg_selected_set |= 1ULL << pkg;
+				pkg_selected_set |= 1 << pkg;
 				pkg++;
 			}
 			startp = endp;
@@ -532,12 +521,10 @@ void parse_cmdline_pkg(char *s)
 			return;
 		}
 
-		errno = 0;
 		pkg = strtol(startp, &endp, 10);
-		if (startp == endp || errno == ERANGE || pkg < 0 || pkg > max_pkg_num)
-			errx(1, "Confused by pkg '%s'", startp);
-
-		pkg_selected_set |= 1ULL << pkg;
+		if (pkg > max_pkg_num)
+			errx(1, "Requested pkg%d Exceeds max pkg%d", pkg, max_pkg_num);
+		pkg_selected_set |= 1 << pkg;
 		startp = endp;
 	}
 }
@@ -546,8 +533,8 @@ void for_packages(unsigned long long pkg_set, int (func) (int))
 {
 	int pkg_num;
 
-	for (pkg_num = 0; pkg_num <= max_pkg_num && pkg_num < MAX_PACKAGES; ++pkg_num) {
-		if (pkg_set & (1ULL << pkg_num))
+	for (pkg_num = 0; pkg_num <= max_pkg_num; ++pkg_num) {
+		if (pkg_set & (1UL << pkg_num))
 			func(pkg_num);
 	}
 }
@@ -557,7 +544,6 @@ static int parse_cmdline_int(const char *s, int *out)
 	char *endp;
 	long val;
 
-	errno = 0;
 	val = strtol(s, &endp, 0);
 	if (endp == s || errno == ERANGE)
 		return -1;
@@ -572,7 +558,7 @@ static int parse_cmdline_int(const char *s, int *out)
 
 void print_version(void)
 {
-	printf("x86_energy_perf_policy 2026.10.31 Len Brown <lenb@kernel.org>\n");
+	printf("x86_energy_perf_policy 2026.04.25 Len Brown <lenb@kernel.org>\n");
 }
 
 static int platform_profile_access(int mode)
@@ -586,7 +572,7 @@ static int platform_profile_access(int mode)
 	return 1;
 }
 
-static int platform_profile_name_is(const char *name)
+static int platform_profile_name_is(char *name)
 {
 	char buf[64];
 
@@ -691,7 +677,7 @@ void cmdline(int argc, char **argv)
 				errx(1, "--platform-profile: value too long");
 			if (!platform_profile_access(W_OK))
 				errx(1, "Can not update platform-profile in '%s'", PATH_PLATFORM_PROFILE);
-			snprintf(platform_profile, sizeof(platform_profile), "%s", optarg);
+			strcpy(platform_profile, optarg);
 			update_platform_profile = 1;
 			break;
 		case 'm':
@@ -726,19 +712,13 @@ void cmdline(int argc, char **argv)
 		case 't':
 			turbo_update_value = parse_cmdline_turbo(parse_optarg_string(optarg));
 			break;
-		case 'u': {
-				char *endp;
-				long val;
-
-				update_hwp_use_pkg++;
-
-				errno = 0;
-				val = strtol(optarg, &endp, 10);
-				if (endp == optarg || errno == ERANGE || val < 0 || val > 1)
-					errx(1, "--hwp-use-pkg: must be 0 or 1");
-				req_update.hwp_use_pkg = val;
-				break;
-			}
+		case 'u':
+			update_hwp_use_pkg++;
+			if (atoi(optarg) == 0)
+				req_update.hwp_use_pkg = 0;
+			else
+				req_update.hwp_use_pkg = 1;
+			break;
 		case 'v':
 			print_version();
 			exit(0);
@@ -784,10 +764,10 @@ void err_on_hypervisor(void)
 	/* On VMs /proc/cpuinfo contains a "flags" entry for hypervisor */
 	cpuinfo = fopen_or_die("/proc/cpuinfo", "r");
 
-	buffer = calloc(4096, 1);
+	buffer = malloc(4096);
 	if (!buffer) {
 		fclose(cpuinfo);
-		err(-ENOMEM, "buffer calloc fail");
+		err(-ENOMEM, "buffer malloc fail");
 	}
 
 	if (!fread(buffer, 1024, 1, cpuinfo)) {
@@ -803,11 +783,7 @@ void err_on_hypervisor(void)
 		err(1, "Failed to find 'flags' in /proc/cpuinfo");
 	}
 	rewind(cpuinfo);
-	if (fseek(cpuinfo, flags - buffer, SEEK_SET) != 0) {
-		fclose(cpuinfo);
-		free(buffer);
-		err(1, "Failed to seek in /proc/cpuinfo");
-	}
+	fseek(cpuinfo, flags - buffer, SEEK_SET);
 	if (!fgets(buffer, 4096, cpuinfo)) {
 		fclose(cpuinfo);
 		free(buffer);
@@ -816,38 +792,28 @@ void err_on_hypervisor(void)
 	fclose(cpuinfo);
 
 	hypervisor = strstr(buffer, "hypervisor");
-	if (hypervisor)
-		err(-1, "not supported on this virtual machine");
 
 	free(buffer);
-}
 
-/*
- * if (use_android_msr_path)
- *	msr_path = /dev/msr%d	// Android
- * else
- *	msr_path = /dev/cpu/%d/msr	// Linux
- */
-static void set_msr_path(int cpu)
-{
-	if (snprintf(msr_path, sizeof(msr_path), use_android_msr_path ? "/dev/msr%d" : "/dev/cpu/%d/msr", cpu) >= (int)sizeof(msr_path))
-		err(-1, "MSR path buffer overflow for cpu%d", cpu);
+	if (hypervisor)
+		err(-1, "not supported on this virtual machine");
 }
 
 int get_msr(int cpu, int offset, unsigned long long *msr)
 {
 	int retval;
+	char pathname[32];
 	int fd;
 
-	set_msr_path(cpu);
-	fd = open(msr_path, O_RDONLY);
+	sprintf(pathname, use_android_msr_path ? "/dev/msr%d" : "/dev/cpu/%d/msr", cpu);
+	fd = open(pathname, O_RDONLY);
 	if (fd < 0)
-		err(-1, "%s open failed, try chown or chmod +r, or run as root", msr_path);
+		err(-1, "%s open failed, try chown or chmod +r %s, or run as root", pathname, use_android_msr_path ? "/dev/msr*" : "/dev/cpu/*/msr");
 
 	retval = pread(fd, msr, sizeof(*msr), offset);
 	if (retval != sizeof(*msr)) {
 		err_on_hypervisor();
-		err(-1, "%s offset 0x%llx read failed", msr_path, (unsigned long long)offset);
+		err(-1, "%s offset 0x%llx read failed", pathname, (unsigned long long)offset);
 	}
 
 	if (debug > 1)
@@ -859,13 +825,14 @@ int get_msr(int cpu, int offset, unsigned long long *msr)
 
 int put_msr(int cpu, int offset, unsigned long long new_msr)
 {
+	char pathname[32];
 	int retval;
 	int fd;
 
-	set_msr_path(cpu);
-	fd = open(msr_path, O_RDWR);
+	sprintf(pathname, use_android_msr_path ? "/dev/msr%d" : "/dev/cpu/%d/msr", cpu);
+	fd = open(pathname, O_RDWR);
 	if (fd < 0)
-		err(-1, "%s open failed, try chown or chmod +w, or run as root", msr_path);
+		err(-1, "%s open failed, try chown or chmod +r %s, or run as root", pathname, use_android_msr_path ? "/dev/msr*" : "/dev/cpu/*/msr");
 
 	retval = pwrite(fd, &new_msr, sizeof(new_msr), offset);
 	if (retval != sizeof(new_msr))
@@ -900,14 +867,14 @@ static unsigned int read_sysfs(const char *path, char *buf, size_t buflen)
 	return (unsigned int)numread;
 }
 
-static int write_sysfs(const char *path, char *buf, size_t buflen)
+static unsigned int write_sysfs(const char *path, char *buf, size_t buflen)
 {
 	ssize_t numwritten;
 	int fd;
 
 	fd = open(path, O_WRONLY);
 	if (fd == -1)
-		return -1;
+		return 0;
 
 	numwritten = write(fd, buf, buflen - 1);
 	if (numwritten < 1) {
@@ -919,7 +886,7 @@ static int write_sysfs(const char *path, char *buf, size_t buflen)
 
 	close(fd);
 
-	return 0;
+	return (unsigned int)numwritten;
 }
 
 static int sysfs_read_string(const char *path, char *buf, size_t buflen)
@@ -944,7 +911,7 @@ static int sysfs_write_string(const char *path, const char *buf)
 	len = snprintf(tmp, sizeof(tmp), "%s\n", buf);
 	if (len < 0 || len >= (int)sizeof(tmp))
 		return -1;
-	return write_sysfs(path, tmp, (size_t)len + 1);
+	return write_sysfs(path, tmp, (size_t)len + 1) ? 0 : -1;
 }
 
 void print_hwp_cap(int cpu, struct msr_hwp_cap *cap, char *str)
@@ -967,7 +934,7 @@ void read_hwp_cap(int cpu, struct msr_hwp_cap *cap, unsigned int msr_offset)
 	cap->lowest = msr_perf_2_ratio(HWP_LOWEST_PERF(msr));
 }
 
-void print_hwp_request(int cpu, struct msr_hwp_request *h, const char *str)
+void print_hwp_request(int cpu, struct msr_hwp_request *h, char *str)
 {
 	if (cpu != -1)
 		printf("cpu%d: ", cpu);
@@ -979,7 +946,7 @@ void print_hwp_request(int cpu, struct msr_hwp_request *h, const char *str)
 	       h->hwp_min, h->hwp_max, h->hwp_desired, h->hwp_epp, h->hwp_window, h->hwp_window & 0x7F, (h->hwp_window >> 7) & 0x7, h->hwp_use_pkg);
 }
 
-void print_hwp_request_pkg(int pkg, struct msr_hwp_request *h, const char *str)
+void print_hwp_request_pkg(int pkg, struct msr_hwp_request *h, char *str)
 {
 	printf("pkg%d: ", pkg);
 
@@ -1037,9 +1004,8 @@ static int get_epb_sysfs(int cpu)
 	if (!read_sysfs(path, linebuf, 3))
 		return -1;
 
-	errno = 0;
 	val = strtol(linebuf, &endp, 0);
-	if (endp == linebuf || errno == ERANGE || val < 0 || val > 15)
+	if (endp == linebuf || errno == ERANGE)
 		return -1;
 
 	return (int)val;
@@ -1050,6 +1016,7 @@ static int set_epb_sysfs(int cpu, int val)
 	char path[SYSFS_PATH_MAX];
 	char linebuf[3];
 	char *endp;
+	int ret;
 
 	if (!has_epb)
 		return -1;
@@ -1057,12 +1024,12 @@ static int set_epb_sysfs(int cpu, int val)
 	snprintf(path, sizeof(path), PATH_TO_CPU "cpu%u/power/energy_perf_bias", cpu);
 	snprintf(linebuf, sizeof(linebuf), "%d", val);
 
-	if (write_sysfs(path, linebuf, 3))
+	ret = write_sysfs(path, linebuf, 3);
+	if (ret <= 0)
 		return -1;
 
-	errno = 0;
 	val = strtol(linebuf, &endp, 0);
-	if (endp == linebuf || errno == ERANGE || val < 0 || val > 15)
+	if (endp == linebuf || errno == ERANGE)
 		return -1;
 
 	return (int)val;
@@ -1172,7 +1139,7 @@ int print_pkg_msrs(int pkg)
  */
 int ratio_2_sysfs_khz(int ratio)
 {
-	int bclk_khz = BCLK_MHZ * KHZ_PER_MHZ; /* Convert MHz to KHz */
+	int bclk_khz = 100 * 1000;	/* 100,000 KHz = 100 MHz */
 
 	return ratio * bclk_khz;
 }
@@ -1188,12 +1155,12 @@ int ratio_2_sysfs_khz(int ratio)
  */
 void update_cpufreq_scaling_freq(int is_max, int cpu, unsigned int ratio)
 {
-	char pathname[96];
+	char pathname[64];
 	FILE *fp;
 	int retval;
 	int khz;
 
-	snprintf(pathname, sizeof(pathname), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_%s_freq", cpu, is_max ? "max" : "min");
+	sprintf(pathname, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_%s_freq", cpu, is_max ? "max" : "min");
 
 	fp = fopen(pathname, "w");
 	if (!fp) {
@@ -1634,41 +1601,32 @@ void set_base_cpu(void)
 		err(-ENODEV, "No valid cpus found");
 }
 
-/* return 0 if path exists */
-static int check_msr_path(void)
+static void probe_android_msr_path(void)
 {
 	struct stat sb;
+	char test_path[32];
 
-	return stat(msr_path, &sb);
+	sprintf(test_path, "/dev/msr%d", base_cpu);
+	if (stat(test_path, &sb) == 0)
+		use_android_msr_path = 1;
 }
 
-/*
- * Check Linux MSR path
- * If it fails, try modprobe and check it again
- * If still no joy, enable Android path and try again
- */
 void probe_dev_msr(void)
 {
-	int retval;
+	struct stat sb;
+	char pathname[32];
 
-	use_android_msr_path = 0;
-	set_msr_path(base_cpu);
-	if (check_msr_path() == 0)
-		return;
+	probe_android_msr_path();
 
-	retval = system("/sbin/modprobe msr > /dev/null 2>&1");
-
-	if (check_msr_path() == 0)
-		return;
-
-	use_android_msr_path = 1;
-	set_msr_path(base_cpu);
-	if (check_msr_path() == 0)
-		return;
-
-	if (WIFEXITED(retval))
-		retval = WEXITSTATUS(retval);
-	errx(-1, "\"msr\" driver support required, modprobe msr returned %d", retval);
+	sprintf(pathname, use_android_msr_path ? "/dev/msr%d" : "/dev/cpu/%d/msr", base_cpu);
+	if (stat(pathname, &sb)) {
+		if (system("/sbin/modprobe msr > /dev/null 2>&1")) {
+			if (use_android_msr_path)
+				err(-5, "no /dev/msr0, Try \"# modprobe msr\" ");
+			else
+				err(-5, "no /dev/cpu/0/msr, Try \"# modprobe msr\" ");
+		}
+	}
 }
 
 static void get_cpuid_or_exit(unsigned int leaf, unsigned int *eax, unsigned int *ebx, unsigned int *ecx, unsigned int *edx)

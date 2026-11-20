@@ -671,6 +671,21 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_OK;
 	}
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	/* Packet is too small, drop it */
+	if (unlikely(skb->len < ETH_HLEN)) {
+		if (sq->stats)
+			sq->stats->dropped++;
+
+		WARN_ONCE(1, "Packet is too small\n");
+		if (net_ratelimit())
+			netdev_warn(dev, "Packet is too small. len=%d SQ=0x%x\n",
+				    skb->len, sq->sqn);
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	/* May send SKBs and WQEs. */
 	if (unlikely(!mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
 		return NETDEV_TX_OK;
@@ -849,7 +864,7 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq, int napi_budget)
 	mlx5_cqwq_update_db_record(&cq->wq);
 
 	/* ensure cq space is freed before enabling more cqes */
-	dma_wmb();
+	wmb();
 
 	sq->dma_fifo_cc = dma_fifo_cc;
 	sq->cc = sqcc;

@@ -1074,7 +1074,8 @@ int renesas_sdhi_probe(struct platform_device *pdev,
 	if (!res)
 		return -EINVAL;
 
-	priv = devm_kzalloc_obj(&pdev->dev, struct renesas_sdhi);
+	priv = devm_kzalloc(&pdev->dev, sizeof(struct renesas_sdhi),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

@@ -7,7 +7,6 @@ NFS
    :maxdepth: 1
 
    client-identifier
-   keyring
    exporting
    localio
    pnfs

@@ -162,6 +162,7 @@ static int ahci_da850_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct ahci_host_priv *hpriv;
 	void __iomem *pwrdn_reg;
+	struct resource *res;
 	u32 mpy;
 	int rc;
 
@@ -178,7 +179,7 @@ static int ahci_da850_probe(struct platform_device *pdev)
 	 * getting procedure with the explicitly specified ids.
 	 */
 	if (hpriv->n_clks < 2) {
-		hpriv->clks = devm_kzalloc_objs(dev, *hpriv->clks, 2);
+		hpriv->clks = devm_kcalloc(dev, 2, sizeof(*hpriv->clks), GFP_KERNEL);
 		if (!hpriv->clks)
 			return -ENOMEM;
 
@@ -197,13 +198,21 @@ static int ahci_da850_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	pwrdn_reg = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(pwrdn_reg))
-		return PTR_ERR(pwrdn_reg);
-
 	rc = ahci_platform_enable_resources(hpriv);
 	if (rc)
 		return rc;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	if (!res) {
+		rc = -ENODEV;
+		goto disable_resources;
+	}
+
+	pwrdn_reg = devm_ioremap(dev, res->start, resource_size(res));
+	if (!pwrdn_reg) {
+		rc = -ENOMEM;
+		goto disable_resources;
+	}
 
 	da850_sata_init(dev, pwrdn_reg, hpriv->mmio, mpy);
 
@@ -218,8 +227,8 @@ disable_resources:
 	return rc;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(ahci_da850_pm_ops, ahci_platform_suspend,
-				ahci_platform_resume);
+static SIMPLE_DEV_PM_OPS(ahci_da850_pm_ops, ahci_platform_suspend,
+			 ahci_platform_resume);
 
 static const struct of_device_id ahci_da850_of_match[] = {
 	{ .compatible = "ti,da850-ahci", },
@@ -233,7 +242,7 @@ static struct platform_driver ahci_da850_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = ahci_da850_of_match,
-		.pm = pm_sleep_ptr(&ahci_da850_pm_ops),
+		.pm = &ahci_da850_pm_ops,
 	},
 };
 module_platform_driver(ahci_da850_driver);

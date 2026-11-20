@@ -75,8 +75,7 @@ static u32 riscv_instruction_at(void *p)
 }
 
 static void riscv_alternative_fix_auipc_jalr(void *ptr, u32 auipc_insn,
-					     u32 jalr_insn, int patch_offset,
-					     bool early)
+					     u32 jalr_insn, int patch_offset)
 {
 	u32 call[2] = { auipc_insn, jalr_insn };
 	s32 imm;
@@ -89,15 +88,10 @@ static void riscv_alternative_fix_auipc_jalr(void *ptr, u32 auipc_insn,
 	riscv_insn_insert_utype_itype_imm(&call[0], &call[1], imm);
 
 	/* patch the call place again */
-	if (early) {
-		memcpy(ptr, call, sizeof(call));
-	} else {
-		patch_text_nosync(ptr, call, sizeof(call));
-	}
+	patch_text_nosync(ptr, call, sizeof(u32) * 2);
 }
 
-static void riscv_alternative_fix_jal(void *ptr, u32 jal_insn, int patch_offset,
-				      bool early)
+static void riscv_alternative_fix_jal(void *ptr, u32 jal_insn, int patch_offset)
 {
 	s32 imm;
 
@@ -109,14 +103,11 @@ static void riscv_alternative_fix_jal(void *ptr, u32 jal_insn, int patch_offset,
 	riscv_insn_insert_jtype_imm(&jal_insn, imm);
 
 	/* patch the call place again */
-	if (early)
-		memcpy(ptr, &jal_insn, sizeof(u32));
-	else
-		patch_text_nosync(ptr, &jal_insn, sizeof(u32));
+	patch_text_nosync(ptr, &jal_insn, sizeof(u32));
 }
 
 void riscv_alternative_fix_offsets(void *alt_ptr, unsigned int len,
-				   int patch_offset, bool early)
+				      int patch_offset)
 {
 	int num_insn = len / sizeof(u32);
 	int i;
@@ -140,8 +131,7 @@ void riscv_alternative_fix_offsets(void *alt_ptr, unsigned int len,
 				continue;
 
 			riscv_alternative_fix_auipc_jalr(alt_ptr + i * sizeof(u32),
-							 insn, insn2, patch_offset,
-							 early);
+							 insn, insn2, patch_offset);
 			i++;
 		}
 
@@ -154,7 +144,7 @@ void riscv_alternative_fix_offsets(void *alt_ptr, unsigned int len,
 				continue;
 
 			riscv_alternative_fix_jal(alt_ptr + i * sizeof(u32),
-						  insn, patch_offset, early);
+						  insn, patch_offset);
 		}
 	}
 }
@@ -183,14 +173,24 @@ static void __init_or_module _apply_alternatives(struct alt_entry *begin,
 				stage);
 }
 
-static __always_inline
-void __init apply_vdso_alternatives(void *base, size_t alternatives_begin, size_t alternatives_end)
+static void __init apply_vdso_alternatives(void *start)
 {
-	if (alternatives_begin == alternatives_end)
+	const Elf_Ehdr *hdr;
+	const Elf_Shdr *shdr;
+	const Elf_Shdr *alt;
+	struct alt_entry *begin, *end;
+
+	hdr = (Elf_Ehdr *)start;
+	shdr = (void *)hdr + hdr->e_shoff;
+	alt = find_section(hdr, shdr, ".alternative");
+	if (!alt)
 		return;
 
-	_apply_alternatives(base + alternatives_begin,
-			    base + alternatives_end,
+	begin = (void *)hdr + alt->sh_offset,
+	end = (void *)hdr + alt->sh_offset + alt->sh_size,
+
+	_apply_alternatives((struct alt_entry *)begin,
+			    (struct alt_entry *)end,
 			    RISCV_ALTERNATIVES_BOOT);
 }
 
@@ -204,19 +204,10 @@ void __init apply_boot_alternatives(void)
 			    RISCV_ALTERNATIVES_BOOT);
 
 	if (IS_ENABLED(CONFIG_MMU))
-		apply_vdso_alternatives(vdso_start,
-					__vdso_alternatives_start_offset,
-					__vdso_alternatives_end_offset);
+		apply_vdso_alternatives(vdso_start);
 
 	if (IS_ENABLED(CONFIG_RISCV_USER_CFI))
-		apply_vdso_alternatives(vdso_cfi_start,
-					__vdso_alternatives_start_cfi_offset,
-					__vdso_alternatives_end_cfi_offset);
-
-	if (IS_ENABLED(CONFIG_COMPAT))
-		apply_vdso_alternatives(compat_vdso_start,
-					compat__vdso_alternatives_start_offset,
-					compat__vdso_alternatives_end_offset);
+		apply_vdso_alternatives(vdso_cfi_start);
 }
 
 /*

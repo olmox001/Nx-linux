@@ -495,39 +495,19 @@ static int tas2552_runtime_suspend(struct device *dev)
 static int tas2552_runtime_resume(struct device *dev)
 {
 	struct tas2552_data *tas2552 = dev_get_drvdata(dev);
-	int ret;
 
 	gpiod_set_value_cansleep(tas2552->enable_gpio, 1);
 
 	tas2552_sw_shutdown(tas2552, 0);
 
 	regcache_cache_only(tas2552->regmap, false);
-	ret = regcache_sync(tas2552->regmap);
-	if (ret) {
-		regcache_cache_only(tas2552->regmap, true);
-		regcache_mark_dirty(tas2552->regmap);
-		tas2552_sw_shutdown(tas2552, 1);
-		gpiod_set_value_cansleep(tas2552->enable_gpio, 0);
-		return ret;
-	}
+	regcache_sync(tas2552->regmap);
 
 	return 0;
 }
 
 static const struct dev_pm_ops tas2552_pm = {
 	RUNTIME_PM_OPS(tas2552_runtime_suspend, tas2552_runtime_resume, NULL)
-};
-
-static const u64 tas2552_selectable_formats[] = {
-	/* Hi Priority */
-	SND_SOC_POSSIBLE_DAIFMT_I2S	|
-	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_NF,
-	/* Low Priority */
-	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
-	SND_SOC_POSSIBLE_DAIFMT_DSP_B	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_NF,
 };
 
 static const struct snd_soc_dai_ops tas2552_speaker_dai_ops = {
@@ -537,8 +517,6 @@ static const struct snd_soc_dai_ops tas2552_speaker_dai_ops = {
 	.set_fmt	= tas2552_set_dai_fmt,
 	.set_tdm_slot	= tas2552_set_dai_tdm_slot,
 	.mute_stream	= tas2552_mute,
-	.auto_selectable_formats	= tas2552_selectable_formats,
-	.num_auto_selectable_formats	= ARRAY_SIZE(tas2552_selectable_formats),
 	.no_capture_mute = 1,
 };
 
@@ -714,7 +692,7 @@ static int tas2552_probe(struct i2c_client *client)
 	int i;
 
 	dev = &client->dev;
-	data = devm_kzalloc_obj(&client->dev, *data);
+	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
 	if (data == NULL)
 		return -ENOMEM;
 

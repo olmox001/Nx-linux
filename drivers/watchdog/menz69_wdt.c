@@ -8,7 +8,6 @@
 #include <linux/kernel.h>
 #include <linux/mcb.h>
 #include <linux/module.h>
-#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 struct men_z069_drv {
@@ -30,7 +29,7 @@ struct men_z069_drv {
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-			    __stringify(WATCHDOG_NOWAYOUT) ")");
+			    __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 static int men_z069_wdt_start(struct watchdog_device *wdt)
 {
@@ -105,7 +104,7 @@ static int men_z069_probe(struct mcb_device *dev,
 	struct men_z069_drv *drv;
 	struct resource *mem;
 
-	drv = devm_kzalloc_obj(&dev->dev, struct men_z069_drv);
+	drv = devm_kzalloc(&dev->dev, sizeof(struct men_z069_drv), GFP_KERNEL);
 	if (!drv)
 		return -ENOMEM;
 

@@ -553,6 +553,19 @@ static void rockchip_pcie_ep_link_training(struct work_struct *work)
 	if (ret)
 		goto again;
 
+	/*
+	 * Check the current speed: if gen2 speed was requested and we are not
+	 * at gen2 speed yet, retrain again for gen2.
+	 */
+	val = rockchip_pcie_read(rockchip, PCIE_CORE_CTRL);
+	if (!PCIE_LINK_IS_GEN2(val) && rockchip->link_gen == 2) {
+		/* Enable retrain for gen2 */
+		rockchip_pcie_ep_retrain_link(rockchip);
+		readl_poll_timeout(rockchip->apb_base + PCIE_CORE_CTRL,
+				   val, PCIE_LINK_IS_GEN2(val), 50,
+				   LINK_TRAIN_TIMEOUT);
+	}
+
 	/* Check again that the link is up */
 	if (!rockchip_pcie_ep_link_up(rockchip))
 		goto again;
@@ -748,13 +761,14 @@ static int rockchip_pcie_ep_init_ob_mem(struct rockchip_pcie_ep *ep)
 	struct pci_epc_mem_window *windows = NULL;
 	int err, i;
 
-	ep->ob_addr = devm_kzalloc_objs(dev, *ep->ob_addr, ep->max_regions);
+	ep->ob_addr = devm_kcalloc(dev, ep->max_regions, sizeof(*ep->ob_addr),
+				   GFP_KERNEL);
 
 	if (!ep->ob_addr)
 		return -ENOMEM;
 
-	windows = devm_kzalloc_objs(dev, struct pci_epc_mem_window,
-				    ep->max_regions);
+	windows = devm_kcalloc(dev, ep->max_regions,
+			       sizeof(struct pci_epc_mem_window), GFP_KERNEL);
 	if (!windows)
 		return -ENOMEM;
 
@@ -830,7 +844,7 @@ static int rockchip_pcie_ep_probe(struct platform_device *pdev)
 	struct pci_epc *epc;
 	int err;
 
-	ep = devm_kzalloc_obj(dev, *ep);
+	ep = devm_kzalloc(dev, sizeof(*ep), GFP_KERNEL);
 	if (!ep)
 		return -ENOMEM;
 

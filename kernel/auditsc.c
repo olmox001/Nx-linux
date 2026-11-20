@@ -107,7 +107,7 @@ struct audit_aux_data_pids {
 
 struct audit_aux_data_bprm_fcaps {
 	struct audit_aux_data	d;
-	struct audit_file_caps	fcap;
+	struct audit_cap_data	fcap;
 	unsigned int		fcap_ver;
 	struct audit_cap_data	old_pcap;
 	struct audit_cap_data	new_pcap;
@@ -459,7 +459,7 @@ static int audit_field_compare(struct task_struct *tsk,
  *
  * If task_creation is true, this is an explicit indication that we are
  * filtering a task rule at task creation time.  This and tsk == current are
- * the only situations where tsk->cred may be accessed.
+ * the only situations where tsk->cred may be accessed without an rcu read lock.
  */
 static int audit_filter_rules(struct task_struct *tsk,
 			      struct audit_krule *rule,
@@ -476,8 +476,7 @@ static int audit_filter_rules(struct task_struct *tsk,
 	if (ctx && rule->prio <= ctx->prio)
 		return 0;
 
-	WARN_ON(tsk != current && !task_creation);
-	cred = tsk->cred;
+	cred = rcu_dereference_check(tsk->cred, tsk == current || task_creation);
 
 	for (i = 0; i < rule->field_count; i++) {
 		struct audit_field *f = &rule->fields[i];
@@ -795,7 +794,7 @@ static enum audit_state audit_filter_task(struct task_struct *tsk, char **key)
 	return AUDIT_STATE_BUILD;
 }
 
-static int audit_in_mask(const struct audit_krule *rule, unsigned long val)
+static bool audit_in_mask(const struct audit_krule *rule, unsigned long val)
 {
 	int word, bit;
 
@@ -825,6 +824,7 @@ static int audit_in_mask(const struct audit_krule *rule, unsigned long val)
  * parameter can be NULL, but all others must be specified.
  * Returns 1/true if the filter finds a match, 0/false if none are found.
  */
+#pragma GCC optimize("unswitch-loops", "align-loops=16", "align-jumps=16")
 static int __audit_filter_op(struct task_struct *tsk,
 			   struct audit_context *ctx,
 			   struct list_head *list,
@@ -835,15 +835,17 @@ static int __audit_filter_op(struct task_struct *tsk,
 	enum audit_state state;
 
 	list_for_each_entry_rcu(e, list, list) {
-		if (audit_in_mask(&e->rule, op) &&
-		    audit_filter_rules(tsk, &e->rule, ctx, name,
-				       &state, false)) {
-			ctx->current_state = state;
-			return 1;
+		if (unlikely(audit_in_mask(&e->rule, op))) {
+			if (audit_filter_rules(tsk, &e->rule, ctx, name,
+						&state, false)) {
+				ctx->current_state = state;
+				return 1;
+			}
 		}
 	}
 	return 0;
 }
+#pragma GCC reset_options
 
 /**
  * audit_filter_uring - apply filters to an io_uring operation
@@ -2602,8 +2604,6 @@ void __audit_bprm(struct linux_binprm *bprm)
 {
 	struct audit_context *context = audit_context();
 
-	/* clear proctitle in audit context to allow replacement */
-	audit_proctitle_free(context);
 	context->type = AUDIT_EXECVE;
 	context->execve.argc = bprm->argc;
 }
@@ -2715,8 +2715,7 @@ int audit_signal_info_syscall(struct task_struct *t)
 		axp->d.next = ctx->aux_pids;
 		ctx->aux_pids = (void *)axp;
 	}
-	if (WARN_ON_ONCE(axp->pid_count >= AUDIT_AUX_PIDS))
-		return -EINVAL;
+	BUG_ON(axp->pid_count >= AUDIT_AUX_PIDS);
 
 	axp->target_pid[axp->pid_count] = task_tgid_nr(t);
 	axp->target_auid[axp->pid_count] = audit_get_loginuid(t);
@@ -2885,19 +2884,6 @@ void __audit_log_nfcfg(const char *name, u8 af, unsigned int nentries,
 	audit_log_end(ab);
 }
 EXPORT_SYMBOL_GPL(__audit_log_nfcfg);
-
-void __audit_log_fsopen(const char *fs_name)
-{
-	struct audit_buffer *ab;
-
-	ab = audit_log_start(audit_context(), GFP_KERNEL, AUDIT_FSOPEN);
-	if (!ab)
-		return;
-
-	audit_log_format(ab, "fs_name=");
-	audit_log_untrustedstring(ab, fs_name);
-	audit_log_end(ab);
-}
 
 static void audit_log_task(struct audit_buffer *ab)
 {

@@ -413,7 +413,7 @@ static int bt_bmc_probe(struct platform_device *pdev)
 	dev = &pdev->dev;
 	dev_info(dev, "Found bt bmc device\n");
 
-	bt_bmc = devm_kzalloc_obj(dev, *bt_bmc);
+	bt_bmc = devm_kzalloc(dev, sizeof(*bt_bmc), GFP_KERNEL);
 	if (!bt_bmc)
 		return -ENOMEM;
 

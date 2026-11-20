@@ -177,7 +177,7 @@ static const struct drm_plane_funcs fsl_dcu_drm_plane_funcs = {
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
 	.destroy = drm_plane_helper_destroy,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.atomic_create_state = drm_atomic_helper_plane_create_state,
+	.reset = drm_atomic_helper_plane_reset,
 	.update_plane = drm_atomic_helper_update_plane,
 };
 

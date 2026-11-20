@@ -741,7 +741,7 @@ static int bcm_kona_i2c_probe(struct platform_device *pdev)
 	struct i2c_adapter *adap;
 
 	/* Allocate memory for private data structure */
-	dev = devm_kzalloc_obj(&pdev->dev, *dev);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 

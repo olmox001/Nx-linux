@@ -82,8 +82,7 @@ _NOW
 STATUS
   this attribute represents operating status (charging, full,
   discharging (i.e., powering a load), etc.). This corresponds to
-  `POWER_SUPPLY_STATUS_*` values, as defined in
-  include/linux/power_supply.h.
+  `BATTERY_STATUS_*` values, as defined in battery.h.
 
 CHARGE_TYPE
   batteries can typically charge at different rates.
@@ -96,8 +95,8 @@ AUTHENTIC
   to the platform is authentic(1) or non-authentic(0).
 
 HEALTH
-  represents health of the battery. Values correspond to
-  POWER_SUPPLY_HEALTH_*, defined in include/linux/power_supply.h.
+  represents health of the battery. Values corresponds to
+  POWER_SUPPLY_HEALTH_*, defined in battery.h.
 
 VOLTAGE_OCV
   open circuit voltage of the battery.
@@ -203,17 +202,16 @@ TEMP_AMBIENT_ALERT_MIN
 TEMP_AMBIENT_ALERT_MAX
   maximum ambient temperature alert.
 TEMP_MIN
-  minimum operable temperature
+  minimum operatable temperature
 TEMP_MAX
-  maximum operable temperature
+  maximum operatable temperature
 
-TIME_TO_EMPTY_NOW, TIME_TO_EMPTY_AVG
+TIME_TO_EMPTY
   seconds left for battery to be considered empty
-  (i.e., while battery powers a load). *_NOW is a
-  momentary reading; *_AVG is averaged over a fixed period.
-TIME_TO_FULL_NOW, TIME_TO_FULL_AVG
+  (i.e., while battery powers a load)
+TIME_TO_FULL
   seconds left for battery to be considered full
-  (i.e., while battery is charging). Same now/avg distinction.
+  (i.e., while battery is charging)
 
 
 Battery <-> external power supply interaction
@@ -254,6 +252,9 @@ A:
 
    The attributes available currently are the ones currently provided by the
    drivers written.
+
+   Good candidates to add in future: model/part#, cycle_time, manufacturer,
+   etc.
 
 
 Q:

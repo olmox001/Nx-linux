@@ -167,7 +167,7 @@ static int _qcom_cc_register_board_clk(struct device *dev, const char *path,
 	}
 
 	if (!node) {
-		fixed = devm_kzalloc_obj(dev, *fixed);
+		fixed = devm_kzalloc(dev, sizeof(*fixed), GFP_KERNEL);
 		if (!fixed)
 			return -ENOMEM;
 
@@ -184,7 +184,7 @@ static int _qcom_cc_register_board_clk(struct device *dev, const char *path,
 	of_node_put(node);
 
 	if (add_factor) {
-		factor = devm_kzalloc_obj(dev, *factor);
+		factor = devm_kzalloc(dev, sizeof(*factor), GFP_KERNEL);
 		if (!factor)
 			return -ENOMEM;
 
@@ -268,7 +268,7 @@ static int qcom_cc_icc_register(struct device *dev,
 	if (!desc->icc_hws)
 		return 0;
 
-	icd = devm_kzalloc_objs(dev, *icd, desc->num_icc_hws);
+	icd = devm_kcalloc(dev, desc->num_icc_hws, sizeof(*icd), GFP_KERNEL);
 	if (!icd)
 		return -ENOMEM;
 
@@ -333,7 +333,7 @@ int qcom_cc_really_probe(struct device *dev,
 	size_t num_clk_hws = desc->num_clk_hws;
 	struct clk_hw **clk_hws = desc->clk_hws;
 
-	cc = devm_kzalloc_obj(dev, *cc);
+	cc = devm_kzalloc(dev, sizeof(*cc), GFP_KERNEL);
 	if (!cc)
 		return -ENOMEM;
 
@@ -372,7 +372,7 @@ int qcom_cc_really_probe(struct device *dev,
 		goto put_rpm;
 
 	if (desc->gdscs && desc->num_gdscs) {
-		scd = devm_kzalloc_obj(dev, *scd);
+		scd = devm_kzalloc(dev, sizeof(*scd), GFP_KERNEL);
 		if (!scd) {
 			ret = -ENOMEM;
 			goto put_rpm;
@@ -428,7 +428,7 @@ int qcom_cc_really_probe(struct device *dev,
 
 put_rpm:
 	if (desc->use_rpm)
-		pm_runtime_put_sync(dev);
+		pm_runtime_put(dev);
 
 	return ret;
 }

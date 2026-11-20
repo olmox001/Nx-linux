@@ -1728,28 +1728,32 @@ static void dpu_plane_atomic_print_state(struct drm_printer *p,
 	}
 }
 
-static struct drm_plane_state *dpu_plane_create_state(struct drm_plane *plane)
+static void dpu_plane_reset(struct drm_plane *plane)
 {
 	struct dpu_plane *pdpu;
 	struct dpu_plane_state *pstate;
 
 	if (!plane) {
 		DPU_ERROR("invalid plane\n");
-		return ERR_PTR(-EINVAL);
+		return;
 	}
 
 	pdpu = to_dpu_plane(plane);
 	DPU_DEBUG_PLANE(pdpu, "\n");
 
+	/* remove previous state, if present */
+	if (plane->state) {
+		dpu_plane_destroy_state(plane, plane->state);
+		plane->state = NULL;
+	}
+
 	pstate = kzalloc_obj(*pstate);
 	if (!pstate) {
 		DPU_ERROR_PLANE(pdpu, "failed to allocate state\n");
-		return ERR_PTR(-ENOMEM);
+		return;
 	}
 
-	__drm_atomic_helper_plane_state_init(&pstate->base, plane);
-
-	return &pstate->base;
+	__drm_atomic_helper_plane_reset(plane, &pstate->base);
 }
 
 #ifdef CONFIG_DEBUG_FS
@@ -1792,7 +1796,7 @@ static bool dpu_plane_format_mod_supported(struct drm_plane *plane,
 static const struct drm_plane_funcs dpu_plane_funcs = {
 		.update_plane = drm_atomic_helper_update_plane,
 		.disable_plane = drm_atomic_helper_disable_plane,
-		.atomic_create_state = dpu_plane_create_state,
+		.reset = dpu_plane_reset,
 		.atomic_duplicate_state = dpu_plane_duplicate_state,
 		.atomic_destroy_state = dpu_plane_destroy_state,
 		.atomic_print_state = dpu_plane_atomic_print_state,

@@ -68,7 +68,7 @@ static int rb532_button_probe(struct platform_device *pdev)
 	struct input_dev *input;
 	int error;
 
-	button = devm_kzalloc_obj(&pdev->dev, *button);
+	button = devm_kzalloc(&pdev->dev, sizeof(*button), GFP_KERNEL);
 	if (!button)
 		return -ENOMEM;
 

@@ -25,7 +25,8 @@ static struct rv_reactor rv_printk = {
 
 static int __init register_react_printk(void)
 {
-	return rv_register_reactor(&rv_printk);
+	rv_register_reactor(&rv_printk);
+	return 0;
 }
 
 static void __exit unregister_react_printk(void)

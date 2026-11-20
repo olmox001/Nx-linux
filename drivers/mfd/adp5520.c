@@ -223,7 +223,7 @@ static int adp5520_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	chip = devm_kzalloc_obj(&client->dev, *chip);
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

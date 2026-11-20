@@ -1135,19 +1135,21 @@ void vc4_crtc_destroy_state(struct drm_crtc *crtc,
 	drm_atomic_helper_crtc_destroy_state(crtc, state);
 }
 
-struct drm_crtc_state *vc4_crtc_create_state(struct drm_crtc *crtc)
+void vc4_crtc_reset(struct drm_crtc *crtc)
 {
 	struct vc4_crtc_state *vc4_crtc_state;
 
+	if (crtc->state)
+		vc4_crtc_destroy_state(crtc, crtc->state);
+
 	vc4_crtc_state = kzalloc_obj(*vc4_crtc_state);
 	if (!vc4_crtc_state) {
-		return ERR_PTR(-ENOMEM);
+		crtc->state = NULL;
+		return;
 	}
 
 	vc4_crtc_state->assigned_channel = VC4_HVS_CHANNEL_DISABLED;
-	__drm_atomic_helper_crtc_state_init(&vc4_crtc_state->base, crtc);
-
-	return &vc4_crtc_state->base;
+	__drm_atomic_helper_crtc_reset(crtc, &vc4_crtc_state->base);
 }
 
 int vc4_crtc_late_register(struct drm_crtc *crtc)
@@ -1168,7 +1170,7 @@ static const struct drm_crtc_funcs vc4_crtc_funcs = {
 	.set_property = NULL,
 	.cursor_set = NULL, /* handled by drm_mode_cursor_universal */
 	.cursor_move = NULL, /* handled by drm_mode_cursor_universal */
-	.atomic_create_state = vc4_crtc_create_state,
+	.reset = vc4_crtc_reset,
 	.atomic_duplicate_state = vc4_crtc_duplicate_state,
 	.atomic_destroy_state = vc4_crtc_destroy_state,
 	.enable_vblank = vc4_enable_vblank,

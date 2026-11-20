@@ -176,7 +176,7 @@ void ip_vs_rht_rcu_free(struct rcu_head *head)
 
 struct ip_vs_rht *ip_vs_rht_alloc(int buckets, int scounts, int locks)
 {
-	struct ip_vs_rht *t = kzalloc_obj(*t);
+	struct ip_vs_rht *t = kzalloc(sizeof(*t), GFP_KERNEL);
 	int i;
 
 	if (!t)
@@ -186,7 +186,7 @@ struct ip_vs_rht *ip_vs_rht_alloc(int buckets, int scounts, int locks)
 
 		scounts = min(scounts, buckets);
 		scounts = min(scounts, ml);
-		t->seqc = kvmalloc_objs(*t->seqc, scounts);
+		t->seqc = kvmalloc_array(scounts, sizeof(*t->seqc), GFP_KERNEL);
 		if (!t->seqc)
 			goto err;
 		for (i = 0; i < scounts; i++)
@@ -194,7 +194,8 @@ struct ip_vs_rht *ip_vs_rht_alloc(int buckets, int scounts, int locks)
 
 		if (locks) {
 			locks = min(locks, scounts);
-			t->lock = kvmalloc_objs(*t->lock, locks);
+			t->lock = kvmalloc_array(locks, sizeof(*t->lock),
+						 GFP_KERNEL);
 			if (!t->lock)
 				goto err;
 			for (i = 0; i < locks; i++)
@@ -202,7 +203,7 @@ struct ip_vs_rht *ip_vs_rht_alloc(int buckets, int scounts, int locks)
 		}
 	}
 
-	t->buckets = kvmalloc_objs(*t->buckets, buckets);
+	t->buckets = kvmalloc_array(buckets, sizeof(*t->buckets), GFP_KERNEL);
 	if (!t->buckets)
 		goto err;
 	for (i = 0; i < buckets; i++)
@@ -1305,7 +1306,6 @@ static inline bool is_new_conn_expected(const struct ip_vs_conn *cp,
  *    In fwmark-VS actual vaddr and vport are unknown to IPVS
  * 2) Real Server and Virtual Service were NOT configured without port:
  *    This is to allow match of different VS to the same RS ip-addr
- * 3) Client port is not 0
  */
 struct ip_vs_conn *ip_vs_new_conn_out(struct ip_vs_service *svc,
 				      struct ip_vs_dest *dest,
@@ -1329,7 +1329,7 @@ struct ip_vs_conn *ip_vs_new_conn_out(struct ip_vs_service *svc,
 	/* check pre-requisites are satisfied */
 	if (svc->fwmark)
 		return NULL;
-	if (!vport || !dport || !cport)
+	if (!vport || !dport)
 		return NULL;
 
 	/* for persistent service first create connection template */
@@ -2503,11 +2503,11 @@ static int __net_init __ip_vs_init(struct net *net)
 	if (ip_vs_estimator_net_init(ipvs) < 0)
 		goto estimator_fail;
 
-	if (ip_vs_protocol_net_init(ipvs) < 0)
-		goto protocol_fail;
-
 	if (ip_vs_control_net_init(ipvs) < 0)
 		goto control_fail;
+
+	if (ip_vs_protocol_net_init(ipvs) < 0)
+		goto protocol_fail;
 
 	if (ip_vs_app_net_init(ipvs) < 0)
 		goto app_fail;
@@ -2528,10 +2528,10 @@ sync_fail:
 conn_fail:
 	ip_vs_app_net_cleanup(ipvs);
 app_fail:
-	ip_vs_control_net_cleanup(ipvs);
-control_fail:
 	ip_vs_protocol_net_cleanup(ipvs);
 protocol_fail:
+	ip_vs_control_net_cleanup(ipvs);
+control_fail:
 	ip_vs_estimator_net_cleanup(ipvs);
 estimator_fail:
 	net->ipvs = NULL;
@@ -2548,8 +2548,8 @@ static void __net_exit __ip_vs_cleanup_batch(struct list_head *net_list)
 		ipvs = net_ipvs(net);
 		ip_vs_conn_net_cleanup(ipvs);
 		ip_vs_app_net_cleanup(ipvs);
-		ip_vs_control_net_cleanup(ipvs);
 		ip_vs_protocol_net_cleanup(ipvs);
+		ip_vs_control_net_cleanup(ipvs);
 		ip_vs_estimator_net_cleanup(ipvs);
 		IP_VS_DBG(2, "ipvs netns %d released\n", ipvs->gen);
 		net->ipvs = NULL;

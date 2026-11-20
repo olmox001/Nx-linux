@@ -62,7 +62,6 @@ void _fat_msg(struct super_block *sb, const char *level, const char *fmt, ...)
 	_printk(FAT_PRINTK_PREFIX "%pV\n", level, sb->s_id, &vaf);
 	va_end(args);
 }
-EXPORT_SYMBOL_GPL(_fat_msg);
 
 /* Flushes the number of free clusters on FAT32 */
 /* XXX: Need to write one per FSINFO block.  Currently only writes 1 */
@@ -134,9 +133,11 @@ int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster)
 		ret = fat_ent_read(inode, &fatent, last);
 		if (ret >= 0) {
 			int wait = inode_needs_sync(inode);
+			int old = ret;
 
-			ret = fat_ent_write(inode, &fatent, new_dclus, ret,
-					    wait);
+			ret = fat_ent_write(inode, &fatent, new_dclus, wait);
+			if (ret < 0)
+				fat_ent_write(inode, &fatent, old, wait);
 			fatent_brelse(&fatent);
 		}
 		if (ret < 0)
@@ -149,17 +150,16 @@ int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster)
 	} else {
 		MSDOS_I(inode)->i_start = new_dclus;
 		MSDOS_I(inode)->i_logstart = new_dclus;
-		mark_inode_dirty(inode);
 		/*
 		 * Since generic_write_sync() synchronizes regular files later,
 		 * we sync here only directories.
 		 */
 		if (S_ISDIR(inode->i_mode) && IS_DIRSYNC(inode)) {
-			ret = sync_inode_metadata(inode, 1);
+			ret = fat_sync_inode(inode);
 			if (ret)
 				return ret;
-		}
-
+		} else
+			mark_inode_dirty(inode);
 	}
 	if (new_fclus != (inode->i_blocks >> (sbi->cluster_bits - 9))) {
 		fat_fs_error_ratelimit(
@@ -359,7 +359,7 @@ int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs)
 
 	for (i = 0; i < nr_bhs; i++) {
 		wait_on_buffer(bhs[i]);
-		if (!err && buffer_write_io_error(bhs[i]))
+		if (!err && !buffer_uptodate(bhs[i]))
 			err = -EIO;
 	}
 	return err;

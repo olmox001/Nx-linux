@@ -203,7 +203,7 @@ static int gpiochip_setup(struct device *dev, struct eqbr_gpio_ctrl *gctrl)
 	gpio_irq_chip_set_chip(girq, &eqbr_irq_chip);
 	girq->parent_handler = eqbr_irq_handler;
 	girq->num_parents = 1;
-	girq->parents = devm_kzalloc_objs(dev, *girq->parents, 1);
+	girq->parents = devm_kcalloc(dev, 1, sizeof(*girq->parents), GFP_KERNEL);
 	if (!girq->parents)
 		return -ENOMEM;
 
@@ -618,7 +618,7 @@ static int funcs_utils(struct device *dev, struct pinfunction *funcs,
 
 		if (of_property_read_string(np, "function", &fn_name)) {
 			/* some groups may not have function, it's OK */
-			dev_dbg(dev, "Group %s: not function bound!\n",
+			dev_dbg(dev, "Group %s: not function binded!\n",
 				(char *)prop->value);
 			continue;
 		}
@@ -669,7 +669,7 @@ static int eqbr_build_functions(struct eqbr_pinctrl_drv_data *drvdata)
 	if (ret)
 		return ret;
 
-	funcs = devm_kzalloc_objs(dev, *funcs, nr_funcs);
+	funcs = devm_kcalloc(dev, nr_funcs, sizeof(*funcs), GFP_KERNEL);
 	if (!funcs)
 		return -ENOMEM;
 
@@ -684,8 +684,9 @@ static int eqbr_build_functions(struct eqbr_pinctrl_drv_data *drvdata)
 	for (i = 0; i < nr_funcs; i++) {
 		if (!funcs[i].ngroups)
 			continue;
-		funcs[i].groups = devm_kzalloc_objs(dev, *(funcs[i].groups),
-						    funcs[i].ngroups);
+		funcs[i].groups = devm_kcalloc(dev, funcs[i].ngroups,
+					       sizeof(*(funcs[i].groups)),
+					       GFP_KERNEL);
 		if (!funcs[i].groups)
 			return -ENOMEM;
 	}
@@ -733,13 +734,13 @@ static int eqbr_build_groups(struct eqbr_pinctrl_drv_data *drvdata)
 		}
 		grp->npins = err;
 		grp->name = prop->value;
-		pins = devm_kzalloc_objs(dev, *pins, grp->npins);
+		pins = devm_kcalloc(dev, grp->npins, sizeof(*pins), GFP_KERNEL);
 		if (!pins)
 			return -ENOMEM;
 
 		grp->pins = pins;
 
-		pinmux = devm_kzalloc_objs(dev, *pinmux, grp->npins);
+		pinmux = devm_kcalloc(dev, grp->npins, sizeof(*pinmux), GFP_KERNEL);
 		if (!pinmux)
 			return -ENOMEM;
 
@@ -798,7 +799,7 @@ static int pinctrl_reg(struct eqbr_pinctrl_drv_data *drvdata)
 	for (i = 0, nr_pins = 0; i < drvdata->nr_banks; i++)
 		nr_pins += drvdata->pin_banks[i].nr_pins;
 
-	pdesc = devm_kzalloc_objs(dev, *pdesc, nr_pins);
+	pdesc = devm_kcalloc(dev, nr_pins, sizeof(*pdesc), GFP_KERNEL);
 	if (!pdesc)
 		return -ENOMEM;
 	pin_names = devm_kcalloc(dev, nr_pins, PIN_NAME_LEN, GFP_KERNEL);
@@ -886,11 +887,11 @@ static int pinbank_probe(struct eqbr_pinctrl_drv_data *drvdata)
 	}
 
 	/* Count pin bank number and gpio controller number */
-	banks = devm_kzalloc_objs(dev, *banks, nr_gpio);
+	banks = devm_kcalloc(dev, nr_gpio, sizeof(*banks), GFP_KERNEL);
 	if (!banks)
 		return -ENOMEM;
 
-	gctrls = devm_kzalloc_objs(dev, *gctrls, nr_gpio);
+	gctrls = devm_kcalloc(dev, nr_gpio, sizeof(*gctrls), GFP_KERNEL);
 	if (!gctrls)
 		return -ENOMEM;
 
@@ -923,7 +924,7 @@ static int eqbr_pinctrl_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	drvdata = devm_kzalloc_obj(dev, *drvdata);
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 

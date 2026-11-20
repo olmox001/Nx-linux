@@ -472,7 +472,8 @@ int proc_thermal_rfim_add(struct pci_dev *pdev, struct proc_thermal_device *proc
 			dlvr_mmio_regs_table = lnl_dlvr_mmio_regs;
 			dlvr_mapping = lnl_dlvr_mapping;
 			break;
-		case PCI_DEVICE_ID_INTEL_NVL_THERMAL:
+		case PCI_DEVICE_ID_INTEL_NVL_H_THERMAL:
+		case PCI_DEVICE_ID_INTEL_NVL_S_THERMAL:
 			dlvr_mmio_regs_table = nvl_dlvr_mmio_regs;
 			ddr_data_rate_reg = &nvl_ddr_data_rate_reg;
 			break;
@@ -490,11 +491,12 @@ int proc_thermal_rfim_add(struct pci_dev *pdev, struct proc_thermal_device *proc
 
 	if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_DVFS) {
 		ret = sysfs_create_group(&pdev->dev.kobj, &dvfs_attribute_group);
-		if (ret) {
-			if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_DLVR)
-				sysfs_remove_group(&pdev->dev.kobj, &dlvr_attribute_group);
-			if (proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_FIVR)
-				sysfs_remove_group(&pdev->dev.kobj, &fivr_attribute_group);
+		if (ret && proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_FIVR) {
+			sysfs_remove_group(&pdev->dev.kobj, &fivr_attribute_group);
+			return ret;
+		}
+		if (ret && proc_priv->mmio_feature_mask & PROC_THERMAL_FEATURE_DLVR) {
+			sysfs_remove_group(&pdev->dev.kobj, &dlvr_attribute_group);
 			return ret;
 		}
 	}

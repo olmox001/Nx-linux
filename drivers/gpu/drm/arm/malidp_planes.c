@@ -73,17 +73,17 @@
  * allocate a new empty object. We just need enough space to store
  * a malidp_plane_state instead of a drm_plane_state.
  */
-static struct drm_plane_state *malidp_plane_create_state(struct drm_plane *plane)
+static void malidp_plane_reset(struct drm_plane *plane)
 {
-	struct malidp_plane_state *state;
+	struct malidp_plane_state *state = to_malidp_plane_state(plane->state);
 
+	if (state)
+		__drm_atomic_helper_plane_destroy_state(&state->base);
+	kfree(state);
+	plane->state = NULL;
 	state = kzalloc_obj(*state);
-	if (!state)
-		return ERR_PTR(-ENOMEM);
-
-	__drm_atomic_helper_plane_state_init(&state->base, plane);
-
-	return &state->base;
+	if (state)
+		__drm_atomic_helper_plane_reset(plane, &state->base);
 }
 
 static struct
@@ -252,7 +252,7 @@ static bool malidp_format_mod_supported_per_plane(struct drm_plane *plane,
 static const struct drm_plane_funcs malidp_de_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.atomic_create_state = malidp_plane_create_state,
+	.reset = malidp_plane_reset,
 	.atomic_duplicate_state = malidp_duplicate_plane_state,
 	.atomic_destroy_state = malidp_destroy_plane_state,
 	.atomic_print_state = malidp_plane_atomic_print_state,
@@ -954,7 +954,7 @@ int malidp_de_planes_init(struct drm_device *drm)
 		modifiers = supported_modifiers;
 	}
 
-	formats = kzalloc_objs(*formats, map->n_pixel_formats);
+	formats = kcalloc(map->n_pixel_formats, sizeof(*formats), GFP_KERNEL);
 	if (!formats) {
 		ret = -ENOMEM;
 		goto cleanup;

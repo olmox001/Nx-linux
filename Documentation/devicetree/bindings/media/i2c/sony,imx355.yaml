@@ -50,15 +50,8 @@ properties:
 
         properties:
           data-lanes:
-            oneOf:
-              - items:
-                  - const: 1
-                  - const: 2
-                  - const: 3
-                  - const: 4
-              - items:
-                  - const: 1
-                  - const: 2
+            minItems: 4
+            maxItems: 4
 
         required:
           - link-frequencies
@@ -81,7 +74,6 @@ examples:
   - |
     #include <dt-bindings/clock/qcom,camcc-sdm845.h>
     #include <dt-bindings/gpio/gpio.h>
-    #include <dt-bindings/media/video-interface-devices.h>
 
     i2c {
         #address-cells = <1>;
@@ -106,7 +98,7 @@ examples:
             pinctrl-0 = <&cam_front_default>;
 
             rotation = <270>;
-            orientation = <MEDIA_ORIENTATION_FRONT>;
+            orientation = <0>;
 
             port {
                 cam_front_endpoint: endpoint {

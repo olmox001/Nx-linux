@@ -119,7 +119,6 @@ enum {
  * @mfc_flags: entry flags
  * @expires: unresolved entry expire time
  * @unresolved: unresolved cached skbs
- * @nl_queries: queued RTM_GETROUTE requests waiting for resolution
  * @last_assert: time of last assert
  * @minvif: minimum VIF id
  * @maxvif: maximum VIF id
@@ -142,7 +141,6 @@ struct mr_mfc {
 		struct {
 			unsigned long expires;
 			struct sk_buff_head unresolved;
-			struct sk_buff_head nl_queries;
 		} unres;
 		struct {
 			unsigned long last_assert;

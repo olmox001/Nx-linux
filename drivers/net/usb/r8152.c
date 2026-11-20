@@ -1432,15 +1432,24 @@ static int generic_ocp_read(struct r8152 *tp, u16 index, u16 size,
 		return -EPERM;
 
 	while (size) {
-		u16 n = min(size, limit);
+		if (size > limit) {
+			ret = get_registers(tp, index, type, limit, data);
+			if (ret < 0)
+				break;
 
-		ret = get_registers(tp, index, type, n, data);
-		if (ret < 0)
+			index += limit;
+			data += limit;
+			size -= limit;
+		} else {
+			ret = get_registers(tp, index, type, size, data);
+			if (ret < 0)
+				break;
+
+			index += size;
+			data += size;
+			size = 0;
 			break;
-
-		index += n;
-		data += n;
-		size -= n;
+		}
 	}
 
 	if (ret == -ENODEV)
@@ -1490,16 +1499,28 @@ static int generic_ocp_write(struct r8152 *tp, u16 index, u16 byteen,
 			size -= 4;
 
 		while (size) {
-			u16 n = min(size, limit);
+			if (size > limit) {
+				ret = set_registers(tp, index,
+						    type | BYTE_EN_DWORD,
+						    limit, data);
+				if (ret < 0)
+					goto error1;
 
-			ret = set_registers(tp, index, type | BYTE_EN_DWORD,
-					    n, data);
-			if (ret < 0)
-				goto error1;
+				index += limit;
+				data += limit;
+				size -= limit;
+			} else {
+				ret = set_registers(tp, index,
+						    type | BYTE_EN_DWORD,
+						    size, data);
+				if (ret < 0)
+					goto error1;
 
-			index += n;
-			data += n;
-			size -= n;
+				index += size;
+				data += size;
+				size = 0;
+				break;
+			}
 		}
 
 		/* Set the last DWORD */
@@ -6958,8 +6979,11 @@ static void set_carrier(struct r8152 *tp)
 {
 	struct net_device *netdev = tp->netdev;
 	struct napi_struct *napi = &tp->napi;
+	u16 speed;
 
-	if (r8152_mdio_read(tp, MII_BMSR) & BMSR_LSTATUS) {
+	speed = rtl8152_get_speed(tp);
+
+	if (speed & LINK_STATUS) {
 		if (!netif_carrier_ok(netdev)) {
 			tp->rtl_ops.enable(tp);
 			netif_stop_queue(netdev);
@@ -6984,11 +7008,6 @@ static void set_carrier(struct r8152 *tp)
 			napi_enable(napi);
 			tasklet_enable(&tp->tx_tl);
 			netif_info(tp, link, netdev, "carrier off\n");
-		}
-
-		if (rtl8152_get_speed(tp) & LINK_STATUS) {
-			set_bit(RTL8152_LINK_CHG, &tp->flags);
-			schedule_delayed_work(&tp->schedule, 0);
 		}
 	}
 }
@@ -10476,7 +10495,7 @@ static int __init rtl8152_driver_init(void)
 {
 	int ret;
 
-	ret = usb_register_device_driver(&rtl8152_cfgselector_driver);
+	ret = usb_register_device_driver(&rtl8152_cfgselector_driver, THIS_MODULE);
 	if (ret)
 		return ret;
 

@@ -29,7 +29,6 @@ static unsigned int pfcp_net_id __read_mostly;
 
 struct pfcp_net {
 	struct list_head	pfcp_dev_list;
-	struct mutex		lock;
 };
 
 static void
@@ -81,7 +80,7 @@ static int pfcp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	md = ip_tunnel_info_opts(&tun_dst->u.tun_info);
 	if (unlikely(!md))
-		goto drop_dst;
+		goto drop;
 
 	if (unparsed->flags & PFCP_SEID_FLAG)
 		pfcp_session_recv(pfcp, skb, md);
@@ -94,7 +93,7 @@ static int pfcp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	if (unlikely(iptunnel_pull_header(skb, PFCP_HLEN, skb->protocol,
 					  !net_eq(sock_net(sk),
 					  dev_net(pfcp->dev)))))
-		goto drop_dst;
+		goto drop;
 
 	skb_dst_set(skb, (struct dst_entry *)tun_dst);
 
@@ -105,8 +104,6 @@ static int pfcp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	gro_cells_receive(&pfcp->gro_cells, skb);
 
 	return 0;
-drop_dst:
-	dst_release(&tun_dst->dst);
 drop:
 	kfree_skb(skb);
 	return 0;
@@ -222,10 +219,7 @@ static int pfcp_newlink(struct net_device *dev,
 	}
 
 	pn = net_generic(link_net, pfcp_net_id);
-
-	mutex_lock(&pn->lock);
 	list_add(&pfcp->list, &pn->pfcp_dev_list);
-	mutex_unlock(&pn->lock);
 
 	netdev_dbg(dev, "registered new PFCP interface\n");
 
@@ -239,26 +233,12 @@ exit_err:
 	return err;
 }
 
-static void __pfcp_dellink(struct net *net, struct net_device *dev,
-			   struct list_head *head)
-{
-	struct pfcp_dev *pfcp = netdev_priv(dev);
-
-	list_del_init(&pfcp->list);
-	unregister_netdevice_queue_net(net, dev, head);
-}
-
 static void pfcp_dellink(struct net_device *dev, struct list_head *head)
 {
 	struct pfcp_dev *pfcp = netdev_priv(dev);
-	struct pfcp_net *pn;
 
-	pn = net_generic(pfcp->net, pfcp_net_id);
-
-	mutex_lock(&pn->lock);
-	if (!list_empty(&pfcp->list))
-		__pfcp_dellink(dev_net(dev), dev, head);
-	mutex_unlock(&pn->lock);
+	list_del(&pfcp->list);
+	unregister_netdevice_queue(dev, head);
 }
 
 static struct rtnl_link_ops pfcp_link_ops __read_mostly = {
@@ -274,8 +254,6 @@ static int __net_init pfcp_net_init(struct net *net)
 	struct pfcp_net *pn = net_generic(net, pfcp_net_id);
 
 	INIT_LIST_HEAD(&pn->pfcp_dev_list);
-	mutex_init(&pn->lock);
-
 	return 0;
 }
 
@@ -285,12 +263,8 @@ static void __net_exit pfcp_net_exit_rtnl(struct net *net,
 	struct pfcp_net *pn = net_generic(net, pfcp_net_id);
 	struct pfcp_dev *pfcp, *pfcp_next;
 
-	mutex_lock(&pn->lock);
-
 	list_for_each_entry_safe(pfcp, pfcp_next, &pn->pfcp_dev_list, list)
-		__pfcp_dellink(net, pfcp->dev, dev_to_kill);
-
-	mutex_unlock(&pn->lock);
+		pfcp_dellink(pfcp->dev, dev_to_kill);
 }
 
 static struct pernet_operations pfcp_net_ops = {

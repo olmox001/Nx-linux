@@ -291,7 +291,8 @@ static int el15203000_probe(struct spi_device *spi)
 		return -ENODEV;
 	}
 
-	priv = devm_kzalloc_flex(&spi->dev, *priv, leds, count);
+	priv = devm_kzalloc(&spi->dev, struct_size(priv, leds, count),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

@@ -386,7 +386,7 @@ static void pmu_sbi_check_event(struct sbi_pmu_event_data *edata)
 					    edata->event_idx, 0);
 		if (!ret.error) {
 			sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_STOP,
-				  ret.value, 0x1, SBI_PMU_STOP_FLAG_RESET);
+				  ret.value, 0x1, SBI_PMU_STOP_FLAG_RESET, 0, 0, 0);
 			return;
 		}
 	}
@@ -722,7 +722,7 @@ static int pmu_sbi_snapshot_disable(void)
 	struct sbiret ret;
 
 	ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_SNAPSHOT_SET_SHMEM, SBI_SHMEM_DISABLE,
-			SBI_SHMEM_DISABLE, 0);
+			SBI_SHMEM_DISABLE, 0, 0, 0, 0);
 	if (ret.error) {
 		pr_warn("failed to disable snapshot shared memory\n");
 		return sbi_err_map_linux_errno(ret.error);
@@ -746,11 +746,10 @@ static int pmu_sbi_snapshot_setup(struct riscv_pmu *pmu, int cpu)
 	if (IS_ENABLED(CONFIG_32BIT))
 		ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_SNAPSHOT_SET_SHMEM,
 				cpu_hw_evt->snapshot_addr_phys,
-				(u64)(cpu_hw_evt->snapshot_addr_phys) >> 32,
-				0);
+				(u64)(cpu_hw_evt->snapshot_addr_phys) >> 32, 0, 0, 0, 0);
 	else
 		ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_SNAPSHOT_SET_SHMEM,
-				cpu_hw_evt->snapshot_addr_phys, 0, 0);
+				cpu_hw_evt->snapshot_addr_phys, 0, 0, 0, 0, 0);
 
 	/* Free up the snapshot area memory and fall back to SBI PMU calls without snapshot */
 	if (ret.error) {
@@ -784,14 +783,14 @@ static u64 pmu_sbi_ctr_read(struct perf_event *event)
 
 	if (pmu_sbi_is_fw_event(event)) {
 		ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_FW_READ,
-				hwc->idx);
+				hwc->idx, 0, 0, 0, 0, 0);
 		if (ret.error)
 			return 0;
 
 		val = ret.value;
 		if (IS_ENABLED(CONFIG_32BIT) && sbi_v2_available && info.width >= 32) {
 			ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_FW_READ_HI,
-					hwc->idx);
+					hwc->idx, 0, 0, 0, 0, 0);
 			if (!ret.error)
 				val |= ((u64)ret.value << 32);
 			else
@@ -834,10 +833,10 @@ static void pmu_sbi_ctr_start(struct perf_event *event, u64 ival)
 	/* There is no benefit setting SNAPSHOT FLAG for a single counter */
 #if defined(CONFIG_32BIT)
 	ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, hwc->idx,
-			1, flag, ival, ival >> 32);
+			1, flag, ival, ival >> 32, 0);
 #else
 	ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, hwc->idx,
-			1, flag, ival);
+			1, flag, ival, 0, 0);
 #endif
 	if (ret.error && (ret.error != SBI_ERR_ALREADY_STARTED))
 		pr_err("Starting counter idx %d failed with error %d\n",
@@ -863,8 +862,7 @@ static void pmu_sbi_ctr_stop(struct perf_event *event, unsigned long flag)
 	if (sbi_pmu_snapshot_available())
 		flag |= SBI_PMU_STOP_FLAG_TAKE_SNAPSHOT;
 
-	ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_STOP,
-			hwc->idx, 1, flag);
+	ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_STOP, hwc->idx, 1, flag, 0, 0, 0);
 	if (!ret.error && sbi_pmu_snapshot_available()) {
 		/*
 		 * The counter snapshot is based on the index base specified by hwc->idx.
@@ -889,7 +887,7 @@ static int pmu_sbi_find_num_ctrs(void)
 {
 	struct sbiret ret;
 
-	ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_NUM_COUNTERS);
+	ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_NUM_COUNTERS, 0, 0, 0, 0, 0, 0);
 	if (!ret.error)
 		return ret.value;
 	else
@@ -907,7 +905,7 @@ static int pmu_sbi_get_ctrinfo(int nctr, unsigned long *mask)
 		return -ENOMEM;
 
 	for (i = 0; i < nctr; i++) {
-		ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_GET_INFO, i);
+		ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_GET_INFO, i, 0, 0, 0, 0, 0);
 		if (ret.error)
 			/* The logical counter ids are not expected to be contiguous */
 			continue;
@@ -940,7 +938,7 @@ static inline void pmu_sbi_stop_all(struct riscv_pmu *pmu)
 			continue;
 		sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_STOP,
 			  i * BITS_PER_LONG, pmu->cmask[i],
-			  SBI_PMU_STOP_FLAG_RESET);
+			  SBI_PMU_STOP_FLAG_RESET, 0, 0, 0);
 	}
 }
 
@@ -962,7 +960,7 @@ static inline void pmu_sbi_stop_hw_ctrs(struct riscv_pmu *pmu)
 	for (i = 0; i < BITS_TO_LONGS(RISCV_MAX_COUNTERS); i++) {
 		/* No need to check the error here as we can't do anything about the error */
 		ret = sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_STOP, i * BITS_PER_LONG,
-				cpu_hw_evt->used_hw_ctrs[i], flag);
+				cpu_hw_evt->used_hw_ctrs[i], flag, 0, 0, 0);
 		if (!ret.error && sbi_pmu_snapshot_available()) {
 			/* Save the counter values to avoid clobbering */
 			for_each_set_bit(idx, &cpu_hw_evt->used_hw_ctrs[i], BITS_PER_LONG)
@@ -1004,7 +1002,7 @@ static inline void pmu_sbi_start_ovf_ctrs_sbi(struct cpu_hw_events *cpu_hw_evt,
 		/* Start all the counters that did not overflow in a single shot */
 		if (ctr_start_mask) {
 			sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, i * BITS_PER_LONG,
-				  ctr_start_mask, 0);
+				  ctr_start_mask, 0, 0, 0, 0);
 		}
 	}
 
@@ -1016,11 +1014,11 @@ static inline void pmu_sbi_start_ovf_ctrs_sbi(struct cpu_hw_events *cpu_hw_evt,
 			max_period = riscv_pmu_ctr_get_width_mask(event);
 			init_val = local64_read(&hwc->prev_count) & max_period;
 #if defined(CONFIG_32BIT)
-			sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, idx,
-				  1, flag, init_val, init_val >> 32);
+			sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, idx, 1,
+				  flag, init_val, init_val >> 32, 0);
 #else
-			sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, idx,
-				  1, flag, init_val);
+			sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, idx, 1,
+				  flag, init_val, 0, 0);
 #endif
 			perf_event_update_userpage(event);
 		}
@@ -1059,9 +1057,8 @@ static inline void pmu_sbi_start_ovf_ctrs_snapshot(struct cpu_hw_events *cpu_hw_
 			sdata->ctr_values[idx] =
 					cpu_hw_evt->snapshot_cval_shcopy[idx + i * BITS_PER_LONG];
 		/* Start all the counters in a single shot */
-		sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START,
-			  idx * BITS_PER_LONG,
-			  cpu_hw_evt->used_hw_ctrs[i], flag);
+		sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_START, idx * BITS_PER_LONG,
+			  cpu_hw_evt->used_hw_ctrs[i], flag, 0, 0, 0);
 	}
 }
 
@@ -1260,29 +1257,22 @@ static int pmu_sbi_setup_irqs(struct riscv_pmu *pmu, struct platform_device *pde
 					  DOMAIN_BUS_ANY);
 	if (!domain) {
 		pr_err("Failed to find INTC IRQ root domain\n");
-		ret = -ENODEV;
-		goto err;
+		return -ENODEV;
 	}
 
 	riscv_pmu_irq = irq_create_mapping(domain, riscv_pmu_irq_num);
 	if (!riscv_pmu_irq) {
 		pr_err("Failed to map PMU interrupt for node\n");
-		ret = -ENODEV;
-		goto err;
+		return -ENODEV;
 	}
 
 	ret = request_percpu_irq(riscv_pmu_irq, pmu_sbi_ovf_handler, "riscv-pmu", hw_events);
 	if (ret) {
 		pr_err("registering percpu irq failed [%d]\n", ret);
-		irq_dispose_mapping(riscv_pmu_irq);
-		riscv_pmu_irq = 0;
-		goto err;
+		return ret;
 	}
 
 	return 0;
-err:
-	riscv_pmu_use_irq = false;
-	return ret;
 }
 
 #ifdef CONFIG_CPU_PM
@@ -1349,8 +1339,7 @@ static void riscv_pmu_destroy(struct riscv_pmu *pmu)
 		}
 	}
 	riscv_pm_pmu_unregister(pmu);
-	if (!hlist_unhashed(&pmu->node))
-		cpuhp_state_remove_instance(CPUHP_AP_PERF_RISCV_STARTING, &pmu->node);
+	cpuhp_state_remove_instance(CPUHP_AP_PERF_RISCV_STARTING, &pmu->node);
 }
 
 static void pmu_sbi_event_init(struct perf_event *event)
@@ -1472,7 +1461,6 @@ static int pmu_sbi_device_probe(struct platform_device *pdev)
 	struct riscv_pmu *pmu = NULL;
 	int ret = -ENODEV;
 	int num_counters;
-	bool irq_requested = false;
 
 	pr_info("SBI PMU extension is available\n");
 	pmu = riscv_pmu_alloc();
@@ -1501,7 +1489,6 @@ static int pmu_sbi_device_probe(struct platform_device *pdev)
 		pmu->pmu.capabilities |= PERF_PMU_CAP_NO_INTERRUPT;
 		pmu->pmu.capabilities |= PERF_PMU_CAP_NO_EXCLUDE;
 	}
-	irq_requested = (ret == 0);
 
 	pmu->pmu.attr_groups = riscv_pmu_attr_groups;
 	pmu->pmu.parent = &pdev->dev;
@@ -1520,11 +1507,11 @@ static int pmu_sbi_device_probe(struct platform_device *pdev)
 
 	ret = riscv_pm_pmu_register(pmu);
 	if (ret)
-		goto out_destroy;
+		goto out_unregister;
 
 	ret = perf_pmu_register(&pmu->pmu, "cpu", PERF_TYPE_RAW);
 	if (ret)
-		goto out_destroy;
+		goto out_unregister;
 
 	/* SBI PMU Snapsphot is only available in SBI v2.0 */
 	if (sbi_v2_available) {
@@ -1565,20 +1552,9 @@ static int pmu_sbi_device_probe(struct platform_device *pdev)
 	return 0;
 
 out_unregister:
-	perf_pmu_unregister(&pmu->pmu);
-
-out_destroy:
 	riscv_pmu_destroy(pmu);
-	if (irq_requested) {
-		free_percpu_irq(riscv_pmu_irq, pmu->hw_events);
-		irq_dispose_mapping(riscv_pmu_irq);
-		riscv_pmu_irq = 0;
-	}
 
 out_free:
-	free_percpu(pmu->hw_events);
-	kfree(pmu_ctr_list);
-	pmu_ctr_list = NULL;
 	kfree(pmu);
 	return ret;
 }

@@ -11,7 +11,6 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
-#include <linux/uaccess.h>
 #include <linux/blkdev.h>
 #include <linux/vringh.h>
 #include <linux/vdpa.h>
@@ -344,17 +343,11 @@ static void vdpasim_blk_work(struct vdpasim *vdpasim)
 			continue;
 
 		while (vdpasim_blk_handle_req(vdpasim, vq)) {
-			bool notify;
-
 			/* Make sure used is visible before rasing the interrupt. */
 			smp_wmb();
 
 			local_bh_disable();
-			/* The ring may be in user memory, and we can't take faults here */
-			pagefault_disable();
-			notify = vringh_need_notify_iotlb(&vq->vring) > 0;
-			pagefault_enable();
-			if (notify)
+			if (vringh_need_notify_iotlb(&vq->vring) > 0)
 				vringh_notify(&vq->vring);
 			local_bh_enable();
 

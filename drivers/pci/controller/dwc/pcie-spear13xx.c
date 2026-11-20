@@ -193,11 +193,11 @@ static int spear13xx_pcie_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	int ret;
 
-	spear13xx_pcie = devm_kzalloc_obj(dev, *spear13xx_pcie);
+	spear13xx_pcie = devm_kzalloc(dev, sizeof(*spear13xx_pcie), GFP_KERNEL);
 	if (!spear13xx_pcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc_obj(dev, *pci);
+	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
 	if (!pci)
 		return -ENOMEM;
 

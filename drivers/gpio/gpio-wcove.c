@@ -425,7 +425,7 @@ static int wcove_gpio_probe(struct platform_device *pdev)
 
 	dev = &pdev->dev;
 
-	wg = devm_kzalloc_obj(dev, *wg);
+	wg = devm_kzalloc(dev, sizeof(*wg), GFP_KERNEL);
 	if (!wg)
 		return -ENOMEM;
 

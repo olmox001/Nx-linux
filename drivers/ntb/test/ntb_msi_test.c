@@ -351,11 +351,12 @@ static int ntb_msit_probe(struct ntb_client *client, struct ntb_dev *ntb)
 		return ret;
 	}
 
-	nm = devm_kzalloc_flex(&ntb->dev, *nm, peers, peers);
+	nm = devm_kzalloc(&ntb->dev, struct_size(nm, peers, peers), GFP_KERNEL);
 	if (!nm)
 		return -ENOMEM;
 
-	nm->isr_ctx = devm_kzalloc_objs(&ntb->dev, *nm->isr_ctx, num_irqs);
+	nm->isr_ctx = devm_kcalloc(&ntb->dev, num_irqs, sizeof(*nm->isr_ctx),
+				   GFP_KERNEL);
 	if (!nm->isr_ctx)
 		return -ENOMEM;
 

@@ -230,8 +230,10 @@ static int zynqmp_aes_aead_cipher(struct aead_request *req)
 	}
 
 freemem:
-	kfree_sensitive(kbuf);
-	kfree_sensitive(dmabuf);
+	memzero_explicit(kbuf, dma_size);
+	kfree(kbuf);
+	memzero_explicit(dmabuf, sizeof(struct zynqmp_aead_hw_req) + GCM_AES_IV_SIZE);
+	kfree(dmabuf);
 
 	return ret;
 }
@@ -362,9 +364,11 @@ unmap:
 	if (unlikely(dma_addr_hw_req))
 		dma_unmap_single(dev, dma_addr_hw_req, dmabuf_size, DMA_BIDIRECTIONAL);
 buf2_free:
-	kfree_sensitive(dmabuf);
+	memzero_explicit(dmabuf, dmabuf_size);
+	kfree(dmabuf);
 buf1_free:
-	kfree_sensitive(kbuf);
+	memzero_explicit(kbuf, kbuf_size);
+	kfree(kbuf);
 err:
 	return ret;
 }
@@ -762,7 +766,7 @@ static void xilinx_aes_aead_exit(struct crypto_aead *aead)
 	struct xilinx_aead_tfm_ctx *tfm_ctx = crypto_tfm_ctx(tfm);
 
 	dma_unmap_single(tfm_ctx->dev, tfm_ctx->key_dma_addr, AES_KEYSIZE_256, DMA_TO_DEVICE);
-	kfree_sensitive(tfm_ctx->key);
+	kfree(tfm_ctx->key);
 	if (tfm_ctx->fbk_cipher) {
 		crypto_free_aead(tfm_ctx->fbk_cipher);
 		tfm_ctx->fbk_cipher = NULL;
@@ -928,7 +932,7 @@ static int xilinx_aes_aead_probe(struct platform_device *pdev)
 	if (aead_dev)
 		return -ENODEV;
 
-	aead_dev = devm_kzalloc_obj(dev, *aead_dev);
+	aead_dev = devm_kzalloc(dev, sizeof(*aead_dev), GFP_KERNEL);
 	if (!aead_dev)
 		return -ENOMEM;
 	aead_dev->dev = dev;

@@ -246,7 +246,7 @@ static int cpcap_rtc_probe(struct platform_device *pdev)
 	struct cpcap_rtc *rtc;
 	int err;
 
-	rtc = devm_kzalloc_obj(dev, *rtc);
+	rtc = devm_kzalloc(dev, sizeof(*rtc), GFP_KERNEL);
 	if (!rtc)
 		return -ENOMEM;
 

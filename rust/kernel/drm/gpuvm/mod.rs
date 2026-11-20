@@ -270,9 +270,7 @@ pub trait DriverGpuVm: Sized + Send + Sync {
     type VmBoData: Send + Sync;
 
     /// The private data passed to callbacks.
-    type SmContext<'ctx>
-    where
-        Self: 'ctx;
+    type SmContext<'ctx>;
 
     /// Indicates that a new mapping should be created.
     fn sm_step_map<'op, 'ctx>(

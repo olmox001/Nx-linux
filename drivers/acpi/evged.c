@@ -115,7 +115,7 @@ static acpi_status acpi_ged_request_interrupt(struct acpi_resource *ares,
 		return AE_ERROR;
 	}
 
-	event = devm_kzalloc_obj(dev, *event);
+	event = devm_kzalloc(dev, sizeof(*event), GFP_KERNEL);
 	if (!event)
 		return AE_ERROR;
 
@@ -143,7 +143,7 @@ static int ged_probe(struct platform_device *pdev)
 	struct acpi_ged_device *geddev;
 	acpi_status acpi_ret;
 
-	geddev = devm_kzalloc_obj(&pdev->dev, *geddev);
+	geddev = devm_kzalloc(&pdev->dev, sizeof(*geddev), GFP_KERNEL);
 	if (!geddev)
 		return -ENOMEM;
 

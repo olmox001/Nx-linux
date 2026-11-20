@@ -297,7 +297,6 @@ void perf_env__exit(struct perf_env *env)
 		zfree(&env->pmu_caps[i].pmu_name);
 	}
 	zfree(&env->pmu_caps);
-	zfree(&env->memory_ranges);
 	free_cpu_domain_info(env->cpu_domain, env->schedstat_version, env->nr_cpus_avail);
 }
 

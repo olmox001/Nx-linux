@@ -1656,7 +1656,7 @@ static int xgene_phy_probe(struct platform_device *pdev)
 	u32 default_txcp1[] = DEFAULT_SATA_TXCP1;
 	int i;
 
-	ctx = devm_kzalloc_obj(&pdev->dev, *ctx);
+	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -1669,7 +1669,7 @@ static int xgene_phy_probe(struct platform_device *pdev)
 	/* Retrieve optional clock */
 	ctx->clk = clk_get(&pdev->dev, NULL);
 
-	/* Load override parameters */
+	/* Load override paramaters */
 	xgene_phy_get_param(pdev, "apm,tx-eye-tuning",
 		ctx->sata_param.txeyetuning, 6, default_txeye_tuning, 1);
 	xgene_phy_get_param(pdev, "apm,tx-eye-direction",

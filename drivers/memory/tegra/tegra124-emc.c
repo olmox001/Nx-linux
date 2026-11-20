@@ -977,7 +977,8 @@ static int tegra124_emc_load_timings_from_dt(struct tegra_emc *emc,
 	unsigned int i = 0;
 	int err;
 
-	emc->timings = devm_kzalloc_objs(emc->dev, *timing, child_count);
+	emc->timings = devm_kcalloc(emc->dev, child_count, sizeof(*timing),
+				    GFP_KERNEL);
 	if (!emc->timings)
 		return -ENOMEM;
 
@@ -1342,7 +1343,7 @@ static int tegra124_emc_probe(struct platform_device *pdev)
 	u32 ram_code;
 	int err;
 
-	emc = devm_kzalloc_obj(&pdev->dev, *emc);
+	emc = devm_kzalloc(&pdev->dev, sizeof(*emc), GFP_KERNEL);
 	if (!emc)
 		return -ENOMEM;
 

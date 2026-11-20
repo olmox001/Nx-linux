@@ -6,7 +6,6 @@
 //
 //
 
-#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/soundwire/sdw.h>
@@ -348,8 +347,9 @@ static int rt700_read_prop(struct sdw_slave *slave)
 	prop->sink_ports = 0xA; /* BITMAP:  00001010 */
 
 	nval = hweight32(prop->source_ports);
-	prop->src_dpn_prop = devm_kzalloc_objs(&slave->dev, *prop->src_dpn_prop,
-					       nval);
+	prop->src_dpn_prop = devm_kcalloc(&slave->dev, nval,
+						sizeof(*prop->src_dpn_prop),
+						GFP_KERNEL);
 	if (!prop->src_dpn_prop)
 		return -ENOMEM;
 
@@ -366,8 +366,9 @@ static int rt700_read_prop(struct sdw_slave *slave)
 
 	/* do this again for sink now */
 	nval = hweight32(prop->sink_ports);
-	prop->sink_dpn_prop = devm_kzalloc_objs(&slave->dev,
-						*prop->sink_dpn_prop, nval);
+	prop->sink_dpn_prop = devm_kcalloc(&slave->dev, nval,
+						sizeof(*prop->sink_dpn_prop),
+						GFP_KERNEL);
 	if (!prop->sink_dpn_prop)
 		return -ENOMEM;
 
@@ -414,11 +415,12 @@ static int rt700_interrupt_callback(struct sdw_slave *slave,
 	dev_dbg(&slave->dev,
 		"%s control_port_stat=%x", __func__, status->control_port);
 
-	guard(mutex)(&rt700->disable_irq_lock);
+	mutex_lock(&rt700->disable_irq_lock);
 	if (status->control_port & 0x4 && !rt700->disable_irq) {
 		mod_delayed_work(system_power_efficient_wq,
 			&rt700->jack_detect_work, msecs_to_jiffies(250));
 	}
+	mutex_unlock(&rt700->disable_irq_lock);
 
 	return 0;
 }
@@ -497,11 +499,11 @@ static int rt700_dev_system_suspend(struct device *dev)
 	 * deferred work completes and before the parent disables
 	 * interrupts on the link
 	 */
-	scoped_guard(mutex, &rt700->disable_irq_lock) {
-		rt700->disable_irq = true;
-		ret = sdw_update_no_pm(slave, SDW_SCP_INTMASK1,
-				       SDW_SCP_INT1_IMPL_DEF, 0);
-	}
+	mutex_lock(&rt700->disable_irq_lock);
+	rt700->disable_irq = true;
+	ret = sdw_update_no_pm(slave, SDW_SCP_INTMASK1,
+			       SDW_SCP_INT1_IMPL_DEF, 0);
+	mutex_unlock(&rt700->disable_irq_lock);
 
 	if (ret < 0) {
 		/* log but don't prevent suspend from happening */

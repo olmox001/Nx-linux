@@ -39,11 +39,11 @@ static int pmu_version;
 struct amd_uncore_ctx {
 	int refcnt;
 	int cpu;
+	struct perf_event **events;
 	unsigned long active_mask[BITS_TO_LONGS(NUM_COUNTERS_MAX)];
 	int nr_active;
 	struct hrtimer hrtimer;
 	u64 hrtimer_duration;
-	struct perf_event *events[];
 };
 
 struct amd_uncore_pmu {
@@ -206,14 +206,16 @@ static int amd_uncore_add(struct perf_event *event, int flags)
 	struct amd_uncore_ctx *ctx = *per_cpu_ptr(pmu->ctx, event->cpu);
 	struct hw_perf_event *hwc = &event->hw;
 
-	/*
-	 * Perf serializes ->add() and ->del() for an event. A successful
-	 * ->add() records the claimed slot in hwc->idx before returning, and
-	 * ->del() clears that slot before resetting hwc->idx. Therefore, an
-	 * existing assignment must be at hwc->idx.
-	 */
+	/* are we already assigned? */
 	if (hwc->idx != -1 && ctx->events[hwc->idx] == event)
 		goto out;
+
+	for (i = 0; i < pmu->num_counters; i++) {
+		if (ctx->events[i] == event) {
+			hwc->idx = i;
+			goto out;
+		}
+	}
 
 	/* if not, take the first available counter */
 	hwc->idx = -1;
@@ -246,15 +248,19 @@ out:
 
 static void amd_uncore_del(struct perf_event *event, int flags)
 {
+	int i;
 	struct amd_uncore_pmu *pmu = event_to_amd_uncore_pmu(event);
 	struct amd_uncore_ctx *ctx = *per_cpu_ptr(pmu->ctx, event->cpu);
 	struct hw_perf_event *hwc = &event->hw;
-	struct perf_event *old = event;
 
 	event->pmu->stop(event, PERF_EF_UPDATE);
 
-	/* ->del() follows a successful ->add(), so hwc->idx owns this slot. */
-	WARN_ON_ONCE(!try_cmpxchg(&ctx->events[hwc->idx], &old, NULL));
+	for (i = 0; i < pmu->num_counters; i++) {
+		struct perf_event *tmp = event;
+
+		if (try_cmpxchg(&ctx->events[i], &tmp, NULL))
+			break;
+	}
 
 	hwc->idx = -1;
 }
@@ -347,7 +353,7 @@ static ssize_t amd_uncore_attr_show_cpumask(struct device *dev,
 	struct pmu *ptr = dev_get_drvdata(dev);
 	struct amd_uncore_pmu *pmu = container_of(ptr, struct amd_uncore_pmu, pmu);
 
-	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(&pmu->active_mask));
+	return cpumap_print_to_pagebuf(true, buf, &pmu->active_mask);
 }
 static DEVICE_ATTR(cpumask, S_IRUGO, amd_uncore_attr_show_cpumask, NULL);
 
@@ -513,8 +519,10 @@ static void amd_uncore_ctx_free(struct amd_uncore *uncore, unsigned int cpu)
 		if (cpu == ctx->cpu)
 			cpumask_clear_cpu(cpu, &pmu->active_mask);
 
-		if (!--ctx->refcnt)
+		if (!--ctx->refcnt) {
+			kfree(ctx->events);
 			kfree(ctx);
+		}
 
 		*per_cpu_ptr(pmu->ctx, cpu) = NULL;
 	}
@@ -559,11 +567,18 @@ static int amd_uncore_ctx_init(struct amd_uncore *uncore, unsigned int cpu)
 		/* Allocate context if sibling does not exist */
 		if (!curr) {
 			node = cpu_to_node(cpu);
-			curr = kzalloc_node(struct_size(curr, events, pmu->num_counters), GFP_KERNEL, node);
+			curr = kzalloc_node(sizeof(*curr), GFP_KERNEL, node);
 			if (!curr)
 				goto fail;
 
 			curr->cpu = cpu;
+			curr->events = kzalloc_node(sizeof(*curr->events) *
+						    pmu->num_counters,
+						    GFP_KERNEL, node);
+			if (!curr->events) {
+				kfree(curr);
+				goto fail;
+			}
 
 			amd_uncore_init_hrtimer(curr);
 			curr->hrtimer_duration = (u64)update_interval * NSEC_PER_MSEC;
@@ -595,7 +610,7 @@ static void amd_uncore_ctx_move(struct amd_uncore *uncore, unsigned int cpu)
 	for (i = 0; i < uncore->num_pmus; i++) {
 		pmu = &uncore->pmus[i];
 		curr = *per_cpu_ptr(pmu->ctx, cpu);
-		if (!curr || curr->cpu != cpu)
+		if (!curr)
 			continue;
 
 		/* Migrate to a shared sibling if possible */

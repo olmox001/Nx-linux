@@ -1,11 +1,12 @@
 #!/bin/bash
-# perf stat CSV output linter (no_mlock)
+# perf stat CSV output linter
 # SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 # Tests various perf stat CSV output commands for the
 # correct number of fields and the CSV separator set to ','.
 
 set -e
 
+# shellcheck source=lib/stat_output.sh
 . "$(dirname $0)"/lib/stat_output.sh
 
 csv_sep=@

@@ -4680,7 +4680,8 @@ static int be_if_create(struct be_adapter *adapter)
 	u32 cap_flags = be_if_cap_flags(adapter);
 
 	/* alloc required memory for other filtering fields */
-	adapter->pmac_id = kzalloc_objs(*adapter->pmac_id, be_max_uc(adapter));
+	adapter->pmac_id = kcalloc(be_max_uc(adapter),
+				   sizeof(*adapter->pmac_id), GFP_KERNEL);
 	if (!adapter->pmac_id)
 		return -ENOMEM;
 

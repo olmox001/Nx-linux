@@ -520,7 +520,7 @@ static int cpwd_probe(struct platform_device *op)
 	if (cpwd_device)
 		return -EINVAL;
 
-	p = devm_kzalloc_obj(&op->dev, *p);
+	p = devm_kzalloc(&op->dev, sizeof(*p), GFP_KERNEL);
 	if (!p)
 		return -ENOMEM;
 

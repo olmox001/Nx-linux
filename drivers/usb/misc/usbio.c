@@ -555,7 +555,7 @@ static int usbio_probe(struct usb_interface *intf, const struct usb_device_id *i
 	struct usbio_fwver fwver;
 	int ret;
 
-	usbio = devm_kzalloc_obj(dev, *usbio);
+	usbio = devm_kzalloc(dev, sizeof(*usbio), GFP_KERNEL);
 	if (!usbio)
 		return -ENOMEM;
 

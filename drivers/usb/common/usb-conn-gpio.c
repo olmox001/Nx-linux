@@ -197,7 +197,7 @@ static int usb_conn_probe(struct platform_device *pdev)
 	struct usb_conn_info *info;
 	int ret = 0;
 
-	info = devm_kzalloc_obj(dev, *info);
+	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
@@ -251,8 +251,10 @@ static int usb_conn_probe(struct platform_device *pdev)
 		ret = devm_request_threaded_irq(dev, info->id_irq, NULL,
 						usb_conn_isr, USB_CONN_IRQF,
 						pdev->name, info);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "failed to request ID IRQ\n");
 			goto put_role_sw;
+		}
 	}
 
 	if (info->vbus_gpiod) {
@@ -266,8 +268,10 @@ static int usb_conn_probe(struct platform_device *pdev)
 		ret = devm_request_threaded_irq(dev, info->vbus_irq, NULL,
 						usb_conn_isr, USB_CONN_IRQF,
 						pdev->name, info);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "failed to request VBUS IRQ\n");
 			goto put_role_sw;
+		}
 	}
 
 	platform_set_drvdata(pdev, info);

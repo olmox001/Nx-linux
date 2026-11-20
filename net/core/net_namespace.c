@@ -181,7 +181,6 @@ static void ops_exit_rtnl_list(const struct list_head *ops_list,
 				ops->exit_rtnl(net, &dev_kill_list);
 		}
 
-		unregister_netdevice_queue_many_net(net, &dev_kill_list);
 		__rtnl_net_unlock(net);
 	}
 
@@ -270,19 +269,14 @@ static void ops_undo_single(struct pernet_operations *ops,
 /* should be called with nsid_lock held */
 static int alloc_netid(struct net *net, struct net *peer, int reqid)
 {
-	int ret;
-	u32 id;
+	int min = 0, max = 0;
 
 	if (reqid >= 0) {
-		id = reqid;
-		ret = idr_alloc_u32(&net->netns_ids, peer, &id, id,
-				    GFP_ATOMIC);
-		if (ret)
-			return ret;
-		return id;
+		min = reqid;
+		max = reqid + 1;
 	}
 
-	return idr_alloc(&net->netns_ids, peer, 0, 0, GFP_ATOMIC);
+	return idr_alloc(&net->netns_ids, peer, min, max, GFP_ATOMIC);
 }
 
 /* This function is used by idr_for_each(). If net is equal to peer, the
@@ -422,9 +416,6 @@ static __net_init void preinit_net(struct net *net, struct user_namespace *user_
 #ifdef CONFIG_DEBUG_NET_SMALL_RTNL
 	mutex_init(&net->rtnl_mutex);
 	lock_set_cmp_fn(&net->rtnl_mutex, rtnl_net_lock_cmp_fn, NULL);
-	INIT_WORK(&net->rtnl_work, rtnl_net_work_func);
-	INIT_LIST_HEAD(&net->dev_unreg_head);
-	spin_lock_init(&net->dev_unreg_lock);
 #endif
 
 	INIT_LIST_HEAD(&net->ptype_all);
@@ -442,7 +433,7 @@ static __net_init int setup_net(struct net *net)
 	LIST_HEAD(net_exit_list);
 	int error = 0;
 
-	net->net_cookie = to_ns_common(net)->ns_id;
+	net->net_cookie = ns_tree_gen_id(net);
 
 	list_for_each_entry(ops, &pernet_list, list) {
 		error = ops_init(ops, net);
@@ -452,9 +443,7 @@ static __net_init int setup_net(struct net *net)
 	down_write(&net_rwsem);
 	list_add_tail_rcu(&net->list, &net_namespace_list);
 	up_write(&net_rwsem);
-	/* Without CONFIG_NET_NS init_net isn't exposed as a namespace. */
-	if (IS_ENABLED(CONFIG_NET_NS))
-		ns_tree_add(net);
+	ns_tree_add_raw(net);
 out:
 	return error;
 
@@ -644,10 +633,10 @@ static void unhash_nsid(struct net *last)
 	 * use for_each_net_rcu() or net_rwsem.
 	 */
 	for_each_net(tmp) {
-		unsigned long id = 0;
+		int id = 0;
 
 		spin_lock(&tmp->nsid_lock);
-		while ((peer = idr_get_next_ul(&tmp->netns_ids, &id))) {
+		while ((peer = idr_get_next(&tmp->netns_ids, &id))) {
 			int curr_id = id;
 
 			id++;

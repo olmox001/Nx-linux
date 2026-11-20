@@ -386,11 +386,11 @@ static int omap_usb2_probe(struct platform_device *pdev)
 	if (!phy_data)
 		return -EINVAL;
 
-	phy = devm_kzalloc_obj(&pdev->dev, *phy);
+	phy = devm_kzalloc(&pdev->dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
 
-	otg = devm_kzalloc_obj(&pdev->dev, *otg);
+	otg = devm_kzalloc(&pdev->dev, sizeof(*otg), GFP_KERNEL);
 	if (!otg)
 		return -ENOMEM;
 

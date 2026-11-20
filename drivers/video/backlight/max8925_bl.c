@@ -95,7 +95,9 @@ static void max8925_backlight_dt_init(struct platform_device *pdev)
 	if (!nproot || !IS_ENABLED(CONFIG_OF))
 		return;
 
-	pdata = devm_kzalloc_obj(&pdev->dev, struct max8925_backlight_pdata);
+	pdata = devm_kzalloc(&pdev->dev,
+			     sizeof(struct max8925_backlight_pdata),
+			     GFP_KERNEL);
 	if (!pdata)
 		return;
 
@@ -124,7 +126,8 @@ static int max8925_backlight_probe(struct platform_device *pdev)
 	unsigned char value;
 	int ret = 0;
 
-	data = devm_kzalloc_obj(&pdev->dev, struct max8925_backlight_data);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct max8925_backlight_data),
+			    GFP_KERNEL);
 	if (data == NULL)
 		return -ENOMEM;
 

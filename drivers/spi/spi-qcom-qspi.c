@@ -721,7 +721,8 @@ static int qcom_qspi_probe(struct platform_device *pdev)
 	if (IS_ERR(ctrl->base))
 		return PTR_ERR(ctrl->base);
 
-	ctrl->clks = devm_kzalloc_objs(dev, *ctrl->clks, QSPI_NUM_CLKS);
+	ctrl->clks = devm_kcalloc(dev, QSPI_NUM_CLKS,
+				  sizeof(*ctrl->clks), GFP_KERNEL);
 	if (!ctrl->clks)
 		return -ENOMEM;
 
@@ -828,7 +829,7 @@ static void qcom_qspi_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 }
 
-static int qcom_qspi_runtime_suspend(struct device *dev)
+static int __maybe_unused qcom_qspi_runtime_suspend(struct device *dev)
 {
 	struct spi_controller *host = dev_get_drvdata(dev);
 	struct qcom_qspi *ctrl = spi_controller_get_devdata(host);
@@ -872,7 +873,7 @@ err_enable_clk:
 	return ret;
 }
 
-static int qcom_qspi_runtime_resume(struct device *dev)
+static int __maybe_unused qcom_qspi_runtime_resume(struct device *dev)
 {
 	struct spi_controller *host = dev_get_drvdata(dev);
 	struct qcom_qspi *ctrl = spi_controller_get_devdata(host);
@@ -916,7 +917,7 @@ err_opp_set_rate_zero:
 	return ret;
 }
 
-static int qcom_qspi_suspend(struct device *dev)
+static int __maybe_unused qcom_qspi_suspend(struct device *dev)
 {
 	struct spi_controller *host = dev_get_drvdata(dev);
 	int ret;
@@ -932,7 +933,7 @@ static int qcom_qspi_suspend(struct device *dev)
 	return ret;
 }
 
-static int qcom_qspi_resume(struct device *dev)
+static int __maybe_unused qcom_qspi_resume(struct device *dev)
 {
 	struct spi_controller *host = dev_get_drvdata(dev);
 	int ret;
@@ -949,9 +950,9 @@ static int qcom_qspi_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops qcom_qspi_dev_pm_ops = {
-	RUNTIME_PM_OPS(qcom_qspi_runtime_suspend,
-		       qcom_qspi_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(qcom_qspi_suspend, qcom_qspi_resume)
+	SET_RUNTIME_PM_OPS(qcom_qspi_runtime_suspend,
+			   qcom_qspi_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(qcom_qspi_suspend, qcom_qspi_resume)
 };
 
 static const struct of_device_id qcom_qspi_dt_match[] = {
@@ -963,7 +964,7 @@ MODULE_DEVICE_TABLE(of, qcom_qspi_dt_match);
 static struct platform_driver qcom_qspi_driver = {
 	.driver = {
 		.name		= "qcom_qspi",
-		.pm		= pm_ptr(&qcom_qspi_dev_pm_ops),
+		.pm		= &qcom_qspi_dev_pm_ops,
 		.of_match_table = qcom_qspi_dt_match,
 	},
 	.probe = qcom_qspi_probe,

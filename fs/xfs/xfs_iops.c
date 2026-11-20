@@ -169,7 +169,7 @@ xfs_create_need_xattr(
 
 STATIC int
 xfs_generic_create(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct inode		*dir,
 	struct dentry		*dentry,
 	umode_t			mode,
@@ -279,7 +279,7 @@ xfs_generic_create(
 
 STATIC int
 xfs_vn_mknod(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct inode		*dir,
 	struct dentry		*dentry,
 	umode_t			mode,
@@ -290,22 +290,23 @@ xfs_vn_mknod(
 
 STATIC int
 xfs_vn_create(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct inode		*dir,
 	struct dentry		*dentry,
-	umode_t			mode)
+	umode_t			mode,
+	bool			flags)
 {
 	return xfs_generic_create(idmap, dir, dentry, mode, 0, NULL);
 }
 
 STATIC struct dentry *
 xfs_vn_mkdir(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct inode		*dir,
 	struct dentry		*dentry,
 	umode_t			mode)
 {
-	return ERR_PTR(xfs_generic_create(idmap, dir, dentry, mode, 0, NULL));
+	return ERR_PTR(xfs_generic_create(idmap, dir, dentry, mode | S_IFDIR, 0, NULL));
 }
 
 STATIC struct dentry *
@@ -337,7 +338,7 @@ STATIC struct dentry *
 xfs_vn_ci_lookup(
 	struct inode	*dir,
 	struct dentry	*dentry,
-	unsigned int	flags)
+	unsigned int flags)
 {
 	struct xfs_inode *ip;
 	struct xfs_name	xname;
@@ -425,7 +426,7 @@ xfs_vn_unlink(
 
 STATIC int
 xfs_vn_symlink(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct inode		*dir,
 	struct dentry		*dentry,
 	const char		*symname)
@@ -466,7 +467,7 @@ xfs_vn_symlink(
 
 STATIC int
 xfs_vn_rename(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct inode		*odir,
 	struct dentry		*odentry,
 	struct inode		*ndir,
@@ -642,30 +643,19 @@ xfs_get_atomic_write_max(
 	 * then advertise a maximum size of whatever we can complete through
 	 * that means.  Hardware support is reported via max_opt, not here.
 	 */
-	return XFS_FSB_TO_B(mp, mp->m_groups[xfs_inode_group_type(ip)].awu_max);
-}
-
-static inline  xfs_fsize_t xfs_get_atomic_hw_write_align(
-		const struct xfs_inode *ip)
-{
-	struct xfs_mount *mp = ip->i_mount;
-
-	return XFS_FSB_TO_B(
-		mp, xfs_calc_group_awu_align_max(mp, xfs_inode_group_type(ip)));
+	if (XFS_IS_REALTIME_INODE(ip))
+		return XFS_FSB_TO_B(mp, mp->m_groups[XG_TYPE_RTG].awu_max);
+	return XFS_FSB_TO_B(mp, mp->m_groups[XG_TYPE_AG].awu_max);
 }
 
 unsigned int
 xfs_get_atomic_write_max_opt(
 	struct xfs_inode	*ip)
 {
-	struct xfs_mount	*mp = ip->i_mount;
-	unsigned int		max_opt;
-	const unsigned int	sw_awu_max = xfs_get_atomic_write_max(ip);
-	const unsigned int	hw_awu_max = xfs_inode_buftarg(ip)->bt_awu_max;
-	const xfs_fsize_t	hw_align_max = xfs_get_atomic_hw_write_align(ip);
+	unsigned int		awu_max = xfs_get_atomic_write_max(ip);
 
 	/* if the max is 1x block, then just keep behaviour that opt is 0 */
-	if (sw_awu_max <= mp->m_sb.sb_blocksize)
+	if (awu_max <= ip->i_mount->m_sb.sb_blocksize)
 		return 0;
 
 	/*
@@ -674,14 +664,7 @@ xfs_get_atomic_write_max_opt(
 	 * less than our out of place write limit, but we don't want to exceed
 	 * the awu_max.
 	 */
-	max_opt = min(sw_awu_max, hw_awu_max);
-
-	/*
-	 * HW atomic writes also have to be naturally aligned on disk, so we
-	 * cannot promise more than the largest extent that the allocator is
-	 * able to align within a group.
-	 */
-	return min_t(xfs_fsize_t, max_opt, hw_align_max);
+	return min(awu_max, xfs_inode_buftarg(ip)->bt_awu_max);
 }
 
 static void
@@ -697,7 +680,7 @@ xfs_report_atomic_write(
 
 STATIC int
 xfs_vn_getattr(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	const struct path	*path,
 	struct kstat		*stat,
 	u32			request_mask,
@@ -772,7 +755,7 @@ xfs_vn_getattr(
 
 static int
 xfs_vn_change_ok(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct dentry		*dentry,
 	struct iattr		*iattr)
 {
@@ -795,7 +778,7 @@ xfs_vn_change_ok(
  */
 static int
 xfs_setattr_nonsize(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct dentry		*dentry,
 	struct xfs_inode	*ip,
 	struct iattr		*iattr)
@@ -852,7 +835,7 @@ xfs_setattr_nonsize(
 	}
 
 	error = xfs_trans_alloc_ichange(ip, udqp, gdqp, NULL,
-			capable_noaudit(CAP_FOWNER), &tp);
+			ns_capable_noaudit(&init_user_ns, CAP_FOWNER), &tp);
 	if (error)
 		goto out_dqrele;
 
@@ -921,7 +904,7 @@ out_dqrele:
  */
 int
 xfs_vn_setattr_size(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct dentry		*dentry,
 	struct iattr		*iattr)
 {
@@ -1148,7 +1131,7 @@ out_trans_cancel:
 
 STATIC int
 xfs_vn_setattr(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct dentry		*dentry,
 	struct iattr		*iattr)
 {
@@ -1256,10 +1239,10 @@ xfs_vn_fiemap(
 	if (fieinfo->fi_flags & FIEMAP_FLAG_XATTR) {
 		fieinfo->fi_flags &= ~FIEMAP_FLAG_XATTR;
 		error = iomap_fiemap(inode, fieinfo, start, length,
-				xfs_xattr_iomap_next);
+				&xfs_xattr_iomap_ops);
 	} else {
 		error = iomap_fiemap(inode, fieinfo, start, length,
-				xfs_read_iomap_next);
+				&xfs_read_iomap_ops);
 	}
 	xfs_iunlock(XFS_I(inode), XFS_IOLOCK_SHARED);
 
@@ -1268,7 +1251,7 @@ xfs_vn_fiemap(
 
 STATIC int
 xfs_vn_tmpfile(
-	const struct mnt_idmap	*idmap,
+	struct mnt_idmap	*idmap,
 	struct inode		*dir,
 	struct file		*file,
 	umode_t			mode)

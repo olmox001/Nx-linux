@@ -260,8 +260,8 @@ static void set_inverse_trans_unicode(struct uni_pagedict *dict)
 
 	inv = dict->inverse_trans_unicode;
 	if (!inv) {
-		inv = dict->inverse_trans_unicode = kmalloc_objs(*inv,
-								 MAX_GLYPH);
+		inv = dict->inverse_trans_unicode = kmalloc_array(MAX_GLYPH,
+				sizeof(*inv), GFP_KERNEL);
 		if (!inv)
 			return;
 	}
@@ -511,7 +511,8 @@ con_insert_unipair(struct uni_pagedict *p, u_short unicode, u_short fontpos)
 	n = UNI_DIR(unicode);
 	dir = p->uni_pgdir[n];
 	if (!dir) {
-		dir = p->uni_pgdir[n] = kzalloc_objs(*dir, UNI_DIR_ROWS);
+		dir = p->uni_pgdir[n] = kcalloc(UNI_DIR_ROWS, sizeof(*dir),
+				GFP_KERNEL);
 		if (!dir)
 			return -ENOMEM;
 	}
@@ -519,7 +520,8 @@ con_insert_unipair(struct uni_pagedict *p, u_short unicode, u_short fontpos)
 	n = UNI_ROW(unicode);
 	row = dir[n];
 	if (!row) {
-		row = dir[n] = kmalloc_objs(*row, UNI_ROW_GLYPHS);
+		row = dir[n] = kmalloc_array(UNI_ROW_GLYPHS, sizeof(*row),
+				GFP_KERNEL);
 		if (!row)
 			return -ENOMEM;
 		/* No glyphs for the characters (yet) */
@@ -774,7 +776,7 @@ int con_get_unimap(struct vc_data *vc, ushort ct, ushort __user *uct,
 	struct uni_pagedict *dict;
 	unsigned int d, r, g;
 
-	struct unipair *unilist __free(kvfree) = kvmalloc_objs(*unilist, ct);
+	struct unipair *unilist __free(kvfree) = kvmalloc_array(ct, sizeof(*unilist), GFP_KERNEL);
 	if (!unilist)
 		return -ENOMEM;
 

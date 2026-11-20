@@ -248,7 +248,7 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 	bool sof_parent;
 	int ret_val;
 
-	drv = devm_kzalloc_obj(&pdev->dev, *drv);
+	drv = devm_kzalloc(&pdev->dev, sizeof(*drv), GFP_KERNEL);
 	if (!drv)
 		return -ENOMEM;
 	snd_soc_card_set_drvdata(&snd_soc_card_cht, drv);

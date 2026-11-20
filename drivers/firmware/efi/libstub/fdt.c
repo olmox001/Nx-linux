@@ -132,6 +132,12 @@ static efi_status_t update_fdt(void *orig_fdt, unsigned long orig_fdt_size,
 		}
 	}
 
+	fdt_val32 = cpu_to_fdt32(efi_get_secureboot());
+	status = fdt_setprop(fdt, node, "linux,uefi-secure-boot",
+			     &fdt_val32, sizeof(fdt_val32));
+	if (status)
+		goto fdt_set_fail;
+
 	/* Shrink the FDT back to its minimum size: */
 	fdt_pack(fdt);
 
@@ -229,7 +235,6 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 	u32 desc_ver;
 	efi_status_t status;
 	struct exit_boot_struct priv;
-	unsigned long fdt_size_allocated = 0;
 	unsigned long fdt_addr = 0;
 	unsigned long fdt_size = 0;
 
@@ -252,13 +257,12 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 		if (strstr(cmdline_ptr, "dtb="))
 			efi_err("Ignoring DTB from command line.\n");
 	} else {
-		status = efi_load_dtb(image, &fdt_addr, &fdt_size_allocated);
+		status = efi_load_dtb(image, &fdt_addr, &fdt_size);
 
 		if (status != EFI_SUCCESS && status != EFI_NOT_READY) {
 			efi_err("Failed to load device tree!\n");
 			goto fail;
 		}
-		fdt_size = fdt_size_allocated;
 	}
 
 	if (fdt_addr) {
@@ -336,7 +340,7 @@ fail_free_new_fdt:
 	efi_free(MAX_FDT_SIZE, *new_fdt_addr);
 
 fail:
-	efi_free(fdt_size_allocated, fdt_addr);
+	efi_free(fdt_size, fdt_addr);
 	if (!efi_novamap)
 		efi_bs_call(free_pool, priv.runtime_map);
 

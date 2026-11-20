@@ -492,8 +492,10 @@ static int qede_set_priv_flags(struct net_device *dev, u32 flags)
 	if (dflags & ~BIT(QEDE_PRI_FLAG_RECOVER_ON_ERROR))
 		return -EINVAL;
 
-	assign_bit(QEDE_ERR_IS_RECOVERABLE, &edev->err_flags,
-		   flags & BIT(QEDE_PRI_FLAG_RECOVER_ON_ERROR));
+	if (flags & BIT(QEDE_PRI_FLAG_RECOVER_ON_ERROR))
+		set_bit(QEDE_ERR_IS_RECOVERABLE, &edev->err_flags);
+	else
+		clear_bit(QEDE_ERR_IS_RECOVERABLE, &edev->err_flags);
 
 	return 0;
 }

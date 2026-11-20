@@ -30,12 +30,12 @@ static int avs_create_dai_links(struct device *dev, const char *codec_name,
 	struct snd_soc_dai_link *dl;
 	const int num_dl = 2;
 
-	dl = devm_kzalloc_objs(dev, *dl, num_dl);
-	platform = devm_kzalloc_obj(dev, *platform);
+	dl = devm_kcalloc(dev, num_dl, sizeof(*dl), GFP_KERNEL);
+	platform = devm_kzalloc(dev, sizeof(*platform), GFP_KERNEL);
 	if (!dl || !platform)
 		return -ENOMEM;
 
-	dl->codecs = devm_kzalloc_obj(dev, *dl->codecs);
+	dl->codecs = devm_kzalloc(dev, sizeof(*dl->codecs), GFP_KERNEL);
 	if (!dl->codecs)
 		return -ENOMEM;
 
@@ -78,7 +78,7 @@ static int avs_dmic_probe(struct platform_device *pdev)
 	mach = dev_get_platdata(dev);
 	pdata = mach->pdata;
 
-	card = devm_kzalloc_obj(dev, *card);
+	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
 	if (!card)
 		return -ENOMEM;
 
@@ -104,8 +104,10 @@ static int avs_dmic_probe(struct platform_device *pdev)
 }
 
 static const struct platform_device_id avs_dmic_driver_ids[] = {
-	{ .name = "avs_dmic" },
-	{ }
+	{
+		.name = "avs_dmic",
+	},
+	{},
 };
 MODULE_DEVICE_TABLE(platform, avs_dmic_driver_ids);
 

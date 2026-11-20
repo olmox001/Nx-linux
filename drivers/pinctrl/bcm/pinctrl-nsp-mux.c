@@ -534,8 +534,9 @@ static int nsp_mux_log_init(struct nsp_pinctrl *pinctrl)
 	unsigned int i;
 	u32 no_of_groups = ARRAY_SIZE(nsp_pin_groups);
 
-	pinctrl->mux_log = devm_kzalloc_objs(pinctrl->dev, struct nsp_mux_log,
-					     no_of_groups);
+	pinctrl->mux_log = devm_kcalloc(pinctrl->dev, no_of_groups,
+					sizeof(struct nsp_mux_log),
+					GFP_KERNEL);
 	if (!pinctrl->mux_log)
 		return -ENOMEM;
 
@@ -557,7 +558,7 @@ static int nsp_pinmux_probe(struct platform_device *pdev)
 	int i, ret;
 	struct pinctrl_pin_desc *pins;
 
-	pinctrl = devm_kzalloc_obj(&pdev->dev, *pinctrl);
+	pinctrl = devm_kzalloc(&pdev->dev, sizeof(*pinctrl), GFP_KERNEL);
 	if (!pinctrl)
 		return -ENOMEM;
 	pinctrl->dev = &pdev->dev;
@@ -588,7 +589,8 @@ static int nsp_pinmux_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	pins = devm_kzalloc_objs(&pdev->dev, *pins, ARRAY_SIZE(nsp_pins));
+	pins = devm_kcalloc(&pdev->dev, ARRAY_SIZE(nsp_pins), sizeof(*pins),
+			    GFP_KERNEL);
 	if (!pins)
 		return -ENOMEM;
 

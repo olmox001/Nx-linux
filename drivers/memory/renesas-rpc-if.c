@@ -34,7 +34,6 @@ static const struct regmap_access_table rpcif_volatile_table = {
 
 static const struct regmap_range xspi_volatile_ranges[] = {
 	regmap_reg_range(XSPI_CDD0BUF0, XSPI_CDD0BUF0),
-	regmap_reg_range(XSPI_CDD1BUF0, XSPI_CDD1BUF0),
 };
 
 static const struct regmap_access_table xspi_volatile_table = {
@@ -312,14 +311,6 @@ static int xspi_hw_init_impl(struct rpcif_priv *xspi, bool hyperflash)
 	regmap_update_bits(xspi->regmap, XSPI_INTE, XSPI_INTE_CMDCMPE,
 			   XSPI_INTE_CMDCMPE);
 
-	regmap_update_bits(xspi->regmap, XSPI_BMCTL0,
-			   XSPI_BMCTL0_CS0ACC(0xff), XSPI_BMCTL0_CS0ACC(0x03));
-
-	regmap_update_bits(xspi->regmap, XSPI_BMCFG,
-			   XSPI_BMCFG_WRMD | XSPI_BMCFG_MWRCOMB |
-			   XSPI_BMCFG_MWRSIZE(0xff) | XSPI_BMCFG_PREEN,
-			   0 | XSPI_BMCFG_MWRCOMB | XSPI_BMCFG_MWRSIZE(0x0f) |
-			   XSPI_BMCFG_PREEN);
 	return 0;
 }
 
@@ -636,14 +627,18 @@ static int xspi_manual_xfer_impl(struct rpcif_priv *xspi)
 	u32 pos = 0, max = 8;
 	int ret = 0;
 
-	/* Clear transaction number and request */
-	regmap_update_bits(xspi->regmap, XSPI_CDCTL0,
-			   XSPI_CDCTL0_TRNUM(0x3) | XSPI_CDCTL0_TRREQ,
+	regmap_update_bits(xspi->regmap, XSPI_CDCTL0, XSPI_CDCTL0_TRNUM(0x3),
 			   XSPI_CDCTL0_TRNUM(0));
 
+	regmap_update_bits(xspi->regmap, XSPI_CDCTL0, XSPI_CDCTL0_TRREQ, 0);
+
 	regmap_write(xspi->regmap, XSPI_CDTBUF0,
-		     XSPI_CDTBUF_CMDSIZE(0x1) | XSPI_CDTBUF_CMD_FIELD(xspi->command) |
-		     XSPI_CDTBUF_ADDSIZE(xspi->addr_nbytes));
+		     XSPI_CDTBUF_CMDSIZE(0x1) | XSPI_CDTBUF_CMD_FIELD(xspi->command));
+
+	regmap_write(xspi->regmap, XSPI_CDABUF0, 0);
+
+	regmap_update_bits(xspi->regmap, XSPI_CDTBUF0, XSPI_CDTBUF_ADDSIZE(0x7),
+			   XSPI_CDTBUF_ADDSIZE(xspi->addr_nbytes));
 
 	regmap_write(xspi->regmap, XSPI_CDABUF0, xspi->smadr);
 
@@ -656,12 +651,17 @@ static int xspi_manual_xfer_impl(struct rpcif_priv *xspi)
 			u32 bytes_left = xspi->xferlen - pos;
 			u32 nbytes, data[2], *p = data;
 
+			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0,
+					   XSPI_CDTBUF_TRTYPE, XSPI_CDTBUF_TRTYPE);
+
 			nbytes = bytes_left >= max ? max : bytes_left;
 
 			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0,
-					   XSPI_CDTBUF_TRTYPE | XSPI_CDTBUF_DATASIZE(0xf) |
+					   XSPI_CDTBUF_DATASIZE(0xf),
+					   XSPI_CDTBUF_DATASIZE(nbytes));
+
+			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0,
 					   XSPI_CDTBUF_ADDSIZE(0x7),
-					   XSPI_CDTBUF_TRTYPE | XSPI_CDTBUF_DATASIZE(nbytes) |
 					   XSPI_CDTBUF_ADDSIZE(xspi->addr_nbytes));
 
 			memcpy(data, xspi->buffer + pos, nbytes);
@@ -693,32 +693,29 @@ static int xspi_manual_xfer_impl(struct rpcif_priv *xspi)
 		while (pos < xspi->xferlen) {
 			u32 bytes_left = xspi->xferlen - pos;
 			u32 nbytes, data[2], *p = data;
-			u32 cdtbuf0_mask, cdtbuf0_val;
+
+			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0,
+					   XSPI_CDTBUF_TRTYPE,
+					   ~(u32)XSPI_CDTBUF_TRTYPE);
 
 			/* nbytes can be up to 8 bytes */
 			nbytes = bytes_left >= max ? max : bytes_left;
 
-			/* clear TRTYPE */
-			cdtbuf0_mask = XSPI_CDTBUF_TRTYPE;
-			cdtbuf0_val = 0;
+			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0,
+					   XSPI_CDTBUF_DATASIZE(0xf),
+					   XSPI_CDTBUF_DATASIZE(nbytes));
 
-			/* program DATASIZE */
-			cdtbuf0_mask |= XSPI_CDTBUF_DATASIZE(0xf);
-			cdtbuf0_val |= XSPI_CDTBUF_DATASIZE(nbytes);
-
-			/* program ADDSIZE */
-			cdtbuf0_mask |= XSPI_CDTBUF_ADDSIZE(0x7);
-			cdtbuf0_val |= XSPI_CDTBUF_ADDSIZE(xspi->addr_nbytes);
-
-			/* program LATE */
-			cdtbuf0_mask |= XSPI_CDTBUF_LATE(0x1f);
-			cdtbuf0_val |= XSPI_CDTBUF_LATE(xspi->dummy);
-
-			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0, cdtbuf0_mask, cdtbuf0_val);
+			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0,
+					   XSPI_CDTBUF_ADDSIZE(0x7),
+					   XSPI_CDTBUF_ADDSIZE(xspi->addr_nbytes));
 
 			if (xspi->addr_nbytes)
 				regmap_write(xspi->regmap, XSPI_CDABUF0,
 					     xspi->smadr + pos);
+
+			regmap_update_bits(xspi->regmap, XSPI_CDTBUF0,
+					   XSPI_CDTBUF_LATE(0x1f),
+					   XSPI_CDTBUF_LATE(xspi->dummy));
 
 			regmap_update_bits(xspi->regmap, XSPI_CDCTL0,
 					   XSPI_CDCTL0_TRREQ, XSPI_CDCTL0_TRREQ);
@@ -776,7 +773,7 @@ int rpcif_manual_xfer(struct device *dev)
 
 	ret = rpc->info->impl->manual_xfer(rpc);
 
-	pm_runtime_put_autosuspend(dev);
+	pm_runtime_put(dev);
 
 	return ret;
 }
@@ -871,6 +868,15 @@ static size_t xspi_dirmap_read_impl(struct rpcif_priv *xspi, u64 offs,
 			   XSPI_CMCFG1_RDCMD_UPPER_BYTE(xspi->command) |
 			   XSPI_CMCFG1_RDLATE(xspi->dummy));
 
+	regmap_update_bits(xspi->regmap, XSPI_BMCTL0, XSPI_BMCTL0_CS0ACC(0xff),
+			   XSPI_BMCTL0_CS0ACC(0x01));
+
+	regmap_update_bits(xspi->regmap, XSPI_BMCFG,
+			   XSPI_BMCFG_WRMD | XSPI_BMCFG_MWRCOMB |
+			   XSPI_BMCFG_MWRSIZE(0xff) | XSPI_BMCFG_PREEN,
+			   0 | XSPI_BMCFG_MWRCOMB | XSPI_BMCFG_MWRSIZE(0x0f) |
+			   XSPI_BMCFG_PREEN);
+
 	regmap_update_bits(xspi->regmap, XSPI_LIOCFGCS0, XSPI_LIOCFG_PRTMD(0x3ff),
 			   XSPI_LIOCFG_PRTMD(xspi->proto));
 
@@ -891,7 +897,7 @@ ssize_t rpcif_dirmap_read(struct device *dev, u64 offs, size_t len, void *buf)
 
 	read = rpc->info->impl->dirmap_read(rpc, offs, len, buf);
 
-	pm_runtime_put_autosuspend(dev);
+	pm_runtime_put(dev);
 
 	return read;
 }
@@ -938,6 +944,15 @@ ssize_t xspi_dirmap_write(struct device *dev, u64 offs, size_t len, const void *
 			   XSPI_CMCFG2_WRCMD_UPPER(xspi->command) |
 			   XSPI_CMCFG2_WRLATE(xspi->dummy));
 
+	regmap_update_bits(xspi->regmap, XSPI_BMCTL0,
+			   XSPI_BMCTL0_CS0ACC(0xff), XSPI_BMCTL0_CS0ACC(0x03));
+
+	regmap_update_bits(xspi->regmap, XSPI_BMCFG,
+			   XSPI_BMCFG_WRMD | XSPI_BMCFG_MWRCOMB |
+			   XSPI_BMCFG_MWRSIZE(0xff) | XSPI_BMCFG_PREEN,
+			   0 | XSPI_BMCFG_MWRCOMB | XSPI_BMCFG_MWRSIZE(0x0f) |
+			   XSPI_BMCFG_PREEN);
+
 	regmap_update_bits(xspi->regmap, XSPI_LIOCFGCS0, XSPI_LIOCFG_PRTMD(0x3ff),
 			   XSPI_LIOCFG_PRTMD(xspi->proto));
 
@@ -948,7 +963,7 @@ ssize_t xspi_dirmap_write(struct device *dev, u64 offs, size_t len, const void *
 		regmap_update_bits(xspi->regmap, XSPI_BMCTL1,
 				   XSPI_BMCTL1_MWRPUSH, XSPI_BMCTL1_MWRPUSH);
 
-	pm_runtime_put_autosuspend(dev);
+	pm_runtime_put(dev);
 
 	return writebytes;
 }
@@ -981,7 +996,7 @@ static int rpcif_probe(struct platform_device *pdev)
 	}
 	of_node_put(flash);
 
-	rpc = devm_kzalloc_obj(dev, *rpc);
+	rpc = devm_kzalloc(dev, sizeof(*rpc), GFP_KERNEL);
 	if (!rpc)
 		return -ENOMEM;
 

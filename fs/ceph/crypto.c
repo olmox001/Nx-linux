@@ -30,9 +30,6 @@ static int ceph_crypt_get_context(struct inode *inode, void *ctx, size_t len)
 		return -ENOBUFS;
 
 	ctxlen = le32_to_cpu(cfa->cfa_blob_len);
-	if (ctxlen > ci->fscrypt_auth_len -
-		     offsetof(struct ceph_fscrypt_auth, cfa_blob))
-		return -ENOBUFS;
 	if (len < ctxlen)
 		return -ERANGE;
 
@@ -303,11 +300,12 @@ out:
  *
  * Though the fscrypt/crypto subsystems broadly expect all buffers to be in the
  * linear-mapped region, this function slightly relaxes those requirements:
- * fname->ctext, fname->name, and oname->name may be vmalloc(), but not tname.
+ * fname->ctext, fname->name, and oname->name may be vmalloc(), but not
+ * tname->name.
  *
  * Returns 0 on success or negative error code on error.
  */
-int ceph_fname_to_usr(const struct ceph_fname *fname, unsigned char *tname,
+int ceph_fname_to_usr(const struct ceph_fname *fname, struct fscrypt_str *tname,
 		      struct fscrypt_str *oname, bool *is_nokey)
 {
 	struct inode *dir = fname->dir;
@@ -316,10 +314,9 @@ int ceph_fname_to_usr(const struct ceph_fname *fname, unsigned char *tname,
 	struct fscrypt_str iname;
 	char *name = fname->name;
 	int name_len = fname->name_len;
-	int dst_len;
 	int ret;
 
-	if (WARN_ON_ONCE(tname && is_vmalloc_addr(tname)))
+	if (WARN_ON_ONCE(tname && is_vmalloc_addr(tname->name)))
 		return -EIO;
 
 	/* Sanity check that the resulting name will fit in the buffer */
@@ -362,39 +359,39 @@ int ceph_fname_to_usr(const struct ceph_fname *fname, unsigned char *tname,
 		goto out_inode;
 	}
 
-	if (!tname && (fname->ctext_len == 0 ||
-		       unlikely(is_vmalloc_addr(fname->ctext)) ||
-		       unlikely(is_vmalloc_addr(oname->name)))) {
+	if ((!tname || !tname->name) &&
+	    (fname->ctext_len == 0 ||
+	     unlikely(is_vmalloc_addr(fname->ctext)) ||
+	     unlikely(is_vmalloc_addr(oname->name)))) {
 		ret = fscrypt_fname_alloc_buffer(NAME_MAX, &_tname);
 		if (ret)
 			goto out_inode;
-		tname = _tname.name;
+		tname = &_tname;
 	}
 
 	if (fname->ctext_len == 0) {
 		int declen;
 
-		declen = base64_decode(name, name_len, tname, false, BASE64_IMAP);
+		declen = base64_decode(name, name_len, tname->name, false,
+				       BASE64_IMAP);
 		if (declen <= 0) {
 			ret = -EIO;
 			goto out;
 		}
-		iname.name = tname;
+		iname.name = tname->name;
 		iname.len = declen;
 	} else if (unlikely(is_vmalloc_addr(fname->ctext))) {
-		memcpy(tname, fname->ctext, fname->ctext_len);
+		memcpy(tname->name, fname->ctext, fname->ctext_len);
 
-		iname.name = tname;
+		iname.name = tname->name;
 		iname.len = fname->ctext_len;
 	} else {
 		iname.name = fname->ctext;
 		iname.len = fname->ctext_len;
 	}
 
-	/* oname->len is overwritten by the decryption below */
-	dst_len = oname->len;
-
-	_oname.name = unlikely(is_vmalloc_addr(oname->name)) ? tname : oname->name;
+	_oname.name = unlikely(is_vmalloc_addr(oname->name)) ?
+		      tname->name : oname->name;
 	_oname.len = oname->len;
 
 	ret = fscrypt_fname_disk_to_usr(dir, 0, 0, &iname, &_oname);
@@ -410,10 +407,6 @@ int ceph_fname_to_usr(const struct ceph_fname *fname, unsigned char *tname,
 
 		name_len = snprintf(tmp_buf, sizeof(tmp_buf), "_%.*s_%llu",
 				    oname->len, oname->name, dir->i_ino);
-		if (name_len > dst_len) {
-			ret = -ENAMETOOLONG;
-			goto out;
-		}
 		memcpy(oname->name, tmp_buf, name_len);
 		oname->len = name_len;
 	}

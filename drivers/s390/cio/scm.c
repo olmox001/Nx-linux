@@ -13,7 +13,6 @@
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/err.h>
-#include <linux/cleanup.h>
 #include <asm/eadm.h>
 #include "chsc.h"
 
@@ -225,12 +224,12 @@ static int scm_add(struct chsc_scm_info *scm_info, size_t num)
 
 int scm_update_information(void)
 {
-	struct chsc_scm_info *scm_info __free(kfree) = NULL;
+	struct chsc_scm_info *scm_info;
 	u64 token = 0;
 	size_t num;
 	int ret;
 
-	scm_info = kmalloc(PAGE_SIZE, GFP_KERNEL | GFP_DMA);
+	scm_info = (void *)__get_free_page(GFP_KERNEL | GFP_DMA);
 	if (!scm_info)
 		return -ENOMEM;
 
@@ -250,6 +249,8 @@ int scm_update_information(void)
 
 		token = scm_info->restok;
 	} while (token);
+
+	free_page((unsigned long)scm_info);
 
 	return ret;
 }

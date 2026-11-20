@@ -169,7 +169,7 @@ static int eeti_ts_probe(struct i2c_client *client)
 	 * for interrupts to occur.
 	 */
 
-	eeti = devm_kzalloc_obj(dev, *eeti);
+	eeti = devm_kzalloc(dev, sizeof(*eeti), GFP_KERNEL);
 	if (!eeti) {
 		dev_err(dev, "failed to allocate driver data\n");
 		return -ENOMEM;

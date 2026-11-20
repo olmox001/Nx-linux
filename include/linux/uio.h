@@ -12,7 +12,6 @@
 
 struct page;
 struct folio_queue;
-struct dma_buf_io_map;
 
 typedef unsigned int __bitwise iov_iter_extraction_t;
 
@@ -30,7 +29,6 @@ enum iter_type {
 	ITER_FOLIOQ,
 	ITER_XARRAY,
 	ITER_DISCARD,
-	ITER_DMABUF_MAP,
 };
 
 #define ITER_SOURCE	1	// == WRITE
@@ -73,7 +71,6 @@ struct iov_iter {
 				const struct folio_queue *folioq;
 				struct xarray *xarray;
 				void __user *ubuf;
-				struct dma_buf_io_map *dmabuf_map;
 			};
 			size_t count;
 		};
@@ -156,11 +153,6 @@ static inline bool iov_iter_is_folioq(const struct iov_iter *i)
 static inline bool iov_iter_is_xarray(const struct iov_iter *i)
 {
 	return iov_iter_type(i) == ITER_XARRAY;
-}
-
-static inline bool iov_iter_is_dmabuf_map(const struct iov_iter *i)
-{
-	return iov_iter_type(i) == ITER_DMABUF_MAP;
 }
 
 static inline unsigned char iov_iter_rw(const struct iov_iter *i)
@@ -308,9 +300,6 @@ void iov_iter_folio_queue(struct iov_iter *i, unsigned int direction,
 			  unsigned int first_slot, unsigned int offset, size_t count);
 void iov_iter_xarray(struct iov_iter *i, unsigned int direction, struct xarray *xarray,
 		     loff_t start, size_t count);
-void iov_iter_dmabuf_map(struct iov_iter *i, unsigned int direction,
-			struct dma_buf_io_map *map,
-			loff_t off, size_t count);
 ssize_t iov_iter_get_pages2(struct iov_iter *i, struct page **pages,
 			size_t maxsize, unsigned maxpages, size_t *start);
 ssize_t iov_iter_get_pages_alloc2(struct iov_iter *i, struct page ***pages,
@@ -373,11 +362,11 @@ struct iovec *iovec_from_user(const struct iovec __user *uvector,
 		unsigned long nr_segs, unsigned long fast_segs,
 		struct iovec *fast_iov, bool compat);
 ssize_t import_iovec(int type, const struct iovec __user *uvec,
-		 unsigned long nr_segs, unsigned int fast_segs,
-		 struct iovec **iovp, struct iov_iter *i);
+		 unsigned nr_segs, unsigned fast_segs, struct iovec **iovp,
+		 struct iov_iter *i);
 ssize_t __import_iovec(int type, const struct iovec __user *uvec,
-		 unsigned long nr_segs, unsigned int fast_segs,
-		 struct iovec **iovp, struct iov_iter *i, bool compat);
+		 unsigned nr_segs, unsigned fast_segs, struct iovec **iovp,
+		 struct iov_iter *i, bool compat);
 int import_ubuf(int type, void __user *buf, size_t len, struct iov_iter *i);
 
 static inline void iov_iter_ubuf(struct iov_iter *i, unsigned int direction,

@@ -49,11 +49,11 @@ static int al_pcie_init(struct pci_config_window *cfg)
 	struct resource *res;
 	int ret;
 
-	al_pcie = devm_kzalloc_obj(dev, *al_pcie);
+	al_pcie = devm_kzalloc(dev, sizeof(*al_pcie), GFP_KERNEL);
 	if (!al_pcie)
 		return -ENOMEM;
 
-	res = devm_kzalloc_obj(dev, *res);
+	res = devm_kzalloc(dev, sizeof(*res), GFP_KERNEL);
 	if (!res)
 		return -ENOMEM;
 
@@ -326,11 +326,11 @@ static int al_pcie_probe(struct platform_device *pdev)
 	struct al_pcie *al_pcie;
 	struct dw_pcie *pci;
 
-	al_pcie = devm_kzalloc_obj(dev, *al_pcie);
+	al_pcie = devm_kzalloc(dev, sizeof(*al_pcie), GFP_KERNEL);
 	if (!al_pcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc_obj(dev, *pci);
+	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
 	if (!pci)
 		return -ENOMEM;
 

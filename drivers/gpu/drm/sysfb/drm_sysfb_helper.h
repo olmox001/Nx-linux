@@ -12,7 +12,6 @@
 #include <drm/drm_device.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_modes.h>
-#include <drm/drm_panic_helper.h>
 
 struct drm_format_info;
 struct drm_scanout_buffer;
@@ -135,18 +134,17 @@ int drm_sysfb_plane_helper_get_scanout_buffer(struct drm_plane *plane,
 	.atomic_disable = drm_sysfb_plane_helper_atomic_disable, \
 	.get_scanout_buffer = drm_sysfb_plane_helper_get_scanout_buffer
 
-struct drm_plane_state *drm_sysfb_plane_atomic_create_state(struct drm_plane *plane);
+void drm_sysfb_plane_reset(struct drm_plane *plane);
 struct drm_plane_state *drm_sysfb_plane_atomic_duplicate_state(struct drm_plane *plane);
 void drm_sysfb_plane_atomic_destroy_state(struct drm_plane *plane,
 					  struct drm_plane_state *plane_state);
 
 #define DRM_SYSFB_PLANE_FUNCS \
+	.reset = drm_sysfb_plane_reset, \
 	.update_plane = drm_atomic_helper_update_plane, \
 	.disable_plane = drm_atomic_helper_disable_plane, \
-	.atomic_create_state = drm_sysfb_plane_atomic_create_state, \
 	.atomic_duplicate_state = drm_sysfb_plane_atomic_duplicate_state, \
-	.atomic_destroy_state = drm_sysfb_plane_atomic_destroy_state, \
-	DRM_PANIC_PLANE_FUNCS
+	.atomic_destroy_state = drm_sysfb_plane_atomic_destroy_state
 
 /*
  * CRTC
@@ -173,12 +171,12 @@ int drm_sysfb_crtc_helper_atomic_check(struct drm_crtc *crtc, struct drm_atomic_
 	.mode_valid = drm_sysfb_crtc_helper_mode_valid, \
 	.atomic_check = drm_sysfb_crtc_helper_atomic_check
 
-struct drm_crtc_state *drm_sysfb_crtc_create_state(struct drm_crtc *crtc);
+void drm_sysfb_crtc_reset(struct drm_crtc *crtc);
 struct drm_crtc_state *drm_sysfb_crtc_atomic_duplicate_state(struct drm_crtc *crtc);
 void drm_sysfb_crtc_atomic_destroy_state(struct drm_crtc *crtc, struct drm_crtc_state *crtc_state);
 
 #define DRM_SYSFB_CRTC_FUNCS \
-	.atomic_create_state = drm_sysfb_crtc_create_state, \
+	.reset = drm_sysfb_crtc_reset, \
 	.set_config = drm_atomic_helper_set_config, \
 	.page_flip = drm_atomic_helper_page_flip, \
 	.atomic_duplicate_state = drm_sysfb_crtc_atomic_duplicate_state, \
@@ -194,7 +192,7 @@ int drm_sysfb_connector_helper_get_modes(struct drm_connector *connector);
 	.get_modes = drm_sysfb_connector_helper_get_modes
 
 #define DRM_SYSFB_CONNECTOR_FUNCS \
-	.atomic_create_state = drm_atomic_helper_connector_create_state, \
+	.reset = drm_atomic_helper_connector_reset, \
 	.fill_modes = drm_helper_probe_single_connector_modes, \
 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state, \
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state

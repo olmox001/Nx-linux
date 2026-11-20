@@ -694,8 +694,9 @@ int lan966x_stats_init(struct lan966x *lan966x)
 
 	lan966x->stats_layout = lan966x_stats_layout;
 	lan966x->num_stats = ARRAY_SIZE(lan966x_stats_layout);
-	lan966x->stats = devm_kzalloc_objs(lan966x->dev, u64,
-					   lan966x->num_phys_ports * lan966x->num_stats);
+	lan966x->stats = devm_kcalloc(lan966x->dev, lan966x->num_phys_ports *
+				      lan966x->num_stats,
+				      sizeof(u64), GFP_KERNEL);
 	if (!lan966x->stats)
 		return -ENOMEM;
 

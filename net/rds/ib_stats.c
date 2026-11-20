@@ -37,9 +37,9 @@
 #include "rds.h"
 #include "ib.h"
 
-DEFINE_PER_CPU_SHARED_ALIGNED(struct rds_ib_statistics, rds_ib_stats);
+DEFINE_PER_CPU(struct rds_ib_statistics, rds_ib_stats) ____cacheline_aligned;
 
-static const char *const rds_ib_stat_names[] = {
+static char *rds_ib_stat_names[] = {
 	"ib_connect_raced",
 	"ib_listen_closed_stale",
 	"ib_evt_handler_call",
@@ -52,8 +52,10 @@ static const char *const rds_ib_stat_names[] = {
 	"ib_tx_credit_updates",
 	"ib_rx_cq_event",
 	"ib_rx_ring_empty",
+	"ib_rx_refill_from_cm",
 	"ib_rx_refill_from_cq",
 	"ib_rx_refill_from_thread",
+	"ib_rx_refill_lock_taken",
 	"ib_rx_alloc_limit",
 	"ib_rx_total_frags",
 	"ib_rx_total_incs",
@@ -67,18 +69,35 @@ static const char *const rds_ib_stat_names[] = {
 	"ib_rdma_mr_8k_free",
 	"ib_rdma_mr_8k_used",
 	"ib_rdma_mr_8k_pool_flush",
-	"ib_rdma_mr_8k_pool_wait",
 	"ib_rdma_mr_8k_pool_depleted",
 	"ib_rdma_mr_1m_alloc",
 	"ib_rdma_mr_1m_free",
 	"ib_rdma_mr_1m_used",
 	"ib_rdma_mr_1m_pool_flush",
-	"ib_rdma_mr_1m_pool_wait",
 	"ib_rdma_mr_1m_pool_depleted",
-	"ib_rdma_mr_8k_reused",
-	"ib_rdma_mr_1m_reused",
+	"ib_rdma_flush_mr_pool_avoided",
 	"ib_atomic_cswp",
 	"ib_atomic_fadd",
+	"ib_srq_lows",
+	"ib_srq_refills",
+	"ib_srq_empty_refills",
+	"ib_recv_cache_added",
+	"ib_recv_cache_removed",
+	"ib_yield_yielding",
+	"ib_yield_right_of_way",
+	"ib_yield_stale",
+	"ib_yield_expired",
+	"ib_yield_accepting",
+	"ib_yield_success",
+	"ib_cm_watchdog_triggered",
+	"ib_frwr_registrations",
+	"ib_frwr_invalidates",
+	"ib_frwr_conn_qp_timeout",
+	"ib_frwr_freg_qp_timeout",
+	"ib_rx_limit_reached",
+	"ib_frag_pages_allocated",
+	"ib_frag_pages_in_ib_recv_queue",
+	"ib_frag_pages_in_caches",
 };
 
 unsigned int rds_ib_stats_info_copy(struct rds_info_iterator *iter,
@@ -93,7 +112,7 @@ unsigned int rds_ib_stats_info_copy(struct rds_info_iterator *iter,
 	if (avail < ARRAY_SIZE(rds_ib_stat_names))
 		goto out;
 
-	for_each_online_cpu(cpu) {
+	for_each_possible_cpu(cpu) {
 		src = (uint64_t *)&(per_cpu(rds_ib_stats, cpu));
 		sum = (uint64_t *)&stats;
 		for (i = 0; i < sizeof(stats) / sizeof(uint64_t); i++)
@@ -105,3 +124,26 @@ unsigned int rds_ib_stats_info_copy(struct rds_info_iterator *iter,
 out:
 	return ARRAY_SIZE(rds_ib_stat_names);
 }
+
+void rds_ib_stats_print(const char *where)
+{
+	struct rds_ib_statistics ibstats = {};
+	uint64_t *src;
+	uint64_t *sum;
+	size_t i;
+	int cpu;
+	size_t nibstats = sizeof(ibstats) / sizeof(uint64_t);
+
+	for_each_possible_cpu(cpu) {
+		src = (uint64_t *)&(per_cpu(rds_ib_stats, cpu));
+		sum = (uint64_t *)&ibstats;
+		for (i = 0; i < nibstats; i++)
+			*(sum++) += *(src++);
+	}
+
+	sum = (uint64_t *)&ibstats;
+	for (i = 0; i < nibstats; i++)
+		if (sum[i])
+			pr_info("%s %s %lld\n", where, rds_ib_stat_names[i], sum[i]);
+}
+EXPORT_SYMBOL_GPL(rds_ib_stats_print);

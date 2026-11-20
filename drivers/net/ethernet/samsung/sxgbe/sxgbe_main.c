@@ -408,11 +408,13 @@ static int init_tx_ring(struct device *dev, u8 queue_no,
 		return -ENOMEM;
 
 	/* allocate memory for TX skbuff array */
-	tx_ring->tx_skbuff_dma = devm_kzalloc_objs(dev, dma_addr_t, tx_rsize);
+	tx_ring->tx_skbuff_dma = devm_kcalloc(dev, tx_rsize,
+					      sizeof(dma_addr_t), GFP_KERNEL);
 	if (!tx_ring->tx_skbuff_dma)
 		goto dmamem_err;
 
-	tx_ring->tx_skbuff = devm_kzalloc_objs(dev, struct sk_buff *, tx_rsize);
+	tx_ring->tx_skbuff = devm_kcalloc(dev, tx_rsize,
+					  sizeof(struct sk_buff *), GFP_KERNEL);
 
 	if (!tx_ring->tx_skbuff)
 		goto dmamem_err;
@@ -662,8 +664,8 @@ static int txring_mem_alloc(struct sxgbe_priv_data *priv)
 	int queue_num;
 
 	SXGBE_FOR_EACH_QUEUE(SXGBE_TX_QUEUES, queue_num) {
-		priv->txq[queue_num] = devm_kmalloc_obj(priv->device,
-							struct sxgbe_tx_queue);
+		priv->txq[queue_num] = devm_kmalloc(priv->device,
+						    sizeof(struct sxgbe_tx_queue), GFP_KERNEL);
 		if (!priv->txq[queue_num])
 			return -ENOMEM;
 	}
@@ -676,8 +678,8 @@ static int rxring_mem_alloc(struct sxgbe_priv_data *priv)
 	int queue_num;
 
 	SXGBE_FOR_EACH_QUEUE(SXGBE_RX_QUEUES, queue_num) {
-		priv->rxq[queue_num] = devm_kmalloc_obj(priv->device,
-							struct sxgbe_rx_queue);
+		priv->rxq[queue_num] = devm_kmalloc(priv->device,
+						    sizeof(struct sxgbe_rx_queue), GFP_KERNEL);
 		if (!priv->rxq[queue_num])
 			return -ENOMEM;
 	}

@@ -501,7 +501,7 @@ static int qcom_glink_send_open_req(struct qcom_glink *glink,
 	req->cmd = cpu_to_le16(GLINK_CMD_OPEN);
 	req->param1 = cpu_to_le16(channel->lcid);
 	req->param2 = cpu_to_le32(name_len);
-	strscpy(req->data, channel->name, GLINK_NAME_SIZE);
+	strcpy(req->data, channel->name);
 
 	trace_qcom_glink_cmd_open_tx(glink->label, channel->name,
 				     channel->lcid, channel->rcid);
@@ -1894,7 +1894,7 @@ struct qcom_glink *qcom_glink_native_probe(struct device *dev,
 	int ret;
 	struct qcom_glink *glink;
 
-	glink = devm_kzalloc_obj(dev, *glink);
+	glink = devm_kzalloc(dev, sizeof(*glink), GFP_KERNEL);
 	if (!glink)
 		return ERR_PTR(-ENOMEM);
 

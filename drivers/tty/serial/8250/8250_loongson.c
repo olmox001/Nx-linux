@@ -10,7 +10,6 @@
 #include <linux/clk.h>
 #include <linux/console.h>
 #include <linux/module.h>
-#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/property.h>
 #include <linux/math.h>
@@ -44,7 +43,7 @@ static const struct loongson_uart_ddata ls2k1500_uart_data = {
 };
 
 struct loongson_uart_priv {
-	struct uart_8250_port *uport;
+	int line;
 	struct clk *clk;
 	struct resource *res;
 	struct reset_control *rst;
@@ -112,7 +111,7 @@ static int loongson_uart_probe(struct platform_device *pdev)
 	struct uart_port *port;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -161,12 +160,13 @@ static int loongson_uart_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	priv->uport = serial8250_register_8250_port(&uart);
-	if (IS_ERR(priv->uport)) {
+	ret = serial8250_register_8250_port(&uart);
+	if (ret < 0) {
 		reset_control_assert(priv->rst);
-		return PTR_ERR(priv->uport);
+		return ret;
 	}
 
+	priv->line = ret;
 	platform_set_drvdata(pdev, priv);
 
 	return 0;
@@ -176,16 +176,16 @@ static void loongson_uart_remove(struct platform_device *pdev)
 {
 	struct loongson_uart_priv *priv = platform_get_drvdata(pdev);
 
-	serial8250_unregister_port(priv->uport);
+	serial8250_unregister_port(priv->line);
 	reset_control_assert(priv->rst);
 }
 
 static int loongson_uart_suspend(struct device *dev)
 {
 	struct loongson_uart_priv *priv = dev_get_drvdata(dev);
-	struct uart_8250_port *up = priv->uport;
+	struct uart_8250_port *up = serial8250_get_port(priv->line);
 
-	serial8250_suspend_port(up);
+	serial8250_suspend_port(priv->line);
 
 	if (!uart_console(&up->port) || console_suspend_enabled)
 		clk_disable_unprepare(priv->clk);
@@ -196,7 +196,7 @@ static int loongson_uart_suspend(struct device *dev)
 static int loongson_uart_resume(struct device *dev)
 {
 	struct loongson_uart_priv *priv = dev_get_drvdata(dev);
-	struct uart_8250_port *up = priv->uport;
+	struct uart_8250_port *up = serial8250_get_port(priv->line);
 	int ret;
 
 	if (!uart_console(&up->port) || console_suspend_enabled) {
@@ -205,7 +205,7 @@ static int loongson_uart_resume(struct device *dev)
 			return ret;
 	}
 
-	serial8250_resume_port(up);
+	serial8250_resume_port(priv->line);
 
 	return 0;
 }

@@ -166,14 +166,13 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 {
 	u32 needed = netdev->mtu + ETH_PAD_LEN;
 	u32 segs = netdev->xdp_zc_max_segs;
-	u8 umem_flags = pool->umem->flags;
 	bool mbuf = flags & XDP_USE_SG;
 	bool force_zc, force_copy;
 	struct netdev_bpf bpf;
 	u32 frame_size;
 	int err = 0;
 
-	netdev_assert_locked_ops_compat(netdev);
+	ASSERT_RTNL();
 
 	force_zc = flags & XDP_ZEROCOPY;
 	force_copy = flags & XDP_COPY;
@@ -205,11 +204,6 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 	pool->cached_need_wakeup = XDP_WAKEUP_TX;
 
 	dev_hold(netdev);
-	/*
-	 * Socket removal precedes the final pool put. Keep the pool visible to
-	 * NETDEV_UNREGISTER even while release work is waiting for process thaw.
-	 */
-	hlist_add_head(&pool->dev_node, &netdev->xsk_pools);
 
 	if (force_copy)
 		/* For copy-mode, we are done. */
@@ -250,6 +244,7 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 	bpf.xsk.pool = pool;
 	bpf.xsk.queue_id = queue_id;
 
+	netdev_assert_locked_ops_compat(netdev);
 	err = netdev->netdev_ops->ndo_bpf(netdev, &bpf);
 	if (err)
 		goto err_unreg_pool;
@@ -269,10 +264,7 @@ err_unreg_pool:
 	if (!force_zc)
 		err = 0; /* fallback to copy mode */
 	if (err) {
-		pool->umem->flags = umem_flags;
 		xsk_clear_pool_at_qid(netdev, queue_id);
-		hlist_del(&pool->dev_node);
-		pool->netdev = NULL;
 		dev_put(netdev);
 	}
 	return err;
@@ -295,39 +287,19 @@ int xp_assign_dev_shared(struct xsk_buff_pool *pool, struct xdp_sock *umem_xs,
 	return xp_assign_dev(pool, dev, queue_id, flags);
 }
 
-static void __xp_clear_dev(struct xsk_buff_pool *pool)
-{
-	struct net_device *netdev = pool->netdev;
-
-	netdev_assert_locked_ops_compat(netdev);
-	xp_disable_drv_zc(pool);
-	xsk_clear_pool_at_qid(netdev, pool->queue_id);
-	hlist_del(&pool->dev_node);
-	pool->netdev = NULL;
-	dev_put(netdev);
-}
-
 void xp_clear_dev(struct xsk_buff_pool *pool)
 {
 	struct net_device *netdev = pool->netdev;
 
-	if (!netdev)
+	if (!pool->netdev)
 		return;
 
 	netdev_lock_ops(netdev);
-	__xp_clear_dev(pool);
+	xp_disable_drv_zc(pool);
+	xsk_clear_pool_at_qid(pool->netdev, pool->queue_id);
+	pool->netdev = NULL;
 	netdev_unlock_ops(netdev);
-}
-
-void xp_clear_dev_all(struct net_device *dev)
-{
-	struct xsk_buff_pool *pool;
-	struct hlist_node *next;
-
-	netdev_lock_ops(dev);
-	hlist_for_each_entry_safe(pool, next, &dev->xsk_pools, dev_node)
-		__xp_clear_dev(pool);
-	netdev_unlock_ops(dev);
+	dev_put(netdev);
 }
 
 static void xp_release_deferred(struct work_struct *work)
@@ -365,11 +337,7 @@ bool xp_put_pool(struct xsk_buff_pool *pool)
 
 	if (refcount_dec_and_test(&pool->users)) {
 		INIT_WORK(&pool->work, xp_release_deferred);
-		/*
-		 * Teardown calls ndo_bpf(), which may need powered hardware.
-		 * RTNL alone does not exclude the device's system PM callbacks.
-		 */
-		queue_work(system_freezable_wq, &pool->work);
+		schedule_work(&pool->work);
 		return true;
 	}
 
@@ -629,7 +597,7 @@ struct xdp_buff *xp_alloc(struct xsk_buff_pool *pool)
 
 	xskb->xdp.data = xskb->xdp.data_hard_start + XDP_PACKET_HEADROOM;
 	xskb->xdp.data_meta = xskb->xdp.data;
-	xskb->xdp.flags &= XDP_FLAGS_HAS_FRAGS;
+	xskb->xdp.flags = 0;
 
 	if (pool->dev)
 		xp_dma_sync_for_device(pool, xskb->dma, pool->frame_len);

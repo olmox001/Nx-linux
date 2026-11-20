@@ -713,7 +713,7 @@ static int pef2256_probe(struct platform_device *pdev)
 	int ret;
 	int irq;
 
-	pef2256 = devm_kzalloc_obj(&pdev->dev, *pef2256);
+	pef2256 = devm_kzalloc(&pdev->dev, sizeof(*pef2256), GFP_KERNEL);
 	if (!pef2256)
 		return -ENOMEM;
 

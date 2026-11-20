@@ -55,7 +55,6 @@ enum init_ns_ino {
 	MNT_NS_INIT_INO		= 0xEFFFFFF8U,
 #ifdef __KERNEL__
 	MNT_NS_ANON_INO		= 0xEFFFFFF7U,
-	MNT_NS_INO_SPECIAL_MAX	= MNT_NS_ANON_INO,
 #endif
 };
 
@@ -97,10 +96,9 @@ enum ns_type {
  * struct ns_id_req - namespace ID request structure
  * @size: size of this structure
  * @spare: reserved for future use
- * @ns_id: last namespace ID
- * @ns_type: bit mask of namespace types to include
- * @spare2: reserved for future use
- * @user_ns_id: filter on this user namespace ID (or 0)
+ * @filter: filter mask
+ * @ns_id: last namespace id
+ * @user_ns_id: owning user namespace ID
  *
  * Structure for passing namespace ID and miscellaneous parameters to
  * statns(2) and listns(2).

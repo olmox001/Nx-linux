@@ -12,7 +12,7 @@
 
 #include <linux/types.h>
 
-/* Number of XOR engines available on the controller */
+/* Number of XOR engines available on the contoller */
 #define XOR_ENGINES_NUM		1
 
 /* Number of operands supported in the h/w */

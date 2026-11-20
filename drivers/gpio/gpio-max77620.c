@@ -316,7 +316,7 @@ static int max77620_gpio_probe(struct platform_device *pdev)
 
 	gpio_irq = ret;
 
-	mgpio = devm_kzalloc_obj(&pdev->dev, *mgpio);
+	mgpio = devm_kzalloc(&pdev->dev, sizeof(*mgpio), GFP_KERNEL);
 	if (!mgpio)
 		return -ENOMEM;
 

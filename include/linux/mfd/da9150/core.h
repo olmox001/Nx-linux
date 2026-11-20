@@ -65,7 +65,6 @@ struct da9150 {
 	struct regmap_irq_chip_data *regmap_irq_data;
 	int irq;
 	int irq_base;
-	bool irq_wake_enabled;
 };
 
 /* Device I/O - Query Interface for FG and standard register access */

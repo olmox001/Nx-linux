@@ -694,8 +694,16 @@ void common_timer_get(struct k_itimer *timr, struct itimerspec64 *cur_setting)
 	if (iv) {
 		cur_setting->it_interval = ktime_to_timespec64(iv);
 	} else if (timr->it_status == POSIX_TIMER_DISARMED) {
-		/* Nothing to update for a disarmed timer */
-		return;
+		/*
+		 * SIGEV_NONE oneshot timers are never queued and therefore
+		 * timr->it_status is always DISARMED. The check below
+		 * vs. remaining time will handle this case.
+		 *
+		 * For all other timers there is nothing to update here, so
+		 * return.
+		 */
+		if (!sig_none)
+			return;
 	}
 
 	now = kc->clock_get_ktime(timr->it_clock);
@@ -705,7 +713,7 @@ void common_timer_get(struct k_itimer *timr, struct itimerspec64 *cur_setting)
 	 * is a SIGEV_NONE timer move the expiry time forward by intervals,
 	 * so expiry is > now.
 	 */
-	if (iv && (sig_none || timr->it_status != POSIX_TIMER_ARMED))
+	if (iv && timr->it_status != POSIX_TIMER_ARMED)
 		timr->it_overrun += kc->timer_forward(timr, now);
 
 	remaining = kc->timer_remaining(timr, now);
@@ -907,15 +915,8 @@ int common_timer_set(struct k_itimer *timr, int flags,
 	sigev_none = timr->it_sigev_notify == SIGEV_NONE;
 
 	if (kc->timer_arm(timr, expires, flags & TIMER_ABSTIME, sigev_none)) {
-		/*
-		 * SIGEV_NONE timers are not queued, but mark them armed
-		 * so that common_timer_get() can tell them apart from
-		 * disarmed timers. An expired SIGEV_NONE timer stays
-		 * armed, which is harmless: common_timer_get() reports
-		 * zero remaining time for it and it never reaches the
-		 * signal delivery code.
-		 */
-		timr->it_status = POSIX_TIMER_ARMED;
+		if (!sigev_none)
+			timr->it_status = POSIX_TIMER_ARMED;
 	} else {
 		/* Timer was already expired, queue the signal */
 		posix_timer_queue_signal(timr);
@@ -1076,9 +1077,13 @@ SYSCALL_DEFINE1(timer_delete, timer_t, timer_id)
 	return 0;
 }
 
-static void posixtimer_delete_timers(void)
+/*
+ * Invoked from do_exit() when the last thread of a thread group exits.
+ * At that point no other task can access the timers of the dying
+ * task anymore.
+ */
+void exit_itimers(struct task_struct *tsk)
 {
-	struct task_struct *tsk = current;
 	struct hlist_head timers;
 	struct hlist_node *next;
 	struct k_itimer *timer;
@@ -1113,24 +1118,6 @@ static void posixtimer_delete_timers(void)
 		posix_timer_cleanup_ignored(hlist_entry(timers.first, struct k_itimer,
 							ignored_list));
 	}
-}
-
-void posixtimer_exit(bool group_dead)
-{
-	if (group_dead) {
-		hrtimer_cancel(&current->signal->real_timer);
-		posix_cpu_timers_exit_group();
-		posixtimer_delete_timers();
-	} else {
-		posix_cpu_timers_exit_task();
-	}
-}
-
-void posixtimer_exec(void)
-{
-	posix_cpu_timers_exit_task();
-	posixtimer_delete_timers();
-	flush_itimer_signals();
 }
 
 SYSCALL_DEFINE2(clock_settime, const clockid_t, which_clock,

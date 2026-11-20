@@ -719,11 +719,6 @@ static const struct mfd_cell twl6032_cells[] = {
 	{ .name = "twl6032-clk" },
 };
 
-static void twl_unregister_device(void *data)
-{
-	platform_device_unregister(data);
-}
-
 /* NOTE: This driver only handles a single twl4030/tps659x0 chip */
 static int
 twl_probe(struct i2c_client *client)
@@ -759,21 +754,17 @@ twl_probe(struct i2c_client *client)
 		return status;
 	}
 
-	status = devm_add_action_or_reset(&client->dev, twl_unregister_device,
-					  pdev);
-	if (status)
-		return status;
-
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		dev_dbg(&client->dev, "can't talk I2C?\n");
 		status = -EIO;
-		goto out;
+		goto free;
 	}
 
-	twl_priv = devm_kzalloc_obj(&client->dev, struct twl_private);
+	twl_priv = devm_kzalloc(&client->dev, sizeof(struct twl_private),
+				GFP_KERNEL);
 	if (!twl_priv) {
 		status = -ENOMEM;
-		goto out;
+		goto free;
 	}
 
 	if ((id->driver_data) & TWL6030_CLASS) {
@@ -787,11 +778,13 @@ twl_probe(struct i2c_client *client)
 	}
 
 	num_slaves = twl_get_num_slaves();
-	twl_priv->twl_modules = devm_kzalloc_objs(&client->dev,
-						  struct twl_client, num_slaves);
+	twl_priv->twl_modules = devm_kcalloc(&client->dev,
+					 num_slaves,
+					 sizeof(struct twl_client),
+					 GFP_KERNEL);
 	if (!twl_priv->twl_modules) {
 		status = -ENOMEM;
-		goto out;
+		goto free;
 	}
 
 	for (i = 0; i < num_slaves; i++) {
@@ -887,7 +880,7 @@ twl_probe(struct i2c_client *client)
 		status = devm_mfd_add_devices(&client->dev, PLATFORM_DEVID_NONE,
 					      cells, num_cells, NULL, 0, NULL);
 		if (status < 0)
-			goto out;
+			goto free;
 
 		if (of_device_is_system_power_controller(node)) {
 			if (!pm_power_off)
@@ -903,11 +896,14 @@ twl_probe(struct i2c_client *client)
 fail:
 	if (status < 0)
 		twl_remove(client);
-out:
+free:
+	if (status < 0)
+		platform_device_unregister(pdev);
+
 	return status;
 }
 
-static int twl_suspend(struct device *dev)
+static int __maybe_unused twl_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
@@ -917,7 +913,7 @@ static int twl_suspend(struct device *dev)
 	return 0;
 }
 
-static int twl_resume(struct device *dev)
+static int __maybe_unused twl_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
@@ -927,7 +923,7 @@ static int twl_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(twl_dev_pm_ops, twl_suspend, twl_resume);
+static SIMPLE_DEV_PM_OPS(twl_dev_pm_ops, twl_suspend, twl_resume);
 
 static const struct i2c_device_id twl_ids[] = {
 	{ "twl4030", TWL4030_VAUX2 },	/* "Triton 2" */
@@ -946,7 +942,7 @@ static const struct i2c_device_id twl_ids[] = {
 /* One Client Driver , 4 Clients */
 static struct i2c_driver twl_driver = {
 	.driver.name	= DRIVER_NAME,
-	.driver.pm	= pm_sleep_ptr(&twl_dev_pm_ops),
+	.driver.pm	= &twl_dev_pm_ops,
 	.id_table	= twl_ids,
 	.probe		= twl_probe,
 	.remove		= twl_remove,

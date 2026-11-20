@@ -135,7 +135,7 @@ static int pxrc_probe(struct usb_interface *intf,
 		return error;
 	}
 
-	pxrc = devm_kzalloc_obj(&intf->dev, *pxrc);
+	pxrc = devm_kzalloc(&intf->dev, sizeof(*pxrc), GFP_KERNEL);
 	if (!pxrc)
 		return -ENOMEM;
 

@@ -233,7 +233,7 @@ static int phy_pipe_clksrc_register(struct qcom_phy *qphy)
 		return ret;
 	}
 
-	fixed = devm_kzalloc_obj(qphy->dev, *fixed);
+	fixed = devm_kzalloc(qphy->dev, sizeof(*fixed), GFP_KERNEL);
 	if (!fixed)
 		return -ENOMEM;
 
@@ -258,7 +258,7 @@ static int qcom_pcie2_phy_probe(struct platform_device *pdev)
 	struct phy *phy;
 	int ret;
 
-	qphy = devm_kzalloc_obj(dev, *qphy);
+	qphy = devm_kzalloc(dev, sizeof(*qphy), GFP_KERNEL);
 	if (!qphy)
 		return -ENOMEM;
 

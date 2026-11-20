@@ -420,7 +420,7 @@ static int bq2515x_get_battery_current_now(struct bq2515x_device *bq2515x)
 							BQ2515X_ICHG_DIVISOR);
 }
 
-static int bq2515x_get_charge_disable(struct bq2515x_device *bq2515x)
+static bool bq2515x_get_charge_disable(struct bq2515x_device *bq2515x)
 {
 	int ret;
 	int ce_pin;
@@ -428,8 +428,6 @@ static int bq2515x_get_charge_disable(struct bq2515x_device *bq2515x)
 	int charger_disable;
 
 	ce_pin = gpiod_get_value_cansleep(bq2515x->ce_gpio);
-	if (ce_pin < 0)
-		return ce_pin;
 
 	ret = regmap_read(bq2515x->regmap, BQ2515X_ICCTRL2, &icctrl2);
 	if (ret)
@@ -437,7 +435,10 @@ static int bq2515x_get_charge_disable(struct bq2515x_device *bq2515x)
 
 	charger_disable = icctrl2 & BQ2515X_CHARGER_DISABLE;
 
-	return charger_disable || ce_pin;
+	if (charger_disable || ce_pin)
+		return true;
+
+	return false;
 }
 
 static int bq2515x_set_charge_disable(struct bq2515x_device *bq2515x, int val)
@@ -614,11 +615,7 @@ static int bq2515x_charging_status(struct bq2515x_device *bq2515x,
 	else
 		status1_no_fault = false;
 
-	ret = bq2515x_get_charge_disable(bq2515x);
-	if (ret < 0)
-		return ret;
-
-	ce_status = !ret;
+	ce_status = (!bq2515x_get_charge_disable(bq2515x));
 
 	/*
 	 * If there are no faults and charging is enabled, then status is
@@ -1086,7 +1083,7 @@ static int bq2515x_probe(struct i2c_client *client)
 	struct power_supply_config charger_cfg = {};
 	int ret;
 
-	bq2515x = devm_kzalloc_obj(dev, *bq2515x);
+	bq2515x = devm_kzalloc(dev, sizeof(*bq2515x), GFP_KERNEL);
 	if (!bq2515x)
 		return -ENOMEM;
 

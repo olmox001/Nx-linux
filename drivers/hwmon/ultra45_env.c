@@ -254,7 +254,7 @@ static const struct attribute_group env_group = {
 
 static int env_probe(struct platform_device *op)
 {
-	struct env *p = devm_kzalloc_obj(&op->dev, *p);
+	struct env *p = devm_kzalloc(&op->dev, sizeof(*p), GFP_KERNEL);
 	int err = -ENOMEM;
 
 	if (!p)

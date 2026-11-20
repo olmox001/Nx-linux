@@ -1071,8 +1071,14 @@ struct hdspm {
 
 
 static const struct pci_device_id snd_hdspm_ids[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_XILINX, PCI_DEVICE_ID_XILINX_HAMMERFALL_DSP_MADI) },
-	{ PCI_DEVICE(0x1d18, 0x3fc6) }, /* RME HDSPe AIO PCI express audio */
+	{
+	 .vendor = PCI_VENDOR_ID_XILINX,
+	 .device = PCI_DEVICE_ID_XILINX_HAMMERFALL_DSP_MADI,
+	 .subvendor = PCI_ANY_ID,
+	 .subdevice = PCI_ANY_ID,
+	 .class = 0,
+	 .class_mask = 0,
+	 .driver_data = 0},
 	{0,}
 };
 
@@ -6528,7 +6534,7 @@ static int snd_hdspm_create(struct snd_card *card,
 
 	dev_dbg(card->dev, "kmalloc Mixer memory of %zd Bytes\n",
 		sizeof(*hdspm->mixer));
-	hdspm->mixer = devm_kzalloc_obj(&pci->dev, *hdspm->mixer);
+	hdspm->mixer = devm_kzalloc(&pci->dev, sizeof(*hdspm->mixer), GFP_KERNEL);
 	if (!hdspm->mixer)
 		return -ENOMEM;
 
@@ -6796,7 +6802,7 @@ static int snd_hdspm_probe(struct pci_dev *pci,
 {
 	static int dev;
 	struct hdspm *hdspm;
-	struct snd_card *card __free(snd_card_free) = NULL;
+	struct snd_card *card;
 	int err;
 
 	if (dev >= SNDRV_CARDS)
@@ -6818,7 +6824,7 @@ static int snd_hdspm_probe(struct pci_dev *pci,
 
 	err = snd_hdspm_create(card, hdspm);
 	if (err < 0)
-		return err;
+		goto error;
 
 	if (hdspm->io_type != MADIface) {
 		snprintf(card->shortname, sizeof(card->shortname), "%s_%x",
@@ -6837,12 +6843,16 @@ static int snd_hdspm_probe(struct pci_dev *pci,
 
 	err = snd_card_register(card);
 	if (err < 0)
-		return err;
+		goto error;
 
 	pci_set_drvdata(pci, card);
-	card = NULL; /* probe succeeded, don't release as error */
+
 	dev++;
 	return 0;
+
+ error:
+	snd_card_free(card);
+	return err;
 }
 
 static struct pci_driver hdspm_driver = {

@@ -757,7 +757,7 @@ static int bwmon_probe(struct platform_device *pdev)
 	struct icc_bwmon *bwmon;
 	int ret;
 
-	bwmon = devm_kzalloc_obj(dev, *bwmon);
+	bwmon = devm_kzalloc(dev, sizeof(*bwmon), GFP_KERNEL);
 	if (!bwmon)
 		return -ENOMEM;
 

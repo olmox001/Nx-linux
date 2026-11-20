@@ -653,7 +653,7 @@ static int irq_pools_init(struct mlx5_core_dev *dev, int sf_vec, int pcif_vec,
 		goto err_sf_ctrl;
 	}
 
-	table->sf_comp_pool->irqs_per_cpu = kzalloc_objs(u16, nr_cpu_ids);
+	table->sf_comp_pool->irqs_per_cpu = kcalloc(nr_cpu_ids, sizeof(u16), GFP_KERNEL);
 	if (!table->sf_comp_pool->irqs_per_cpu) {
 		err = -ENOMEM;
 		goto err_irqs_per_cpu;
@@ -747,7 +747,7 @@ int mlx5_irq_table_create(struct mlx5_core_dev *dev)
 	/* PCI PF vectors usage is limited by online cpus, device EQs and
 	 * PCI MSI-X capability.
 	 */
-	pcif_vec = MLX5_CAP_GEN(dev, num_ports) * num_online_cpus() + 1;
+	pcif_vec = MLX5_CAP_GEN(dev, num_ports) * num_possible_cpus() + 1;
 	pcif_vec = min_t(int, pcif_vec, num_eqs);
 	pcif_vec = min_t(int, pcif_vec, pci_msix_vec_count(dev->pdev));
 

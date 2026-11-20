@@ -6,11 +6,6 @@
  *  Nick Kossifidis <mick@ics.forth.gr>
  */
 
-#ifdef CONFIG_64BIT
-/* riscv_has_extension_likely() cannot be used this early */
-#define USE_EARLY_PGTABLE_LEVELS
-#endif
-
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/memblock.h>
@@ -27,7 +22,6 @@
 #include <linux/hugetlb.h>
 #include <linux/kfence.h>
 #include <linux/execmem.h>
-#include <linux/vmemmap-optimization.h>
 
 #include <asm/alternative.h>
 #include <asm/fixmap.h>
@@ -58,8 +52,10 @@ u64 satp_mode __ro_after_init = SATP_MODE_32;
 EXPORT_SYMBOL(satp_mode);
 
 #ifdef CONFIG_64BIT
-bool _pgtable_l4_enabled __ro_after_init = true;
-bool _pgtable_l5_enabled __ro_after_init = true;
+bool pgtable_l4_enabled __ro_after_init = true;
+bool pgtable_l5_enabled __ro_after_init = true;
+EXPORT_SYMBOL(pgtable_l4_enabled);
+EXPORT_SYMBOL(pgtable_l5_enabled);
 #endif
 
 phys_addr_t phys_ram_base __ro_after_init;
@@ -189,7 +185,7 @@ void __init arch_mm_preinit(void)
 		 */
 		unsigned long size =
 			DIV_ROUND_UP(memblock_phys_mem_size(), 1024);
-		swiotlb_adjust_size(min(swiotlb_default_pool_size(), size));
+		swiotlb_adjust_size(min(swiotlb_size_or_default(), size));
 		swiotlb = true;
 		swiotlb_flags |= SWIOTLB_ANY;
 	}
@@ -309,6 +305,8 @@ static void __init setup_bootmem(void)
 	 */
 	if (!IS_ENABLED(CONFIG_BUILTIN_DTB))
 		memblock_reserve(dtb_early_pa, fdt_totalsize(dtb_early_va));
+
+	dma_contiguous_reserve(dma32_phys_limit);
 }
 
 #ifdef CONFIG_RELOCATABLE
@@ -656,23 +654,23 @@ static void __meminit create_p4d_mapping(p4d_t *p4dp, uintptr_t va, phys_addr_t 
 }
 
 #define pgd_next_t		p4d_t
-#define alloc_pgd_next(__va)	(pgtable_l5_enabled() ?			\
-		pt_ops.alloc_p4d(__va) : (pgtable_l4_enabled() ?	\
+#define alloc_pgd_next(__va)	(pgtable_l5_enabled ?			\
+		pt_ops.alloc_p4d(__va) : (pgtable_l4_enabled ?		\
 		pt_ops.alloc_pud(__va) : pt_ops.alloc_pmd(__va)))
-#define get_pgd_next_virt(__pa)	(pgtable_l5_enabled() ?			\
-		pt_ops.get_p4d_virt(__pa) : (pgd_next_t *)(pgtable_l4_enabled() ? \
+#define get_pgd_next_virt(__pa)	(pgtable_l5_enabled ?			\
+		pt_ops.get_p4d_virt(__pa) : (pgd_next_t *)(pgtable_l4_enabled ?	\
 		pt_ops.get_pud_virt(__pa) : (pud_t *)pt_ops.get_pmd_virt(__pa)))
 #define create_pgd_next_mapping(__nextp, __va, __pa, __sz, __prot)	\
-				(pgtable_l5_enabled() ?			\
+				(pgtable_l5_enabled ?			\
 		create_p4d_mapping(__nextp, __va, __pa, __sz, __prot) : \
-				(pgtable_l4_enabled() ?			\
+				(pgtable_l4_enabled ?			\
 		create_pud_mapping((pud_t *)__nextp, __va, __pa, __sz, __prot) :	\
 		create_pmd_mapping((pmd_t *)__nextp, __va, __pa, __sz, __prot)))
-#define fixmap_pgd_next		(pgtable_l5_enabled() ?			\
-		(uintptr_t)fixmap_p4d : (pgtable_l4_enabled() ?		\
+#define fixmap_pgd_next		(pgtable_l5_enabled ?			\
+		(uintptr_t)fixmap_p4d : (pgtable_l4_enabled ?		\
 		(uintptr_t)fixmap_pud : (uintptr_t)fixmap_pmd))
-#define trampoline_pgd_next	(pgtable_l5_enabled() ?			\
-		(uintptr_t)trampoline_p4d : (pgtable_l4_enabled() ?	\
+#define trampoline_pgd_next	(pgtable_l5_enabled ?			\
+		(uintptr_t)trampoline_p4d : (pgtable_l4_enabled ?	\
 		(uintptr_t)trampoline_pud : (uintptr_t)trampoline_pmd))
 #else
 #define pgd_next_t		pte_t
@@ -717,11 +715,11 @@ static uintptr_t __meminit best_map_size(phys_addr_t pa, uintptr_t va, phys_addr
 	if (debug_pagealloc_enabled())
 		return PAGE_SIZE;
 
-	if (pgtable_l5_enabled() &&
+	if (pgtable_l5_enabled &&
 	    !(pa & (P4D_SIZE - 1)) && !(va & (P4D_SIZE - 1)) && size >= P4D_SIZE)
 		return P4D_SIZE;
 
-	if (pgtable_l4_enabled() &&
+	if (pgtable_l4_enabled &&
 	    !(pa & (PUD_SIZE - 1)) && !(va & (PUD_SIZE - 1)) && size >= PUD_SIZE)
 		return PUD_SIZE;
 
@@ -773,14 +771,14 @@ u64 __pi_set_satp_mode_from_fdt(uintptr_t dtb_pa);
 
 static void __init disable_pgtable_l5(void)
 {
-	_pgtable_l5_enabled = false;
+	pgtable_l5_enabled = false;
 	kernel_map.page_offset = PAGE_OFFSET_L4;
 	satp_mode = SATP_MODE_48;
 }
 
 static void __init disable_pgtable_l4(void)
 {
-	_pgtable_l4_enabled = false;
+	pgtable_l4_enabled = false;
 	kernel_map.page_offset = PAGE_OFFSET_L3;
 	satp_mode = SATP_MODE_39;
 }
@@ -843,14 +841,6 @@ static __init void set_satp_mode(uintptr_t dtb_pa)
 
 	kernel_map.page_offset = PAGE_OFFSET_L5;
 
-	/* Fall back to SV48 if RISCV_ISA_SV57 isn't enabled */
-	if (!IS_ENABLED(CONFIG_RISCV_ISA_SV57) && satp_mode_limit == 0)
-		satp_mode_limit = SATP_MODE_48;
-
-	/* Fall back to SV39 if RISCV_ISA_SV48 isn't enabled */
-	if (!IS_ENABLED(CONFIG_RISCV_ISA_SV48) && satp_mode_limit == SATP_MODE_48)
-		satp_mode_limit = SATP_MODE_39;
-
 	if (satp_mode_limit == SATP_MODE_48) {
 		disable_pgtable_l5();
 	} else if (satp_mode_limit == SATP_MODE_39) {
@@ -879,7 +869,7 @@ retry:
 
 	create_pgd_mapping(early_pg_dir,
 			   set_satp_mode_pmd,
-			   pgtable_l5_enabled() ?
+			   pgtable_l5_enabled ?
 				(uintptr_t)early_p4d : (uintptr_t)early_pud,
 			   PGDIR_SIZE, PAGE_TABLE);
 
@@ -891,7 +881,7 @@ retry:
 	local_flush_tlb_all();
 
 	if (hw_satp != identity_satp) {
-		if (pgtable_l5_enabled()) {
+		if (pgtable_l5_enabled) {
 			disable_pgtable_l5();
 			memset(early_pg_dir, 0, PAGE_SIZE);
 			goto retry;
@@ -904,10 +894,6 @@ out:
 	memset(early_p4d, 0, PAGE_SIZE);
 	memset(early_pud, 0, PAGE_SIZE);
 	memset(early_pmd, 0, PAGE_SIZE);
-	if (pgtable_l4_enabled())
-		set_bit(RISCV_ISA_EXT_SV48, riscv_isa);
-	if (pgtable_l5_enabled())
-		set_bit(RISCV_ISA_EXT_SV57, riscv_isa);
 }
 #endif
 
@@ -1136,11 +1122,11 @@ asmlinkage void __init setup_vm(uintptr_t dtb_pa)
 
 #ifndef __PAGETABLE_PMD_FOLDED
 	/* Setup fixmap P4D and PUD */
-	if (pgtable_l5_enabled())
+	if (pgtable_l5_enabled)
 		create_p4d_mapping(fixmap_p4d, FIXADDR_START,
 				   (uintptr_t)fixmap_pud, P4D_SIZE, PAGE_TABLE);
 	/* Setup fixmap PUD and PMD */
-	if (pgtable_l4_enabled())
+	if (pgtable_l4_enabled)
 		create_pud_mapping(fixmap_pud, FIXADDR_START,
 				   (uintptr_t)fixmap_pmd, PUD_SIZE, PAGE_TABLE);
 	create_pmd_mapping(fixmap_pmd, FIXADDR_START,
@@ -1148,10 +1134,10 @@ asmlinkage void __init setup_vm(uintptr_t dtb_pa)
 	/* Setup trampoline PGD and PMD */
 	create_pgd_mapping(trampoline_pg_dir, kernel_map.virt_addr,
 			   trampoline_pgd_next, PGDIR_SIZE, PAGE_TABLE);
-	if (pgtable_l5_enabled())
+	if (pgtable_l5_enabled)
 		create_p4d_mapping(trampoline_p4d, kernel_map.virt_addr,
 				   (uintptr_t)trampoline_pud, P4D_SIZE, PAGE_TABLE);
-	if (pgtable_l4_enabled())
+	if (pgtable_l4_enabled)
 		create_pud_mapping(trampoline_pud, kernel_map.virt_addr,
 				   (uintptr_t)trampoline_pmd, PUD_SIZE, PAGE_TABLE);
 	create_pmd_mapping(trampoline_pmd, kernel_map.virt_addr,
@@ -1253,6 +1239,8 @@ static void __init create_linear_mapping_page_table(void)
 
 	/* Map all memory banks in the linear mapping */
 	for_each_mem_range(i, &start, &end) {
+		if (start >= end)
+			break;
 		if (start <= __pa(PAGE_OFFSET) &&
 		    __pa(PAGE_OFFSET) < end)
 			start = __pa(PAGE_OFFSET);
@@ -1342,7 +1330,7 @@ static inline void setup_vm_final(void)
  */
 static void __init arch_reserve_crashkernel(void)
 {
-	unsigned long long low_size = 0, cma_size = 0;
+	unsigned long long low_size = 0;
 	unsigned long long crash_base, crash_size;
 	bool high = false;
 	int ret;
@@ -1352,12 +1340,11 @@ static void __init arch_reserve_crashkernel(void)
 
 	ret = parse_crashkernel(boot_command_line, memblock_phys_mem_size(),
 				&crash_size, &crash_base,
-				&low_size, &cma_size, &high);
+				&low_size, NULL, &high);
 	if (ret)
 		return;
 
 	reserve_crashkernel_generic(crash_size, crash_base, low_size, high);
-	reserve_crashkernel_cma(cma_size);
 }
 
 void __init paging_init(void)
@@ -1373,7 +1360,6 @@ void __init misc_mem_init(void)
 {
 	early_memtest(min_low_pfn << PAGE_SHIFT, max_low_pfn << PAGE_SHIFT);
 	arch_numa_init();
-	dma_contiguous_reserve(dma32_phys_limit);
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 	/* The entire VMEMMAP region has been populated. Flush TLB for this region */
 	local_flush_tlb_kernel_range(VMEMMAP_START, VMEMMAP_END);
@@ -1422,7 +1408,7 @@ static void __init preallocate_pgd_pages_range(unsigned long start, unsigned lon
 		if (!p4d)
 			goto failed;
 
-		if (pgtable_l5_enabled())
+		if (pgtable_l5_enabled)
 			continue;
 
 		lvl = "pud";
@@ -1430,7 +1416,7 @@ static void __init preallocate_pgd_pages_range(unsigned long start, unsigned lon
 		if (!pud)
 			goto failed;
 
-		if (pgtable_l4_enabled())
+		if (pgtable_l4_enabled)
 			continue;
 
 		lvl = "pmd";
@@ -1481,9 +1467,7 @@ struct execmem_info __init *execmem_arch_setup(void)
 			[EXECMEM_KPROBES] = {
 				.start	= VMALLOC_START,
 				.end	= VMALLOC_END,
-				.pgprot	= IS_ENABLED(CONFIG_STRICT_MODULE_RWX) ?
-					  PAGE_KERNEL_READ_EXEC :
-					  PAGE_KERNEL_EXEC,
+				.pgprot	= PAGE_KERNEL_READ_EXEC,
 				.alignment = 1,
 			},
 			[EXECMEM_BPF] = {
@@ -1501,17 +1485,10 @@ struct execmem_info __init *execmem_arch_setup(void)
 #endif /* CONFIG_EXECMEM */
 
 #ifdef CONFIG_MEMORY_HOTPLUG
-static void __meminit free_pgtable_page(struct page *page)
-{
-	if (PageReserved(page))
-		free_reserved_page(page);
-	else
-		pagetable_free(page_ptdesc(page));
-}
-
 static void __meminit free_pte_table(pte_t *pte_start, pmd_t *pmd)
 {
 	struct page *page = pmd_page(*pmd);
+	struct ptdesc *ptdesc = page_ptdesc(page);
 	pte_t *pte;
 	int i;
 
@@ -1521,13 +1498,18 @@ static void __meminit free_pte_table(pte_t *pte_start, pmd_t *pmd)
 			return;
 	}
 
-	free_pgtable_page(page);
+	pagetable_dtor(ptdesc);
+	if (PageReserved(page))
+		free_reserved_page(page);
+	else
+		pagetable_free(ptdesc);
 	pmd_clear(pmd);
 }
 
-static void __meminit free_pmd_table(pmd_t *pmd_start, pud_t *pud)
+static void __meminit free_pmd_table(pmd_t *pmd_start, pud_t *pud, bool is_vmemmap)
 {
 	struct page *page = pud_page(*pud);
+	struct ptdesc *ptdesc = page_ptdesc(page);
 	pmd_t *pmd;
 	int i;
 
@@ -1537,7 +1519,12 @@ static void __meminit free_pmd_table(pmd_t *pmd_start, pud_t *pud)
 			return;
 	}
 
-	free_pgtable_page(page);
+	if (!is_vmemmap)
+		pagetable_dtor(ptdesc);
+	if (PageReserved(page))
+		free_reserved_page(page);
+	else
+		pagetable_free(ptdesc);
 	pud_clear(pud);
 }
 
@@ -1553,7 +1540,10 @@ static void __meminit free_pud_table(pud_t *pud_start, p4d_t *p4d)
 			return;
 	}
 
-	free_pgtable_page(page);
+	if (PageReserved(page))
+		free_reserved_page(page);
+	else
+		__free_pages(page, 0);
 	p4d_clear(p4d);
 }
 
@@ -1636,13 +1626,13 @@ static void __meminit remove_pud_mapping(pud_t *pud_base, unsigned long addr, un
 
 	for (; addr < end; addr = next) {
 		next = pud_addr_end(addr, end);
-		pudp = pgtable_l4_enabled() ? pud_base + pud_index(addr) : pud_base;
+		pudp = pgtable_l4_enabled ? pud_base + pud_index(addr) : pud_base;
 		pud = pudp_get(pudp);
 		if (!pud_present(pud))
 			continue;
 
 		if (pud_leaf(pud)) {
-			if (pgtable_l4_enabled()) {
+			if (pgtable_l4_enabled) {
 				pud_clear(pudp);
 				if (is_vmemmap)
 					free_vmemmap_storage(pud_page(pud), PUD_SIZE, altmap);
@@ -1653,8 +1643,8 @@ static void __meminit remove_pud_mapping(pud_t *pud_base, unsigned long addr, un
 		pmd_base = pmd_offset(pudp, 0);
 		remove_pmd_mapping(pmd_base, addr, next, is_vmemmap, altmap);
 
-		if (pgtable_l4_enabled())
-			free_pmd_table(pmd_base, pudp);
+		if (pgtable_l4_enabled)
+			free_pmd_table(pmd_base, pudp, is_vmemmap);
 	}
 }
 
@@ -1667,13 +1657,13 @@ static void __meminit remove_p4d_mapping(p4d_t *p4d_base, unsigned long addr, un
 
 	for (; addr < end; addr = next) {
 		next = p4d_addr_end(addr, end);
-		p4dp = pgtable_l5_enabled() ? p4d_base + p4d_index(addr) : p4d_base;
+		p4dp = pgtable_l5_enabled ? p4d_base + p4d_index(addr) : p4d_base;
 		p4d = p4dp_get(p4dp);
 		if (!p4d_present(p4d))
 			continue;
 
 		if (p4d_leaf(p4d)) {
-			if (pgtable_l5_enabled()) {
+			if (pgtable_l5_enabled) {
 				p4d_clear(p4dp);
 				if (is_vmemmap)
 					free_vmemmap_storage(p4d_page(p4d), P4D_SIZE, altmap);
@@ -1684,7 +1674,7 @@ static void __meminit remove_p4d_mapping(p4d_t *p4d_base, unsigned long addr, un
 		pud_base = pud_offset(p4dp, 0);
 		remove_pud_mapping(pud_base, addr, next, is_vmemmap, altmap);
 
-		if (pgtable_l5_enabled())
+		if (pgtable_l5_enabled)
 			free_pud_table(pud_base, p4dp);
 	}
 }

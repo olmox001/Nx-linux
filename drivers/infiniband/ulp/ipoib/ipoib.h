@@ -95,6 +95,9 @@ enum {
 	IPOIB_NEIGH_TBL_FLUSH	  = 12,
 	IPOIB_FLAG_DEV_ADDR_SET	  = 13,
 	IPOIB_FLAG_DEV_ADDR_CTRL  = 14,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	IPOIB_FLAG_CSUM		  = 17,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	IPOIB_MAX_BACKOFF_SECONDS = 16,
 
@@ -194,9 +197,24 @@ struct ipoib_tx_buf {
 
 struct ib_cm_id;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+/* Signature so driver can make sure ipoib_cm_data.caps is valid */
+#define IPOIB_CM_PROTO_SIG	0x2211
+/* Current driver ipoib_cm_data version */
+#define IPOIB_CM_PROTO_VER	(1UL << 12)
+
+enum ipoib_cm_data_caps {
+	IPOIB_CM_CAPS_IBCRC_AS_CSUM	= 1UL << 0,
+};
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 struct ipoib_cm_data {
 	__be32 qpn; /* High byte MUST be ignored on receive */
 	__be32 mtu;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	__be16 sig; /* must be IPOIB_CM_PROTO_SIG */
+	__be16 caps; /* 4 bits proto ver and 12 bits capabilities */
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 };
 
 /*
@@ -241,6 +259,9 @@ struct ipoib_cm_rx {
 	unsigned long		jiffies;
 	enum ipoib_cm_state	state;
 	int			recv_count;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	u16			caps;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 };
 
 struct ipoib_cm_tx {
@@ -255,6 +276,9 @@ struct ipoib_cm_tx {
 	unsigned long	     flags;
 	u32		     mtu;
 	unsigned int         max_send_sge;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	u16		     caps;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 };
 
 struct ipoib_cm_rx_buf {
@@ -480,7 +504,23 @@ void ipoib_del_neighs_by_gid(struct net_device *dev, u8 *gid);
 
 extern struct workqueue_struct *ipoib_workqueue;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+extern int cm_ibcrc_as_csum;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 /* functions */
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static inline int ipoib_cm_check_proto_sig(u16 proto_sig)
+{
+	return (proto_sig == IPOIB_CM_PROTO_SIG);
+}
+
+static inline int ipoib_cm_check_proto_ver(u16 caps)
+{
+	return ((caps & 0xF000) == IPOIB_CM_PROTO_VER);
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 int ipoib_rx_poll(struct napi_struct *napi, int budget);
 int ipoib_tx_poll(struct napi_struct *napi, int budget);
@@ -599,6 +639,16 @@ void ipoib_event(struct ib_event_handler *handler,
 
 int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey);
 int ipoib_vlan_delete(struct net_device *pdev, unsigned short pkey);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+int ipoib_named_vlan_add(struct net_device *pdev, unsigned short pkey,
+			 char *child_name_buf);
+int ipoib_named_vlan_delete(struct net_device *pdev, char *child_name_buf);
+int ipoib_get_netdev_pkey(struct net_device *dev, u16 *pkey);
+int ipoib_vlan_add_common(struct net_device *pdev, unsigned short pkey,
+			  char *child_name_buf);
+int ipoib_vlan_delete_common(struct net_device *pdev, unsigned short pkey,
+			     char *child_name_buf);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 int __ipoib_vlan_add(struct ipoib_dev_priv *ppriv, struct ipoib_dev_priv *priv,
 		     u16 pkey, int child_type);

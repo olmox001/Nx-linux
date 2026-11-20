@@ -389,39 +389,45 @@ static irqreturn_t ds3232_irq(int irq, void *dev_id)
 	int ret;
 	int stat, control;
 
-	guard(rtc_ops)(ds3232->rtc);
+	rtc_lock(ds3232->rtc);
 
 	ret = regmap_read(ds3232->regmap, DS3232_REG_SR, &stat);
 	if (ret)
-		return IRQ_HANDLED;
+		goto unlock;
 
 	if (stat & DS3232_REG_SR_A1F) {
 		ret = regmap_read(ds3232->regmap, DS3232_REG_CR, &control);
 		if (ret) {
 			dev_warn(ds3232->dev,
 				 "Read Control Register error %d\n", ret);
-			return IRQ_HANDLED;
-		}
-		/* disable alarm1 interrupt */
-		control &= ~(DS3232_REG_CR_A1IE);
-		ret = regmap_write(ds3232->regmap, DS3232_REG_CR, control);
-		if (ret) {
-			dev_warn(ds3232->dev,
-				 "Write Control Register error %d\n", ret);
-			return IRQ_HANDLED;
-		}
+		} else {
+			/* disable alarm1 interrupt */
+			control &= ~(DS3232_REG_CR_A1IE);
+			ret = regmap_write(ds3232->regmap, DS3232_REG_CR,
+					   control);
+			if (ret) {
+				dev_warn(ds3232->dev,
+					 "Write Control Register error %d\n",
+					 ret);
+				goto unlock;
+			}
 
-		/* clear the alarm pend flag */
-		stat &= ~DS3232_REG_SR_A1F;
-		ret = regmap_write(ds3232->regmap, DS3232_REG_SR, stat);
-		if (ret) {
-			dev_warn(ds3232->dev,
-				 "Write Status Register error %d\n", ret);
-			return IRQ_HANDLED;
-		}
+			/* clear the alarm pend flag */
+			stat &= ~DS3232_REG_SR_A1F;
+			ret = regmap_write(ds3232->regmap, DS3232_REG_SR, stat);
+			if (ret) {
+				dev_warn(ds3232->dev,
+					 "Write Status Register error %d\n",
+					 ret);
+				goto unlock;
+			}
 
-		rtc_update_irq(ds3232->rtc, 1, RTC_AF | RTC_IRQF);
+			rtc_update_irq(ds3232->rtc, 1, RTC_AF | RTC_IRQF);
+		}
 	}
+
+unlock:
+	rtc_unlock(ds3232->rtc);
 
 	return IRQ_HANDLED;
 }
@@ -468,7 +474,7 @@ static int ds3232_probe(struct device *dev, struct regmap *regmap, int irq,
 		.type = NVMEM_TYPE_BATTERY_BACKED
 	};
 
-	ds3232 = devm_kzalloc_obj(dev, *ds3232);
+	ds3232 = devm_kzalloc(dev, sizeof(*ds3232), GFP_KERNEL);
 	if (!ds3232)
 		return -ENOMEM;
 

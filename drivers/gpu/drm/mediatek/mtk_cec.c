@@ -187,7 +187,7 @@ static int mtk_cec_probe(struct platform_device *pdev)
 	struct mtk_cec *cec;
 	int ret;
 
-	cec = devm_kzalloc_obj(dev, *cec);
+	cec = devm_kzalloc(dev, sizeof(*cec), GFP_KERNEL);
 	if (!cec)
 		return -ENOMEM;
 

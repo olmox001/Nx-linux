@@ -531,14 +531,12 @@ static ssize_t read_kcore_iter(struct kiocb *iocb, struct iov_iter *iter)
 			 * again until we are done.
 			 */
 			while (true) {
-				size_t n = vread_iter(iter, src, left);
-
-				read += n;
+				read += vread_iter(iter, src, left);
 				if (read == tsz)
 					break;
 
-				src += n;
-				left -= n;
+				src += read;
+				left -= read;
 
 				if (fault_in_iov_iter_writeable(iter, left)) {
 					ret = -EFAULT;

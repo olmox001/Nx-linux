@@ -14,7 +14,6 @@
 #include <linux/array_size.h>
 #include <linux/bitfield.h>
 #include <linux/bits.h>
-#include <linux/cleanup.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/dmi.h>
@@ -183,6 +182,7 @@ static const struct amd_pmc_cpu_info amd_1ah_m80_cpu_info = {
 	.smu_arg	= AMD_PMC_REGISTER_ARG_1AH_80H,
 	.smu_rsp	= AMD_PMC_REGISTER_RSP_1AH_80H,
 	.num_ips	= ARRAY_SIZE(soc15_ip_blk_v3),
+	.scratch_reg	= AMD_PMC_SCRATCH_REG_1AH,
 	.ips_ptr	= soc15_ip_blk_v3,
 	.os_hint	= MSG_OS_HINT_RN,
 };
@@ -199,7 +199,6 @@ static const struct pci_device_id pmc_pci_ids[] = {
 	{ PCI_DEVICE_DATA(AMD, 1AH_M20H_ROOT, NULL) },
 	{ PCI_DEVICE_DATA(AMD, 1AH_M60H_ROOT, NULL) },
 	{ PCI_DEVICE_DATA(AMD, 1AH_M80H_ROOT, &amd_1ah_m80_cpu_info) },
-	{ PCI_DEVICE_DATA(AMD, 1AH_MDCH_ROOT, &amd_1ah_m80_cpu_info) },
 	{ }
 };
 
@@ -518,9 +517,8 @@ static void amd_pmc_dbgfs_register(struct amd_pmc_dev *dev)
 			    &smu_fw_info_fops);
 	debugfs_create_file("s0ix_stats", 0644, dev->dbgfs_dir, dev,
 			    &s0ix_stats_fops);
-	if (dev->cpu_info->scratch_reg)
-		debugfs_create_file("amd_pmc_idlemask", 0644, dev->dbgfs_dir, dev,
-					&amd_pmc_idlemask_fops);
+	debugfs_create_file("amd_pmc_idlemask", 0644, dev->dbgfs_dir, dev,
+			    &amd_pmc_idlemask_fops);
 }
 
 static char *amd_pmc_get_msg_port(struct amd_pmc_dev *dev)
@@ -650,6 +648,7 @@ static int amd_pmc_wa_irq1(struct amd_pmc_dev *pdev)
 
 static int amd_pmc_verify_czn_rtc(struct amd_pmc_dev *pdev, u32 *arg)
 {
+	struct rtc_device *rtc_device;
 	time64_t then, now, duration;
 	struct rtc_wkalrm alarm;
 	struct rtc_time tm;
@@ -665,8 +664,7 @@ static int amd_pmc_verify_czn_rtc(struct amd_pmc_dev *pdev, u32 *arg)
 	if (pdev->major < 64 || (pdev->major == 64 && pdev->minor < 53))
 		return 0;
 
-	struct rtc_device *rtc_device __free(rtc_class_close) =
-		rtc_class_open("rtc0");
+	rtc_device = rtc_class_open("rtc0");
 	if (!rtc_device)
 		return 0;
 	rc = rtc_read_next_alarm(rtc_device, &alarm);
@@ -701,6 +699,19 @@ static int amd_pmc_verify_czn_rtc(struct amd_pmc_dev *pdev, u32 *arg)
 	pm_pr_dbg("wakeup timer programmed for %lld seconds\n", duration);
 
 	return rc;
+}
+
+static bool amd_pmc_intermediate_wakeup_need_delay(struct amd_pmc_dev *pdev)
+{
+	/*
+	 * Starting a new HW sleep cycle right after waking from one
+	 * can cause electrical problems triggering the over voltage protection.
+	 * That is avoided by delaying the next suspend a bit, see also
+	 * https://lore.kernel.org/all/20250414162446.3853194-1-superm1@kernel.org/
+	 */
+	struct smu_metrics table;
+
+	return get_metrics_table(pdev, &table) == 0 && table.s0i3_last_entry_status;
 }
 
 static bool amd_pmc_want_suspend_delay(struct amd_pmc_dev *pdev)
@@ -793,7 +804,7 @@ static void amd_pmc_s2idle_check(void)
 	struct amd_pmc_dev *pdev = &pmc;
 	int rc;
 
-	if (!pdev->is_first_check_after_suspend ||
+	if (amd_pmc_intermediate_wakeup_need_delay(pdev) ||
 	    amd_pmc_want_suspend_delay(pdev))
 		msleep(2500);
 
@@ -928,22 +939,19 @@ static int amd_pmc_probe(struct platform_device *pdev)
 	}
 
 	amd_pmc_dbgfs_register(dev);
-
-	/*
-	 * STB is an optional debug facility (enable_stb); a failure to set it
-	 * up must not stop the rest of the driver - most importantly the s0i3
-	 * LPS0 handler - from working, so treat it as non-fatal.
-	 */
 	err = amd_stb_s2d_init(dev);
 	if (err)
-		dev_warn(dev->dev, "STB initialization failed (%d), continuing without STB support\n",
-			 err);
+		goto err_dbgfs_unregister;
 
 	if (IS_ENABLED(CONFIG_AMD_MP2_STB))
 		amd_mp2_stb_init(dev);
 	pm_report_max_hw_sleep(U64_MAX);
 	return 0;
 
+err_dbgfs_unregister:
+	amd_pmc_dbgfs_unregister(dev);
+	if (IS_ENABLED(CONFIG_SUSPEND))
+		acpi_unregister_lps0_dev(&amd_pmc_s2idle_dev_ops);
 err_pci_dev_put:
 	pci_dev_put(rdev);
 	return err;
@@ -959,10 +967,6 @@ static void amd_pmc_remove(struct platform_device *pdev)
 	pci_dev_put(dev->rdev);
 	if (IS_ENABLED(CONFIG_AMD_MP2_STB))
 		amd_mp2_stb_deinit(dev);
-	dev->regbase = NULL;
-	dev->smu_virt_addr = NULL;
-	dev->stb_virt_addr = NULL;
-	dev->fch_virt_addr = NULL;
 }
 
 static const struct acpi_device_id amd_pmc_acpi_ids[] = {

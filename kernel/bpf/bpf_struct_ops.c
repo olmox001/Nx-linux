@@ -13,7 +13,6 @@
 #include <linux/btf_ids.h>
 #include <linux/rcupdate_wait.h>
 #include <linux/poll.h>
-#include <linux/bpf-cgroup.h>
 
 struct bpf_struct_ops_value {
 	struct bpf_struct_ops_common_value common;
@@ -58,7 +57,7 @@ struct bpf_struct_ops_map {
 
 struct bpf_struct_ops_link {
 	struct bpf_link link;
-	struct bpf_map *map;
+	struct bpf_map __rcu *map;
 	wait_queue_head_t wait_hup;
 };
 
@@ -148,8 +147,6 @@ void bpf_struct_ops_image_free(void *image)
 
 #define MAYBE_NULL_SUFFIX "__nullable"
 #define REFCOUNTED_SUFFIX "__ref"
-#define ARENA_SUFFIX "__arena"
-#define ARENA_MAYBE_NULL_SUFFIX "__arena__nullable"
 
 /* Prepare argument info for every nullable argument of a member of a
  * struct_ops type.
@@ -162,7 +159,7 @@ void bpf_struct_ops_image_free(void *image)
  * to provide an array of struct bpf_ctx_arg_aux, which in turn provides
  * the information that used by the verifier to check the arguments of the
  * BPF struct_ops program assigned to the member. Here, we only care about
- * the arguments that are marked as __nullable, __ref or __arena.
+ * the arguments that are marked as __nullable.
  *
  * The array of struct bpf_ctx_arg_aux is eventually assigned to
  * prog->aux->ctx_arg_info of BPF struct_ops programs and passed to the
@@ -175,12 +172,10 @@ static int prepare_arg_info(struct btf *btf,
 			    const char *st_ops_name,
 			    const char *member_name,
 			    const struct btf_type *func_proto, void *stub_func_addr,
-			    struct btf_func_model *model,
 			    struct bpf_struct_ops_arg_info *arg_info)
 {
 	const struct btf_type *stub_func_proto, *pointed_type;
-	bool is_nullable = false, is_refcounted = false, is_arena = false;
-	bool is_arena_nullable = false;
+	bool is_nullable = false, is_refcounted = false;
 	const struct btf_param *stub_args, *args;
 	struct bpf_ctx_arg_aux *info, *info_buf;
 	u32 nargs, arg_no, info_cnt = 0;
@@ -230,39 +225,27 @@ static int prepare_arg_info(struct btf *btf,
 	/* Prepare info for every nullable argument */
 	info = info_buf;
 	for (arg_no = 0; arg_no < nargs; arg_no++) {
-		bool ptr_to_arena, ptr_to_struct;
-
-		/*
-		 * Skip arguments that are not suffixed with "__arena__nullable",
-		 * "__arena", "__nullable", or "__ref".
+		/* Skip arguments that is not suffixed with
+		 * "__nullable or __ref".
 		 */
-		is_arena_nullable = btf_param_match_suffix(btf, &stub_args[arg_no],
-							   ARENA_MAYBE_NULL_SUFFIX);
-		is_arena = btf_param_match_suffix(btf, &stub_args[arg_no], ARENA_SUFFIX);
-		is_nullable = !is_arena_nullable &&
-			      btf_param_match_suffix(btf, &stub_args[arg_no], MAYBE_NULL_SUFFIX);
+		is_nullable = btf_param_match_suffix(btf, &stub_args[arg_no],
+						     MAYBE_NULL_SUFFIX);
 		is_refcounted = btf_param_match_suffix(btf, &stub_args[arg_no],
 						       REFCOUNTED_SUFFIX);
 
-		if (is_arena_nullable)
-			suffix = ARENA_MAYBE_NULL_SUFFIX;
-		else if (is_arena)
-			suffix = ARENA_SUFFIX;
-		else if (is_nullable)
+		if (is_nullable)
 			suffix = MAYBE_NULL_SUFFIX;
 		else if (is_refcounted)
 			suffix = REFCOUNTED_SUFFIX;
 		else
 			continue;
 
-		/*
-		 * Should be a pointer to struct, or any pointer for __arena or
-		 * __arena__nullable.
-		 */
-		pointed_type = btf_type_resolve_ptr(btf, args[arg_no].type, &arg_btf_id);
-		ptr_to_arena = pointed_type && (is_arena || is_arena_nullable);
-		ptr_to_struct = pointed_type && btf_type_is_struct(pointed_type);
-		if (!ptr_to_arena && !ptr_to_struct) {
+		/* Should be a pointer to struct */
+		pointed_type = btf_type_resolve_ptr(btf,
+						    args[arg_no].type,
+						    &arg_btf_id);
+		if (!pointed_type ||
+		    !btf_type_is_struct(pointed_type)) {
 			pr_warn("stub function %s has %s tagging to an unsupported type\n",
 				stub_fname, suffix);
 			goto err_out;
@@ -285,18 +268,7 @@ static int prepare_arg_info(struct btf *btf,
 		info->btf_id = arg_btf_id;
 		info->btf = btf;
 		info->offset = offset;
-		if (is_arena || is_arena_nullable) {
-			/*
-			 * Both types get PTR_TO_ARENA. In verifier state,
-			 * PTR_TO_ARENA encompasses potential NULL values, but
-			 * we do not force the program to check it, or maintain
-			 * precision around it, since it has no safety implication.
-			 */
-			info->reg_type = PTR_TO_ARENA;
-			model->arg_flags[arg_no] |= BTF_FMODEL_ARENA_ARG;
-			if (is_arena_nullable)
-				model->arg_flags[arg_no] |= BTF_FMODEL_NULLABLE_ARG;
-		} else if (is_nullable) {
+		if (is_nullable) {
 			info->reg_type = PTR_TRUSTED | PTR_TO_BTF_ID | PTR_MAYBE_NULL;
 		} else if (is_refcounted) {
 			info->reg_type = PTR_TRUSTED | PTR_TO_BTF_ID;
@@ -488,7 +460,6 @@ int bpf_struct_ops_desc_init(struct bpf_struct_ops_desc *st_ops_desc,
 		stub_func_addr = *(void **)(st_ops->cfi_stubs + moff);
 		err = prepare_arg_info(btf, st_ops->name, mname,
 				       func_proto, stub_func_addr,
-				       &st_ops->func_models[i],
 				       arg_info + i);
 		if (err)
 			goto errout;
@@ -1025,19 +996,9 @@ static void __bpf_struct_ops_map_free(struct bpf_map *map)
 	bpf_map_area_free(st_map);
 }
 
-static void bpf_struct_ops_map_free_pre_rcu(struct bpf_map *map)
-{
-	struct bpf_struct_ops_map *st_map = (struct bpf_struct_ops_map *)map;
-
-	bpf_struct_ops_map_del_ksyms(st_map);
-	bpf_struct_ops_map_dissoc_progs(st_map);
-}
-
 static void bpf_struct_ops_map_free(struct bpf_map *map)
 {
 	struct bpf_struct_ops_map *st_map = (struct bpf_struct_ops_map *)map;
-	struct bpf_struct_ops *st_ops = st_map->st_ops_desc->st_ops;
-	bool tasks_rcu = st_ops->free_after_tasks_rcu_gp;
 
 	/* st_ops->owner was acquired during map_alloc to implicitly holds
 	 * the btf's refcnt. The acquire was only done when btf_is_module()
@@ -1046,8 +1007,26 @@ static void bpf_struct_ops_map_free(struct bpf_map *map)
 	if (btf_is_module(st_map->btf))
 		module_put(st_map->st_ops_desc->st_ops->owner);
 
-	if (tasks_rcu && IS_ENABLED(CONFIG_TASKS_RCU))
-		synchronize_rcu_tasks();
+	bpf_struct_ops_map_dissoc_progs(st_map);
+
+	bpf_struct_ops_map_del_ksyms(st_map);
+
+	/* The struct_ops's function may switch to another struct_ops.
+	 *
+	 * For example, bpf_tcp_cc_x->init() may switch to
+	 * another tcp_cc_y by calling
+	 * setsockopt(TCP_CONGESTION, "tcp_cc_y").
+	 * During the switch,  bpf_struct_ops_put(tcp_cc_x) is called
+	 * and its refcount may reach 0 which then free its
+	 * trampoline image while tcp_cc_x is still running.
+	 *
+	 * A vanilla rcu gp is to wait for all bpf-tcp-cc prog
+	 * to finish. bpf-tcp-cc prog is non sleepable.
+	 * A rcu_tasks gp is to wait for the last few insn
+	 * in the tramopline image to finish before releasing
+	 * the trampoline image.
+	 */
+	synchronize_rcu_mult(call_rcu, call_rcu_tasks);
 
 	__bpf_struct_ops_map_free(map);
 }
@@ -1116,11 +1095,6 @@ static struct bpf_map *bpf_struct_ops_map_alloc(union bpf_attr *attr)
 		goto errout;
 	}
 
-	if (st_ops_desc->st_ops->cgroup_atype && !(attr->map_flags & BPF_F_LINK)) {
-		ret = -EOPNOTSUPP;
-		goto errout;
-	}
-
 	vt = st_ops_desc->value_type;
 	if (attr->value_size != vt->size) {
 		ret = -EINVAL;
@@ -1161,11 +1135,6 @@ static struct bpf_map *bpf_struct_ops_map_alloc(union bpf_attr *attr)
 
 	mutex_init(&st_map->lock);
 	bpf_map_init_from_attr(map, attr);
-	/*
-	 * A prog dissociated in map_free_pre_rcu() may still run the struct_ops
-	 * from a bpf_wq callback or a sleepable prog, under RCU tasks trace.
-	 */
-	map->free_after_mult_rcu_gp = true;
 
 	return map;
 
@@ -1198,7 +1167,6 @@ const struct bpf_map_ops bpf_struct_ops_map_ops = {
 	.map_alloc_check = bpf_struct_ops_map_alloc_check,
 	.map_alloc = bpf_struct_ops_map_alloc,
 	.map_free = bpf_struct_ops_map_free,
-	.map_free_pre_rcu = bpf_struct_ops_map_free_pre_rcu,
 	.map_get_next_key = bpf_struct_ops_map_get_next_key,
 	.map_lookup_elem = bpf_struct_ops_map_lookup_elem,
 	.map_delete_elem = bpf_struct_ops_map_delete_elem,
@@ -1285,31 +1253,7 @@ int bpf_struct_ops_for_each_prog(const void *kdata,
 }
 EXPORT_SYMBOL_GPL(bpf_struct_ops_for_each_prog);
 
-void *bpf_struct_ops_map_kdata(struct bpf_map *map)
-{
-	struct bpf_struct_ops_map *st_map;
-
-	st_map = container_of(map, struct bpf_struct_ops_map, map);
-	return st_map->kvalue.data;
-}
-
-int bpf_struct_ops_map_cgroup_atype(struct bpf_map *map)
-{
-	struct bpf_struct_ops_map *st_map;
-
-	st_map = container_of(map, struct bpf_struct_ops_map, map);
-	return st_map->st_ops_desc->st_ops->cgroup_atype;
-}
-
-void *bpf_struct_ops_map_cfi_stubs(struct bpf_map *map)
-{
-	struct bpf_struct_ops_map *st_map;
-
-	st_map = container_of(map, struct bpf_struct_ops_map, map);
-	return st_map->st_ops_desc->st_ops->cfi_stubs;
-}
-
-bool bpf_struct_ops_valid_to_reg(struct bpf_map *map)
+static bool bpf_struct_ops_valid_to_reg(struct bpf_map *map)
 {
 	struct bpf_struct_ops_map *st_map = (struct bpf_struct_ops_map *)map;
 
@@ -1325,7 +1269,8 @@ static void bpf_struct_ops_map_link_dealloc(struct bpf_link *link)
 	struct bpf_struct_ops_map *st_map;
 
 	st_link = container_of(link, struct bpf_struct_ops_link, link);
-	st_map = (struct bpf_struct_ops_map *)st_link->map;
+	st_map = (struct bpf_struct_ops_map *)
+		rcu_dereference_protected(st_link->map, true);
 	if (st_map) {
 		st_map->st_ops_desc->st_ops->unreg(&st_map->kvalue.data, link);
 		bpf_map_put(&st_map->map);
@@ -1340,11 +1285,11 @@ static void bpf_struct_ops_map_link_show_fdinfo(const struct bpf_link *link,
 	struct bpf_map *map;
 
 	st_link = container_of(link, struct bpf_struct_ops_link, link);
-	mutex_lock(&update_mutex);
-	map = st_link->map;
+	rcu_read_lock();
+	map = rcu_dereference(st_link->map);
 	if (map)
 		seq_printf(seq, "map_id:\t%d\n", map->id);
-	mutex_unlock(&update_mutex);
+	rcu_read_unlock();
 }
 
 static int bpf_struct_ops_map_link_fill_link_info(const struct bpf_link *link,
@@ -1354,31 +1299,11 @@ static int bpf_struct_ops_map_link_fill_link_info(const struct bpf_link *link,
 	struct bpf_map *map;
 
 	st_link = container_of(link, struct bpf_struct_ops_link, link);
-	mutex_lock(&update_mutex);
-	map = st_link->map;
+	rcu_read_lock();
+	map = rcu_dereference(st_link->map);
 	if (map)
 		info->struct_ops.map_id = map->id;
-	mutex_unlock(&update_mutex);
-	return 0;
-}
-
-int bpf_struct_ops_link_update_check(struct bpf_map *new_map,
-				     struct bpf_map *old_map,
-				     struct bpf_map *expected_old_map)
-{
-	struct bpf_struct_ops_map *st_map, *old_st_map;
-
-	if (!old_map)
-		return -ENOLINK;
-	if (expected_old_map && old_map != expected_old_map)
-		return -EPERM;
-
-	st_map = container_of(new_map, struct bpf_struct_ops_map, map);
-	old_st_map = container_of(old_map, struct bpf_struct_ops_map, map);
-	/* The new and old struct_ops must be the same type. */
-	if (st_map->st_ops_desc != old_st_map->st_ops_desc)
-		return -EINVAL;
-
+	rcu_read_unlock();
 	return 0;
 }
 
@@ -1400,19 +1325,30 @@ static int bpf_struct_ops_map_link_update(struct bpf_link *link, struct bpf_map 
 		return -EOPNOTSUPP;
 
 	mutex_lock(&update_mutex);
-	old_map = st_link->map;
-	err = bpf_struct_ops_link_update_check(new_map, old_map, expected_old_map);
-	if (err)
+
+	old_map = rcu_dereference_protected(st_link->map, lockdep_is_held(&update_mutex));
+	if (!old_map) {
+		err = -ENOLINK;
 		goto err_out;
+	}
+	if (expected_old_map && old_map != expected_old_map) {
+		err = -EPERM;
+		goto err_out;
+	}
 
 	old_st_map = container_of(old_map, struct bpf_struct_ops_map, map);
+	/* The new and old struct_ops must be the same type. */
+	if (st_map->st_ops_desc != old_st_map->st_ops_desc) {
+		err = -EINVAL;
+		goto err_out;
+	}
 
 	err = st_map->st_ops_desc->st_ops->update(st_map->kvalue.data, old_st_map->kvalue.data, link);
 	if (err)
 		goto err_out;
 
 	bpf_map_inc(new_map);
-	WRITE_ONCE(st_link->map, new_map);
+	rcu_assign_pointer(st_link->map, new_map);
 	bpf_map_put(old_map);
 
 err_out:
@@ -1429,7 +1365,7 @@ static int bpf_struct_ops_map_link_detach(struct bpf_link *link)
 
 	mutex_lock(&update_mutex);
 
-	map = st_link->map;
+	map = rcu_dereference_protected(st_link->map, lockdep_is_held(&update_mutex));
 	if (!map) {
 		mutex_unlock(&update_mutex);
 		return 0;
@@ -1438,7 +1374,7 @@ static int bpf_struct_ops_map_link_detach(struct bpf_link *link)
 
 	st_map->st_ops_desc->st_ops->unreg(&st_map->kvalue.data, link);
 
-	WRITE_ONCE(st_link->map, NULL);
+	RCU_INIT_POINTER(st_link->map, NULL);
 	/* Pair with bpf_map_get() in bpf_struct_ops_link_create() or
 	 * bpf_map_inc() in bpf_struct_ops_map_link_update().
 	 */
@@ -1458,7 +1394,7 @@ static __poll_t bpf_struct_ops_map_link_poll(struct file *file,
 
 	poll_wait(file, &st_link->wait_hup, pts);
 
-	return READ_ONCE(st_link->map) ? 0 : EPOLLHUP;
+	return rcu_access_pointer(st_link->map) ? 0 : EPOLLHUP;
 }
 
 static const struct bpf_link_ops bpf_struct_ops_map_lops = {
@@ -1476,7 +1412,6 @@ int bpf_struct_ops_link_create(union bpf_attr *attr)
 	struct bpf_link_primer link_primer;
 	struct bpf_struct_ops_map *st_map;
 	struct bpf_map *map;
-	int cgroup_atype;
 	int err;
 
 	map = bpf_map_get(attr->link_create.map_fd);
@@ -1486,19 +1421,6 @@ int bpf_struct_ops_link_create(union bpf_attr *attr)
 	st_map = (struct bpf_struct_ops_map *)map;
 
 	if (!bpf_struct_ops_valid_to_reg(map)) {
-		err = -EINVAL;
-		goto err_out;
-	}
-
-	cgroup_atype = st_map->st_ops_desc->st_ops->cgroup_atype;
-	if (cgroup_atype) {
-		err = cgroup_bpf_struct_ops_attach(map, attr);
-		bpf_map_put(map);
-		return err;
-	}
-
-	if (memchr_inv(&attr->link_create.cgroup, 0, sizeof(attr->link_create.cgroup)) ||
-	    attr->link_create.target_fd) {
 		err = -EINVAL;
 		goto err_out;
 	}
@@ -1528,7 +1450,7 @@ int bpf_struct_ops_link_create(union bpf_attr *attr)
 		link = NULL;
 		goto err_out;
 	}
-	link->map = map;
+	RCU_INIT_POINTER(link->map, map);
 	mutex_unlock(&update_mutex);
 
 	return bpf_link_settle(&link_primer);
@@ -1543,10 +1465,10 @@ int bpf_prog_assoc_struct_ops(struct bpf_prog *prog, struct bpf_map *map)
 {
 	struct bpf_map *st_ops_assoc;
 
-	guard(spinlock_irqsave)(&prog->aux->st_ops_assoc_lock);
+	guard(mutex)(&prog->aux->st_ops_assoc_mutex);
 
 	st_ops_assoc = rcu_dereference_protected(prog->aux->st_ops_assoc,
-						 lockdep_is_held(&prog->aux->st_ops_assoc_lock));
+						 lockdep_is_held(&prog->aux->st_ops_assoc_mutex));
 	if (st_ops_assoc && st_ops_assoc == map)
 		return 0;
 
@@ -1571,20 +1493,19 @@ int bpf_prog_assoc_struct_ops(struct bpf_prog *prog, struct bpf_map *map)
 
 void bpf_prog_disassoc_struct_ops(struct bpf_prog *prog)
 {
-	struct bpf_prog_aux *aux = prog->aux;
 	struct bpf_map *st_ops_assoc;
 
-	scoped_guard(spinlock_irqsave, &aux->st_ops_assoc_lock) {
-		st_ops_assoc = rcu_dereference_protected(aux->st_ops_assoc,
-							 lockdep_is_held(&aux->st_ops_assoc_lock));
-		if (!st_ops_assoc || st_ops_assoc == BPF_PTR_POISON)
-			return;
+	guard(mutex)(&prog->aux->st_ops_assoc_mutex);
 
-		RCU_INIT_POINTER(aux->st_ops_assoc, NULL);
-	}
+	st_ops_assoc = rcu_dereference_protected(prog->aux->st_ops_assoc,
+						 lockdep_is_held(&prog->aux->st_ops_assoc_mutex));
+	if (!st_ops_assoc || st_ops_assoc == BPF_PTR_POISON)
+		return;
 
 	if (prog->type != BPF_PROG_TYPE_STRUCT_OPS)
 		bpf_map_put(st_ops_assoc);
+
+	RCU_INIT_POINTER(prog->aux->st_ops_assoc, NULL);
 }
 
 /*

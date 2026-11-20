@@ -750,6 +750,15 @@ static irqreturn_t pciehp_ist(int irq, void *dev_id)
 		goto out;
 	}
 
+	/* Ignore all events if this is set */
+	if (events & IGNORE_EVENTS) {
+		ctrl_dbg(ctrl, "Slot(%s): ignoring events (%#06x)\n",
+			slot_name(ctrl), events);
+		ret = IRQ_HANDLED;
+		goto out;
+	}
+
+
 	/* Check Attention Button Pressed */
 	if (events & PCI_EXP_SLTSTA_ABP)
 		pciehp_handle_button_press(ctrl);
@@ -1019,7 +1028,7 @@ struct controller *pcie_init(struct pcie_device *dev)
 	ctrl->depth = pcie_hotplug_depth(dev->port);
 	pcie_capability_read_dword(pdev, PCI_EXP_SLTCAP, &slot_cap);
 
-	if (pdev->hotplug_user_indicators)
+	if (pciehp_user_ledctrl && pdev->hotplug_user_indicators)
 		slot_cap &= ~(PCI_EXP_SLTCAP_AIP | PCI_EXP_SLTCAP_PIP);
 
 	/*

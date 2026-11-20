@@ -19,7 +19,6 @@
 #include <linux/i2c.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
-#include <linux/kstrtox.h>
 #include <linux/unaligned.h>
 
 /*
@@ -495,13 +494,11 @@ static ssize_t pac1934_shunt_value_store(struct device *dev,
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct pac1934_chip_info *info = iio_priv(indio_dev);
 	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
-	unsigned int sh_val;
-	int ret;
+	int sh_val;
 
-	ret = kstrtouint(buf, 10, &sh_val);
-	if (ret) {
+	if (kstrtouint(buf, 10, &sh_val)) {
 		dev_err(dev, "Shunt value is not valid\n");
-		return ret;
+		return -EINVAL;
 	}
 
 	scoped_guard(mutex, &info->lock)
@@ -1447,7 +1444,7 @@ static int pac1934_prep_custom_attributes(struct pac1934_chip_info *info,
 		if (info->active_channels[i])
 			active_channels_count++;
 
-	pac1934_group = devm_kzalloc_obj(dev, *pac1934_group);
+	pac1934_group = devm_kzalloc(dev, sizeof(*pac1934_group), GFP_KERNEL);
 	if (!pac1934_group)
 		return -ENOMEM;
 

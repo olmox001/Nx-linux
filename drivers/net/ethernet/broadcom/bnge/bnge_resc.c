@@ -182,9 +182,8 @@ int bnge_cal_nr_rss_ctxs(u16 rx_rings)
 	if (!rx_rings)
 		return 0;
 
-	return min_t(int, bnge_adjust_pow_two(rx_rings - 1,
-					      BNGE_RSS_TABLE_ENTRIES),
-		     BNGE_RSS_TABLE_MAX_TBL);
+	return bnge_adjust_pow_two(rx_rings - 1,
+				   BNGE_RSS_TABLE_ENTRIES);
 }
 
 static u16 bnge_rss_ctxs_in_use(struct bnge_dev *bd,
@@ -383,7 +382,7 @@ int bnge_alloc_irqs(struct bnge_dev *bd)
 	irqs_demand = pci_alloc_irq_vectors(bd->pdev, min, irqs_demand,
 					    PCI_IRQ_MSIX);
 	aux_msix = bnge_aux_get_msix(bd);
-	if (irqs_demand < 0 || irqs_demand < aux_msix + min) {
+	if (irqs_demand < 0 || irqs_demand < aux_msix) {
 		rc = -ENODEV;
 		goto err_free_irqs;
 	}
@@ -460,7 +459,6 @@ static void _bnge_get_max_rings(struct bnge_dev *bd, u16 *max_rx,
 	}
 
 	*max_rx = min_t(int, *max_rx, max_ring_grps);
-	*max_rx = min_t(int, *max_rx, BNGE_MAX_RSS_TABLE_ENTRIES);
 }
 
 static int bnge_get_max_rings(struct bnge_dev *bd, u16 *max_rx,
@@ -575,7 +573,7 @@ static int bnge_alloc_rss_indir_tbl(struct bnge_dev *bd)
 
 	bd->rss_indir_tbl_entries = entries;
 	bd->rss_indir_tbl =
-		kmalloc_objs(*bd->rss_indir_tbl, entries);
+		kmalloc_array(entries, sizeof(*bd->rss_indir_tbl), GFP_KERNEL);
 	if (!bd->rss_indir_tbl)
 		return -ENOMEM;
 

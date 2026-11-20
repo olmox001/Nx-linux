@@ -1845,7 +1845,7 @@ max3421_probe(struct spi_device *spi)
 	}
 
 	if (IS_ENABLED(CONFIG_OF) && dev->of_node) {
-		pdata = devm_kzalloc_obj(&spi->dev, *pdata);
+		pdata = devm_kzalloc(&spi->dev, sizeof(*pdata), GFP_KERNEL);
 		if (!pdata) {
 			retval = -ENOMEM;
 			goto error;

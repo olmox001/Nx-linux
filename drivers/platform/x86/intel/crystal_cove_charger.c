@@ -89,7 +89,7 @@ static int crystal_cove_charger_probe(struct platform_device *pdev)
 	struct crystal_cove_charger_data *charger;
 	int ret;
 
-	charger = devm_kzalloc_obj(&pdev->dev, *charger);
+	charger = devm_kzalloc(&pdev->dev, sizeof(*charger), GFP_KERNEL);
 	if (!charger)
 		return -ENOMEM;
 
@@ -135,7 +135,7 @@ static int crystal_cove_charger_probe(struct platform_device *pdev)
 					crystal_cove_charger_irq,
 					IRQF_ONESHOT, KBUILD_MODNAME, charger);
 	if (ret)
-		return ret;
+		return dev_err_probe(&pdev->dev, ret, "requesting irq\n");
 
 	return 0;
 }

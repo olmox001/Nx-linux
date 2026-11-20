@@ -212,11 +212,12 @@ static int cbus_i2c_probe(struct platform_device *pdev)
 	struct i2c_adapter *adapter;
 	struct cbus_host *chost;
 
-	adapter = devm_kzalloc_obj(&pdev->dev, struct i2c_adapter);
+	adapter = devm_kzalloc(&pdev->dev, sizeof(struct i2c_adapter),
+			       GFP_KERNEL);
 	if (!adapter)
 		return -ENOMEM;
 
-	chost = devm_kzalloc_obj(&pdev->dev, *chost);
+	chost = devm_kzalloc(&pdev->dev, sizeof(*chost), GFP_KERNEL);
 	if (!chost)
 		return -ENOMEM;
 

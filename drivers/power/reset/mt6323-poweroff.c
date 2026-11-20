@@ -54,7 +54,7 @@ static int mt6323_pwrc_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	pwrc = devm_kzalloc_obj(&pdev->dev, *pwrc);
+	pwrc = devm_kzalloc(&pdev->dev, sizeof(*pwrc), GFP_KERNEL);
 	if (!pwrc)
 		return -ENOMEM;
 

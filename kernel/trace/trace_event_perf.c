@@ -354,7 +354,8 @@ int perf_trace_add(struct perf_event *p_event, int flags)
 	struct trace_event_call *tp_event = p_event->tp_event;
 	struct hw_perf_event *hwc = &p_event->hw;
 
-	hwc->state = (flags & PERF_EF_START) ? 0 : PERF_HES_STOPPED;
+	if (!(flags & PERF_EF_START))
+		p_event->hw.state = PERF_HES_STOPPED;
 
 	if (is_sampling_event(p_event)) {
 		hwc->last_period = hwc->sample_period;

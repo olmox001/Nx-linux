@@ -149,7 +149,9 @@ static int gadc_thermal_read_linear_lookup_table(struct device *dev,
 		return -EINVAL;
 	}
 
-	gti->lookup_table = devm_kzalloc_objs(dev, *gti->lookup_table, ntable);
+	gti->lookup_table = devm_kcalloc(dev,
+					 ntable, sizeof(*gti->lookup_table),
+					 GFP_KERNEL);
 	if (!gti->lookup_table)
 		return -ENOMEM;
 
@@ -177,7 +179,7 @@ static int gadc_thermal_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	gti = devm_kzalloc_obj(dev, *gti);
+	gti = devm_kzalloc(dev, sizeof(*gti), GFP_KERNEL);
 	if (!gti)
 		return -ENOMEM;
 
@@ -226,4 +228,3 @@ module_platform_driver(gadc_thermal_driver);
 MODULE_AUTHOR("Laxman Dewangan <ldewangan@nvidia.com>");
 MODULE_DESCRIPTION("Generic ADC thermal driver using IIO framework with DT");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_CONSUMER");

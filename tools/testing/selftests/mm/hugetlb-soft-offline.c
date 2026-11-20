@@ -11,7 +11,6 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,18 +21,15 @@
 #include <sys/mman.h>
 #include <sys/statfs.h>
 #include <sys/types.h>
-#include <mm/hugepage_settings.h>
 
 #include "kselftest.h"
-#include "vm_util.h"
+#include "hugepage_settings.h"
 
 #ifndef MADV_SOFT_OFFLINE
 #define MADV_SOFT_OFFLINE 101
 #endif
 
 #define EPREFIX " !!! "
-
-#define ENABLE_SOFT_OFFLINE_PATH "/proc/sys/vm/enable_soft_offline"
 
 static int do_soft_offline(int fd, size_t len, int expect_errno)
 {
@@ -81,28 +77,26 @@ untruncate:
 	return ret;
 }
 
-static unsigned long orig_enable_soft_offline = -1UL;
-
-/*
- * Runs from an atexit handler, so it must not call anything that
- * exits on failure.
- */
-static void restore_enable_soft_offline(void)
+static int set_enable_soft_offline(int value)
 {
-	char buf[24];
-	int fd, len;
+	char cmd[256] = {0};
+	FILE *cmdfile = NULL;
 
-	if (orig_enable_soft_offline == -1UL)
-		return;
+	if (value != 0 && value != 1)
+		return -EINVAL;
 
-	len = snprintf(buf, sizeof(buf), "%lu", orig_enable_soft_offline);
-	fd = open(ENABLE_SOFT_OFFLINE_PATH, O_WRONLY);
-	if (fd < 0)
-		return;
-	if (write(fd, buf, len) != len)
-		ksft_print_msg("failed to restore enable_soft_offline: %s\n",
-			       strerror(errno));
-	close(fd);
+	sprintf(cmd, "echo %d > /proc/sys/vm/enable_soft_offline", value);
+	cmdfile = popen(cmd, "r");
+
+	if (cmdfile)
+		ksft_print_msg("enable_soft_offline => %d\n", value);
+	else {
+		ksft_perror(EPREFIX "failed to set enable_soft_offline");
+		return errno;
+	}
+
+	pclose(cmdfile);
+	return 0;
 }
 
 static int create_hugetlbfs_file(struct statfs *file_stat)
@@ -151,10 +145,10 @@ static void test_soft_offline_common(int enable_soft_offline)
 	hugepagesize_kb = file_stat.f_bsize / 1024;
 	ksft_print_msg("Hugepagesize is %ldkB\n", hugepagesize_kb);
 
-	ret = write_num(ENABLE_SOFT_OFFLINE_PATH, enable_soft_offline);
-	if (ret)
-		ksft_exit_fail_msg("Failed to write to %s: %s\n",
-				   ENABLE_SOFT_OFFLINE_PATH, strerror(-ret));
+	if (set_enable_soft_offline(enable_soft_offline) != 0) {
+		close(fd);
+		ksft_exit_fail_msg("Failed to set enable_soft_offline\n");
+	}
 
 	nr_hugepages_before = hugetlb_nr_default_pages();
 
@@ -191,21 +185,12 @@ static void test_soft_offline_common(int enable_soft_offline)
 
 int main(int argc, char **argv)
 {
-	int ret;
-
 	ksft_print_header();
 
 	if (!hugetlb_setup_default(8))
 		ksft_exit_skip("not enough hugetlb pages\n");
 
 	ksft_set_plan(2);
-
-	ret = read_num(ENABLE_SOFT_OFFLINE_PATH, &orig_enable_soft_offline);
-	if (ret)
-		ksft_exit_fail_msg("Failed to read %s: %s\n",
-				   ENABLE_SOFT_OFFLINE_PATH, strerror(-ret));
-
-	atexit(restore_enable_soft_offline);
 
 	test_soft_offline_common(1);
 	test_soft_offline_common(0);

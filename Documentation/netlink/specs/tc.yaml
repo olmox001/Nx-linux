@@ -42,7 +42,7 @@ definitions:
       - skip-hw
       - skip-sw
       - in-hw
-      - not-in-hw
+      - not-in-nw
       - verbose
   -
     name: flower-key-ctrl-flags

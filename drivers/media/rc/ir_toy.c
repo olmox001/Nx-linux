@@ -55,6 +55,7 @@ enum state {
 
 struct irtoy {
 	struct device *dev;
+	struct usb_device *usbdev;
 
 	struct rc_dev *rc;
 	struct urb *urb_in, *urb_out;
@@ -372,7 +373,7 @@ static int irtoy_tx_carrier(struct rc_dev *rc, uint32_t carrier)
 	u8 buf[3];
 	int err;
 
-	if (carrier < 11800 || carrier > 3000000)
+	if (carrier < 11800)
 		return -EINVAL;
 
 	buf[0] = 0x06;
@@ -440,6 +441,7 @@ static int irtoy_probe(struct usb_interface *intf,
 			  irtoy_out_callback, irtoy);
 
 	irtoy->dev = &intf->dev;
+	irtoy->usbdev = usbdev;
 	irtoy->rc = rc;
 	irtoy->urb_out = urb;
 	irtoy->pulse = true;

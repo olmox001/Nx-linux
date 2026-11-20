@@ -9,7 +9,6 @@ Virtualization Support
 
    kvm/index
    uml/user_mode_linux_howto_v2
-   uml/nommu-uml
    paravirt_ops
    guest-halt-polling
    ne_overview

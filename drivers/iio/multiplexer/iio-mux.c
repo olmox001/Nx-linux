@@ -249,8 +249,10 @@ static int mux_configure_chan_ext_info(struct device *dev, struct mux *mux,
 	if (!page)
 		return -ENOMEM;
 
-	child->ext_info_cache = devm_kzalloc_objs(dev, *child->ext_info_cache,
-						  num_ext_info);
+	child->ext_info_cache = devm_kcalloc(dev,
+					     num_ext_info,
+					     sizeof(*child->ext_info_cache),
+					     GFP_KERNEL);
 	if (!child->ext_info_cache)
 		return -ENOMEM;
 
@@ -359,7 +361,7 @@ static int mux_probe(struct platform_device *pdev)
 	if (all_children < 0)
 		return all_children;
 
-	labels = devm_kmalloc_objs(dev, *labels, all_children);
+	labels = devm_kmalloc_array(dev, all_children, sizeof(*labels), GFP_KERNEL);
 	if (!labels)
 		return -ENOMEM;
 
@@ -461,4 +463,3 @@ module_platform_driver(mux_driver);
 MODULE_DESCRIPTION("IIO multiplexer driver");
 MODULE_AUTHOR("Peter Rosin <peda@axentia.se>");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_CONSUMER");

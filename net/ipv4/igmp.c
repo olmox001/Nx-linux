@@ -1523,7 +1523,6 @@ int inet_fill_ifmcaddr(struct sk_buff *skb, struct net_device *dev,
 	ci.ifa_valid = INFINITY_LIFE_TIME;
 
 	if (nla_put_in_addr(skb, IFA_MULTICAST, im->multiaddr) < 0 ||
-	    nla_put_u32(skb, IFA_MC_USERS, READ_ONCE(im->users)) < 0 ||
 	    nla_put(skb, IFA_CACHEINFO, sizeof(ci), &ci) < 0) {
 		nlmsg_cancel(skb, nlh);
 		return -EMSGSIZE;
@@ -1545,7 +1544,6 @@ static void inet_ifmcaddr_notify(struct net_device *dev,
 
 	skb = nlmsg_new(NLMSG_ALIGN(sizeof(struct ifaddrmsg)) +
 			nla_total_size(sizeof(__be32)) +
-			nla_total_size(sizeof(u32)) +
 			nla_total_size(sizeof(struct ifa_cacheinfo)),
 			GFP_KERNEL);
 	if (!skb)
@@ -2463,8 +2461,6 @@ int ip_mc_leave_group(struct sock *sk, struct ip_mreqn *imr)
 				iml->multi.imr_address.s_addr)
 			continue;
 
-		/* The drop request may not resolve to the joined device. */
-		in_dev = inetdev_by_index(net, iml->multi.imr_ifindex);
 		(void) ip_mc_leave_src(sk, iml, in_dev);
 
 		*imlp = iml->next_rcu;
@@ -2711,8 +2707,8 @@ done:
 		err = ip_mc_leave_group(sk, &imr);
 	return err;
 }
-
-int ip_mc_msfget(struct sock *sk, struct ip_msfilter *msf, sockopt_t *opt)
+int ip_mc_msfget(struct sock *sk, struct ip_msfilter *msf,
+		 sockptr_t optval, sockptr_t optlen)
 {
 	int err, len, count, copycount, msf_size;
 	struct ip_mreqn	imr;
@@ -2757,19 +2753,14 @@ int ip_mc_msfget(struct sock *sk, struct ip_msfilter *msf, sockopt_t *opt)
 	len = flex_array_size(psl, sl_addr, copycount);
 	msf->imsf_numsrc = count;
 	msf_size = IP_MSFILTER_SIZE(copycount);
-
-	/* The source list is sized by the imsf_numsrc the caller left in
-	 * optval, not by optlen, which only has to cover the fixed part.
-	 */
-	err = sockopt_expand_out(opt, msf_size);
-	if (err)
-		return err;
-
-	opt->optlen = msf_size;
-	if (copy_to_iter(msf, IP_MSFILTER_SIZE(0), &opt->iter_out) !=
-	    IP_MSFILTER_SIZE(0))
+	if (copy_to_sockptr(optlen, &msf_size, sizeof(int)) ||
+	    copy_to_sockptr(optval, msf, IP_MSFILTER_SIZE(0))) {
 		return -EFAULT;
-	if (len && copy_to_iter(psl->sl_addr, len, &opt->iter_out) != len)
+	}
+	if (len &&
+	    copy_to_sockptr_offset(optval,
+				   offsetof(struct ip_msfilter, imsf_slist_flex),
+				   psl->sl_addr, len))
 		return -EFAULT;
 	return 0;
 done:

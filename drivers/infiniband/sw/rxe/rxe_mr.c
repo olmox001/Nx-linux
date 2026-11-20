@@ -418,13 +418,13 @@ int copy_data(
 	int			access,
 	struct rxe_dma_info	*dma,
 	void			*addr,
-	u32			length,
+	int			length,
 	enum rxe_mr_copy_dir	dir)
 {
-	u32			bytes;
+	int			bytes;
 	struct rxe_sge		*sge	= &dma->sge[dma->cur_sge];
-	u32			offset	= dma->sge_offset;
-	u32			resid	= dma->resid;
+	int			offset	= dma->sge_offset;
+	int			resid	= dma->resid;
 	struct rxe_mr		*mr	= NULL;
 	u64			iova;
 	int			err;
@@ -712,7 +712,12 @@ struct rxe_mr *lookup_mr(struct rxe_pd *pd, int access, u32 key,
 
 	if (unlikely((type == RXE_LOOKUP_LOCAL && mr->lkey != key) ||
 		     (type == RXE_LOOKUP_REMOTE && mr->rkey != key) ||
-		     mr_pd(mr) != pd || ((access & mr->access) != access) ||
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		     (mr_pd(mr)->real_rxepd != pd->real_rxepd) ||
+#else
+		     (mr_pd(mr) != pd) ||
+#endif
+		     ((access & mr->access) != access) ||
 		     mr->state != RXE_MR_STATE_VALID)) {
 		rxe_put(mr);
 		mr = NULL;
@@ -777,10 +782,6 @@ int rxe_reg_fast_mr(struct rxe_qp *qp, struct rxe_send_wqe *wqe)
 	u32 key = wqe->wr.wr.reg.key;
 	u32 access = wqe->wr.wr.reg.access;
 
-	/* IB_WR_REG_MR is a kernel-only op; a user QP must not reach here. */
-	if (qp->is_user)
-		return -EOPNOTSUPP;
-
 	/* user can only register MR in free state */
 	if (unlikely(mr->state != RXE_MR_STATE_FREE)) {
 		rxe_dbg_mr(mr, "mr->lkey = 0x%x not free\n", mr->lkey);
@@ -797,12 +798,6 @@ int rxe_reg_fast_mr(struct rxe_qp *qp, struct rxe_send_wqe *wqe)
 	if (unlikely((mr->lkey & ~0xff) != (key & ~0xff))) {
 		rxe_dbg_mr(mr, "key = 0x%x has wrong index mr->lkey = 0x%x\n",
 			key, mr->lkey);
-		return -EINVAL;
-	}
-
-	/* an MR with no umem is never an ODP MR */
-	if (unlikely(access & IB_ACCESS_ON_DEMAND)) {
-		rxe_dbg_mr(mr, "access = 0x%x requests ODP\n", access);
 		return -EINVAL;
 	}
 

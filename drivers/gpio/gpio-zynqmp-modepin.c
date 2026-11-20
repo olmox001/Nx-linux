@@ -118,7 +118,7 @@ static int modepin_gpio_probe(struct platform_device *pdev)
 	struct gpio_chip *chip;
 	int status;
 
-	chip = devm_kzalloc_obj(&pdev->dev, *chip);
+	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

@@ -371,7 +371,7 @@ static unsigned int *simple_amp_alloc_tlv_ranges(const struct simple_amp_ranges 
 	unsigned int *t;
 	unsigned int i;
 
-	tlv = kzalloc_objs(*tlv, 2 + ranges->nb_ranges * 6);
+	tlv = kzalloc_objs(*tlv, 2 + ranges->nb_ranges * 6, GFP_KERNEL);
 	if (!tlv)
 		return NULL;
 
@@ -682,8 +682,9 @@ static int simple_amp_parse_ranges(struct device *dev,
 	if (ranges->nb_ranges > max_gpio_val + 1)
 		return -EINVAL;
 
-	ranges->tab_ranges = devm_kzalloc_objs(dev, *ranges->tab_ranges,
-					       ranges->nb_ranges);
+	ranges->tab_ranges = devm_kcalloc(dev, ranges->nb_ranges,
+					  sizeof(*ranges->tab_ranges),
+					  GFP_KERNEL);
 	if (!ranges->tab_ranges)
 		return -ENOMEM;
 
@@ -797,8 +798,9 @@ static int simple_amp_parse_labels(struct device *dev,
 	if (labels->nb_labels > (1 << multi->gpios->ndescs))
 		return -EINVAL;
 
-	labels->tab_labels = devm_kzalloc_objs(dev, *labels->tab_labels,
-					       labels->nb_labels);
+	labels->tab_labels = devm_kcalloc(dev, labels->nb_labels,
+					  sizeof(*labels->tab_labels),
+					  GFP_KERNEL);
 	if (!labels->tab_labels)
 		return -ENOMEM;
 
@@ -861,7 +863,7 @@ static int simple_amp_probe(struct platform_device *pdev)
 	struct simple_amp *simple_amp;
 	int ret;
 
-	simple_amp = devm_kzalloc_obj(dev, *simple_amp);
+	simple_amp = devm_kzalloc(dev, sizeof(*simple_amp), GFP_KERNEL);
 	if (!simple_amp)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, simple_amp);

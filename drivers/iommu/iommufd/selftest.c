@@ -633,63 +633,70 @@ mock_viommu_alloc_domain_nested(struct iommufd_viommu *viommu, u32 flags,
 static int mock_viommu_cache_invalidate(struct iommufd_viommu *viommu,
 					struct iommu_user_data_array *array)
 {
-	struct iommu_viommu_invalidate_selftest cmd;
-	struct mock_dev *mdev;
-	struct device *dev;
-	u32 processed = 0;
-	int rc = 0;
-	int i;
+	struct iommu_viommu_invalidate_selftest *cmds;
+	struct iommu_viommu_invalidate_selftest *cur;
+	struct iommu_viommu_invalidate_selftest *end;
+	int rc;
 
-	if (array->type != IOMMU_VIOMMU_INVALIDATE_DATA_SELFTEST) {
-		rc = -EINVAL;
-		goto out;
+	/* A zero-length array is allowed to validate the array type */
+	if (array->entry_num == 0 &&
+	    array->type == IOMMU_VIOMMU_INVALIDATE_DATA_SELFTEST) {
+		array->entry_num = 0;
+		return 0;
 	}
 
-	/*
-	 * The core re-invokes this op for the remaining requests, so handle one
-	 * request per call. A zero-length array only probes the type, validated
-	 * above.
-	 */
-	if (!array->entry_num)
-		return 0;
+	cmds = kzalloc_objs(*cmds, array->entry_num);
+	if (!cmds)
+		return -ENOMEM;
+	cur = cmds;
+	end = cmds + array->entry_num;
 
-	rc = iommu_copy_struct_from_user_array(
-		&cmd, array, IOMMU_VIOMMU_INVALIDATE_DATA_SELFTEST, 0,
-		cache_id);
+	static_assert(sizeof(*cmds) == 3 * sizeof(u32));
+	rc = iommu_copy_struct_from_full_user_array(
+		cmds, sizeof(*cmds), array,
+		IOMMU_VIOMMU_INVALIDATE_DATA_SELFTEST);
 	if (rc)
 		goto out;
 
-	if (cmd.flags & ~IOMMU_TEST_INVALIDATE_FLAG_ALL) {
-		rc = -EOPNOTSUPP;
-		goto out;
-	}
+	while (cur != end) {
+		struct mock_dev *mdev;
+		struct device *dev;
+		int i;
 
-	if (cmd.cache_id > MOCK_DEV_CACHE_ID_MAX) {
-		rc = -EINVAL;
-		goto out;
-	}
+		if (cur->flags & ~IOMMU_TEST_INVALIDATE_FLAG_ALL) {
+			rc = -EOPNOTSUPP;
+			goto out;
+		}
 
-	xa_lock(&viommu->vdevs);
-	dev = iommufd_viommu_find_dev(viommu, (unsigned long)cmd.vdev_id);
-	if (!dev) {
+		if (cur->cache_id > MOCK_DEV_CACHE_ID_MAX) {
+			rc = -EINVAL;
+			goto out;
+		}
+
+		xa_lock(&viommu->vdevs);
+		dev = iommufd_viommu_find_dev(viommu,
+					      (unsigned long)cur->vdev_id);
+		if (!dev) {
+			xa_unlock(&viommu->vdevs);
+			rc = -EINVAL;
+			goto out;
+		}
+		mdev = container_of(dev, struct mock_dev, dev);
+
+		if (cur->flags & IOMMU_TEST_INVALIDATE_FLAG_ALL) {
+			/* Invalidate all cache entries and ignore cache_id */
+			for (i = 0; i < MOCK_DEV_CACHE_NUM; i++)
+				mdev->cache[i] = 0;
+		} else {
+			mdev->cache[cur->cache_id] = 0;
+		}
 		xa_unlock(&viommu->vdevs);
-		rc = -EINVAL;
-		goto out;
-	}
-	mdev = container_of(dev, struct mock_dev, dev);
 
-	if (cmd.flags & IOMMU_TEST_INVALIDATE_FLAG_ALL) {
-		/* Invalidate all cache entries and ignore cache_id */
-		for (i = 0; i < MOCK_DEV_CACHE_NUM; i++)
-			mdev->cache[i] = 0;
-	} else {
-		mdev->cache[cmd.cache_id] = 0;
+		cur++;
 	}
-	xa_unlock(&viommu->vdevs);
-
-	processed = 1;
 out:
-	array->entry_num = processed;
+	array->entry_num = cur - cmds;
+	kfree(cmds);
 	return rc;
 }
 
@@ -870,46 +877,42 @@ mock_domain_cache_invalidate_user(struct iommu_domain *domain,
 	struct mock_iommu_domain_nested *mock_nested = to_mock_nested(domain);
 	struct iommu_hwpt_invalidate_selftest inv;
 	u32 processed = 0;
+	int i = 0, j;
 	int rc = 0;
-	int i;
 
 	if (array->type != IOMMU_HWPT_INVALIDATE_DATA_SELFTEST) {
 		rc = -EINVAL;
 		goto out;
 	}
 
-	/*
-	 * The core re-invokes this op for the remaining requests, so handle one
-	 * request per call. A zero-length array only probes the type, validated
-	 * above.
-	 */
-	if (!array->entry_num)
-		return 0;
+	for ( ; i < array->entry_num; i++) {
+		rc = iommu_copy_struct_from_user_array(&inv, array,
+						       IOMMU_HWPT_INVALIDATE_DATA_SELFTEST,
+						       i, iotlb_id);
+		if (rc)
+			break;
 
-	rc = iommu_copy_struct_from_user_array(
-		&inv, array, IOMMU_HWPT_INVALIDATE_DATA_SELFTEST, 0, iotlb_id);
-	if (rc)
-		goto out;
+		if (inv.flags & ~IOMMU_TEST_INVALIDATE_FLAG_ALL) {
+			rc = -EOPNOTSUPP;
+			break;
+		}
 
-	if (inv.flags & ~IOMMU_TEST_INVALIDATE_FLAG_ALL) {
-		rc = -EOPNOTSUPP;
-		goto out;
+		if (inv.iotlb_id > MOCK_NESTED_DOMAIN_IOTLB_ID_MAX) {
+			rc = -EINVAL;
+			break;
+		}
+
+		if (inv.flags & IOMMU_TEST_INVALIDATE_FLAG_ALL) {
+			/* Invalidate all mock iotlb entries and ignore iotlb_id */
+			for (j = 0; j < MOCK_NESTED_DOMAIN_IOTLB_NUM; j++)
+				mock_nested->iotlb[j] = 0;
+		} else {
+			mock_nested->iotlb[inv.iotlb_id] = 0;
+		}
+
+		processed++;
 	}
 
-	if (inv.iotlb_id > MOCK_NESTED_DOMAIN_IOTLB_ID_MAX) {
-		rc = -EINVAL;
-		goto out;
-	}
-
-	if (inv.flags & IOMMU_TEST_INVALIDATE_FLAG_ALL) {
-		/* Invalidate all mock iotlb entries and ignore iotlb_id */
-		for (i = 0; i < MOCK_NESTED_DOMAIN_IOTLB_NUM; i++)
-			mock_nested->iotlb[i] = 0;
-	} else {
-		mock_nested->iotlb[inv.iotlb_id] = 0;
-	}
-
-	processed = 1;
 out:
 	array->entry_num = processed;
 	return rc;
@@ -2052,10 +2055,7 @@ static int iommufd_test_dmabuf_get(struct iommufd_ucmd *ucmd,
 		goto err_free;
 	}
 
-	rc = dma_buf_fd(dmabuf, open_flags);
-	if (rc < 0)
-		dma_buf_put(dmabuf);
-	return rc;
+	return dma_buf_fd(dmabuf, open_flags);
 
 err_free:
 	kfree(priv->memory);

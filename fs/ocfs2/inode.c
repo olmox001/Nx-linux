@@ -638,18 +638,14 @@ static int ocfs2_read_locked_inode(struct inode *inode,
 	fe = (struct ocfs2_dinode *) bh->b_data;
 
 	/*
-	 * The caller must know whether it is asking for a system file inode
-	 * or not so the proper lock names can be built.  Since i_flags comes
-	 * from disk, a mismatch is filesystem corruption instead of a code
-	 * bug, so handle it with ocfs2_error() rather than BUG_ON().
+	 * This is a code bug. Right now the caller needs to
+	 * understand whether it is asking for a system file inode or
+	 * not so the proper lock names can be built.
 	 */
-	if (!!(fe->i_flags & cpu_to_le32(OCFS2_SYSTEM_FL)) !=
-	    !!(args->fi_flags & OCFS2_FI_FLAG_SYSFILE)) {
-		status = ocfs2_error(osb->sb,
-				     "Inode %llu: system file state is ambiguous\n",
-				     (unsigned long long)args->fi_blkno);
-		goto bail;
-	}
+	mlog_bug_on_msg(!!(fe->i_flags & cpu_to_le32(OCFS2_SYSTEM_FL)) !=
+			!!(args->fi_flags & OCFS2_FI_FLAG_SYSFILE),
+			"Inode %llu: system file state is ambiguous\n",
+			(unsigned long long)args->fi_blkno);
 
 	if (S_ISCHR(le16_to_cpu(fe->i_mode)) ||
 	    S_ISBLK(le16_to_cpu(fe->i_mode)))
@@ -1109,7 +1105,6 @@ static void ocfs2_delete_inode(struct inode *inode)
 {
 	int wipe, status;
 	sigset_t oldset;
-	unsigned int nofs_flag = 0;
 	struct buffer_head *di_bh = NULL;
 	struct ocfs2_dinode *di = NULL;
 
@@ -1144,7 +1139,7 @@ static void ocfs2_delete_inode(struct inode *inode)
 	 * shared mode so that all nodes can still concurrently
 	 * process deletes.
 	 */
-	status = ocfs2_nfs_sync_lock(OCFS2_SB(inode->i_sb), 0, &nofs_flag);
+	status = ocfs2_nfs_sync_lock(OCFS2_SB(inode->i_sb), 0);
 	if (status < 0) {
 		mlog(ML_ERROR, "getting nfs sync lock(PR) failed %d\n", status);
 		ocfs2_cleanup_delete_inode(inode, 0);
@@ -1216,7 +1211,7 @@ bail_unlock_inode:
 	brelse(di_bh);
 
 bail_unlock_nfs_sync:
-	ocfs2_nfs_sync_unlock(OCFS2_SB(inode->i_sb), 0, nofs_flag);
+	ocfs2_nfs_sync_unlock(OCFS2_SB(inode->i_sb), 0);
 
 bail_unblock:
 	ocfs2_unblock_signals(&oldset);
@@ -1318,16 +1313,15 @@ static void ocfs2_clear_inode(struct inode *inode)
 	oi->ip_blkno = 0ULL;
 
 	/*
-	 * ip_jinode is used to track txns against this inode. The journal is
-	 * flushed before it is shut down, so an inode cleaned up after that
-	 * has nothing left to release. Hold the shutdown lock so a journal
-	 * found here stays allocated until the release has finished.
+	 * ip_jinode is used to track txns against this inode. We ensure that
+	 * the journal is flushed before journal shutdown. Thus it is safe to
+	 * have inodes get cleaned up after journal shutdown.
 	 */
-	down_read(&osb->journal_shutdown_sem);
-	if (osb->journal)
-		jbd2_journal_release_jbd_inode(osb->journal->j_journal,
-					       &oi->ip_jinode);
-	up_read(&osb->journal_shutdown_sem);
+	if (!osb->journal)
+		return;
+
+	jbd2_journal_release_jbd_inode(osb->journal->j_journal,
+				       &oi->ip_jinode);
 }
 
 void ocfs2_evict_inode(struct inode *inode)
@@ -1526,42 +1520,11 @@ int ocfs2_validate_inode_block(struct super_block *sb,
 		goto bail;
 	}
 
-	/*
-	 * Only system inodes created by mkfs.ocfs2 are allocated from the
-	 * global allocator and thus legitimately carry OCFS2_INVALID_SLOT.
-	 * Regular inodes are always allocated from a per-slot suballocator.
-	 * If a regular inode with OCFS2_INVALID_SLOT was accepted here,
-	 * deleting it would pass the slot to get_local_system_inode() via
-	 * ocfs2_remove_inode() and trigger BUG_ON(slot == OCFS2_INVALID_SLOT).
-	 */
-	if (le16_to_cpu(di->i_suballoc_slot) == (u16)OCFS2_INVALID_SLOT) {
-		if (!(le32_to_cpu(di->i_flags) & OCFS2_SYSTEM_FL)) {
-			rc = ocfs2_error(sb,
-					 "Invalid dinode %llu: suballoc slot %u for non-system inode\n",
-					 (unsigned long long)bh->b_blocknr,
-					 le16_to_cpu(di->i_suballoc_slot));
-			goto bail;
-		}
-	} else if ((u32)le16_to_cpu(di->i_suballoc_slot) > OCFS2_SB(sb)->max_slots - 1) {
+	if (le16_to_cpu(di->i_suballoc_slot) != (u16)OCFS2_INVALID_SLOT &&
+	    (u32)le16_to_cpu(di->i_suballoc_slot) > OCFS2_SB(sb)->max_slots - 1) {
 		rc = ocfs2_error(sb, "Invalid dinode %llu: suballoc slot %u\n",
 				 (unsigned long long)bh->b_blocknr,
 				 le16_to_cpu(di->i_suballoc_slot));
-		goto bail;
-	}
-
-	/*
-	 * A suballocator block group bitmap is contained in a single block
-	 * and starts after the group descriptor header, so a valid suballoc
-	 * bit can never exceed ocfs2_suballoc_bits_per_block().  Otherwise
-	 * deleting the inode will pass the oversized bit to
-	 * _ocfs2_free_suballoc_bits() via ocfs2_free_dinode() and trigger
-	 * BUG_ON((count + start_bit) > ocfs2_bits_per_group(cl)), since any
-	 * group holds at most ocfs2_suballoc_bits_per_block() bits.
-	 */
-	if (le16_to_cpu(di->i_suballoc_bit) >= ocfs2_suballoc_bits_per_block(sb)) {
-		rc = ocfs2_error(sb, "Invalid dinode %llu: suballoc bit %u\n",
-				 (unsigned long long)bh->b_blocknr,
-				 le16_to_cpu(di->i_suballoc_bit));
 		goto bail;
 	}
 

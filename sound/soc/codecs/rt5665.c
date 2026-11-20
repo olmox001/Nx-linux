@@ -6,7 +6,6 @@
  * Author: Bard Liao <bardliao@realtek.com>
  */
 
-#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
@@ -1209,7 +1208,7 @@ static void rt5665_jack_detect_handler(struct work_struct *work)
 		usleep_range(10000, 15000);
 	}
 
-	guard(mutex)(&rt5665->calibrate_mutex);
+	mutex_lock(&rt5665->calibrate_mutex);
 
 	val = snd_soc_component_read(rt5665->component, RT5665_AJD1_CTRL) & 0x0010;
 	if (!val) {
@@ -1275,6 +1274,8 @@ static void rt5665_jack_detect_handler(struct work_struct *work)
 		schedule_delayed_work(&rt5665->jd_check_work, 0);
 	else
 		cancel_delayed_work_sync(&rt5665->jd_check_work);
+
+	mutex_unlock(&rt5665->calibrate_mutex);
 }
 
 static const char * const rt5665_clk_sync[] = {
@@ -4388,7 +4389,9 @@ static int rt5665_resume(struct snd_soc_component *component)
 	struct rt5665_priv *rt5665 = snd_soc_component_get_drvdata(component);
 
 	regcache_cache_only(rt5665->regmap, false);
-	return regcache_sync(rt5665->regmap);
+	regcache_sync(rt5665->regmap);
+
+	return 0;
 }
 #else
 #define rt5665_suspend NULL
@@ -4399,21 +4402,11 @@ static int rt5665_resume(struct snd_soc_component *component)
 #define RT5665_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE | \
 		SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S8)
 
-static const u64 rt5665_selectable_formats =
-	SND_SOC_POSSIBLE_DAIFMT_I2S	|
-	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
-	SND_SOC_POSSIBLE_DAIFMT_DSP_B	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_NF;
-
 static const struct snd_soc_dai_ops rt5665_aif_dai_ops = {
 	.hw_params = rt5665_hw_params,
 	.set_fmt = rt5665_set_dai_fmt,
 	.set_tdm_slot = rt5665_set_tdm_slot,
 	.set_bclk_ratio = rt5665_set_bclk_ratio,
-	.auto_selectable_formats	= &rt5665_selectable_formats,
-	.num_auto_selectable_formats	= 1,
 };
 
 static struct snd_soc_dai_driver rt5665_dai[] = {
@@ -4571,7 +4564,7 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 {
 	int value, count;
 
-	guard(mutex)(&rt5665->calibrate_mutex);
+	mutex_lock(&rt5665->calibrate_mutex);
 
 	regcache_cache_bypass(rt5665->regmap, true);
 
@@ -4608,8 +4601,7 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 			pr_err("HP Calibration Failure\n");
 			regmap_write(rt5665->regmap, RT5665_RESET, 0);
 			regcache_cache_bypass(rt5665->regmap, false);
-			rt5665->calibration_done = true;
-			return;
+			goto out_unlock;
 		}
 
 		count++;
@@ -4628,8 +4620,7 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 			pr_err("MONO Calibration Failure\n");
 			regmap_write(rt5665->regmap, RT5665_RESET, 0);
 			regcache_cache_bypass(rt5665->regmap, false);
-			rt5665->calibration_done = true;
-			return;
+			goto out_unlock;
 		}
 
 		count++;
@@ -4644,7 +4635,9 @@ static void rt5665_calibrate(struct rt5665_priv *rt5665)
 	regmap_write(rt5665->regmap, RT5665_BIAS_CUR_CTRL_8, 0xa602);
 	regmap_write(rt5665->regmap, RT5665_ASRC_8, 0x0120);
 
+out_unlock:
 	rt5665->calibration_done = true;
+	mutex_unlock(&rt5665->calibrate_mutex);
 }
 
 static void rt5665_calibrate_handler(struct work_struct *work)
@@ -4667,7 +4660,8 @@ static int rt5665_i2c_probe(struct i2c_client *i2c)
 	int ret;
 	unsigned int val;
 
-	rt5665 = devm_kzalloc_obj(&i2c->dev, struct rt5665_priv);
+	rt5665 = devm_kzalloc(&i2c->dev, sizeof(struct rt5665_priv),
+		GFP_KERNEL);
 
 	if (rt5665 == NULL)
 		return -ENOMEM;

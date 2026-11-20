@@ -618,7 +618,7 @@ static int ucsi_stm32g0_probe(struct i2c_client *client)
 	struct ucsi_stm32g0 *g0;
 	int ret;
 
-	g0 = devm_kzalloc_obj(dev, *g0);
+	g0 = devm_kzalloc(dev, sizeof(*g0), GFP_KERNEL);
 	if (!g0)
 		return -ENOMEM;
 

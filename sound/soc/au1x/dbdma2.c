@@ -326,7 +326,9 @@ static int au1xpsc_pcm_drvprobe(struct platform_device *pdev)
 {
 	struct au1xpsc_audio_dmadata *dmadata;
 
-	dmadata = devm_kzalloc_objs(&pdev->dev, struct au1xpsc_audio_dmadata, 2);
+	dmadata = devm_kcalloc(&pdev->dev,
+			       2, sizeof(struct au1xpsc_audio_dmadata),
+			       GFP_KERNEL);
 	if (!dmadata)
 		return -ENOMEM;
 

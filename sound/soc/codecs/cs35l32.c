@@ -352,7 +352,7 @@ static int cs35l32_i2c_probe(struct i2c_client *i2c_client)
 	int ret, i, devid;
 	unsigned int reg;
 
-	cs35l32 = devm_kzalloc_obj(&i2c_client->dev, *cs35l32);
+	cs35l32 = devm_kzalloc(&i2c_client->dev, sizeof(*cs35l32), GFP_KERNEL);
 	if (!cs35l32)
 		return -ENOMEM;
 
@@ -368,7 +368,8 @@ static int cs35l32_i2c_probe(struct i2c_client *i2c_client)
 	if (pdata) {
 		cs35l32->pdata = *pdata;
 	} else {
-		pdata = devm_kzalloc_obj(&i2c_client->dev, *pdata);
+		pdata = devm_kzalloc(&i2c_client->dev, sizeof(*pdata),
+				     GFP_KERNEL);
 		if (!pdata)
 			return -ENOMEM;
 
@@ -537,15 +538,7 @@ static int cs35l32_runtime_resume(struct device *dev)
 	gpiod_set_value_cansleep(cs35l32->reset_gpio, 1);
 
 	regcache_cache_only(cs35l32->regmap, false);
-	ret = regcache_sync(cs35l32->regmap);
-	if (ret) {
-		regcache_cache_only(cs35l32->regmap, true);
-		regcache_mark_dirty(cs35l32->regmap);
-		gpiod_set_value_cansleep(cs35l32->reset_gpio, 0);
-		regulator_bulk_disable(ARRAY_SIZE(cs35l32->supplies),
-				       cs35l32->supplies);
-		return ret;
-	}
+	regcache_sync(cs35l32->regmap);
 
 	return 0;
 }

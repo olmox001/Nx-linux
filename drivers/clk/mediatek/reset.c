@@ -142,7 +142,7 @@ int mtk_register_reset_controller_with_dev(struct device *dev,
 		return PTR_ERR(regmap);
 	}
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

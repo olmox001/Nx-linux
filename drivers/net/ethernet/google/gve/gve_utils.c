@@ -93,11 +93,15 @@ void gve_dec_pagecnt_bias(struct gve_rx_slot_page_info *page_info)
 {
 	page_info->pagecnt_bias--;
 	if (page_info->pagecnt_bias == 0) {
-		/* Out of bias: take another batch. USHRT_MAX keeps this rare
-		 * while leaving page_count() far below INT_MAX.
+		int pagecount = page_count(page_info->page);
+
+		/* If we have run out of bias - set it back up to INT_MAX
+		 * minus the existing refs.
 		 */
-		page_info->pagecnt_bias = USHRT_MAX;
-		page_ref_add(page_info->page, USHRT_MAX);
+		page_info->pagecnt_bias = INT_MAX - pagecount;
+
+		/* Set pagecount back up to max. */
+		page_ref_add(page_info->page, INT_MAX - pagecount);
 	}
 }
 
@@ -115,8 +119,6 @@ void gve_remove_napi(struct gve_priv *priv, int ntfy_idx)
 {
 	struct gve_notify_block *block = &priv->ntfy_blocks[ntfy_idx];
 
-	if (block->irq_requested)
-		disable_irq(block->irq);
-
+	disable_irq(block->irq);
 	netif_napi_del_locked(&block->napi);
 }

@@ -3,7 +3,6 @@
 
 #include <linux/bitrev.h>
 #include <linux/clk.h>
-#include <linux/devm-helpers.h>
 #include <linux/firmware.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -58,7 +57,6 @@ struct fsl_xcvr {
 	struct snd_aes_iec958 tx_iec958;
 	u8 cap_ds[FSL_XCVR_CAPDS_SIZE];
 	struct work_struct work_rst;
-	int irq;
 	spinlock_t lock; /* Protect hw_reset and trigger */
 	struct snd_pcm_hw_constraint_list spdif_constr_rates;
 	u32 spdif_constr_rates_list[SPDIF_NUM_RATES];
@@ -799,9 +797,10 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 {
 	struct fsl_xcvr *xcvr = snd_soc_dai_get_drvdata(dai);
 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+	unsigned long lock_flags;
 	int ret = 0;
 
-	guard(spinlock_irqsave)(&xcvr->lock);
+	spin_lock_irqsave(&xcvr->lock, lock_flags);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -813,7 +812,7 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 					 FSL_XCVR_EXT_CTRL_DPTH_RESET(tx));
 		if (ret < 0) {
 			dev_err(dai->dev, "Failed to set DPATH RESET: %d\n", ret);
-			return ret;
+			goto release_lock;
 		}
 
 		if (tx) {
@@ -825,7 +824,7 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 						   FSL_XCVR_ISR_CMDC_TX_EN);
 				if (ret < 0) {
 					dev_err(dai->dev, "err updating isr %d\n", ret);
-					return ret;
+					goto release_lock;
 				}
 				fallthrough;
 			case FSL_XCVR_MODE_SPDIF:
@@ -834,7 +833,7 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 						      FSL_XCVR_TX_DPTH_CTRL_STRT_DATA_TX);
 				if (ret < 0) {
 					dev_err(dai->dev, "Failed to start DATA_TX: %d\n", ret);
-					return ret;
+					goto release_lock;
 				}
 				break;
 			}
@@ -845,14 +844,14 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 					 FSL_XCVR_EXT_CTRL_DMA_DIS(tx), 0);
 		if (ret < 0) {
 			dev_err(dai->dev, "Failed to enable DMA: %d\n", ret);
-			return ret;
+			goto release_lock;
 		}
 
 		ret = regmap_update_bits(xcvr->regmap, FSL_XCVR_EXT_IER0,
 					 FSL_XCVR_IRQ_EARC_ALL, FSL_XCVR_IRQ_EARC_ALL);
 		if (ret < 0) {
 			dev_err(dai->dev, "Error while setting IER0: %d\n", ret);
-			return ret;
+			goto release_lock;
 		}
 
 		/* clear DPATH RESET */
@@ -861,7 +860,7 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 					 0);
 		if (ret < 0) {
 			dev_err(dai->dev, "Failed to clear DPATH RESET: %d\n", ret);
-			return ret;
+			goto release_lock;
 		}
 
 		break;
@@ -874,14 +873,14 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 					 FSL_XCVR_EXT_CTRL_DMA_DIS(tx));
 		if (ret < 0) {
 			dev_err(dai->dev, "Failed to disable DMA: %d\n", ret);
-			return ret;
+			goto release_lock;
 		}
 
 		ret = regmap_update_bits(xcvr->regmap, FSL_XCVR_EXT_IER0,
 					 FSL_XCVR_IRQ_EARC_ALL, 0);
 		if (ret < 0) {
 			dev_err(dai->dev, "Failed to clear IER0: %d\n", ret);
-			return ret;
+			goto release_lock;
 		}
 
 		if (tx) {
@@ -892,7 +891,7 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 							FSL_XCVR_TX_DPTH_CTRL_STRT_DATA_TX);
 				if (ret < 0) {
 					dev_err(dai->dev, "Failed to stop DATA_TX: %d\n", ret);
-					return ret;
+					goto release_lock;
 				}
 				if (xcvr->soc_data->spdif_only)
 					break;
@@ -906,7 +905,7 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 				if (ret < 0) {
 					dev_err(dai->dev,
 						"Err updating ISR %d\n", ret);
-					return ret;
+					goto release_lock;
 				}
 				break;
 			}
@@ -917,16 +916,18 @@ static int fsl_xcvr_trigger(struct snd_pcm_substream *substream, int cmd,
 		break;
 	}
 
+release_lock:
+	spin_unlock_irqrestore(&xcvr->lock, lock_flags);
 	return ret;
 }
 
 static int fsl_xcvr_load_firmware(struct fsl_xcvr *xcvr)
 {
 	struct device *dev = &xcvr->pdev->dev;
+	const struct firmware *fw;
 	int ret = 0, rem, off, out, page = 0, size = FSL_XCVR_REG_OFFSET;
 	u32 mask, val;
 
-	const struct firmware *fw __free(firmware) = NULL;
 	ret = request_firmware(&fw, xcvr->soc_data->fw_name, dev);
 	if (ret) {
 		dev_err(dev, "failed to request firmware.\n");
@@ -938,6 +939,7 @@ static int fsl_xcvr_load_firmware(struct fsl_xcvr *xcvr)
 	/* RAM is 20KiB = 16KiB code + 4KiB data => max 10 pages 2KiB each */
 	if (rem > 16384) {
 		dev_err(dev, "FW size %d is bigger than 16KiB.\n", rem);
+		release_firmware(fw);
 		return -ENOMEM;
 	}
 
@@ -948,7 +950,7 @@ static int fsl_xcvr_load_firmware(struct fsl_xcvr *xcvr)
 		if (ret < 0) {
 			dev_err(dev, "FW: failed to set page %d, err=%d\n",
 				page, ret);
-			return ret;
+			goto err_firmware;
 		}
 
 		off = page * size;
@@ -968,6 +970,11 @@ static int fsl_xcvr_load_firmware(struct fsl_xcvr *xcvr)
 			memset_io(xcvr->ram_addr, 0, size);
 		}
 	}
+
+err_firmware:
+	release_firmware(fw);
+	if (ret < 0)
+		return ret;
 
 	/* configure watermarks */
 	mask = FSL_XCVR_EXT_CTRL_RX_FWM_MASK | FSL_XCVR_EXT_CTRL_TX_FWM_MASK;
@@ -1441,10 +1448,11 @@ static void reset_rx_work(struct work_struct *work)
 {
 	struct fsl_xcvr *xcvr = container_of(work, struct fsl_xcvr, work_rst);
 	struct device *dev = &xcvr->pdev->dev;
+	unsigned long lock_flags;
 	u32 ext_ctrl;
 
 	dev_dbg(dev, "reset rx path\n");
-	guard(spinlock_irqsave)(&xcvr->lock);
+	spin_lock_irqsave(&xcvr->lock, lock_flags);
 	regmap_read(xcvr->regmap, FSL_XCVR_EXT_CTRL, &ext_ctrl);
 
 	if (!(ext_ctrl & FSL_XCVR_EXT_CTRL_DMA_RD_DIS)) {
@@ -1461,6 +1469,7 @@ static void reset_rx_work(struct work_struct *work)
 				   FSL_XCVR_EXT_CTRL_RX_DPTH_RESET,
 				   0);
 	}
+	spin_unlock_irqrestore(&xcvr->lock, lock_flags);
 }
 
 static irqreturn_t irq0_isr(int irq, void *devid)
@@ -1619,9 +1628,9 @@ static int fsl_xcvr_probe(struct platform_device *pdev)
 	struct fsl_xcvr *xcvr;
 	struct resource *rx_res, *tx_res;
 	void __iomem *regs;
-	int ret;
+	int ret, irq;
 
-	xcvr = devm_kzalloc_obj(dev, *xcvr);
+	xcvr = devm_kzalloc(dev, sizeof(*xcvr), GFP_KERNEL);
 	if (!xcvr)
 		return -ENOMEM;
 
@@ -1707,22 +1716,12 @@ static int fsl_xcvr_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(xcvr->reset),
 				     "failed to get XCVR reset control\n");
 
-	/*
-	 * irq0_isr() schedules work_rst. Prepare the work and its lock
-	 * before the IRQ, and register the cancel action first so a failed
-	 * probe frees the IRQ and then cancels any queued work.
-	 */
-	spin_lock_init(&xcvr->lock);
-	ret = devm_work_autocancel(dev, &xcvr->work_rst, reset_rx_work);
-	if (ret)
-		return ret;
-
 	/* get IRQs */
-	xcvr->irq = platform_get_irq(pdev, 0);
-	if (xcvr->irq < 0)
-		return xcvr->irq;
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
 
-	ret = devm_request_irq(dev, xcvr->irq, irq0_isr, 0, pdev->name, xcvr);
+	ret = devm_request_irq(dev, irq, irq0_isr, 0, pdev->name, xcvr);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to claim IRQ0\n");
 
@@ -1763,6 +1762,8 @@ static int fsl_xcvr_probe(struct platform_device *pdev)
 			fsl_xcvr_comp.name);
 	}
 
+	INIT_WORK(&xcvr->work_rst, reset_rx_work);
+	spin_lock_init(&xcvr->lock);
 	return ret;
 }
 
@@ -1770,8 +1771,6 @@ static void fsl_xcvr_remove(struct platform_device *pdev)
 {
 	struct fsl_xcvr *xcvr = dev_get_drvdata(&pdev->dev);
 
-	/* Free the IRQ first so irq0_isr() cannot requeue work_rst. */
-	devm_free_irq(&pdev->dev, xcvr->irq, xcvr);
 	cancel_work_sync(&xcvr->work_rst);
 	pm_runtime_disable(&pdev->dev);
 }

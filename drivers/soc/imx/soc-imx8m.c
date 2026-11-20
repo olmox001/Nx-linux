@@ -231,11 +231,11 @@ static int imx8m_soc_probe(struct platform_device *pdev)
 	u64 soc_uid[2] = {0, 0};
 	int ret;
 
-	soc_dev_attr = devm_kzalloc_obj(dev, *soc_dev_attr);
+	soc_dev_attr = devm_kzalloc(dev, sizeof(*soc_dev_attr), GFP_KERNEL);
 	if (!soc_dev_attr)
 		return -ENOMEM;
 
-	drvdata = devm_kzalloc_obj(dev, *drvdata);
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 

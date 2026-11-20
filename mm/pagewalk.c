@@ -408,7 +408,7 @@ static int __walk_page_range(unsigned long start, unsigned long end,
 	int err = 0;
 	struct vm_area_struct *vma = walk->vma;
 	const struct mm_walk_ops *ops = walk->ops;
-	bool is_hugetlb = vma_is_hugetlb(vma);
+	bool is_hugetlb = is_vm_hugetlb_page(vma);
 
 	/* We do not support hugetlb PTE installation. */
 	if (ops->install_pte && is_hugetlb)
@@ -444,6 +444,7 @@ static inline void process_mm_walk_lock(struct mm_struct *mm,
 static inline void process_vma_walk_lock(struct vm_area_struct *vma,
 					 enum page_walk_lock walk_lock)
 {
+#ifdef CONFIG_PER_VMA_LOCK
 	switch (walk_lock) {
 	case PGWALK_WRLOCK:
 		vma_start_write(vma);
@@ -458,6 +459,7 @@ static inline void process_vma_walk_lock(struct vm_area_struct *vma,
 		/* PGWALK_RDLOCK is handled by process_mm_walk_lock */
 		break;
 	}
+#endif
 }
 
 /*
@@ -812,10 +814,10 @@ int walk_page_mapping(struct address_space *mapping, pgoff_t first_index,
 		return -EINVAL;
 
 	lockdep_assert_held(&mapping->i_mmap_rwsem);
-	mapping_rmap_tree_foreach(vma, mapping, first_index,
+	vma_interval_tree_foreach(vma, &mapping->i_mmap, first_index,
 				  first_index + nr - 1) {
 		/* Clip to the vma */
-		vba = vma_start_pgoff(vma);
+		vba = vma->vm_pgoff;
 		vea = vba + vma_pages(vma);
 		cba = first_index;
 		cba = max(cba, vba);

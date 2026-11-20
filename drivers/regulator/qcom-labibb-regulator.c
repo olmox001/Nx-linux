@@ -799,7 +799,8 @@ static int qcom_labibb_regulator_probe(struct platform_device *pdev)
 		    WARN_ON(type != reg_data->type))
 			return -EINVAL;
 
-		vreg = devm_kzalloc_obj(&pdev->dev, *vreg);
+		vreg  = devm_kzalloc(&pdev->dev, sizeof(*vreg),
+					   GFP_KERNEL);
 		if (!vreg)
 			return -ENOMEM;
 

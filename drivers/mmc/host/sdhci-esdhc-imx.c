@@ -1142,20 +1142,6 @@ static void esdhc_reset_tuning(struct sdhci_host *host)
 	}
 }
 
-static void sdhci_esdhc_imx_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
-{
-	/*
-	 * This controller has no driver-type control: esdhc_writew_le()
-	 * discards the driver-type field when writing SDHCI_HOST_CONTROL2.
-	 * The programmed value is therefore irrelevant, but SDHCI rejects
-	 * non-SD values such as 4 (eMMC 40 ohm, from fixed-emmc-driver-type).
-	 * Force an always-valid Type B.
-	 */
-	ios->drv_type = MMC_SET_DRIVER_TYPE_B;
-
-	sdhci_set_ios(mmc, ios);
-}
-
 static void usdhc_init_card(struct mmc_host *mmc, struct mmc_card *card)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
@@ -1527,7 +1513,7 @@ static u32 esdhc_cqhci_irq(struct sdhci_host *host, u32 intmask)
 	if (!sdhci_cqe_irq(host, intmask, &cmd_error, &data_error))
 		return intmask;
 
-	cqhci_irq(host->mmc, cmd_error, data_error);
+	cqhci_irq(host->mmc, intmask, cmd_error, data_error);
 
 	return 0;
 }
@@ -1966,9 +1952,6 @@ static int sdhci_esdhc_imx_probe(struct platform_device *pdev)
 		host->max_timeout_count = 0xF;
 	}
 
-	/* No SDHCI driver type control */
-	host->mmc_host_ops.set_ios = sdhci_esdhc_imx_set_ios;
-
 	if (imx_data->socdata->flags & ESDHC_FLAG_MAN_TUNING)
 		sdhci_esdhc_ops.platform_execute_tuning =
 					esdhc_executing_tuning;
@@ -1990,7 +1973,7 @@ static int sdhci_esdhc_imx_probe(struct platform_device *pdev)
 
 	if (imx_data->socdata->flags & ESDHC_FLAG_CQHCI) {
 		host->mmc->caps2 |= MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD;
-		cq_host = devm_kzalloc_obj(&pdev->dev, *cq_host);
+		cq_host = devm_kzalloc(&pdev->dev, sizeof(*cq_host), GFP_KERNEL);
 		if (!cq_host) {
 			err = -ENOMEM;
 			goto disable_ahb_clk;

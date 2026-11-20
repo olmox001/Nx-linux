@@ -5,8 +5,6 @@
 #include <errno.h>
 #include <linux/compiler.h>
 
-struct dso;
-
 #ifdef HAVE_LIBDW_SUPPORT
 
 #include "dwarf-aux.h"
@@ -21,9 +19,7 @@ struct debuginfo {
 };
 
 /* This also tries to open distro debuginfo */
-struct debuginfo *debuginfo__from_path(const char *path);
-/* Create a debuginfo using information in DSO */
-struct debuginfo *debuginfo__new(struct dso *dso);
+struct debuginfo *debuginfo__new(const char *path);
 void debuginfo__delete(struct debuginfo *dbg);
 
 int debuginfo__get_text_offset(struct debuginfo *dbg, Dwarf_Addr *offs,
@@ -35,12 +31,7 @@ int debuginfo__get_text_offset(struct debuginfo *dbg, Dwarf_Addr *offs,
 struct debuginfo {
 };
 
-static inline struct debuginfo *debuginfo__from_path(const char *path __maybe_unused)
-{
-	return NULL;
-}
-
-static inline struct debuginfo *debuginfo__new(struct dso *dso __maybe_unused)
+static inline struct debuginfo *debuginfo__new(const char *path __maybe_unused)
 {
 	return NULL;
 }

@@ -131,7 +131,7 @@ static int brcmstb_memc_probe(struct platform_device *pdev)
 	struct brcmstb_memc *memc;
 	int ret;
 
-	memc = devm_kzalloc_obj(dev, *memc);
+	memc = devm_kzalloc(dev, sizeof(*memc), GFP_KERNEL);
 	if (!memc)
 		return -ENOMEM;
 

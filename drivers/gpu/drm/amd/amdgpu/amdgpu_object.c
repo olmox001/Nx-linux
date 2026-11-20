@@ -43,7 +43,6 @@
 #include "amdgpu_vram_mgr.h"
 #include "amdgpu_vm.h"
 #include "amdgpu_dma_buf.h"
-#include "kfd_svm.h"
 
 /**
  * DOC: amdgpu_object
@@ -94,8 +93,7 @@ static void amdgpu_bo_user_destroy(struct ttm_buffer_object *tbo)
 bool amdgpu_bo_is_amdgpu_bo(struct ttm_buffer_object *bo)
 {
 	if (bo->destroy == &amdgpu_bo_destroy ||
-	    bo->destroy == &amdgpu_bo_user_destroy ||
-	    bo->destroy == &svm_range_bo_destroy)
+	    bo->destroy == &amdgpu_bo_user_destroy)
 		return true;
 
 	return false;
@@ -200,14 +198,6 @@ void amdgpu_bo_placement_from_domain(struct amdgpu_bo *abo, u32 domain)
 		places[c].fpfn = 0;
 		places[c].lpfn = 0;
 		places[c].mem_type = AMDGPU_PL_OA;
-		places[c].flags = 0;
-		c++;
-	}
-
-	if (domain & AMDGPU_GEM_DOMAIN_NPA) {
-		places[c].fpfn = 0;
-		places[c].lpfn = 0;
-		places[c].mem_type = AMDGPU_PL_NPA;
 		places[c].flags = 0;
 		c++;
 	}
@@ -923,19 +913,6 @@ void amdgpu_bo_unref(struct amdgpu_bo **bo)
 	*bo = NULL;
 }
 
-/* Map a BO onto vram_pin_size_xcp[]. bo->xcp_id < 0 means "any partition":
- * such pins are not owned by a single partition and go to
- * vram_pin_size_common, which every partition subtracts.
- */
-static int amdgpu_bo_get_xcp(struct amdgpu_bo *bo)
-{
-	s8 xcp = bo->xcp_id;
-
-	if (xcp >= 0 && xcp < MAX_XCP)
-		return xcp;
-	return -1;
-}
-
 /**
  * amdgpu_bo_pin - pin an &amdgpu_bo buffer object
  * @bo: &amdgpu_bo buffer object to be pinned
@@ -1016,17 +993,7 @@ int amdgpu_bo_pin(struct amdgpu_bo *bo, u32 domain)
 	ttm_bo_pin(&bo->tbo);
 
 	if (bo->tbo.resource->mem_type == TTM_PL_VRAM) {
-		int xcp = amdgpu_bo_get_xcp(bo);
-
 		atomic64_add(amdgpu_bo_size(bo), &adev->vram_pin_size);
-		if (xcp >= 0) {
-			atomic64_add(amdgpu_bo_size(bo),
-				     &adev->vram_pin_size_xcp[xcp]);
-		} else {
-			atomic64_add(amdgpu_bo_size(bo),
-				     &adev->vram_pin_size_common);
-		}
-		amdgpu_amdkfd_account_vram_pin(bo, xcp);
 		atomic64_add(amdgpu_vram_mgr_bo_visible_size(bo),
 			     &adev->visible_pin_size);
 	} else if (bo->tbo.resource->mem_type == TTM_PL_TT) {
@@ -1059,17 +1026,7 @@ void amdgpu_bo_unpin(struct amdgpu_bo *bo)
 		dma_buf_unpin(bo->tbo.base.import_attach);
 
 	if (bo->tbo.resource->mem_type == TTM_PL_VRAM) {
-		int xcp = amdgpu_bo_get_xcp(bo);
-
 		atomic64_sub(amdgpu_bo_size(bo), &adev->vram_pin_size);
-		if (xcp >= 0) {
-			atomic64_sub(amdgpu_bo_size(bo),
-				     &adev->vram_pin_size_xcp[xcp]);
-		} else {
-			atomic64_sub(amdgpu_bo_size(bo),
-				     &adev->vram_pin_size_common);
-		}
-		amdgpu_amdkfd_account_vram_unpin(bo, xcp);
 		atomic64_sub(amdgpu_vram_mgr_bo_visible_size(bo),
 			     &adev->visible_pin_size);
 	} else if (bo->tbo.resource->mem_type == TTM_PL_TT) {
@@ -1093,8 +1050,7 @@ static const char * const amdgpu_vram_names[] = {
 	"LPDDR4",
 	"LPDDR5",
 	"HBM3E",
-	"HBM4",
-	"GDDR7"
+	"HBM4"
 };
 
 /**
@@ -1704,9 +1660,6 @@ u64 amdgpu_bo_print_info(int id, struct amdgpu_bo *bo, struct seq_file *m)
 				break;
 			case AMDGPU_PL_MMIO_REMAP:
 				placement = "MMIO REMAP";
-				break;
-			case AMDGPU_PL_NPA:
-				placement = "NPA";
 				break;
 			case TTM_PL_SYSTEM:
 			default:

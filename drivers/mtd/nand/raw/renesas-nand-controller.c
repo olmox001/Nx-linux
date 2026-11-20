@@ -1217,7 +1217,8 @@ static int rnandc_chip_init(struct rnandc *rnandc, struct device_node *np)
 	}
 
 	/* Alloc the driver's NAND chip structure */
-	rnand = devm_kzalloc_flex(rnandc->dev, *rnand, sels, nsels);
+	rnand = devm_kzalloc(rnandc->dev, struct_size(rnand, sels, nsels),
+			     GFP_KERNEL);
 	if (!rnand)
 		return -ENOMEM;
 
@@ -1321,7 +1322,7 @@ static int rnandc_probe(struct platform_device *pdev)
 	struct clk *eclk;
 	int irq, ret;
 
-	rnandc = devm_kzalloc_obj(&pdev->dev, *rnandc);
+	rnandc = devm_kzalloc(&pdev->dev, sizeof(*rnandc), GFP_KERNEL);
 	if (!rnandc)
 		return -ENOMEM;
 

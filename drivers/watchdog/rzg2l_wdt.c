@@ -14,7 +14,6 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
-#include <linux/stringify.h>
 #include <linux/reset.h>
 #include <linux/units.h>
 #include <linux/watchdog.h>
@@ -42,7 +41,7 @@
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-				__stringify(WATCHDOG_NOWAYOUT) ")");
+				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 enum rz_wdt_type {
 	WDT_RZG2L,
@@ -254,7 +253,7 @@ static int rzg2l_wdt_probe(struct platform_device *pdev)
 	unsigned long pclk_rate;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

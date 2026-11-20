@@ -93,7 +93,7 @@ static int micro_key_probe(struct platform_device *pdev)
 	int error;
 	int i;
 
-	keys = devm_kzalloc_obj(&pdev->dev, *keys);
+	keys = devm_kzalloc(&pdev->dev, sizeof(*keys), GFP_KERNEL);
 	if (!keys)
 		return -ENOMEM;
 

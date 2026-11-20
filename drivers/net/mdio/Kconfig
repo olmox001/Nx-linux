@@ -3,8 +3,7 @@
 # MDIO Layer Configuration
 #
 
-menu "MDIO controller drivers"
-	depends on PHYLIB
+if PHYLIB
 
 config FWNODE_MDIO
 	def_tristate (ACPI || OF) || COMPILE_TEST
@@ -172,11 +171,11 @@ config MDIO_IPQ8064
 	  interface units of the IPQ8064 SoC
 
 config MDIO_REALTEK_RTL9300
-	tristate "Realtek RTL83xx/RTL93xx MDIO interface support"
+	tristate "Realtek RTL9300 MDIO interface support"
 	depends on MACH_REALTEK_RTL || COMPILE_TEST
 	help
 	  This driver supports the MDIO interface found in the Realtek
-	  RTL83xx/RTL93xx family of Ethernet switches with integrated SoC.
+	  RTL9300 family of Ethernet switches with integrated SoC.
 
 config MDIO_REGMAP
 	tristate
@@ -199,7 +198,7 @@ config MDIO_THUNDER
 	  ThunderX SoCs when the MDIO bus device appears as a PCI
 	  device.
 
-menu "MDIO Multiplexers"
+comment "MDIO Multiplexers"
 
 config MDIO_BUS_MUX
 	tristate
@@ -289,5 +288,5 @@ config MDIO_BUS_MUX_MMIOREG
 
 	  Currently, only 8/16/32 bits registers are supported.
 
-endmenu
-endmenu
+
+endif

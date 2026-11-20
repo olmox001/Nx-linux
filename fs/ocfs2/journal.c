@@ -14,7 +14,6 @@
 #include <linux/kthread.h>
 #include <linux/time.h>
 #include <linux/random.h>
-#include <linux/delay.h>
 #include <linux/writeback.h>
 
 #include <cluster/masklog.h>
@@ -156,7 +155,7 @@ static void ocfs2_queue_replay_slots(struct ocfs2_super *osb,
 	replay_map->rm_state = REPLAY_DONE;
 }
 
-static void ocfs2_free_replay_slots(struct ocfs2_super *osb)
+void ocfs2_free_replay_slots(struct ocfs2_super *osb)
 {
 	struct ocfs2_replay_map *replay_map = osb->replay_map;
 
@@ -227,22 +226,13 @@ void ocfs2_recovery_disable_quota(struct ocfs2_super *osb)
 	ocfs2_recovery_disable(osb, OCFS2_REC_QUOTA_WANT_DISABLE);
 }
 
-/* Stop producers and drain completion work without freeing recovery state. */
-void ocfs2_recovery_stop(struct ocfs2_super *osb)
-{
-	ocfs2_recovery_disable(osb, OCFS2_REC_WANT_DISABLE);
-}
-
 void ocfs2_recovery_exit(struct ocfs2_super *osb)
 {
 	struct ocfs2_recovery_map *rm;
 
-	/*
-	 * Disable producers and drain work before freeing recovery state.
-	 * Do this before setting vol_state to VOLUME_DISMOUNTED: completion
-	 * work may still be waiting in __ocfs2_wait_on_mount().
-	 */
-	ocfs2_recovery_stop(osb);
+	/* disable any new recovery threads and wait for any currently
+	 * running ones to exit. Do this before setting the vol_state. */
+	ocfs2_recovery_disable(osb, OCFS2_REC_WANT_DISABLE);
 
 	/*
 	 * Now that recovery is shut down, and the osb is about to be
@@ -252,7 +242,6 @@ void ocfs2_recovery_exit(struct ocfs2_super *osb)
 	/* XXX: Should we bug if there are dirty entries? */
 
 	kfree(rm);
-	ocfs2_free_replay_slots(osb);
 }
 
 static int __ocfs2_recovery_map_test(struct ocfs2_super *osb,
@@ -352,7 +341,7 @@ static int ocfs2_commit_cache(struct ocfs2_super *osb)
 	trace_ocfs2_commit_cache_end(journal->j_trans_id, flushed);
 
 	ocfs2_wake_downconvert_thread(osb);
-	wake_up(&osb->checkpoint_event);
+	wake_up(&journal->j_checkpointed);
 finally:
 	return status;
 }
@@ -686,20 +675,19 @@ static int __ocfs2_journal_access(handle_t *handle,
 		mlog(ML_ERROR, "giving me a buffer that's not uptodate!\n");
 		mlog(ML_ERROR, "b_blocknr=%llu, b_state=0x%lx\n",
 		     (unsigned long long)bh->b_blocknr, bh->b_state);
-	}
-	/*
-	 * A previous transaction with a couple of buffer heads fail
-	 * to checkpoint, so all the bhs are marked as BH_Write_EIO.
-	 * For current transaction, the bh is just among those error
-	 * bhs which previous transaction handle. We can't just clear
-	 * its BH_Write_EIO and reuse directly, since other bhs are
-	 * not written to disk yet and that will cause metadata
-	 * inconsistency. So we should set fs read-only to avoid
-	 * further damage.
-	 */
-	if (buffer_write_io_error(bh)) {
+
 		lock_buffer(bh);
-		if (buffer_write_io_error(bh)) {
+		/*
+		 * A previous transaction with a couple of buffer heads fail
+		 * to checkpoint, so all the bhs are marked as BH_Write_EIO.
+		 * For current transaction, the bh is just among those error
+		 * bhs which previous transaction handle. We can't just clear
+		 * its BH_Write_EIO and reuse directly, since other bhs are
+		 * not written to disk yet and that will cause metadata
+		 * inconsistency. So we should set fs read-only to avoid
+		 * further damage.
+		 */
+		if (buffer_write_io_error(bh) && !buffer_uptodate(bh)) {
 			unlock_buffer(bh);
 			return ocfs2_error(osb->sb, "A previous attempt to "
 					"write this buffer head failed\n");
@@ -901,6 +889,7 @@ int ocfs2_journal_alloc(struct ocfs2_super *osb)
 
 	atomic_set(&journal->j_num_trans, 0);
 	init_rwsem(&journal->j_trans_barrier);
+	init_waitqueue_head(&journal->j_checkpointed);
 	spin_lock_init(&journal->j_lock);
 	journal->j_trans_id = 1UL;
 	INIT_LIST_HEAD(&journal->j_la_cleanups);
@@ -1072,14 +1061,12 @@ void ocfs2_journal_shutdown(struct ocfs2_super *osb)
 
 	journal = osb->journal;
 	if (!journal)
-		return;
+		goto done;
 
 	inode = journal->j_inode;
 
-	if (journal->j_state != OCFS2_JOURNAL_LOADED) {
-		down_write(&osb->journal_shutdown_sem);
-		goto free;
-	}
+	if (journal->j_state != OCFS2_JOURNAL_LOADED)
+		goto done;
 
 	/* need to inc inode use count - jbd2_journal_destroy will iput. */
 	if (!igrab(inode))
@@ -1115,12 +1102,6 @@ void ocfs2_journal_shutdown(struct ocfs2_super *osb)
 			mlog_errno(status);
 	}
 
-	/*
-	 * Exclude the final JBD2 inode cleanup in ocfs2_clear_inode() while
-	 * the journal is destroyed and freed.
-	 */
-	down_write(&osb->journal_shutdown_sem);
-
 	/* Shutdown the kernel journal system */
 	if (!jbd2_journal_destroy(journal->j_journal) && !status) {
 		/*
@@ -1143,17 +1124,10 @@ void ocfs2_journal_shutdown(struct ocfs2_super *osb)
 
 	journal->j_state = OCFS2_JOURNAL_FREE;
 
-free:
-	/* Serialize the removal with ocfs2_ci_fully_checkpointed(). */
-	spin_lock(&trans_inc_lock);
-	osb->journal = NULL;
-	spin_unlock(&trans_inc_lock);
-	wake_up(&osb->checkpoint_event);
-	kfree(journal);
-	up_write(&osb->journal_shutdown_sem);
-
-	/* The journal inode's own cleanup takes the read side. */
+done:
 	iput(inode);
+	kfree(journal);
+	osb->journal = NULL;
 }
 
 static void ocfs2_clear_journal_error(struct super_block *sb,
@@ -2423,7 +2397,7 @@ static int __ocfs2_wait_on_mount(struct ocfs2_super *osb, int quota)
 
 static int ocfs2_commit_thread(void *arg)
 {
-	int status;
+	int status = 0;
 	struct ocfs2_super *osb = arg;
 	struct ocfs2_journal *journal = osb->journal;
 
@@ -2437,21 +2411,25 @@ static int ocfs2_commit_thread(void *arg)
 		wait_event_interruptible(osb->checkpoint_event,
 					 atomic_read(&journal->j_num_trans)
 					 || kthread_should_stop());
+		if (status < 0) {
+			/* As we can not terminate by ourself, just enter an
+			 * empty loop to wait for stop.
+			 */
+			continue;
+		}
 
 		status = ocfs2_commit_cache(osb);
 		if (status < 0) {
-			static unsigned long abort_warn_time;
-
-			/* Warn about this once per minute */
-			if (printk_timed_ratelimit(&abort_warn_time, 60*HZ))
-				mlog(ML_ERROR, "status = %d, journal is "
-						"already aborted.\n", status);
 			/*
-			 * After ocfs2_commit_cache() fails, j_num_trans has a
-			 * non-zero value.  Sleep here to avoid a busy-wait
-			 * loop.
+			 * journal can not recover from abort state, there is
+			 * no need to keep commit cache. So we should either
+			 * change to readonly(local mount) or just panic
+			 * (cluster mount).
+			 * We should also clear j_num_trans to prevent further
+			 * commit.
 			 */
-			msleep_interruptible(1000);
+			atomic_set(&journal->j_num_trans, 0);
+			ocfs2_abort(osb->sb, "Detected aborted journal");
 		}
 
 		if (kthread_should_stop() && atomic_read(&journal->j_num_trans)){

@@ -41,6 +41,10 @@
 #define UVERBS_MODULE_NAME mlx5_ib
 #include <rdma/uverbs_named_ioctl.h>
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#include "oracle_ext.h"
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
+
 static void mlx5_ib_cq_comp(struct mlx5_core_cq *cq, struct mlx5_eqe *eqe)
 {
 	struct ib_cq *ibcq = &to_mibcq(cq)->ibcq;
@@ -469,6 +473,11 @@ repoll:
 		return -EAGAIN;
 
 	cqe64 = (cq->mcq.cqe_sz == 64) ? cqe : cqe + 64;
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	if (unlikely(mlx5_ib_verify_cqe_flag))
+		verify_cqe(cqe64, cq);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	++cq->mcq.cons_index;
 
@@ -958,6 +967,9 @@ int mlx5_ib_create_user_cq(struct ib_cq *ibcq,
 	int vector = attr->comp_vector;
 	struct mlx5_ib_dev *dev = to_mdev(ibdev);
 	struct mlx5_ib_cq *cq = to_mcq(ibcq);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct mlx5_eq_comp *eq;
+#endif
 	u32 out[MLX5_ST_SZ_DW(create_cq_out)];
 	int index;
 	int inlen;
@@ -990,7 +1002,12 @@ int mlx5_ib_create_user_cq(struct ib_cq *ibcq,
 	if (err)
 		return err;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	eq = mlx5_comp_eqn_get_low(dev->mdev, vector, &eqn);
+	err = PTR_ERR_OR_ZERO(eq);
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 	err = mlx5_comp_eqn_get(dev->mdev, vector, &eqn);
+#endif  /* WITHOUT_ORACLE_EXTENSIONS */
 	if (err)
 		goto err_cqb;
 
@@ -1013,7 +1030,11 @@ int mlx5_ib_create_user_cq(struct ib_cq *ibcq,
 
 	err = mlx5_core_create_cq(dev->mdev, &cq->mcq, cqb, inlen, out, sizeof(out));
 	if (err)
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		goto err_put_eq;
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 		goto err_cqb;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 	mlx5_ib_dbg(dev, "cqn 0x%x\n", cq->mcq.cqn);
 	cq->mcq.event = mlx5_ib_cq_event;
@@ -1030,6 +1051,11 @@ int mlx5_ib_create_user_cq(struct ib_cq *ibcq,
 
 err_cmd:
 	mlx5_core_destroy_cq(dev->mdev, &cq->mcq);
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+err_put_eq:
+	mlx5_comp_eqn_put_low(dev->mdev, eq);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 err_cqb:
 	kvfree(cqb);
@@ -1116,11 +1142,18 @@ int mlx5_ib_pre_destroy_cq(struct ib_cq *cq)
 {
 	struct mlx5_ib_dev *dev = to_mdev(cq->device);
 	struct mlx5_ib_cq *mcq = to_mcq(cq);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	int ret;
 
-	if (!cq->uobject)
-		cancel_work_sync(&mcq->notify_work);
+	ret = mlx5_core_destroy_cq(dev->mdev, &mcq->mcq);
+	if (ret)
+	        return ret;
 
+	mlx5_comp_eqn_put_low(dev->mdev, mcq->mcq.eq);
+	return 0;
+#else
 	return mlx5_core_destroy_cq(dev->mdev, &mcq->mcq);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 }
 
 void mlx5_ib_post_destroy_cq(struct ib_cq *cq)
@@ -1172,8 +1205,7 @@ void __mlx5_ib_cq_clean(struct mlx5_ib_cq *cq, u32 rsn, struct mlx5_ib_srq *srq)
 	/* Now sweep backwards through the CQ, removing CQ entries
 	 * that match our QP by copying older entries on top of them.
 	 */
-	while (prod_index != cq->mcq.cons_index) {
-		--prod_index;
+	while ((int) --prod_index - (int) cq->mcq.cons_index >= 0) {
 		cqe = get_cqe(cq, prod_index & cq->ibcq.cqe);
 		cqe64 = (cq->mcq.cqe_sz == 64) ? cqe : cqe + 64;
 		if (is_equal_rsn(cqe64, rsn)) {
@@ -1249,9 +1281,9 @@ static int resize_user(struct mlx5_ib_dev *dev, struct mlx5_ib_cq *cq,
 	if (ucmd.cqe_size && SIZE_MAX / ucmd.cqe_size <= entries - 1)
 		return -EINVAL;
 
-	umem = ib_umem_get_cq_buf_or_va(&dev->ib_dev, NULL, ucmd.buf_addr,
-					(size_t)ucmd.cqe_size * entries,
-					IB_ACCESS_LOCAL_WRITE);
+	umem = ib_umem_get_va(&dev->ib_dev, ucmd.buf_addr,
+			      (size_t)ucmd.cqe_size * entries,
+			      IB_ACCESS_LOCAL_WRITE);
 	if (IS_ERR(umem)) {
 		err = PTR_ERR(umem);
 		return err;
@@ -1316,7 +1348,7 @@ static int copy_resize_cqes(struct mlx5_ib_cq *cq)
 
 	while (get_cqe_opcode(scqe64) != MLX5_CQE_RESIZE_CQ) {
 		dcqe = mlx5_frag_buf_get_wqe(&cq->resize_buf->fbc,
-					     (i + 1) & (cq->resize_buf->nent - 1));
+					     (i + 1) & cq->resize_buf->nent);
 		dcqe64 = dsize == 64 ? dcqe : dcqe + 64;
 		sw_own = sw_ownership_bit(i + 1, cq->resize_buf->nent);
 		memcpy(dcqe, scqe, dsize);

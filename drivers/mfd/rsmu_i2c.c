@@ -274,7 +274,7 @@ static int rsmu_i2c_probe(struct i2c_client *client)
 	struct rsmu_ddata *rsmu;
 	int ret;
 
-	rsmu = devm_kzalloc_obj(&client->dev, *rsmu);
+	rsmu = devm_kzalloc(&client->dev, sizeof(*rsmu), GFP_KERNEL);
 	if (!rsmu)
 		return -ENOMEM;
 

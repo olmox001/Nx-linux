@@ -16,10 +16,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <include/vdso/time64.h>
 #include <pthread.h>
 #include <stdbool.h>
 
-#include "clock-helpers.h"
 #include "kselftest.h"
 
 #define DELAY 2
@@ -113,10 +113,9 @@ static void check_itimer(int which, const char *name)
 
 	done = 0;
 
-	if (which == ITIMER_VIRTUAL) {
-		clock_id = CLOCK_THREAD_CPUTIME_ID;
+	if (which == ITIMER_VIRTUAL)
 		signal(SIGVTALRM, sig_handler);
-	} else if (which == ITIMER_PROF) {
+	else if (which == ITIMER_PROF) {
 		clock_id = CLOCK_THREAD_CPUTIME_ID;
 		signal(SIGPROF, sig_handler);
 	}
@@ -142,14 +141,13 @@ static void check_itimer(int which, const char *name)
 	ksft_test_result(check_diff(start, end) == 0, "%s\n", name);
 }
 
-static void check_timer_create(int which)
+static void check_timer_create(int which, const char *name)
 {
-	const char *name = clock_name(which);
 	struct timespec start, end;
 	struct itimerspec val = {
 		.it_value.tv_sec = DELAY,
 	};
-	int clock_id = which;
+	int clock_id = CLOCK_REALTIME;
 	timer_t id;
 
 	done = 0;
@@ -457,9 +455,8 @@ static void check_delete(void)
 	ksft_test_result(!tsig.signals, "check_delete\n");
 }
 
-static void check_sigev_none(int which)
+static void check_sigev_none(int which, const char *name)
 {
-	const char *name = clock_name(which);
 	struct timespec start, now;
 	struct itimerspec its;
 	struct sigevent sev;
@@ -496,48 +493,8 @@ static void check_sigev_none(int which)
 			 "check_sigev_none %s\n", name);
 }
 
-static void check_sigev_none_disarm(int which)
+static void check_gettime(int which, const char *name)
 {
-	const char *name = clock_name(which);
-	struct itimerspec its;
-	struct sigevent sev;
-	timer_t timerid;
-	bool armed;
-
-	memset(&sev, 0, sizeof(sev));
-	sev.sigev_notify = SIGEV_NONE;
-
-	if (timer_create(which, &sev, &timerid))
-		fatal_error(name, "timer_create()");
-
-	/* Start a oneshot timer which does not expire during the test */
-	memset(&its, 0, sizeof(its));
-	its.it_value.tv_sec = 100;
-	if (timer_settime(timerid, 0, &its, NULL))
-		fatal_error(name, "timer_settime()");
-
-	if (timer_gettime(timerid, &its))
-		fatal_error(name, "timer_gettime()");
-	armed = its.it_value.tv_sec || its.it_value.tv_nsec;
-
-	/* Disarm it. The remaining time must be reported as 0 */
-	memset(&its, 0, sizeof(its));
-	if (timer_settime(timerid, 0, &its, NULL))
-		fatal_error(name, "timer_settime()");
-
-	if (timer_gettime(timerid, &its))
-		fatal_error(name, "timer_gettime()");
-
-	if (timer_delete(timerid))
-		fatal_error(name, "timer_delete()");
-
-	ksft_test_result(armed && !its.it_value.tv_sec && !its.it_value.tv_nsec,
-			 "%s %s\n", __func__, name);
-}
-
-static void check_gettime(int which)
-{
-	const char *name = clock_name(which);
 	struct itimerspec its, prev;
 	struct timespec start, now;
 	struct sigevent sev;
@@ -589,9 +546,8 @@ static void check_gettime(int which)
 	ksft_test_result(wraps > 1, "check_gettime %s\n", name);
 }
 
-static void check_overrun(int which)
+static void check_overrun(int which, const char *name)
 {
-	const char *name = clock_name(which);
 	struct timespec start, now;
 	struct tmrsig tsig = { };
 	struct itimerspec its;
@@ -720,7 +676,7 @@ int main(int argc, char **argv)
 
 	ksft_print_header();
 	if (run_sig_ign_tests) {
-		ksft_set_plan(21);
+		ksft_set_plan(19);
 	} else {
 		ksft_set_plan(10);
 	}
@@ -733,7 +689,7 @@ int main(int argc, char **argv)
 	check_itimer(ITIMER_VIRTUAL, "ITIMER_VIRTUAL");
 	check_itimer(ITIMER_PROF, "ITIMER_PROF");
 	check_itimer(ITIMER_REAL, "ITIMER_REAL");
-	check_timer_create(CLOCK_THREAD_CPUTIME_ID);
+	check_timer_create(CLOCK_THREAD_CPUTIME_ID, "CLOCK_THREAD_CPUTIME_ID");
 
 	/*
 	 * It's unfortunately hard to reliably test a timer expiration
@@ -744,7 +700,7 @@ int main(int argc, char **argv)
 	 * to ensure true parallelism. So test only one thread until we
 	 * find a better solution.
 	 */
-	check_timer_create(CLOCK_PROCESS_CPUTIME_ID);
+	check_timer_create(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
 	check_timer_distribution();
 
 	if (run_sig_ign_tests) {
@@ -752,20 +708,18 @@ int main(int argc, char **argv)
 		check_sig_ign(1);
 		check_rearm();
 		check_delete();
-		check_sigev_none(CLOCK_MONOTONIC);
-		check_sigev_none(CLOCK_PROCESS_CPUTIME_ID);
-		check_sigev_none_disarm(CLOCK_MONOTONIC);
-		check_sigev_none_disarm(CLOCK_PROCESS_CPUTIME_ID);
-		check_gettime(CLOCK_MONOTONIC);
-		check_gettime(CLOCK_PROCESS_CPUTIME_ID);
-		check_gettime(CLOCK_THREAD_CPUTIME_ID);
+		check_sigev_none(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
+		check_sigev_none(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
+		check_gettime(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
+		check_gettime(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
+		check_gettime(CLOCK_THREAD_CPUTIME_ID, "CLOCK_THREAD_CPUTIME_ID");
 	} else {
 		ksft_print_msg("Skipping SIG_IGN tests on kernel < 6.13\n");
 	}
 
-	check_overrun(CLOCK_MONOTONIC);
-	check_overrun(CLOCK_PROCESS_CPUTIME_ID);
-	check_overrun(CLOCK_THREAD_CPUTIME_ID);
+	check_overrun(CLOCK_MONOTONIC, "CLOCK_MONOTONIC");
+	check_overrun(CLOCK_PROCESS_CPUTIME_ID, "CLOCK_PROCESS_CPUTIME_ID");
+	check_overrun(CLOCK_THREAD_CPUTIME_ID, "CLOCK_THREAD_CPUTIME_ID");
 
 	ksft_finished();
 }

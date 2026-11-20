@@ -255,8 +255,9 @@ static int cp110_syscon_common_probe(struct platform_device *pdev,
 	if (ret)
 		return ret;
 
-	cp110_clk_data = devm_kzalloc_flex(dev, *cp110_clk_data, hws,
-					   CP110_CLK_NUM);
+	cp110_clk_data = devm_kzalloc(dev, struct_size(cp110_clk_data, hws,
+						       CP110_CLK_NUM),
+				      GFP_KERNEL);
 	if (!cp110_clk_data)
 		return -ENOMEM;
 	cp110_clk_data->num = CP110_CLK_NUM;

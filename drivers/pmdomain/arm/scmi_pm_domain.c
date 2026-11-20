@@ -63,15 +63,15 @@ static int scmi_pm_domain_probe(struct scmi_device *sdev)
 		return num_domains;
 	}
 
-	scmi_pd = devm_kzalloc_objs(dev, *scmi_pd, num_domains);
+	scmi_pd = devm_kcalloc(dev, num_domains, sizeof(*scmi_pd), GFP_KERNEL);
 	if (!scmi_pd)
 		return -ENOMEM;
 
-	scmi_pd_data = devm_kzalloc_obj(dev, *scmi_pd_data);
+	scmi_pd_data = devm_kzalloc(dev, sizeof(*scmi_pd_data), GFP_KERNEL);
 	if (!scmi_pd_data)
 		return -ENOMEM;
 
-	domains = devm_kzalloc_objs(dev, *domains, num_domains);
+	domains = devm_kcalloc(dev, num_domains, sizeof(*domains), GFP_KERNEL);
 	if (!domains)
 		return -ENOMEM;
 

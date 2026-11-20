@@ -835,7 +835,7 @@ static int k3_dma_probe(struct platform_device *op)
 	struct k3_dma_dev *d;
 	int i, ret, irq = 0;
 
-	d = devm_kzalloc_obj(&op->dev, *d);
+	d = devm_kzalloc(&op->dev, sizeof(*d), GFP_KERNEL);
 	if (!d)
 		return -ENOMEM;
 
@@ -882,7 +882,8 @@ static int k3_dma_probe(struct platform_device *op)
 		return -ENOMEM;
 
 	/* init phy channel */
-	d->phy = devm_kzalloc_objs(&op->dev, struct k3_dma_phy, d->dma_channels);
+	d->phy = devm_kcalloc(&op->dev,
+		d->dma_channels, sizeof(struct k3_dma_phy), GFP_KERNEL);
 	if (d->phy == NULL)
 		return -ENOMEM;
 
@@ -916,8 +917,8 @@ static int k3_dma_probe(struct platform_device *op)
 	d->slave.copy_align = DMAENGINE_ALIGN_8_BYTES;
 
 	/* init virtual channel */
-	d->chans = devm_kzalloc_objs(&op->dev, struct k3_dma_chan,
-				     d->dma_requests);
+	d->chans = devm_kcalloc(&op->dev,
+		d->dma_requests, sizeof(struct k3_dma_chan), GFP_KERNEL);
 	if (d->chans == NULL)
 		return -ENOMEM;
 

@@ -8,7 +8,6 @@
  */
 #include <dt-bindings/soc/renesas,r8a78000-mfis.h>
 #include <linux/device.h>
-#include <linux/hwspinlock.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -20,18 +19,12 @@
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
 
-/* FIXME: hwspinlock core refactoring to not need internal header is on-going */
-#include "../../hwspinlock/hwspinlock_internal.h"
-
-#define MFISLCKR0	0xc0
-#define MFISLCKR8	0x0724
 #define MFISWPCNTR	0x0900
 #define MFISWACNTR	0x0904
 
 #define MFIS_X5H_IICR(i) ((i) * 0x1000 + 0x00)
 #define MFIS_X5H_EICR(i) ((i) * 0x1000 + 0x04)
 
-#define MFIS_NUM_LOCKS 64
 #define MFIS_UNPROTECT_KEY 0xACCE0000
 
 struct mfis_priv;
@@ -49,7 +42,6 @@ struct mfis_info {
 	unsigned int mb_tx_uses_eicr:1;
 	unsigned int mb_channels_are_unidir:1;
 	u32 (*mb_calc_reg)(u32 chan_num, bool tx_uses_eicr, bool is_only_rx);
-	int hwsp_base_id;
 };
 
 struct mfis_chan_priv {
@@ -58,7 +50,7 @@ struct mfis_chan_priv {
 };
 
 struct mfis_priv {
-	raw_spinlock_t unprotect_lock; /* guards access to unprotection reg */
+	spinlock_t unprotect_lock; /* guards access to the unprotection reg */
 	struct device *dev;
 	struct mfis_reg common_reg;
 	struct mfis_reg mbox_reg;
@@ -67,9 +59,6 @@ struct mfis_priv {
 	/* mailbox private data */
 	struct mbox_controller mbox;
 	struct mfis_chan_priv *chan_privs;
-
-	/* hwspinlock private data */
-	struct hwspinlock_device bank; /* flex array inside, must be last! */
 };
 
 static u32 mfis_read(struct mfis_reg *mreg, unsigned int reg)
@@ -91,43 +80,11 @@ static void mfis_write(struct mfis_reg *mreg, u32 reg, u32 val)
 	unprotect_code = (MFIS_UNPROTECT_KEY & ~unprotect_mask) |
 			 ((mreg->start + reg) & unprotect_mask);
 
-	raw_spin_lock_irqsave(&priv->unprotect_lock, flags);
+	spin_lock_irqsave(&priv->unprotect_lock, flags);
 	iowrite32(unprotect_code, priv->common_reg.base + MFISWACNTR);
 	iowrite32(val, mreg->base + reg);
-	raw_spin_unlock_irqrestore(&priv->unprotect_lock, flags);
+	spin_unlock_irqrestore(&priv->unprotect_lock, flags);
 }
-
-/********************************************************
- *			HW Spinlocks			*
- ********************************************************/
-
-#define MFISLCKR8_CH_OFS (MFISLCKR8 - 8 * sizeof(u32))
-
-static int rcar_mfis_hwsp_trylock(struct hwspinlock *lock)
-{
-	struct mfis_priv *priv = lock->priv;
-	int id = hwlock_to_id(lock) - lock->bank->base_id;
-	u32 val, reg;
-
-	reg = id * sizeof(u32) + (id < 8 ? MFISLCKR0 : MFISLCKR8_CH_OFS);
-	val = mfis_read(&priv->common_reg, reg);
-	return !val;
-}
-
-static void rcar_mfis_hwsp_unlock(struct hwspinlock *lock)
-{
-	struct mfis_priv *priv = lock->priv;
-	int id = hwlock_to_id(lock) - lock->bank->base_id;
-	u32 reg;
-
-	reg = id * sizeof(u32) + (id < 8 ? MFISLCKR0 : MFISLCKR8_CH_OFS);
-	mfis_write(&priv->common_reg, reg, 0);
-}
-
-static const struct hwspinlock_ops rcar_mfis_hwsp_ops = {
-	.trylock	= rcar_mfis_hwsp_trylock,
-	.unlock		= rcar_mfis_hwsp_unlock,
-};
 
 /********************************************************
  *			Mailbox				*
@@ -300,11 +257,12 @@ static int mfis_mb_probe(struct mfis_priv *priv)
 		num_chan *= 2;
 	}
 
-	chan  = devm_kzalloc_objs(dev, *chan, num_chan);
+	chan  = devm_kcalloc(dev, num_chan, sizeof(*chan), GFP_KERNEL);
 	if (!chan)
 		return -ENOMEM;
 
-	priv->chan_privs = devm_kzalloc_objs(dev, *priv->chan_privs, num_chan);
+	priv->chan_privs = devm_kcalloc(dev, num_chan, sizeof(*priv->chan_privs),
+					    GFP_KERNEL);
 	if (!priv->chan_privs)
 		return -ENOMEM;
 
@@ -356,7 +314,7 @@ static int mfis_probe(struct platform_device *pdev)
 	struct mfis_priv *priv;
 	int ret;
 
-	priv = devm_kzalloc_flex(dev, *priv, bank.lock, MFIS_NUM_LOCKS);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -365,21 +323,13 @@ static int mfis_probe(struct platform_device *pdev)
 	if (!priv->info)
 		return -ENOENT;
 
-	raw_spin_lock_init(&priv->unprotect_lock);
+	spin_lock_init(&priv->unprotect_lock);
 
 	ret = mfis_reg_probe(pdev, priv, &priv->common_reg, "common", true);
 	if (ret)
 		return ret;
 
 	ret = mfis_reg_probe(pdev, priv, &priv->mbox_reg, "mboxes", false);
-	if (ret)
-		return ret;
-
-	for (unsigned int ch = 0; ch < MFIS_NUM_LOCKS; ch++)
-		priv->bank.lock[ch].priv = priv;
-
-	ret = devm_hwspin_lock_register(dev, &priv->bank, &rcar_mfis_hwsp_ops,
-					priv->info->hwsp_base_id, MFIS_NUM_LOCKS);
 	if (ret)
 		return ret;
 
@@ -407,7 +357,6 @@ static const struct mfis_info mfis_info_r8a78000_scp = {
 	.mb_tx_uses_eicr = true,
 	.mb_channels_are_unidir = true,
 	.mb_calc_reg = mfis_mb_r8a78000_calc_reg,
-	.hwsp_base_id = MFIS_NUM_LOCKS,
 };
 
 static const struct of_device_id mfis_mfd_of_match[] = {

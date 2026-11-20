@@ -20,7 +20,7 @@ static int vivaldi_probe(struct hid_device *hdev,
 	struct vivaldi_data *drvdata;
 	int ret;
 
-	drvdata = devm_kzalloc_obj(&hdev->dev, *drvdata);
+	drvdata = devm_kzalloc(&hdev->dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 

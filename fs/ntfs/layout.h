@@ -811,17 +811,14 @@ enum {
  *                                  on XP SP2+.
  * @data.non_resident.reserved:     5 bytes for 8-byte alignment.
  * @data.non_resident.allocated_size:
- *                                  Allocated size in bytes, a multiple of
- *                                  the cluster size.  For compressed and
- *                                  sparse attributes holes count as
- *                                  allocated; the clusters actually in use
- *                                  are in compressed_size.
+ *                                  Allocated disk space in bytes.
+ *                                  For compressed: logical allocated size.
  * @data.non_resident.data_size:    Logical attribute value size in bytes.
- *                                  Never larger than allocated_size, also
- *                                  when compressed/sparse.
+ *                                  Can be larger than allocated_size if
+ *                                  compressed/sparse.
  * @data.non_resident.initialized_size:
  *                                  Initialized portion size in bytes.
- *                                  Usually equals data_size, never larger.
+ *                                  Usually equals data_size.
  * @data.non_resident.compressed_size:
  *                                  Compressed on-disk size in bytes.
  *                                  Only present when compressed or sparse.
@@ -1883,8 +1880,8 @@ struct index_header {
  * @index_block_size:   Size of each index block in bytes
  *                      (in $INDEX_ALLOCATION).
  * @clusters_per_index_block:
- *                      Clusters per index block, or 512-byte units when
- *                      the index block is smaller than a cluster.
+ *                      Clusters per index block (or log2(bytes)
+ *                      if < cluster).
  *                      Power of 2; used for encoding block size.
  * @reserved:           3 bytes reserved/alignment (zero).
  * @index:              Index header for root entries (entries follow
@@ -1924,7 +1921,7 @@ struct index_root {
  * @lsn:                Log sequence number of last modification.
  * @index_block_vcn:    VCN of this index block.
  *                      Units: clusters if cluster_size <= index_block_size;
- *                      512-byte blocks otherwise.
+ *                      sectors otherwise.
  * @index:              Index header describing entries in this block.
  *
  * When creating the index block, we place the update sequence array at this

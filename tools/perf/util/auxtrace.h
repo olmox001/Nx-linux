@@ -65,10 +65,6 @@ enum itrace_period_type {
  * struct itrace_synth_opts - AUX area tracing synthesis options.
  * @set: indicates whether or not options have been set
  * @default_no_sample: Default to no sampling.
- * @default_single_event_per_ip: Default to synthesizing at most 1 event per IP
- *                               (equivalent to --itrace=i1i). Used by commands
- *                               like 'perf annotate --data-type' to avoid duplicate
- *                               sample counts for a single instruction.
  * @inject: indicates the event (not just the sample) must be fully synthesized
  *          because 'perf inject' will write it out
  * @instructions: whether to synthesize 'instructions' events
@@ -121,7 +117,6 @@ enum itrace_period_type {
 struct itrace_synth_opts {
 	bool			set;
 	bool			default_no_sample;
-	bool			default_single_event_per_ip;
 	bool			inject;
 	bool			instructions;
 	bool			cycles;
@@ -627,7 +622,7 @@ int itrace_do_parse_synth_opts(struct itrace_synth_opts *synth_opts,
 int itrace_parse_synth_opts(const struct option *opt, const char *str,
 			    int unset);
 void itrace_synth_opts__set_default(struct itrace_synth_opts *synth_opts,
-				    bool no_sample, bool single_event_per_ip);
+				    bool no_sample);
 
 size_t perf_event__fprintf_auxtrace_error(union perf_event *event, FILE *fp);
 void perf_session__auxtrace_error_inc(struct perf_session *session,
@@ -650,7 +645,6 @@ void auxtrace__free(struct perf_session *session);
 bool auxtrace__evsel_is_auxtrace(struct perf_session *session,
 				 struct evsel *evsel);
 u64 auxtrace_synth_id_range_start(struct evsel *evsel);
-bool auxtrace__dont_decode(struct perf_session *session);
 
 #define ITRACE_HELP \
 "				i[period]:    		synthesize instructions events\n" \

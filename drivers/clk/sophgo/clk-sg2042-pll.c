@@ -495,8 +495,9 @@ static int sg2042_init_clkdata(struct platform_device *pdev,
 {
 	struct sg2042_clk_data *clk_data;
 
-	clk_data = devm_kzalloc_flex(&pdev->dev, *clk_data, onecell_data.hws,
-				     num_clks);
+	clk_data = devm_kzalloc(&pdev->dev,
+				struct_size(clk_data, onecell_data.hws, num_clks),
+				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 

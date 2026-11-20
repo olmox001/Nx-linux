@@ -283,7 +283,7 @@ static int rt8515_probe(struct platform_device *pdev)
 	struct v4l2_flash_config v4l2_sd_cfg = {};
 	int ret;
 
-	rt = devm_kzalloc_obj(dev, *rt);
+	rt = devm_kzalloc(dev, sizeof(*rt), GFP_KERNEL);
 	if (!rt)
 		return -ENOMEM;
 

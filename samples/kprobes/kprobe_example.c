@@ -6,7 +6,7 @@
  * For more information on theory of operation of kprobes, see
  * Documentation/trace/kprobes.rst
  *
- * You will see the trace data in /sys/kernel/tracing/trace
+ * You will see the trace data in /var/log/messages and on the console
  * whenever kernel_clone() is invoked to create a new process.
  */
 
@@ -15,7 +15,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/kprobes.h>
-#include <linux/trace_printk.h>
 
 static char symbol[KSYM_NAME_LEN] = "kernel_clone";
 module_param_string(symbol, symbol, KSYM_NAME_LEN, 0644);
@@ -29,39 +28,39 @@ static struct kprobe kp = {
 static int __kprobes handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
 #ifdef CONFIG_X86
-	trace_printk("<%s> p->addr = 0x%p, ip = %lx, flags = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->ip, regs->flags);
+	pr_info("<%s> p->addr = 0x%p, ip = %lx, flags = 0x%lx\n",
+		p->symbol_name, p->addr, regs->ip, regs->flags);
 #endif
 #ifdef CONFIG_PPC
-	trace_printk("<%s> p->addr = 0x%p, nip = 0x%lx, msr = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->nip, regs->msr);
+	pr_info("<%s> p->addr = 0x%p, nip = 0x%lx, msr = 0x%lx\n",
+		p->symbol_name, p->addr, regs->nip, regs->msr);
 #endif
 #ifdef CONFIG_MIPS
-	trace_printk("<%s> p->addr = 0x%p, epc = 0x%lx, status = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->cp0_epc, regs->cp0_status);
+	pr_info("<%s> p->addr = 0x%p, epc = 0x%lx, status = 0x%lx\n",
+		p->symbol_name, p->addr, regs->cp0_epc, regs->cp0_status);
 #endif
 #ifdef CONFIG_ARM64
-	trace_printk("<%s> p->addr = 0x%p, pc = 0x%lx, pstate = 0x%lx\n",
-		     p->symbol_name, p->addr, (long)regs->pc, (long)regs->pstate);
+	pr_info("<%s> p->addr = 0x%p, pc = 0x%lx, pstate = 0x%lx\n",
+		p->symbol_name, p->addr, (long)regs->pc, (long)regs->pstate);
 #endif
 #ifdef CONFIG_ARM
-	trace_printk("<%s> p->addr = 0x%p, pc = 0x%lx, cpsr = 0x%lx\n",
-		     p->symbol_name, p->addr, (long)regs->ARM_pc, (long)regs->ARM_cpsr);
+	pr_info("<%s> p->addr = 0x%p, pc = 0x%lx, cpsr = 0x%lx\n",
+		p->symbol_name, p->addr, (long)regs->ARM_pc, (long)regs->ARM_cpsr);
 #endif
 #ifdef CONFIG_RISCV
-	trace_printk("<%s> p->addr = 0x%p, pc = 0x%lx, status = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->epc, regs->status);
+	pr_info("<%s> p->addr = 0x%p, pc = 0x%lx, status = 0x%lx\n",
+		p->symbol_name, p->addr, regs->epc, regs->status);
 #endif
 #ifdef CONFIG_S390
-	trace_printk("<%s> p->addr = 0x%p, ip = 0x%lx, flags = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->psw.addr, regs->flags);
+	pr_info("<%s> p->addr, 0x%p, ip = 0x%lx, flags = 0x%lx\n",
+		p->symbol_name, p->addr, regs->psw.addr, regs->flags);
 #endif
 #ifdef CONFIG_LOONGARCH
-	trace_printk("<%s> p->addr = 0x%p, era = 0x%lx, estat = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->csr_era, regs->csr_estat);
+	pr_info("<%s> p->addr = 0x%p, era = 0x%lx, estat = 0x%lx\n",
+		p->symbol_name, p->addr, regs->csr_era, regs->csr_estat);
 #endif
 
-	/* A trace_dump_stack(0) here will give a stack backtrace */
+	/* A dump_stack() here will give a stack backtrace */
 	return 0;
 }
 
@@ -70,36 +69,36 @@ static void __kprobes handler_post(struct kprobe *p, struct pt_regs *regs,
 				unsigned long flags)
 {
 #ifdef CONFIG_X86
-	trace_printk("<%s> p->addr = 0x%p, flags = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->flags);
+	pr_info("<%s> p->addr = 0x%p, flags = 0x%lx\n",
+		p->symbol_name, p->addr, regs->flags);
 #endif
 #ifdef CONFIG_PPC
-	trace_printk("<%s> p->addr = 0x%p, msr = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->msr);
+	pr_info("<%s> p->addr = 0x%p, msr = 0x%lx\n",
+		p->symbol_name, p->addr, regs->msr);
 #endif
 #ifdef CONFIG_MIPS
-	trace_printk("<%s> p->addr = 0x%p, status = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->cp0_status);
+	pr_info("<%s> p->addr = 0x%p, status = 0x%lx\n",
+		p->symbol_name, p->addr, regs->cp0_status);
 #endif
 #ifdef CONFIG_ARM64
-	trace_printk("<%s> p->addr = 0x%p, pstate = 0x%lx\n",
-		     p->symbol_name, p->addr, (long)regs->pstate);
+	pr_info("<%s> p->addr = 0x%p, pstate = 0x%lx\n",
+		p->symbol_name, p->addr, (long)regs->pstate);
 #endif
 #ifdef CONFIG_ARM
-	trace_printk("<%s> p->addr = 0x%p, cpsr = 0x%lx\n",
-		     p->symbol_name, p->addr, (long)regs->ARM_cpsr);
+	pr_info("<%s> p->addr = 0x%p, cpsr = 0x%lx\n",
+		p->symbol_name, p->addr, (long)regs->ARM_cpsr);
 #endif
 #ifdef CONFIG_RISCV
-	trace_printk("<%s> p->addr = 0x%p, status = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->status);
+	pr_info("<%s> p->addr = 0x%p, status = 0x%lx\n",
+		p->symbol_name, p->addr, regs->status);
 #endif
 #ifdef CONFIG_S390
-	trace_printk("<%s> p->addr = 0x%p, flags = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->flags);
+	pr_info("<%s> p->addr, 0x%p, flags = 0x%lx\n",
+		p->symbol_name, p->addr, regs->flags);
 #endif
 #ifdef CONFIG_LOONGARCH
-	trace_printk("<%s> p->addr = 0x%p, estat = 0x%lx\n",
-		     p->symbol_name, p->addr, regs->csr_estat);
+	pr_info("<%s> p->addr = 0x%p, estat = 0x%lx\n",
+		p->symbol_name, p->addr, regs->csr_estat);
 #endif
 }
 

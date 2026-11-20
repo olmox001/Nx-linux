@@ -563,7 +563,7 @@ int mtd_pairing_info_to_wunit(struct mtd_info *mtd,
 		return -EINVAL;
 
 	if (master->pairing && master->pairing->get_wunit)
-		return master->pairing->get_wunit(master, info);
+		return mtd->pairing->get_wunit(master, info);
 
 	return info->pair;
 }

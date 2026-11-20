@@ -42,7 +42,7 @@ int dcss_blkctl_init(struct dcss_dev *dcss, unsigned long blkctl_base)
 {
 	struct dcss_blkctl *blkctl;
 
-	blkctl = devm_kzalloc_obj(dcss->dev, *blkctl);
+	blkctl = devm_kzalloc(dcss->dev, sizeof(*blkctl), GFP_KERNEL);
 	if (!blkctl)
 		return -ENOMEM;
 

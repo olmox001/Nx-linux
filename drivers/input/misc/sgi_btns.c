@@ -81,7 +81,7 @@ static int sgi_buttons_probe(struct platform_device *pdev)
 	struct input_dev *input;
 	int error, i;
 
-	bdev = devm_kzalloc_obj(&pdev->dev, *bdev);
+	bdev = devm_kzalloc(&pdev->dev, sizeof(*bdev), GFP_KERNEL);
 	if (!bdev)
 		return -ENOMEM;
 

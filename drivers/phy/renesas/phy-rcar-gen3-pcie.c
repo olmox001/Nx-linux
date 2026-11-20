@@ -88,7 +88,7 @@ static int rcar_gen3_phy_pcie_probe(struct platform_device *pdev)
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
-	phy = devm_kzalloc_obj(dev, *phy);
+	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
 

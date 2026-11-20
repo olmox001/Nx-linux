@@ -177,6 +177,9 @@ enum {
 	MLX4_DEV_CAP_FLAG_VEP_UC_STEER	= 1LL << 41,
 	MLX4_DEV_CAP_FLAG_VEP_MC_STEER	= 1LL << 42,
 	MLX4_DEV_CAP_FLAG_COUNTERS	= 1LL << 48,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	MLX4_DEV_CAP_FLAG_COUNTERS_EXT	= 1LL << 49,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	MLX4_DEV_CAP_FLAG_RSS_IP_FRAG   = 1LL << 52,
 	MLX4_DEV_CAP_FLAG_SET_ETH_SCHED = 1LL << 53,
 	MLX4_DEV_CAP_FLAG_SENSE_SUPPORT	= 1LL << 55,
@@ -573,7 +576,11 @@ struct mlx4_caps {
 	int			reserved_eqs;
 	int			num_comp_vectors;
 	int			num_mpts;
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	int			num_mtts;
+#else
+	u64			num_mtts;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	int			fmr_reserved_mtts;
 	int			reserved_mtts;
 	int			reserved_mrws;
@@ -888,6 +895,9 @@ struct mlx4_dev {
 	u64			regid_allmulti_array[MLX4_MAX_PORTS + 1];
 	struct mlx4_vf_dev     *dev_vfs;
 	u8  uar_page_shift;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	spinlock_t		eq_accounting_lock;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 };
 
 struct mlx4_adev {

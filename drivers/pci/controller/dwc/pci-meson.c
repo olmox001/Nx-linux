@@ -385,7 +385,7 @@ static int meson_pcie_probe(struct platform_device *pdev)
 	struct meson_pcie *mp;
 	int ret;
 
-	mp = devm_kzalloc_obj(dev, *mp);
+	mp = devm_kzalloc(dev, sizeof(*mp), GFP_KERNEL);
 	if (!mp)
 		return -ENOMEM;
 
@@ -397,7 +397,7 @@ static int meson_pcie_probe(struct platform_device *pdev)
 
 	mp->phy = devm_phy_get(dev, "pcie");
 	if (IS_ERR(mp->phy)) {
-		dev_err(dev, "get phy failed, %pe\n", mp->phy);
+		dev_err(dev, "get phy failed, %ld\n", PTR_ERR(mp->phy));
 		return PTR_ERR(mp->phy);
 	}
 

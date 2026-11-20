@@ -177,7 +177,7 @@ static int dm816x_usb_phy_probe(struct platform_device *pdev)
 	struct usb_otg *otg;
 	int error;
 
-	phy = devm_kzalloc_obj(&pdev->dev, *phy);
+	phy = devm_kzalloc(&pdev->dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
 
@@ -200,7 +200,7 @@ static int dm816x_usb_phy_probe(struct platform_device *pdev)
 	if (phy->usbphy_ctrl == 0x2c)
 		phy->instance = 1;
 
-	otg = devm_kzalloc_obj(&pdev->dev, *otg);
+	otg = devm_kzalloc(&pdev->dev, sizeof(*otg), GFP_KERNEL);
 	if (!otg)
 		return -ENOMEM;
 

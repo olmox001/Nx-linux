@@ -210,15 +210,19 @@ static irqreturn_t nct6694_irq(int irq, void *dev_id)
 	};
 	int ret;
 
-	guard(rtc_ops)(data->rtc);
+	rtc_lock(data->rtc);
 
 	sts->irq_en = NCT6694_RTC_IRQ_EN;
 	sts->irq_pend = NCT6694_RTC_IRQ_STS;
 	ret = nct6694_write_msg(data->nct6694, &cmd_hd, sts);
-	if (ret)
+	if (ret) {
+		rtc_unlock(data->rtc);
 		return IRQ_NONE;
+	}
 
 	rtc_update_irq(data->rtc, 1, RTC_IRQF | RTC_AF);
+
+	rtc_unlock(data->rtc);
 
 	return IRQ_HANDLED;
 }
@@ -236,11 +240,12 @@ static int nct6694_rtc_probe(struct platform_device *pdev)
 	struct nct6694 *nct6694 = dev_get_drvdata(pdev->dev.parent);
 	int ret;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	data->msg = devm_kzalloc_obj(&pdev->dev, union nct6694_rtc_msg);
+	data->msg = devm_kzalloc(&pdev->dev, sizeof(union nct6694_rtc_msg),
+				 GFP_KERNEL);
 	if (!data->msg)
 		return -ENOMEM;
 

@@ -1158,12 +1158,8 @@ static int dvb_register_ci_mac(struct cx23885_tsport *port)
 		info.platform_data = &sp2_config;
 		request_module(info.type);
 		client_ci = i2c_new_client_device(&i2c_bus->i2c_adap, &info);
-		if (IS_ERR(client_ci))
-			return PTR_ERR(client_ci);
-		if (!client_ci->dev.driver) {
-			i2c_unregister_device(client_ci);
+		if (!i2c_client_has_driver(client_ci))
 			return -ENODEV;
-		}
 		if (!try_module_get(client_ci->dev.driver->owner)) {
 			i2c_unregister_device(client_ci);
 			return -ENODEV;
@@ -1206,7 +1202,7 @@ static int dvb_register(struct cx23885_tsport *port)
 	int (*p_set_voltage)(struct dvb_frontend *fe,
 			     enum fe_sec_voltage voltage) = NULL;
 	int mfe_shared = 0; /* bus not shared by default */
-	int ret = -EINVAL;
+	int ret;
 
 	/* Get the first frontend */
 	fe0 = vb2_dvb_get_frontend(&port->frontends, 1);
@@ -2590,10 +2586,8 @@ static int dvb_register(struct cx23885_tsport *port)
 		goto frontend_detach;
 
 	ret = dvb_register_ci_mac(port);
-	if (ret) {
-		vb2_dvb_unregister_bus(&port->frontends);
+	if (ret)
 		goto frontend_detach;
-	}
 
 	return 0;
 
@@ -2624,7 +2618,7 @@ frontend_detach:
 
 	port->gate_ctrl = NULL;
 	vb2_dvb_dealloc_frontends(&port->frontends);
-	return ret;
+	return -EINVAL;
 }
 
 int cx23885_dvb_register(struct cx23885_tsport *port)

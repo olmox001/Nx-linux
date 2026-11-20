@@ -332,7 +332,7 @@ int omap_mcbsp_st_init(struct platform_device *pdev)
 	if (!res)
 		return 0;
 
-	st_data = devm_kzalloc_obj(mcbsp->dev, *mcbsp->st_data);
+	st_data = devm_kzalloc(mcbsp->dev, sizeof(*mcbsp->st_data), GFP_KERNEL);
 	if (!st_data)
 		return -ENOMEM;
 

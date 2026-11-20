@@ -1048,7 +1048,7 @@ static int acpi_video_bus_check(struct acpi_video_bus *video)
 	if (!video)
 		return -EINVAL;
 
-	dev = acpi_dev_get_pci_dev(video->device);
+	dev = acpi_get_pci_dev(video->device->handle);
 	if (!dev)
 		return -ENODEV;
 	pci_dev_put(dev);
@@ -1700,9 +1700,10 @@ static int acpi_video_resume(struct notifier_block *nb,
 
 static void acpi_video_dev_register_backlight(struct acpi_video_device *device)
 {
-	struct device *phys_dev, *parent = NULL;
 	struct backlight_properties props;
 	struct pci_dev *pdev;
+	acpi_handle acpi_parent;
+	struct device *parent = NULL;
 	int result;
 	static int count;
 	char *name;
@@ -1716,9 +1717,13 @@ static void acpi_video_dev_register_backlight(struct acpi_video_device *device)
 		return;
 	count++;
 
-	pdev = acpi_dev_get_pci_dev(acpi_dev_parent(device->dev));
-	if (pdev)
-		parent = &pdev->dev;
+	if (ACPI_SUCCESS(acpi_get_parent(device->dev->handle, &acpi_parent))) {
+		pdev = acpi_get_pci_dev(acpi_parent);
+		if (pdev) {
+			parent = &pdev->dev;
+			pci_dev_put(pdev);
+		}
+	}
 
 	memset(&props, 0, sizeof(struct backlight_properties));
 	props.type = BACKLIGHT_FIRMWARE;
@@ -1732,7 +1737,7 @@ static void acpi_video_dev_register_backlight(struct acpi_video_device *device)
 	kfree(name);
 	if (IS_ERR(device->backlight)) {
 		device->backlight = NULL;
-		goto put_parent;
+		return;
 	}
 
 	/*
@@ -1742,12 +1747,8 @@ static void acpi_video_dev_register_backlight(struct acpi_video_device *device)
 	device->backlight->props.brightness =
 			acpi_video_get_brightness(device->backlight);
 
-	phys_dev = acpi_bus_get_primary_device(device->dev);
-	if (!phys_dev)
-		phys_dev = get_device(parent);
-
-	device->cooling_dev = thermal_cooling_device_create(phys_dev, "LCD", device,
-							    &video_cooling_ops);
+	device->cooling_dev = thermal_cooling_device_register("LCD", device,
+							      &video_cooling_ops);
 	if (IS_ERR(device->cooling_dev)) {
 		/*
 		 * Set cooling_dev to NULL so we don't crash trying to free it.
@@ -1756,17 +1757,21 @@ static void acpi_video_dev_register_backlight(struct acpi_video_device *device)
 		 * -- dtor
 		 */
 		device->cooling_dev = NULL;
-		goto put_phys_dev;
+		return;
 	}
 
-	dev_info(&device->cooling_dev->device, "Using ACPI device %s\n",
-		acpi_dev_name(device->dev));
+	dev_info(&device->dev->dev, "registered as cooling_device%d\n",
+		 device->cooling_dev->id);
+	result = sysfs_create_link(&device->dev->dev.kobj,
+			&device->cooling_dev->device.kobj,
+			"thermal_cooling");
+	if (result)
+		pr_info("sysfs link creation failed\n");
 
-put_phys_dev:
-	put_device(phys_dev);
-
-put_parent:
-	put_device(parent);
+	result = sysfs_create_link(&device->cooling_dev->device.kobj,
+			&device->dev->dev.kobj, "device");
+	if (result)
+		pr_info("Reverse sysfs link creation failed\n");
 }
 
 static void acpi_video_run_bcl_for_osi(struct acpi_video_bus *video)
@@ -1824,10 +1829,6 @@ static int acpi_video_bus_register_backlight(struct acpi_video_bus *video)
 
 static void acpi_video_dev_unregister_backlight(struct acpi_video_device *device)
 {
-	if (device->cooling_dev) {
-		thermal_cooling_device_unregister(device->cooling_dev);
-		device->cooling_dev = NULL;
-	}
 	if (device->backlight) {
 		backlight_device_unregister(device->backlight);
 		device->backlight = NULL;
@@ -1836,6 +1837,12 @@ static void acpi_video_dev_unregister_backlight(struct acpi_video_device *device
 		kfree(device->brightness->levels);
 		kfree(device->brightness);
 		device->brightness = NULL;
+	}
+	if (device->cooling_dev) {
+		sysfs_remove_link(&device->dev->dev.kobj, "thermal_cooling");
+		sysfs_remove_link(&device->cooling_dev->device.kobj, "device");
+		thermal_cooling_device_unregister(device->cooling_dev);
+		device->cooling_dev = NULL;
 	}
 }
 

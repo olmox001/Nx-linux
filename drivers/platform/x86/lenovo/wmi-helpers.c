@@ -24,9 +24,8 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/notifier.h>
+#include <linux/unaligned.h>
 #include <linux/wmi.h>
-
-#include <asm/byteorder.h>
 
 #include "wmi-helpers.h"
 
@@ -43,33 +42,49 @@ static BLOCKING_NOTIFIER_HEAD(tm_chain_head);
  * @size: Length of the buffer.
  * @retval: Pointer for the return value to be assigned.
  *
- * Calls the specified WMI method for Lenovo WMI devices that return a WMI
- * integer. Validates the return value and assigns it to @retval when it's not
- * NULL, otherwise the return value is not validated.
+ * Calls wmidev_evaluate_method for Lenovo WMI devices that return an ACPI
+ * integer. Validates the return value type and assigns the value to the
+ * retval pointer.
  *
  * Return: 0 on success, or an error code.
  */
 int lwmi_dev_evaluate_int(struct wmi_device *wdev, u8 instance, u32 method_id,
 			  unsigned char *buf, size_t size, u32 *retval)
 {
-	struct wmi_buffer input = {
-		.length = size,
-		.data = buf,
-	};
-	struct wmi_buffer output;
-	int ret;
+	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
+	struct acpi_buffer input = { size, buf };
+	acpi_status status;
 
-	if (!retval)
-		return wmidev_invoke_procedure(wdev, instance, method_id, &input);
+	status = wmidev_evaluate_method(wdev, instance, method_id, &input,
+					&output);
+	if (ACPI_FAILURE(status))
+		return -EIO;
 
-	ret = wmidev_invoke_method(wdev, instance, method_id, &input,
-				   &output, sizeof(__le32));
-	if (ret)
-		return ret;
+	union acpi_object *ret_obj __free(kfree) = output.pointer;
 
-	__le32 *valp __free(kfree) = output.data;
+	if (retval) {
+		if (!ret_obj)
+			return -ENODATA;
 
-	*retval = le32_to_cpu(*valp);
+		switch (ret_obj->type) {
+		/*
+		 * The ACPI method may simply return a buffer when a u32
+		 * is expected. This is valid on Windows as its WMI-ACPI
+		 * driver converts everything to a common buffer.
+		 */
+		case ACPI_TYPE_BUFFER:
+			if (ret_obj->buffer.length < sizeof(u32))
+				return -ENXIO;
+
+			*retval = get_unaligned_le32(ret_obj->buffer.pointer);
+			return 0;
+		case ACPI_TYPE_INTEGER:
+			*retval = (u32)ret_obj->integer.value;
+			return 0;
+		default:
+			return -ENXIO;
+		}
+	}
 
 	return 0;
 };

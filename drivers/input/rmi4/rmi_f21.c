@@ -116,7 +116,7 @@ static int rmi_f21_probe(struct rmi_function *fn)
 		return -ENXIO;
 	}
 
-	f21 = devm_kzalloc_obj(&fn->dev, *f21);
+	f21 = devm_kzalloc(&fn->dev, sizeof(*f21), GFP_KERNEL);
 	if (!f21)
 		return -ENOMEM;
 

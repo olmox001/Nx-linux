@@ -183,8 +183,7 @@ static int adjust_systime(void __iomem *ioaddr, u32 sec, u32 nsec,
 					 10, 100000);
 }
 
-static void get_systime(void __iomem *ioaddr, u64 *systime,
-			struct ptp_system_timestamp *sts)
+static void get_systime(void __iomem *ioaddr, u64 *systime)
 {
 	u64 ns, sec0, sec1;
 
@@ -192,10 +191,8 @@ static void get_systime(void __iomem *ioaddr, u64 *systime,
 	sec1 = readl_relaxed(ioaddr + PTP_STSR);
 	do {
 		sec0 = sec1;
-		ptp_read_system_prets(sts);
 		/* Get the TSSS value */
-		ns = readl(ioaddr + PTP_STNSR);
-		ptp_read_system_postts(sts);
+		ns = readl_relaxed(ioaddr + PTP_STNSR);
 		/* Get the TSS value */
 		sec1 = readl_relaxed(ioaddr + PTP_STSR);
 	} while (sec0 != sec1);

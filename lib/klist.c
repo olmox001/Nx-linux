@@ -36,7 +36,6 @@
 #include <linux/klist.h>
 #include <linux/export.h>
 #include <linux/sched.h>
-#include <linux/sched/task.h>
 
 /*
  * Use the lowest bit of n_klist to mark deleted nodes and exclude
@@ -188,24 +187,18 @@ static void klist_release(struct kref *kref)
 
 	WARN_ON(!knode_dead(n));
 	list_del(&n->n_node);
-	knode_set_klist(n, NULL);
 	spin_lock(&klist_remove_lock);
 	list_for_each_entry_safe(waiter, tmp, &klist_remove_waiters, list) {
-		struct task_struct *p;
-
 		if (waiter->node != n)
 			continue;
 
-		p = waiter->process;
-		get_task_struct(p);
 		list_del(&waiter->list);
-		/* Publish only after the final waiter and n accesses */
-		smp_store_release(&waiter->woken, 1);
+		waiter->woken = 1;
 		mb();
-		wake_up_process(p);
-		put_task_struct(p);
+		wake_up_process(waiter->process);
 	}
 	spin_unlock(&klist_remove_lock);
+	knode_set_klist(n, NULL);
 }
 
 static int klist_dec_and_del(struct klist_node *n)
@@ -257,8 +250,7 @@ void klist_remove(struct klist_node *n)
 
 	for (;;) {
 		set_current_state(TASK_UNINTERRUPTIBLE);
-		/* Pairs with the release store in klist_release() */
-		if (smp_load_acquire(&waiter.woken))
+		if (waiter.woken)
 			break;
 		schedule();
 	}

@@ -1939,7 +1939,7 @@ static int hellcreek_probe(struct platform_device *pdev)
 	int ret, i;
 
 	data = of_device_get_match_data(dev);
-	hellcreek = devm_kzalloc_flex(dev, *hellcreek, ports, data->num_ports);
+	hellcreek = devm_kzalloc(dev, struct_size(hellcreek, ports, data->num_ports), GFP_KERNEL);
 	if (!hellcreek)
 		return -ENOMEM;
 
@@ -1955,8 +1955,10 @@ static int hellcreek_probe(struct platform_device *pdev)
 		struct hellcreek_port *port = &hellcreek->ports[i];
 
 		port->counter_values =
-			devm_kzalloc_objs(dev, *port->counter_values,
-					  ARRAY_SIZE(hellcreek_counter));
+			devm_kcalloc(dev,
+				     ARRAY_SIZE(hellcreek_counter),
+				     sizeof(*port->counter_values),
+				     GFP_KERNEL);
 		if (!port->counter_values)
 			return -ENOMEM;
 
@@ -2012,7 +2014,7 @@ static int hellcreek_probe(struct platform_device *pdev)
 
 	hellcreek_feature_detect(hellcreek);
 
-	hellcreek->ds = devm_kzalloc_obj(dev, *hellcreek->ds);
+	hellcreek->ds = devm_kzalloc(dev, sizeof(*hellcreek->ds), GFP_KERNEL);
 	if (!hellcreek->ds)
 		return -ENOMEM;
 
@@ -2091,7 +2093,7 @@ static const struct of_device_id hellcreek_of_match[] = {
 		.compatible = "hirschmann,hellcreek-de1soc-r1",
 		.data	    = &de1soc_r1_pdata,
 	},
-	{ /* sentinel */ }
+	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, hellcreek_of_match);
 

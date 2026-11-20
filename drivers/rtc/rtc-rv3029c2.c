@@ -270,17 +270,19 @@ static irqreturn_t rv3029_handle_irq(int irq, void *dev_id)
 	unsigned long events = 0;
 	int ret;
 
-	guard(rtc_ops)(rv3029->rtc);
+	rtc_lock(rv3029->rtc);
 
 	ret = regmap_read(rv3029->regmap, RV3029_IRQ_CTRL, &controls);
 	if (ret) {
 		dev_warn(dev, "Read IRQ Control Register error %d\n", ret);
+		rtc_unlock(rv3029->rtc);
 		return IRQ_NONE;
 	}
 
 	ret = regmap_read(rv3029->regmap, RV3029_IRQ_FLAGS, &flags);
 	if (ret) {
 		dev_warn(dev, "Read IRQ Flags Register error %d\n", ret);
+		rtc_unlock(rv3029->rtc);
 		return IRQ_NONE;
 	}
 
@@ -295,6 +297,7 @@ static irqreturn_t rv3029_handle_irq(int irq, void *dev_id)
 		regmap_write(rv3029->regmap, RV3029_IRQ_FLAGS, flags);
 		regmap_write(rv3029->regmap, RV3029_IRQ_CTRL, controls);
 	}
+	rtc_unlock(rv3029->rtc);
 
 	return IRQ_HANDLED;
 }
@@ -601,7 +604,7 @@ static ssize_t rv3029_hwmon_show_temp(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", temp_mC);
+	return sprintf(buf, "%d\n", temp_mC);
 }
 
 static ssize_t rv3029_hwmon_set_update_interval(struct device *dev,
@@ -654,7 +657,7 @@ static ssize_t rv3029_hwmon_show_update_interval(struct device *dev,
 		interval_ms = 0;
 	}
 
-	return sysfs_emit(buf, "%d\n", interval_ms);
+	return sprintf(buf, "%d\n", interval_ms);
 }
 
 static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO, rv3029_hwmon_show_temp,
@@ -715,7 +718,7 @@ static int rv3029_probe(struct device *dev, struct regmap *regmap, int irq,
 	};
 	int rc = 0;
 
-	rv3029 = devm_kzalloc_obj(dev, *rv3029);
+	rv3029 = devm_kzalloc(dev, sizeof(*rv3029), GFP_KERNEL);
 	if (!rv3029)
 		return -ENOMEM;
 

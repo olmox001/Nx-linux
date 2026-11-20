@@ -51,8 +51,7 @@ struct vga_device {
 	unsigned int mem_norm_cnt;	/* normal MEM count */
 	bool bridge_has_one_vga;
 	bool is_firmware_default;	/* device selected by firmware */
-	unsigned int (*set_decode)(void *data, bool decode);
-	void *set_decode_data;
+	unsigned int (*set_decode)(struct pci_dev *pdev, bool decode);
 };
 
 static LIST_HEAD(vga_list);
@@ -576,7 +575,9 @@ static bool vga_is_firmware_default(struct pci_dev *pdev)
 static bool vga_arb_integrated_gpu(struct device *dev)
 {
 #if defined(CONFIG_ACPI)
-	return acpi_dev_is_video_device(ACPI_COMPANION(dev));
+	struct acpi_device *adev = ACPI_COMPANION(dev);
+
+	return adev && !strcmp(acpi_device_hid(adev), ACPI_VIDEO_HID);
 #else
 	return false;
 #endif
@@ -936,7 +937,6 @@ EXPORT_SYMBOL(vga_set_legacy_decoding);
  * vga_client_register - register or unregister a VGA arbitration client
  * @pdev: PCI device of the VGA client
  * @set_decode: VGA decode change callback
- * @data: private data to pass to callback
  *
  * Clients have two callback mechanisms they can use.
  *
@@ -958,18 +958,15 @@ EXPORT_SYMBOL(vga_set_legacy_decoding);
  * Returns: 0 on success, -ENODEV on failure
  */
 int vga_client_register(struct pci_dev *pdev,
-		unsigned int (*set_decode)(void *data, bool decode),
-		void *data)
+		unsigned int (*set_decode)(struct pci_dev *pdev, bool decode))
 {
 	unsigned long flags;
 	struct vga_device *vgadev;
 
 	spin_lock_irqsave(&vga_lock, flags);
 	vgadev = vgadev_find(pdev);
-	if (vgadev) {
+	if (vgadev)
 		vgadev->set_decode = set_decode;
-		vgadev->set_decode_data = data;
-	}
 	spin_unlock_irqrestore(&vga_lock, flags);
 	if (!vgadev)
 		return -ENODEV;
@@ -1469,7 +1466,7 @@ static void vga_arbiter_notify_clients(void)
 	spin_lock_irqsave(&vga_lock, flags);
 	list_for_each_entry(vgadev, &vga_list, list) {
 		if (vgadev->set_decode) {
-			new_decodes = vgadev->set_decode(vgadev->set_decode_data,
+			new_decodes = vgadev->set_decode(vgadev->pdev,
 							 new_state);
 			vga_update_device_decodes(vgadev, new_decodes);
 		}

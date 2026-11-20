@@ -1336,7 +1336,7 @@ static int ofdpa_port_ipv4_resolve(struct ofdpa_port *ofdpa_port,
 	int err = 0;
 
 	if (!n) {
-		n = ipv4_neigh_create(dev, &ip_addr);
+		n = neigh_create(&arp_tbl, &ip_addr, dev);
 		if (IS_ERR(n))
 			return PTR_ERR(n);
 	}
@@ -1435,7 +1435,7 @@ static int ofdpa_port_vlan_flood_group(struct ofdpa_port *ofdpa_port,
 	int err = 0;
 	int i;
 
-	group_ids = kzalloc_objs(u32, port_count);
+	group_ids = kcalloc(port_count, sizeof(u32), GFP_KERNEL);
 	if (!group_ids)
 		return -ENOMEM;
 

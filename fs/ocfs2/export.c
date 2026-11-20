@@ -37,7 +37,6 @@ static struct dentry *ocfs2_get_dentry(struct super_block *sb,
 	struct inode *inode;
 	struct ocfs2_super *osb = OCFS2_SB(sb);
 	u64 blkno = handle->ih_blkno;
-	unsigned int nofs_flag = 0;
 	int status, set;
 	struct dentry *result;
 
@@ -60,7 +59,7 @@ static struct dentry *ocfs2_get_dentry(struct super_block *sb,
 	 * This will synchronize us against ocfs2_delete_inode() on
 	 * all nodes
 	 */
-	status = ocfs2_nfs_sync_lock(osb, 1, &nofs_flag);
+	status = ocfs2_nfs_sync_lock(osb, 1);
 	if (status < 0) {
 		mlog(ML_ERROR, "getting nfs sync lock(EX) failed %d\n", status);
 		goto check_err;
@@ -91,7 +90,7 @@ static struct dentry *ocfs2_get_dentry(struct super_block *sb,
 	inode = ocfs2_iget(osb, blkno, 0, 0);
 
 unlock_nfs_sync:
-	ocfs2_nfs_sync_unlock(osb, 1, nofs_flag);
+	ocfs2_nfs_sync_unlock(osb, 1);
 
 check_err:
 	if (status < 0) {
@@ -134,13 +133,12 @@ static struct dentry *ocfs2_get_parent(struct dentry *child)
 	u64 blkno;
 	struct dentry *parent;
 	struct inode *dir = d_inode(child);
-	unsigned int nofs_flag = 0;
 	int set;
 
 	trace_ocfs2_get_parent(child, child->d_name.len, child->d_name.name,
 			       (unsigned long long)OCFS2_I(dir)->ip_blkno);
 
-	status = ocfs2_nfs_sync_lock(OCFS2_SB(dir->i_sb), 1, &nofs_flag);
+	status = ocfs2_nfs_sync_lock(OCFS2_SB(dir->i_sb), 1);
 	if (status < 0) {
 		mlog(ML_ERROR, "getting nfs sync lock(EX) failed %d\n", status);
 		parent = ERR_PTR(status);
@@ -185,7 +183,7 @@ bail_unlock:
 	ocfs2_inode_unlock(dir, 0);
 
 unlock_nfs_sync:
-	ocfs2_nfs_sync_unlock(OCFS2_SB(dir->i_sb), 1, nofs_flag);
+	ocfs2_nfs_sync_unlock(OCFS2_SB(dir->i_sb), 1);
 
 bail:
 	trace_ocfs2_get_parent_end(parent);

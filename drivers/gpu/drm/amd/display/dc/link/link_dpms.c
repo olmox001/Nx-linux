@@ -528,27 +528,19 @@ static bool write_i2c_redriver_setting(
 	return success;
 }
 
-static struct link_encoder *get_link_encoder(struct pipe_ctx *pipe_ctx)
-{
-	struct link_encoder *link_enc
-			= pipe_ctx->stream->ctx->dc->config.unify_link_enc_assignment
-			? pipe_ctx->link_res.dio_link_enc
-			: link_enc_cfg_get_link_enc(pipe_ctx->stream->link);
-
-	ASSERT(link_enc);
-	return link_enc;
-}
-
 static void update_psp_stream_config(struct pipe_ctx *pipe_ctx, bool dpms_off)
 {
 	struct cp_psp *cp_psp = &pipe_ctx->stream->ctx->cp_psp;
-	struct link_encoder *link_enc = get_link_encoder(pipe_ctx);
+	struct link_encoder *link_enc = pipe_ctx->link_res.dio_link_enc;
 	struct cp_psp_stream_config config = {0};
 	enum dp_panel_mode panel_mode =
 			dp_get_panel_mode(pipe_ctx->stream->link);
 
 	if (cp_psp == NULL || cp_psp->funcs.update_stream_config == NULL)
 		return;
+	if (!pipe_ctx->stream->ctx->dc->config.unify_link_enc_assignment)
+		link_enc = link_enc_cfg_get_link_enc(pipe_ctx->stream->link);
+	ASSERT(link_enc);
 	if (link_enc == NULL)
 		return;
 
@@ -767,25 +759,14 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 
 		if (should_use_dto_dscclk)
 			dccg->funcs->set_dto_dscclk(dccg, dsc->inst, dsc_cfg.dc_dsc_cfg.num_slices_h);
-		if (!dsc->funcs->dsc_prepare_config(dsc, &dsc_cfg, &dsc_optc_cfg)) {
-			ASSERT(false);
-			return;
-		}
-		dsc->funcs->dsc_set_config(dsc);
+		dsc->funcs->dsc_set_config(dsc, &dsc_cfg, &dsc_optc_cfg);
 		dsc->funcs->dsc_enable(dsc, pipe_ctx->stream_res.opp->inst);
 		for (odm_pipe = pipe_ctx->next_odm_pipe; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe) {
 			struct display_stream_compressor *odm_dsc = odm_pipe->stream_res.dsc;
 
-			ASSERT(odm_dsc);
-			if (!odm_dsc)
-				return;
 			if (should_use_dto_dscclk)
 				dccg->funcs->set_dto_dscclk(dccg, odm_dsc->inst, dsc_cfg.dc_dsc_cfg.num_slices_h);
-			if (!odm_dsc->funcs->dsc_prepare_config(odm_dsc, &dsc_cfg, &dsc_optc_cfg)) {
-				ASSERT(false);
-				return;
-			}
-			odm_dsc->funcs->dsc_set_config(odm_dsc);
+			odm_dsc->funcs->dsc_set_config(odm_dsc, &dsc_cfg, &dsc_optc_cfg);
 			odm_dsc->funcs->dsc_enable(odm_dsc, odm_pipe->stream_res.opp->inst);
 		}
 		dsc_cfg.dc_dsc_cfg.num_slices_h *= opp_cnt;
@@ -2038,8 +2019,6 @@ static enum dc_status enable_link_hdmi_frl(struct pipe_ctx *pipe_ctx)
 		pipe_ctx->stream_res.hpo_frl_stream_enc->funcs->hdmi_frl_enable(
 			pipe_ctx->stream_res.hpo_frl_stream_enc,
 			pipe_ctx->stream_res.tg->inst);
-	} else if (link_stat == LINK_RESULT_NO_TIMEOUT) {
-		return status;
 	} else {
 		status = DC_FAIL_HDMI_FRL_LINK_TRAINING;
 		stream->link->frl_link_settings.frl_link_rate = 0;
@@ -2405,7 +2384,7 @@ static struct vpg *get_vpg(struct pipe_ctx *pipe_ctx)
 		return pipe_ctx->stream_res.stream_enc->vpg;
 }
 
-enum dc_status link_set_dpms_off(struct pipe_ctx *pipe_ctx)
+void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 {
 	DC_LOGGER_INIT(pipe_ctx->stream->ctx->logger);
 	struct dc_stream_state *stream = pipe_ctx->stream;
@@ -2417,8 +2396,7 @@ enum dc_status link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 	ASSERT(is_master_pipe_for_link(link, pipe_ctx));
 
 	if (dc_is_virtual_signal(stream->signal))
-		/* No real hardware to program for virtual signals. */
-		return DC_DPMS_SKIPPED_HANDSHAKE;
+		return;
 
 	if (stream->sink) {
 		if (stream->sink->sink_signal != SIGNAL_TYPE_VIRTUAL &&
@@ -2513,23 +2491,18 @@ enum dc_status link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 		/* since current psp not loaded, we need to reset it to default */
 		link->panel_mode = panel_mode;
 	}
-
-	return DC_DPMS_SUCCESS;
 }
 
-static enum dc_status link_set_dpms_on_pre_enable_link(
+void link_set_dpms_on(
 		struct dc_state *state,
-		struct pipe_ctx *pipe_ctx
-)
+		struct pipe_ctx *pipe_ctx)
 {
-	// Used conditionally in ifdef'ed diagnostic builds
-	(void) state;
-
 	DC_LOGGER_INIT(pipe_ctx->stream->ctx->logger);
 	struct dc_stream_state *stream = pipe_ctx->stream;
 	struct dc *dc = stream->ctx->dc;
 	struct dc_link *link = stream->link;
-
+	enum dc_status status;
+	struct link_encoder *link_enc = pipe_ctx->link_res.dio_link_enc;
 	enum otg_out_mux_dest otg_out_dest = OUT_MUX_DIO;
 	struct vpg *vpg = get_vpg(pipe_ctx);
 	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
@@ -2539,8 +2512,7 @@ static enum dc_status link_set_dpms_on_pre_enable_link(
 	ASSERT(is_master_pipe_for_link(link, pipe_ctx));
 
 	if (dc_is_virtual_signal(stream->signal))
-		/* No real hardware to program for virtual signals. */
-		return DC_DPMS_SKIPPED_HANDSHAKE;
+		return;
 
 	if (stream->sink) {
 		if (stream->sink->sink_signal != SIGNAL_TYPE_VIRTUAL &&
@@ -2554,12 +2526,13 @@ static enum dc_status link_set_dpms_on_pre_enable_link(
 	}
 
 	link_wait_for_unlocked(link);
+	if (!dc->config.unify_link_enc_assignment)
+		link_enc = link_enc_cfg_get_link_enc(link);
+	ASSERT(link_enc);
 
 	if (!dc_is_virtual_signal(stream->signal)
 			&& !dc_is_hdmi_frl_signal(stream->signal)
 			&& !dp_is_128b_132b_signal(pipe_ctx)) {
-		struct link_encoder *link_enc = get_link_encoder(pipe_ctx);
-
 		if (link_enc)
 			link_enc->funcs->setup(
 				link_enc,
@@ -2606,9 +2579,7 @@ static enum dc_status link_set_dpms_on_pre_enable_link(
 		}
 
 		update_psp_stream_config(pipe_ctx, false);
-
-		/* Seamless boot: hardware already enabled by BIOS; skip link training. */
-		return DC_DPMS_SKIPPED_HANDSHAKE;
+		return;
 	}
 
 	/* eDP lit up by bios already, no need to enable again. */
@@ -2626,16 +2597,11 @@ static enum dc_status link_set_dpms_on_pre_enable_link(
 			msleep(post_oui_delay);
 		}
 
-		/* eDP already lit by BIOS; skip standard enable steps. */
-		return DC_DPMS_SKIPPED_HANDSHAKE;
+		return;
 	}
 
 	if (stream->dpms_off)
-		/*
-		 * Stream is configured as DPMS-off; skip link enable.
-		 * Hardware will NOT be in a fully enabled state after this early exit.
-		 */
-		return DC_DPMS_FAILED_INCOMPLETE;
+		return;
 
 	/* For Dp tunneling link, a pending HPD means that we have a race condition between processing
 	 * current link and processing the pending HPD. If we enable the link now, we may end up with a
@@ -2643,11 +2609,7 @@ static enum dc_status link_set_dpms_on_pre_enable_link(
 	 */
 	if (link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA && link->is_hpd_pending) {
 		DC_LOG_DEBUG("%s, Link%d HPD is pending, not enable it.\n", __func__, link->link_index);
-		/*
-		 * Pending HPD on USB4 DPIA link: skip enable to avoid race condition.
-		 * Hardware will NOT be in a fully enabled state after this early exit.
-		 */
-		return DC_DPMS_FAILED_INCOMPLETE;
+		return;
 	}
 
 	/* Have to setup DSC before DIG FE and BE are connected (which happens before the
@@ -2658,68 +2620,35 @@ static enum dc_status link_set_dpms_on_pre_enable_link(
 	 */
 	if (stream->timing.flags.DSC) {
 		if (dc_is_dp_signal(stream->signal) ||
-			dc_is_virtual_signal(stream->signal))
+		    dc_is_virtual_signal(stream->signal))
 			link_set_dsc_enable(pipe_ctx, true);
 	}
 
 	if (link->replay_settings.config.replay_supported && !dc_is_embedded_signal(link->connector_signal))
 		dp_setup_replay(link, stream);
 
-	return DC_DPMS_SUCCESS;
-}
+	status = enable_link(state, pipe_ctx);
 
-static enum dc_status link_set_dpms_on_enable_link(
-		struct dc_state *state,
-		struct pipe_ctx *pipe_ctx
-)
-{
-	DC_LOGGER_INIT(pipe_ctx->stream->ctx->logger);
-	struct dc_stream_state *stream = pipe_ctx->stream;
-	struct dc_link *link = stream->link;
-	const enum dc_status status = enable_link(state, pipe_ctx);
+	if (status != DC_OK) {
+		DC_LOG_WARNING("enabling link %u failed: %d\n",
+		link->link_index,
+		status);
 
-	if (status == DC_OK)
-		return DC_DPMS_SUCCESS;
-
-	DC_LOG_WARNING("enabling link %u failed: %d\n", link->link_index, status);
-
-	/* Abort stream enable *unless* the failure was due to
-	 * DP link training - some DP monitors will recover and
-	 * show the stream anyway. But MST displays can't proceed
-	 * without link training.
-	 */
-	switch (status) {
-	case DC_FAIL_DP_LINK_TRAINING:
-	case DC_FAIL_HDMI_FRL_LINK_TRAINING:
-		if (stream->signal != SIGNAL_TYPE_DISPLAY_PORT_MST)
-			return DC_DPMS_SUCCESS;
-		break;
-
-	default:
-		break;
+		/* Abort stream enable *unless* the failure was due to
+		 * DP link training - some DP monitors will recover and
+		 * show the stream anyway. But MST displays can't proceed
+		 * without link training.
+		 */
+			if ((status != DC_FAIL_DP_LINK_TRAINING &&
+					status != DC_FAIL_HDMI_FRL_LINK_TRAINING) ||
+					stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST) {
+			if (false == link->link_status.link_active)
+				disable_link(link, &pipe_ctx->link_res,
+						stream->signal);
+			BREAK_TO_DEBUGGER();
+			return;
+		}
 	}
-
-	if (!link->link_status.link_active)
-		disable_link(link, &pipe_ctx->link_res, stream->signal);
-
-	/*
-	 * Link enable failed; do NOT set skip_remaining so that post_enable_link
-	 * still runs and leaves hardware in a consistent state.
-	 */
-	return DC_DPMS_FAILED_HANDSHAKE;
-}
-
-static enum dc_status link_set_dpms_on_post_enable_link(
-		struct dc_state *state,
-		struct pipe_ctx *pipe_ctx
-)
-{
-	// Used conditionally in ifdef'ed diagnostic builds
-	(void) state;
-
-	struct dc_stream_state *stream = pipe_ctx->stream;
-	struct dc_link *link = stream->link;
-	struct hw_sequencer_funcs *hwss = &stream->ctx->dc->hwss;
 
 	if (stream->timing.flags.DSC && dc_is_hdmi_frl_signal(stream->signal))
 		//TODO: bring HDMI FRL in line with DP
@@ -2738,15 +2667,15 @@ static enum dc_status link_set_dpms_on_post_enable_link(
 	if (!(dc_is_virtual_signal(stream->signal) ||
 			dc_is_hdmi_frl_signal(stream->signal) ||
 			dp_is_128b_132b_signal(pipe_ctx))) {
-		struct link_encoder *link_enc = get_link_encoder(pipe_ctx);
 
-		if (link_enc)
-			link_enc->funcs->setup(
+			if (link_enc)
+				link_enc->funcs->setup(
 					link_enc,
 					stream->signal);
-	}
 
-	hwss->enable_stream(pipe_ctx);
+		}
+
+	dc->hwss.enable_stream(pipe_ctx);
 
 	/* Set DPS PPS SDP (AKA "info frames") */
 	if (stream->timing.flags.DSC) {
@@ -2778,7 +2707,7 @@ static enum dc_status link_set_dpms_on_post_enable_link(
 			link->is_display_mux_present)
 		msleep(20);
 
-	hwss->unblank_stream(pipe_ctx,
+	dc->hwss.unblank_stream(pipe_ctx,
 		&link->cur_link_settings);
 
 	if (stream->sink_patches.delay_ignore_msa > 0)
@@ -2788,50 +2717,8 @@ static enum dc_status link_set_dpms_on_post_enable_link(
 		enable_stream_features(pipe_ctx);
 	update_psp_stream_config(pipe_ctx, false);
 
-	hwss->enable_audio_stream(pipe_ctx);
+	dc->hwss.enable_audio_stream(pipe_ctx);
 
 	if (dc_is_hdmi_signal(stream->signal))
 		set_avmute(pipe_ctx, false);
-
-	return DC_DPMS_SUCCESS;
-}
-
-enum dc_status link_set_dpms_on(
-		struct dc_state *state,
-		struct pipe_ctx *pipe_ctx
-)
-{
-	enum dc_status result = DC_DPMS_SUCCESS;
-
-	typedef enum dc_status (*step)(struct dc_state *, struct pipe_ctx *);
-	const step steps[] = {
-		link_set_dpms_on_pre_enable_link,
-		link_set_dpms_on_enable_link,
-		link_set_dpms_on_post_enable_link,
-	};
-
-	for (size_t i = 0; i < ARRAY_SIZE(steps); i++) {
-		const enum dc_status step_result = steps[i](state, pipe_ctx);
-
-		switch (step_result) {
-		case DC_DPMS_SUCCESS:
-		case DC_DPMS_FAILED_HANDSHAKE:
-			// Enum is ordered from "best" to "worst" results
-			result = max(result, step_result);
-			break;
-
-		case DC_DPMS_SKIPPED_HANDSHAKE:
-			return step_result;
-
-		case DC_DPMS_FAILED_INCOMPLETE:
-			ASSERT(false);
-			return step_result;
-
-		default:
-			ASSERT(false);
-			return step_result;
-		}
-	}
-
-	return result;
 }

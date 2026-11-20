@@ -235,7 +235,8 @@ static int microread_i2c_probe(struct i2c_client *client)
 	struct microread_i2c_phy *phy;
 	int r;
 
-	phy = devm_kzalloc_obj(&client->dev, struct microread_i2c_phy);
+	phy = devm_kzalloc(&client->dev, sizeof(struct microread_i2c_phy),
+			   GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
 

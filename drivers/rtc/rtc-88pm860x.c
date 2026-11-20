@@ -270,7 +270,8 @@ static int pm860x_rtc_probe(struct platform_device *pdev)
 	struct pm860x_rtc_info *info;
 	int ret;
 
-	info = devm_kzalloc_obj(&pdev->dev, struct pm860x_rtc_info);
+	info = devm_kzalloc(&pdev->dev, sizeof(struct pm860x_rtc_info),
+			    GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 	info->irq = platform_get_irq(pdev, 0);

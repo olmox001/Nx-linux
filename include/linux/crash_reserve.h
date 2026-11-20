@@ -14,11 +14,9 @@
 extern struct resource crashk_res;
 extern struct resource crashk_low_res;
 extern struct range crashk_cma_ranges[];
-
-#define CRASHK_CMA_RANGES_MAX 4
 #if defined(CONFIG_CMA) && defined(CONFIG_ARCH_HAS_GENERIC_CRASHKERNEL_RESERVATION)
 #define CRASHKERNEL_CMA
-#define CRASHKERNEL_CMA_RANGES_MAX (CRASHK_CMA_RANGES_MAX)
+#define CRASHKERNEL_CMA_RANGES_MAX 4
 extern int crashk_cma_cnt;
 #else
 #define crashk_cma_cnt 0
@@ -41,7 +39,15 @@ static inline bool arch_add_crash_res_to_iomem(void)
 }
 #endif
 #ifndef DEFAULT_CRASH_KERNEL_LOW_SIZE
+#ifdef __aarch64__
+#ifdef CONFIG_ARM64_64K_PAGES
+#define DEFAULT_CRASH_KERNEL_LOW_SIZE   (512UL << 20)
+#else
+#define DEFAULT_CRASH_KERNEL_LOW_SIZE   (256UL << 20)
+#endif
+#else
 #define DEFAULT_CRASH_KERNEL_LOW_SIZE	(128UL << 20)
+#endif
 #endif
 #ifndef CRASH_ALIGN
 #define CRASH_ALIGN			SZ_2M

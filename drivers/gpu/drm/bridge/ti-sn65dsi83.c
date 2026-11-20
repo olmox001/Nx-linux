@@ -11,8 +11,6 @@
  *   = 1x Single-link DSI ~ 2x Single-link or 1x Dual-link LVDS
  *   - Supported
  *   - Dual-link LVDS mode tested
- *   - Single-link to LVDS Channel A tested
- *   - Single-link to LVDS Channel B tested
  *   - 2x Single-link LVDS mode unsupported
  *     (should be easy to add by someone who has the HW)
  * - SN65DSI85
@@ -164,7 +162,7 @@ struct sn65dsi83 {
 	struct gpio_desc		*enable_gpio;
 	struct regulator		*vcc;
 	bool				lvds_dual_link;
-	bool				lvds_channel_swap;
+	bool				lvds_dual_link_even_odd_swap;
 	int				lvds_vod_swing_conf[2];
 	int				lvds_term_conf[2];
 	int				irq;
@@ -646,7 +644,7 @@ static void sn65dsi83_atomic_pre_enable(struct drm_bridge *bridge,
 			REG_LVDS_VCOM_CHA_LVDS_VOD_SWING(ctx->lvds_vod_swing_conf[CHANNEL_A]) |
 			REG_LVDS_VCOM_CHB_LVDS_VOD_SWING(ctx->lvds_vod_swing_conf[CHANNEL_B]));
 	regmap_write(ctx->regmap, REG_LVDS_LANE,
-		     (ctx->lvds_channel_swap ?
+		     (ctx->lvds_dual_link_even_odd_swap ?
 		      REG_LVDS_LANE_EVEN_ODD_SWAP : 0) |
 		     (ctx->lvds_term_conf[CHANNEL_A] ?
 			  REG_LVDS_LANE_CHA_LVDS_TERM : 0) |
@@ -783,7 +781,8 @@ sn65dsi83_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 
 	*num_input_fmts = 0;
 
-	input_fmts = kzalloc_objs(*input_fmts, MAX_INPUT_SEL_FORMATS);
+	input_fmts = kcalloc(MAX_INPUT_SEL_FORMATS, sizeof(*input_fmts),
+			     GFP_KERNEL);
 	if (!input_fmts)
 		return NULL;
 
@@ -804,7 +803,7 @@ static const struct drm_bridge_funcs sn65dsi83_funcs = {
 
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_create_state = drm_atomic_helper_bridge_create_state,
+	.atomic_reset = drm_atomic_helper_bridge_reset,
 	.atomic_get_input_bus_fmts = sn65dsi83_atomic_get_input_bus_fmts,
 };
 
@@ -828,35 +827,48 @@ static int sn65dsi83_select_lvds_vod_swing(struct device *dev,
 static int sn65dsi83_parse_lvds_endpoint(struct sn65dsi83 *ctx, int channel)
 {
 	struct device *dev = ctx->dev;
-	int endpoint_reg = (channel == CHANNEL_A) ? 2 : 3;
-	struct device_node *endpoint __free(device_node) =
-		of_graph_get_endpoint_by_regs(dev->of_node, endpoint_reg, -1);
+	struct device_node *endpoint;
+	int endpoint_reg;
 	/* Set so the property can be freely selected if not defined */
 	u32 lvds_vod_swing_data[2] = { 0, 1000000 };
 	u32 lvds_vod_swing_clk[2] = { 0, 1000000 };
 	/* Set default near end terminataion to 200 Ohm */
 	u32 lvds_term = 200;
 	int lvds_vod_swing_conf;
+	int ret = 0;
 	int ret_data;
 	int ret_clock;
+
+	if (channel == CHANNEL_A)
+		endpoint_reg = 2;
+	else
+		endpoint_reg = 3;
+
+	endpoint = of_graph_get_endpoint_by_regs(dev->of_node, endpoint_reg, -1);
 
 	of_property_read_u32(endpoint, "ti,lvds-termination-ohms", &lvds_term);
 	if (lvds_term == 100)
 		ctx->lvds_term_conf[channel] = OHM_100;
 	else if (lvds_term == 200)
 		ctx->lvds_term_conf[channel] = OHM_200;
-	else
-		return -EINVAL;
+	else {
+		ret = -EINVAL;
+		goto exit;
+	}
 
 	ret_data = of_property_read_u32_array(endpoint, "ti,lvds-vod-swing-data-microvolt",
 					lvds_vod_swing_data, ARRAY_SIZE(lvds_vod_swing_data));
-	if (ret_data != 0 && ret_data != -EINVAL)
-		return ret_data;
+	if (ret_data != 0 && ret_data != -EINVAL) {
+		ret = ret_data;
+		goto exit;
+	}
 
 	ret_clock = of_property_read_u32_array(endpoint, "ti,lvds-vod-swing-clock-microvolt",
 					lvds_vod_swing_clk, ARRAY_SIZE(lvds_vod_swing_clk));
-	if (ret_clock != 0 && ret_clock != -EINVAL)
-		return ret_clock;
+	if (ret_clock != 0 && ret_clock != -EINVAL) {
+		ret = ret_clock;
+		goto exit;
+	}
 
 	/* Use default value if both properties are NOT defined. */
 	if (ret_data == -EINVAL && ret_clock == -EINVAL)
@@ -866,20 +878,23 @@ static int sn65dsi83_parse_lvds_endpoint(struct sn65dsi83 *ctx, int channel)
 	if (!ret_data || !ret_clock) {
 		lvds_vod_swing_conf = sn65dsi83_select_lvds_vod_swing(dev, lvds_vod_swing_data,
 						lvds_vod_swing_clk, ctx->lvds_term_conf[channel]);
-		if (lvds_vod_swing_conf < 0)
-			return lvds_vod_swing_conf;
+		if (lvds_vod_swing_conf < 0) {
+			ret = lvds_vod_swing_conf;
+			goto exit;
+		}
 	}
 
 	ctx->lvds_vod_swing_conf[channel] = lvds_vod_swing_conf;
-
-	return 0;
+	ret = 0;
+exit:
+	of_node_put(endpoint);
+	return ret;
 }
 
 static int sn65dsi83_parse_dt(struct sn65dsi83 *ctx, enum sn65dsi83_model model)
 {
 	struct drm_bridge *panel_bridge;
 	struct device *dev = ctx->dev;
-	u32 output_port = 2;
 	int ret;
 
 	ret = sn65dsi83_parse_lvds_endpoint(ctx, CHANNEL_A);
@@ -891,38 +906,29 @@ static int sn65dsi83_parse_dt(struct sn65dsi83 *ctx, enum sn65dsi83_model model)
 		return ret;
 
 	ctx->lvds_dual_link = false;
-	ctx->lvds_channel_swap = false;
+	ctx->lvds_dual_link_even_odd_swap = false;
 	if (model != MODEL_SN65DSI83) {
-		struct device_node *port0, *port1, *port2, *port3;
+		struct device_node *port2, *port3;
 		int dual_link;
 
-		port0 = of_graph_get_port_by_id(dev->of_node, 0);
-		port1 = of_graph_get_port_by_id(dev->of_node, 1);
 		port2 = of_graph_get_port_by_id(dev->of_node, 2);
 		port3 = of_graph_get_port_by_id(dev->of_node, 3);
 		dual_link = drm_of_lvds_get_dual_link_pixel_order(port2, port3);
-
-		if (dual_link == DRM_LVDS_DUAL_LINK_ODD_EVEN_PIXELS) {
-			/* Odd pixels to LVDS Channel A, even pixels to B */
-			ctx->lvds_dual_link = true;
-		} else if (dual_link == DRM_LVDS_DUAL_LINK_EVEN_ODD_PIXELS) {
-			/* Even pixels to LVDS Channel A, odd pixels to B */
-			ctx->lvds_dual_link = true;
-			ctx->lvds_channel_swap = true;
-		} else if (port0 && !port1 && port2 && !port3) {
-			/* DSI Channel A to LVDS Channel A */
-		} else if (port0 && !port1 && !port2 && port3) {
-			/* DSI Channel A to LVDS Channel B */
-			ctx->lvds_channel_swap = true;
-			output_port = 3;
-		}
-		of_node_put(port0);
-		of_node_put(port1);
 		of_node_put(port2);
 		of_node_put(port3);
+
+		if (dual_link == DRM_LVDS_DUAL_LINK_ODD_EVEN_PIXELS) {
+			ctx->lvds_dual_link = true;
+			/* Odd pixels to LVDS Channel A, even pixels to B */
+			ctx->lvds_dual_link_even_odd_swap = false;
+		} else if (dual_link == DRM_LVDS_DUAL_LINK_EVEN_ODD_PIXELS) {
+			ctx->lvds_dual_link = true;
+			/* Even pixels to LVDS Channel A, odd pixels to B */
+			ctx->lvds_dual_link_even_odd_swap = true;
+		}
 	}
 
-	panel_bridge = devm_drm_of_get_bridge(dev, dev->of_node, output_port, 0);
+	panel_bridge = devm_drm_of_get_bridge(dev, dev->of_node, 2, 0);
 	if (IS_ERR(panel_bridge))
 		return dev_err_probe(dev, PTR_ERR(panel_bridge), "Failed to get panel bridge\n");
 
@@ -973,6 +979,7 @@ static int sn65dsi83_host_attach(struct sn65dsi83 *ctx)
 	dsi->lanes = dsi_lanes;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
+			  MIPI_DSI_MODE_VIDEO_NO_HFP | MIPI_DSI_MODE_VIDEO_NO_HBP |
 			  MIPI_DSI_MODE_VIDEO_NO_HSA | MIPI_DSI_MODE_NO_EOT_PACKET;
 
 	ret = devm_mipi_dsi_attach(dev, dsi);
@@ -1036,7 +1043,7 @@ static int sn65dsi83_probe(struct i2c_client *client)
 		ret = devm_request_threaded_irq(ctx->dev, ctx->irq, NULL, sn65dsi83_irq,
 						IRQF_ONESHOT, dev_name(ctx->dev), ctx);
 		if (ret)
-			return ret;
+			return dev_err_probe(dev, ret, "failed to request irq\n");
 	}
 
 	dev_set_drvdata(dev, ctx);
@@ -1068,9 +1075,9 @@ static void sn65dsi83_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id sn65dsi83_id[] = {
-	{ .name = "ti,sn65dsi83", .driver_data = MODEL_SN65DSI83 },
-	{ .name = "ti,sn65dsi84", .driver_data = MODEL_SN65DSI84 },
-	{ }
+	{ "ti,sn65dsi83", MODEL_SN65DSI83 },
+	{ "ti,sn65dsi84", MODEL_SN65DSI84 },
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, sn65dsi83_id);
 

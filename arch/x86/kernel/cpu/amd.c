@@ -113,7 +113,7 @@ static void init_amd_k5(struct cpuinfo_x86 *c)
 static void init_amd_k6(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_X86_32
-	struct msr val;
+	u32 l, h;
 	int mbytes = get_num_physpages() >> (20-PAGE_SHIFT);
 
 	if (c->x86_model < 6) {
@@ -160,13 +160,13 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 		if (mbytes > 508)
 			mbytes = 508;
 
-		rdmsrq(MSR_K6_WHCR, val.q);
-		if ((val.l & 0x0000FFFF) == 0) {
+		rdmsr(MSR_K6_WHCR, l, h);
+		if ((l&0x0000FFFF) == 0) {
 			unsigned long flags;
-			val.l = (1 << 0) | ((mbytes / 4) << 1);
+			l = (1<<0)|((mbytes/4)<<1);
 			local_irq_save(flags);
 			wbinvd();
-			wrmsrq(MSR_K6_WHCR, val.q);
+			wrmsr(MSR_K6_WHCR, l, h);
 			local_irq_restore(flags);
 			pr_info("Enabling old style K6 write allocation for %d Mb\n",
 				mbytes);
@@ -181,13 +181,13 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 		if (mbytes > 4092)
 			mbytes = 4092;
 
-		rdmsrq(MSR_K6_WHCR, val.q);
-		if ((val.l & 0xFFFF0000) == 0) {
+		rdmsr(MSR_K6_WHCR, l, h);
+		if ((l&0xFFFF0000) == 0) {
 			unsigned long flags;
-			val.l = ((mbytes >> 2) << 22) | (1 << 16);
+			l = ((mbytes>>2)<<22)|(1<<16);
 			local_irq_save(flags);
 			wbinvd();
-			wrmsrq(MSR_K6_WHCR, val.q);
+			wrmsr(MSR_K6_WHCR, l, h);
 			local_irq_restore(flags);
 			pr_info("Enabling new style K6 write allocation for %d Mb\n",
 				mbytes);
@@ -207,7 +207,7 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 static void init_amd_k7(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_X86_32
-	struct msr val;
+	u32 l, h;
 
 	/*
 	 * Bit 15 of Athlon specific MSR 15, needs to be 0
@@ -228,12 +228,11 @@ static void init_amd_k7(struct cpuinfo_x86 *c)
 	 * As per AMD technical note 27212 0.2
 	 */
 	if ((c->x86_model == 8 && c->x86_stepping >= 1) || (c->x86_model > 8)) {
-		rdmsrq(MSR_K7_CLK_CTL, val.q);
-		if ((val.l & 0xfff00000) != 0x20000000) {
+		rdmsr(MSR_K7_CLK_CTL, l, h);
+		if ((l & 0xfff00000) != 0x20000000) {
 			pr_info("CPU: CLK_CTL MSR was %x. Reprogramming to %x\n",
-				val.l, ((val.l & 0x000fffff) | 0x20000000));
-			val.l = (val.l & 0x000fffff) | 0x20000000;
-			wrmsrq(MSR_K7_CLK_CTL, val.q);
+				l, ((l & 0x000fffff)|0x20000000));
+			wrmsr(MSR_K7_CLK_CTL, (l & 0x000fffff)|0x20000000, h);
 		}
 	}
 
@@ -416,14 +415,9 @@ static void tsa_init(struct cpuinfo_x86 *c)
 		else
 			pr_debug("%s: current revision: 0x%x\n", __func__, c->microcode);
 	} else {
-		if (!cpu_has(c, X86_FEATURE_ZEN5)) {
-			setup_force_cpu_cap(X86_FEATURE_TSA_SQ_NO);
-			setup_force_cpu_cap(X86_FEATURE_TSA_L1_NO);
-		}
+		setup_force_cpu_cap(X86_FEATURE_TSA_SQ_NO);
+		setup_force_cpu_cap(X86_FEATURE_TSA_L1_NO);
 	}
-
-	if (!cpu_has(c, X86_FEATURE_ZEN5))
-		setup_force_cpu_cap(X86_FEATURE_TSA_FILL_NO);
 }
 
 static void bsp_init_amd(struct cpuinfo_x86 *c)
@@ -622,13 +616,12 @@ clear_sev:
 
 static void early_init_amd(struct cpuinfo_x86 *c)
 {
-	u64 val;
+	u32 dummy;
 
 	if (c->x86 >= 0xf)
 		set_cpu_cap(c, X86_FEATURE_K8);
 
-	rdmsrq_safe(MSR_AMD64_PATCH_LEVEL, &val);
-	c->microcode = (u32)val;
+	rdmsr_safe(MSR_AMD64_PATCH_LEVEL, &c->microcode, &dummy);
 
 	/*
 	 * c->x86_power is 8000_0007 edx. Bit 8 is TSC runs at constant rate
@@ -801,6 +794,15 @@ static void init_amd_ln(struct cpuinfo_x86 *c)
 	 */
 	msr_set_bit(MSR_AMD64_DE_CFG, 31);
 }
+
+static bool ibs_keep;
+
+static int __init ibs_keep_setup(char *__unused)
+{
+	ibs_keep = true;
+	return 1;
+}
+__setup("ibs_keep", ibs_keep_setup);
 
 static bool rdrand_force;
 
@@ -1002,6 +1004,12 @@ static void init_amd_zen2(struct cpuinfo_x86 *c)
 
 	if (!cpu_has(c, X86_FEATURE_HYPERVISOR))
 		msr_set_bit(MSR_ZEN4_BP_CFG, MSR_ZEN2_BP_CFG_BUG_FIX_BIT);
+
+	/* UEK only, erratum 1215 */
+	if (cpu_has(c, X86_FEATURE_IBS) && !ibs_keep) {
+		clear_cpu_cap(c, X86_FEATURE_IBS);
+		pr_warn_once(FW_BUG "Erratum 1215 present, disabling IBS");
+	}
 }
 
 static void init_amd_zen3(struct cpuinfo_x86 *c)
@@ -1201,7 +1209,7 @@ static unsigned int amd_size_cache(struct cpuinfo_x86 *c, unsigned int size)
 
 static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 {
-	u32 ebx, eax, ecx, edx, shift, tmp;
+	u32 ebx, eax, ecx, edx;
 	u16 mask = 0xfff;
 
 	if (c->x86 < 0xf)
@@ -1210,12 +1218,10 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 	if (c->extended_cpuid_level < 0x80000006)
 		return;
 
-	shift = !!cpu_has(c, X86_FEATURE_L2_TLB_SIZE_X32) * 5;
-
 	cpuid(0x80000006, &eax, &ebx, &ecx, &edx);
 
-	tlb_lld_4k = ((ebx >> 16) & mask) << shift;
-	tlb_lli_4k = (ebx & mask) << shift;
+	tlb_lld_4k = (ebx >> 16) & mask;
+	tlb_lli_4k = ebx & mask;
 
 	/*
 	 * K8 doesn't have 2M/4M entries in the L2 TLB so read out the L1 TLB
@@ -1227,18 +1233,16 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 	}
 
 	/* Handle DTLB 2M and 4M sizes, fall back to L1 if L2 is disabled */
-	tmp = ((eax >> 16) & mask) << shift;
-	if (!tmp)
+	if (!((eax >> 16) & mask))
 		tlb_lld_2m = (cpuid_eax(0x80000005) >> 16) & 0xff;
 	else
-		tlb_lld_2m = tmp;
+		tlb_lld_2m = (eax >> 16) & mask;
 
 	/* a 4M entry uses two 2M entries */
 	tlb_lld_4m = tlb_lld_2m >> 1;
 
 	/* Handle ITLB 2M and 4M sizes, fall back to L1 if L2 is disabled */
-	tmp = (eax & mask) << shift;
-	if (!tmp) {
+	if (!(eax & mask)) {
 		/* Erratum 658 */
 		if (c->x86 == 0x15 && c->x86_model <= 0x1f) {
 			tlb_lli_2m = 1024;
@@ -1246,9 +1250,8 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 			cpuid(0x80000005, &eax, &ebx, &ecx, &edx);
 			tlb_lli_2m = eax & 0xff;
 		}
-	} else {
-		tlb_lli_2m = tmp;
-	}
+	} else
+		tlb_lli_2m = eax & mask;
 
 	tlb_lli_4m = tlb_lli_2m >> 1;
 
@@ -1367,8 +1370,7 @@ static __init int print_s5_reset_status_mmio(void)
 	u32 value;
 	int i;
 
-	if (!cpu_feature_enabled(X86_FEATURE_ZEN) ||
-	    cpu_feature_enabled(X86_FEATURE_HYPERVISOR))
+	if (!cpu_feature_enabled(X86_FEATURE_ZEN))
 		return 0;
 
 	addr = ioremap(FCH_PM_BASE + FCH_PM_S5_RESET_STATUS, sizeof(value));

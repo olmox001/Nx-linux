@@ -9,15 +9,12 @@
 #include <drm/drm_managed.h>
 #include <drm/drm_pagemap.h>
 #include <drm/drm_pagemap_util.h>
-#include <drm/ttm/ttm_bo.h>
 
 #include "xe_bo.h"
 #include "xe_exec_queue_types.h"
 #include "xe_gt_stats.h"
-#include "xe_log.h"
 #include "xe_migrate.h"
 #include "xe_module.h"
-#include "xe_pagefault.h"
 #include "xe_pm.h"
 #include "xe_pt.h"
 #include "xe_svm.h"
@@ -69,7 +66,7 @@ static bool xe_svm_range_in_vram(struct xe_svm_range *range)
 
 	struct drm_gpusvm_pages_flags flags = {
 		/* Pairs with WRITE_ONCE in drm_gpusvm.c */
-		.__flags = READ_ONCE(range->pages.flags.__flags),
+		.__flags = READ_ONCE(range->base.pages.flags.__flags),
 	};
 
 	return flags.has_devmem_pages;
@@ -99,7 +96,7 @@ static struct xe_vm *range_to_vm(struct drm_gpusvm_range *r)
 	       (r__)->base.gpusvm,					\
 	       xe_svm_range_in_vram((r__)) ? 1 : 0,			\
 	       xe_svm_range_has_vram_binding((r__)) ? 1 : 0,		\
-	       (r__)->pages.notifier_seq,				\
+	       (r__)->base.pages.notifier_seq,				\
 	       xe_svm_range_start((r__)), xe_svm_range_end((r__)),	\
 	       xe_svm_range_size((r__)))
 
@@ -118,8 +115,6 @@ xe_svm_range_alloc(struct drm_gpusvm *gpusvm)
 		return NULL;
 
 	INIT_LIST_HEAD(&range->garbage_collector_link);
-	mutex_init(&range->lock);
-	drm_gpusvm_init_pages(&range->pages, &gpusvm_to_vm(gpusvm)->xe->drm);
 	xe_vm_get(gpusvm_to_vm(gpusvm));
 
 	return &range->base;
@@ -127,11 +122,8 @@ xe_svm_range_alloc(struct drm_gpusvm *gpusvm)
 
 static void xe_svm_range_free(struct drm_gpusvm_range *range)
 {
-	drm_gpusvm_free_pages(range->gpusvm, &(to_xe_range(range)->pages),
-			      drm_gpusvm_range_size(range) >> PAGE_SHIFT);
-	mutex_destroy(&to_xe_range(range)->lock);
 	xe_vm_put(range_to_vm(range));
-	kfree(to_xe_range(range));
+	kfree(range);
 }
 
 static void
@@ -142,16 +134,15 @@ xe_svm_garbage_collector_add_range(struct xe_vm *vm, struct xe_svm_range *range,
 
 	range_debug(range, "GARBAGE COLLECTOR ADD");
 
-	drm_gpusvm_range_set_unmapped(&range->base, &range->pages, 1,
-				      mmu_range);
+	drm_gpusvm_range_set_unmapped(&range->base, mmu_range);
 
-	spin_lock(&vm->svm.garbage_collector.list_lock);
+	spin_lock(&vm->svm.garbage_collector.lock);
 	if (list_empty(&range->garbage_collector_link))
 		list_add_tail(&range->garbage_collector_link,
 			      &vm->svm.garbage_collector.range_list);
-	spin_unlock(&vm->svm.garbage_collector.list_lock);
+	spin_unlock(&vm->svm.garbage_collector.lock);
 
-	queue_work(xe->usm.pagefault_wq, &vm->svm.garbage_collector.work);
+	queue_work(xe->usm.pf_wq, &vm->svm.garbage_collector.work);
 }
 
 static void xe_svm_tlb_inval_count_stats_incr(struct xe_gt *gt)
@@ -175,7 +166,7 @@ xe_svm_range_notifier_event_begin(struct xe_vm *vm, struct drm_gpusvm_range *r,
 	range_debug(range, "NOTIFIER");
 
 	/* Skip if already unmapped or if no binding exist */
-	if (range->base.flags.unmapped || !range->tile_present)
+	if (range->base.pages.flags.unmapped || !range->tile_present)
 		return 0;
 
 	range_debug(range, "NOTIFIER - EXECUTE");
@@ -217,8 +208,7 @@ xe_svm_range_notifier_event_end(struct xe_vm *vm, struct drm_gpusvm_range *r,
 
 	xe_svm_assert_in_notifier(vm);
 
-	drm_gpusvm_unmap_pages(&vm->svm.gpusvm, &(to_xe_range(r)->pages),
-			       drm_gpusvm_range_size(r) >> PAGE_SHIFT, &ctx);
+	drm_gpusvm_range_unmap_pages(&vm->svm.gpusvm, r, &ctx);
 	if (!xe_vm_is_closed(vm) && mmu_range->event == MMU_NOTIFY_UNMAP)
 		xe_svm_garbage_collector_add_range(vm, to_xe_range(r),
 						   mmu_range);
@@ -309,35 +299,18 @@ range_notifier_event_end:
 static int __xe_svm_garbage_collector(struct xe_vm *vm,
 				      struct xe_svm_range *range)
 {
-	struct drm_gpusvm_ctx ctx = { .in_notifier = false, };
 	struct dma_fence *fence;
 
 	range_debug(range, "GARBAGE COLLECTOR");
 
-	scoped_guard(mutex, &range->lock) {
-		drm_gpusvm_range_get(&range->base);
-		range->removed = true;
+	xe_vm_lock(vm, false);
+	fence = xe_vm_range_unbind(vm, range);
+	xe_vm_unlock(vm);
+	if (IS_ERR(fence))
+		return PTR_ERR(fence);
+	dma_fence_put(fence);
 
-		range_debug(range, "GARBAGE COLLECTOR");
-
-		xe_vm_lock(vm, false);
-		fence = xe_vm_range_unbind(vm, range);
-		xe_vm_unlock(vm);
-		if (IS_ERR(fence)) {
-			drm_gpusvm_range_put(&range->base);
-			return PTR_ERR(fence);
-		}
-		dma_fence_put(fence);
-
-		drm_gpusvm_unmap_pages(&vm->svm.gpusvm, &range->pages,
-				       drm_gpusvm_range_size(&range->base) >> PAGE_SHIFT,
-				       &ctx);
-
-		scoped_guard(mutex, &vm->svm.range_lock)
-			drm_gpusvm_range_remove(&vm->svm.gpusvm, &range->base);
-	}
-
-	drm_gpusvm_range_put(&range->base);
+	drm_gpusvm_range_remove(&vm->svm.gpusvm, &range->base);
 
 	return 0;
 }
@@ -347,7 +320,6 @@ static void xe_vma_set_default_attributes(struct xe_vma *vma)
 	struct xe_vma_mem_attr default_attr = {
 		.preferred_loc.devmem_fd = DRM_XE_PREFERRED_LOC_DEFAULT_DEVICE,
 		.preferred_loc.migration_policy = DRM_XE_MIGRATE_ALL_PAGES,
-		.default_pat_index = vma->attr.default_pat_index,
 		.pat_index = vma->attr.default_pat_index,
 		.atomic_access = DRM_XE_ATOMIC_UNDEFINED,
 		.purgeable_state = XE_MADV_PURGEABLE_WILLNEED,
@@ -411,15 +383,13 @@ static int xe_svm_garbage_collector(struct xe_vm *vm)
 	u64 range_end;
 	int err, ret = 0;
 
-	lockdep_assert_held(&vm->lock);
+	lockdep_assert_held_write(&vm->lock);
 
 	if (xe_vm_is_closed_or_banned(vm))
 		return -ENOENT;
 
-	guard(mutex)(&vm->svm.garbage_collector.lock);
-
 	for (;;) {
-		spin_lock(&vm->svm.garbage_collector.list_lock);
+		spin_lock(&vm->svm.garbage_collector.lock);
 		range = list_first_entry_or_null(&vm->svm.garbage_collector.range_list,
 						 typeof(*range),
 						 garbage_collector_link);
@@ -430,7 +400,7 @@ static int xe_svm_garbage_collector(struct xe_vm *vm)
 		range_end = xe_svm_range_end(range);
 
 		list_del(&range->garbage_collector_link);
-		spin_unlock(&vm->svm.garbage_collector.list_lock);
+		spin_unlock(&vm->svm.garbage_collector.lock);
 
 		err = __xe_svm_garbage_collector(vm, range);
 		if (err) {
@@ -449,7 +419,7 @@ static int xe_svm_garbage_collector(struct xe_vm *vm)
 				return err;
 		}
 	}
-	spin_unlock(&vm->svm.garbage_collector.list_lock);
+	spin_unlock(&vm->svm.garbage_collector.lock);
 
 	return ret;
 }
@@ -459,8 +429,9 @@ static void xe_svm_garbage_collector_work_func(struct work_struct *w)
 	struct xe_vm *vm = container_of(w, struct xe_vm,
 					svm.garbage_collector.work);
 
-	guard(rwsem_read)(&vm->lock);
+	down_write(&vm->lock);
 	xe_svm_garbage_collector(vm);
+	up_write(&vm->lock);
 }
 
 #if IS_ENABLED(CONFIG_DRM_XE_PAGEMAP)
@@ -912,11 +883,8 @@ int xe_svm_init(struct xe_vm *vm)
 {
 	int err;
 
-	mutex_init(&vm->svm.range_lock);
-	mutex_init(&vm->svm.garbage_collector.lock);
-
 	if (vm->flags & XE_VM_FLAG_FAULT_MODE) {
-		spin_lock_init(&vm->svm.garbage_collector.list_lock);
+		spin_lock_init(&vm->svm.garbage_collector.lock);
 		INIT_LIST_HEAD(&vm->svm.garbage_collector.range_list);
 		INIT_WORK(&vm->svm.garbage_collector.work,
 			  xe_svm_garbage_collector_work_func);
@@ -925,39 +893,31 @@ int xe_svm_init(struct xe_vm *vm)
 		err = drm_pagemap_acquire_owner(&vm->svm.peer, &xe_owner_list,
 						xe_has_interconnect);
 		if (err)
-			goto out_err;
+			return err;
 
 		err = xe_svm_get_pagemaps(vm);
 		if (err) {
 			drm_pagemap_release_owner(&vm->svm.peer);
-			goto out_err;
+			return err;
 		}
 
-		err = drm_gpusvm_init(&vm->svm.gpusvm, "Xe SVM",
+		err = drm_gpusvm_init(&vm->svm.gpusvm, "Xe SVM", &vm->xe->drm,
 				      current->mm, 0, vm->size,
 				      xe_modparam.svm_notifier_size * SZ_1M,
 				      &gpusvm_ops, fault_chunk_sizes,
 				      ARRAY_SIZE(fault_chunk_sizes));
-		drm_gpusvm_driver_set_lock(&vm->svm.gpusvm, &vm->svm.range_lock);
+		drm_gpusvm_driver_set_lock(&vm->svm.gpusvm, &vm->lock);
 
 		if (err) {
 			xe_svm_put_pagemaps(vm);
 			drm_pagemap_release_owner(&vm->svm.peer);
-			goto out_err;
+			return err;
 		}
 	} else {
 		err = drm_gpusvm_init(&vm->svm.gpusvm, "Xe SVM (simple)",
-				      NULL, 0, 0, 0, NULL,
+				      &vm->xe->drm, NULL, 0, 0, 0, NULL,
 				      NULL, 0);
-		if (err)
-			goto out_err;
 	}
-
-	return 0;
-
-out_err:
-	mutex_destroy(&vm->svm.range_lock);
-	mutex_destroy(&vm->svm.garbage_collector.lock);
 
 	return err;
 }
@@ -984,31 +944,15 @@ void xe_svm_close(struct xe_vm *vm)
  */
 void xe_svm_fini(struct xe_vm *vm)
 {
-	struct drm_gpusvm_notifier *notifier, *next;
-	struct drm_gpusvm_ctx ctx = { .in_notifier = false, };
-
 	xe_assert(vm->xe, xe_vm_is_closed(vm));
 
-	drm_gpusvm_for_each_notifier_safe(notifier, next, &vm->svm.gpusvm, 0, LONG_MAX) {
-		struct drm_gpusvm_range *range, *__next;
-
-		drm_gpusvm_for_each_range_safe(range, __next, notifier, 0, LONG_MAX)
-			drm_gpusvm_unmap_pages(&vm->svm.gpusvm,
-					       &(to_xe_range(range)->pages),
-					       drm_gpusvm_range_size(range) >> PAGE_SHIFT,
-					       &ctx);
-	}
-
-	scoped_guard(mutex, &vm->svm.range_lock)
-		drm_gpusvm_fini(&vm->svm.gpusvm);
-	mutex_destroy(&vm->svm.range_lock);
-	mutex_destroy(&vm->svm.garbage_collector.lock);
+	drm_gpusvm_fini(&vm->svm.gpusvm);
 }
 
 static bool xe_svm_range_has_pagemap_locked(const struct xe_svm_range *range,
 					    const struct drm_pagemap *dpagemap)
 {
-	return range->pages.dpagemap == dpagemap;
+	return range->base.pages.dpagemap == dpagemap;
 }
 
 static bool xe_svm_range_has_pagemap(struct xe_svm_range *range,
@@ -1055,7 +999,6 @@ void xe_svm_range_migrate_to_smem(struct xe_vm *vm, struct xe_svm_range *range)
  * @tile_mask: Mask representing the tiles to be checked
  * @dpagemap: if !%NULL, the range is expected to be present
  * in device memory identified by this parameter.
- * @valid_pages: Pages are valid, result written back to caller
  *
  * The xe_svm_range_validate() function checks if a range is
  * valid and located in the desired memory region.
@@ -1064,8 +1007,7 @@ void xe_svm_range_migrate_to_smem(struct xe_vm *vm, struct xe_svm_range *range)
  */
 bool xe_svm_range_validate(struct xe_vm *vm,
 			   struct xe_svm_range *range,
-			   u8 tile_mask, const struct drm_pagemap *dpagemap,
-			   bool *valid_pages)
+			   u8 tile_mask, const struct drm_pagemap *dpagemap)
 {
 	bool ret;
 
@@ -1075,9 +1017,7 @@ bool xe_svm_range_validate(struct xe_vm *vm,
 	if (dpagemap)
 		ret = ret && xe_svm_range_has_pagemap_locked(range, dpagemap);
 	else
-		ret = ret && !range->pages.dpagemap;
-
-	*valid_pages = xe_svm_range_pages_valid(range);
+		ret = ret && !range->base.pages.dpagemap;
 
 	xe_svm_notifier_unlock(vm);
 
@@ -1150,7 +1090,7 @@ static int xe_drm_pagemap_populate_mm(struct drm_pagemap *dpagemap,
 				dma_resv_wait_timeout(bo->ttm.base.resv, DMA_RESV_USAGE_KERNEL,
 						      false, MAX_SCHEDULE_TIMEOUT);
 			else if (pre_migrate_fence)
-				dma_fence_enable_signaling(pre_migrate_fence);
+				dma_fence_enable_sw_signaling(pre_migrate_fence);
 		}
 
 		drm_pagemap_devmem_init(&bo->devmem_allocation, dev, mm,
@@ -1195,12 +1135,8 @@ bool xe_svm_range_needs_migrate_to_vram(struct xe_svm_range *range, struct xe_vm
 {
 	struct xe_vm *vm = range_to_vm(&range->base);
 	u64 range_size = xe_svm_range_size(range);
-	struct drm_gpusvm_range_flags flags = {
-		/* READ_ONCE pairs with WRITE_ONCE in drm_gpusvm_range_set_unmapped() */
-		.__flags = READ_ONCE(range->base.flags.__flags),
-	};
 
-	if (!flags.migrate_devmem || !dpagemap)
+	if (!range->base.pages.flags.migrate_devmem || !dpagemap)
 		return false;
 
 	xe_assert(vm->xe, IS_DGFX(vm->xe));
@@ -1268,8 +1204,8 @@ DECL_SVM_RANGE_US_STATS(bind, BIND)
 DECL_SVM_RANGE_US_STATS(fault, PAGEFAULT)
 
 static int __xe_svm_handle_pagefault(struct xe_vm *vm, struct xe_vma *vma,
-				     struct xe_pagefault *pf, struct xe_gt *gt,
-				     u64 fault_addr, bool need_vram)
+				     struct xe_gt *gt, u64 fault_addr,
+				     bool need_vram)
 {
 	int devmem_possible = IS_DGFX(vm->xe) &&
 		IS_ENABLED(CONFIG_DRM_XE_PAGEMAP);
@@ -1283,57 +1219,37 @@ static int __xe_svm_handle_pagefault(struct xe_vm *vm, struct xe_vma *vma,
 	};
 	struct xe_validation_ctx vctx;
 	struct drm_exec exec;
-	struct xe_svm_range *range = NULL;
-	struct drm_gpusvm_range_flags range_flags;
+	struct xe_svm_range *range;
 	struct dma_fence *fence;
 	struct drm_pagemap *dpagemap;
 	struct xe_tile *tile = gt_to_tile(gt);
 	int migrate_try_count = ctx.devmem_only ? 3 : 1;
 	ktime_t start = xe_gt_stats_ktime_get(), bind_start, get_pages_start;
-	int err = 0;
+	int err;
 
-	lockdep_assert_held(&vm->lock);
+	lockdep_assert_held_write(&vm->lock);
 	xe_assert(vm->xe, xe_vma_is_cpu_addr_mirror(vma));
 
 	xe_gt_stats_incr(gt, XE_GT_STATS_ID_SVM_PAGEFAULT_COUNT, 1);
 
 retry:
-	/* Release old range */
-	if (range) {
-		mutex_unlock(&range->lock);
-		drm_gpusvm_range_put(&range->base);
-	}
-
 	/* Always process UNMAPs first so view SVM ranges is current */
 	err = xe_svm_garbage_collector(vm);
-	if (err) {
-		xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_SVM_GARBAGE_COLLECTOR);
+	if (err)
 		return err;
-	}
 
 	dpagemap = ctx.devmem_only ? xe_tile_local_pagemap(tile) :
 		xe_vma_resolve_pagemap(vma, tile);
 	ctx.device_private_page_owner = xe_svm_private_page_owner(vm, !dpagemap);
 	range = xe_svm_range_find_or_insert(vm, fault_addr, vma, &ctx);
 
-	if (IS_ERR(range)) {
-		xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_SVM_RANGE_NOT_FOUND);
+	if (IS_ERR(range))
 		return PTR_ERR(range);
-	}
 
 	xe_svm_range_fault_count_stats_incr(gt, range);
 
-	mutex_lock(&range->lock);
-
-	if (xe_svm_range_is_removed(range))
-		goto retry;
-
-	/* READ_ONCE pairs with WRITE_ONCE in drm_gpusvm_range_set_unmapped() */
-	range_flags.__flags = READ_ONCE(range->base.flags.__flags);
-	if (ctx.devmem_only && !range_flags.migrate_devmem) {
-		err = -EACCES;
-		goto err_out;
-	}
+	if (ctx.devmem_only && !range->base.pages.flags.migrate_devmem)
+		return -EACCES;
 
 	if (xe_svm_range_is_valid(range, tile, ctx.devmem_only, dpagemap)) {
 		xe_svm_range_valid_fault_count_stats_incr(gt, range);
@@ -1368,10 +1284,10 @@ retry:
 				else
 					goto retry;
 			} else {
-				xe_log_err(gt, PAGEFAULT, err,
-					   "VRAM allocation failed, retry count exceeded, ASID=%u\n",
-					   vm->usm.asid);
-				goto err_out;
+				drm_err(&vm->xe->drm,
+					"VRAM allocation failed, retry count exceeded, asid=%u, errno=%pe\n",
+					vm->usm.asid, ERR_PTR(err));
+				return err;
 			}
 		}
 	}
@@ -1391,14 +1307,14 @@ get_pages:
 			range_debug(range, "PAGE FAULT - RETRY PAGES");
 			goto retry;
 		} else {
-			xe_log_err(gt, PAGEFAULT, err,
-				   "Get pages failed, retry count exceeded, ASID=%u, GPUVM=%s\n",
-				   vm->usm.asid, vm->svm.gpusvm.name);
+			drm_err(&vm->xe->drm,
+				"Get pages failed, retry count exceeded, asid=%u, gpusvm=%p, errno=%pe\n",
+				vm->usm.asid, &vm->svm.gpusvm, ERR_PTR(err));
 		}
 	}
 	if (err) {
 		range_debug(range, "PAGE FAULT - FAIL PAGE COLLECT");
-		goto err_out;
+		goto out;
 	} else if (IS_ENABLED(CONFIG_DRM_XE_DEBUG_VM)) {
 		drm_dbg(&vm->xe->drm, "After page collect data location is %sin \"%s\".\n",
 			xe_svm_range_has_pagemap(range, dpagemap) ? "" : "NOT ",
@@ -1421,7 +1337,6 @@ get_pages:
 			err = PTR_ERR(fence);
 			xe_validation_retry_on_oom(&vctx, &err);
 			xe_svm_range_bind_us_stats_incr(gt, range, bind_start);
-			xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_SVM_REBIND);
 			break;
 		}
 	}
@@ -1433,25 +1348,15 @@ get_pages:
 	xe_svm_range_bind_us_stats_incr(gt, range, bind_start);
 
 out:
-	/* Give hint to immediately ack faults */
-	xe_pagefault_set_start_addr(pf,  xe_svm_range_start(range));
-	xe_pagefault_set_end_addr(pf, xe_svm_range_end(range));
-
 	xe_svm_range_fault_us_stats_incr(gt, range, start);
-	mutex_unlock(&range->lock);
-	drm_gpusvm_range_put(&range->base);
 	return 0;
 
 err_out:
 	if (err == -EAGAIN) {
-		xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_NONE);
 		ctx.timeslice_ms <<= 1;	/* Double timeslice if we have to retry */
 		range_debug(range, "PAGE FAULT - RETRY BIND");
 		goto retry;
 	}
-
-	mutex_unlock(&range->lock);
-	drm_gpusvm_range_put(&range->base);
 
 	return err;
 }
@@ -1460,7 +1365,6 @@ err_out:
  * xe_svm_handle_pagefault() - SVM handle page fault
  * @vm: The VM.
  * @vma: The CPU address mirror VMA.
- * @pf: Pagefault structure
  * @gt: The gt upon the fault occurred.
  * @fault_addr: The GPU fault address.
  * @atomic: The fault atomic access bit.
@@ -1471,18 +1375,16 @@ err_out:
  * Return: 0 on success, negative error code on error.
  */
 int xe_svm_handle_pagefault(struct xe_vm *vm, struct xe_vma *vma,
-			    struct xe_pagefault *pf, struct xe_gt *gt,
-			    u64 fault_addr, bool atomic)
+			    struct xe_gt *gt, u64 fault_addr,
+			    bool atomic)
 {
 	int need_vram, ret;
 retry:
 	need_vram = xe_vma_need_vram_for_atomic(vm->xe, vma, atomic);
-	if (need_vram < 0) {
-		xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_SVM_NEEDS_VRAM_CHECK);
+	if (need_vram < 0)
 		return need_vram;
-	}
 
-	ret =  __xe_svm_handle_pagefault(vm, vma, pf, gt, fault_addr,
+	ret =  __xe_svm_handle_pagefault(vm, vma, gt, fault_addr,
 					 need_vram ? true : false);
 	if (ret == -EAGAIN) {
 		/*
@@ -1490,16 +1392,11 @@ retry:
 		 * may have been split by xe_svm_range_set_default_attr.
 		 */
 		vma = xe_vm_find_vma_by_addr(vm, fault_addr);
-		if (!vma) {
-			xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_SVM_VMA_NOT_FOUND);
+		if (!vma)
 			return -EINVAL;
-		}
 
-		xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_NONE);
 		goto retry;
 	}
-	if (ret && xe_pagefault_get_error(pf) == XE_PAGEFAULT_ERROR_NONE)
-		xe_pagefault_set_error(pf, XE_PAGEFAULT_ERROR_SVM_SERVICE_FAILED);
 	return ret;
 }
 
@@ -1543,9 +1440,9 @@ void xe_svm_unmap_address_range(struct xe_vm *vm, u64 start, u64 end)
 				drm_gpusvm_range_get(range);
 				__xe_svm_garbage_collector(vm, to_xe_range(range));
 				if (!list_empty(&to_xe_range(range)->garbage_collector_link)) {
-					spin_lock(&vm->svm.garbage_collector.list_lock);
+					spin_lock(&vm->svm.garbage_collector.lock);
 					list_del(&to_xe_range(range)->garbage_collector_link);
-					spin_unlock(&vm->svm.garbage_collector.list_lock);
+					spin_unlock(&vm->svm.garbage_collector.lock);
 				}
 				drm_gpusvm_range_put(range);
 			}
@@ -1575,7 +1472,7 @@ int xe_svm_bo_evict(struct xe_bo *bo)
  * @ctx: GPU SVM context
  *
  * This function finds or inserts a newly allocated a SVM range based on the
- * address. Take a reference to SVM range on success.
+ * address.
  *
  * Return: Pointer to the SVM range on success, ERR_PTR() on failure.
  */
@@ -1584,14 +1481,10 @@ struct xe_svm_range *xe_svm_range_find_or_insert(struct xe_vm *vm, u64 addr,
 {
 	struct drm_gpusvm_range *r;
 
-	guard(mutex)(&vm->svm.range_lock);
-
 	r = drm_gpusvm_range_find_or_insert(&vm->svm.gpusvm, max(addr, xe_vma_start(vma)),
 					    xe_vma_start(vma), xe_vma_end(vma), ctx);
 	if (IS_ERR(r))
 		return ERR_CAST(r);
-
-	drm_gpusvm_range_get(r);
 
 	return to_xe_range(r);
 }
@@ -1612,86 +1505,13 @@ int xe_svm_range_get_pages(struct xe_vm *vm, struct xe_svm_range *range,
 {
 	int err = 0;
 
-	lockdep_assert_held(&range->lock);
-
-	err = drm_gpusvm_get_pages(&vm->svm.gpusvm, &range->pages, 1,
-				   vm->svm.gpusvm.mm,
-				   &range->base.notifier->notifier,
-				   drm_gpusvm_range_start(&range->base),
-				   drm_gpusvm_range_end(&range->base), ctx);
+	err = drm_gpusvm_range_get_pages(&vm->svm.gpusvm, &range->base, ctx);
 	if (err == -EOPNOTSUPP) {
 		range_debug(range, "PAGE FAULT - EVICT PAGES");
 		drm_gpusvm_range_evict(&vm->svm.gpusvm, &range->base);
 	}
 
 	return err;
-}
-
-/**
- * xe_svm_devmem_lru_bump() - Move a range's backing BO to the TTM LRU tail
- * @devmem_allocation: The device-memory allocation backing the range's pages
- *
- * Intended as a &drm_gpusvm_ctx.devmem_fn, so drm_gpusvm_get_pages() calls it
- * under the GPUSVM notifier lock. That lock sits in the reclaim path, so
- * dma-resv cannot be acquired blocking beneath it; dma-resv is also the outer
- * lock of the notifier when memory is allocated and migrated, so a blocking
- * acquire here would invert that order. Hence the trylock. The BO is private
- * (dedicated dma-resv), so the trylock succeeds unless the BO is being moved
- * elsewhere (e.g. eviction); a contended BO is simply skipped.
- *
- * A shared device_private_page_owner can hand us allocations backed by a
- * foreign driver; skip anything that is not an Xe BO before casting.
- */
-void xe_svm_devmem_lru_bump(struct drm_pagemap_devmem *devmem_allocation)
-{
-#if IS_ENABLED(CONFIG_DRM_XE_PAGEMAP)
-	struct xe_bo *bo;
-
-	if (devmem_allocation->ops != &dpagemap_devmem_ops)
-		return;
-
-	bo = to_xe_bo(devmem_allocation);
-
-	if (!dma_resv_trylock(bo->ttm.base.resv))
-		return;
-
-	ttm_bo_move_to_lru_tail_unlocked(&bo->ttm);
-	dma_resv_unlock(bo->ttm.base.resv);
-#endif
-}
-
-/**
- * xe_svm_range_prefetch_lru_bump() - Bump the TTM LRU for an already-valid range
- * @vm: Pointer to the struct xe_vm
- * @vma: Pointer to the VMA covering the range
- * @range: Pointer to the xe SVM range structure
- * @dpagemap: Target pagemap of the prefetch, or %NULL for system memory
- *
- * A valid range skips migration and binding, so nothing else refreshes its
- * backing BOs on the LRU. Re-fault the CPU pages without touching the DMA
- * mappings (@no_dma_map) and move each backing BO to the LRU tail.
- *
- * Prefetching is a best-effort optimization, so any failure is ignored; a
- * later fault will refault the range.
- */
-void xe_svm_range_prefetch_lru_bump(struct xe_vm *vm, struct xe_vma *vma,
-				    struct xe_svm_range *range,
-				    struct drm_pagemap *dpagemap)
-{
-	struct drm_gpusvm_ctx ctx = {
-		.read_only = xe_vma_read_only(vma),
-		.device_private_page_owner =
-			xe_svm_private_page_owner(vm, !dpagemap),
-		.no_dma_map = 1,
-		.devmem_fn = xe_svm_devmem_lru_bump,
-	};
-
-	guard(mutex)(&range->lock);
-
-	if (xe_svm_range_is_removed(range))
-		return;
-
-	xe_svm_range_get_pages(vm, range, &ctx);
 }
 
 /**
@@ -1800,13 +1620,8 @@ int xe_svm_alloc_vram(struct xe_svm_range *range, const struct drm_gpusvm_ctx *c
 	struct xe_device *xe = vm->xe;
 	int err, retries = 1;
 	bool write_locked = false;
-	struct drm_gpusvm_range_flags flags = {
-		/* READ_ONCE pairs with WRITE_ONCE in drm_gpusvm_range_set_unmapped() */
-		.__flags = READ_ONCE(range->base.flags.__flags),
-	};
 
-	lockdep_assert_held(&range->lock);
-	xe_assert(range_to_vm(&range->base)->xe, flags.migrate_devmem);
+	xe_assert(range_to_vm(&range->base)->xe, range->base.pages.flags.migrate_devmem);
 	range_debug(range, "ALLOCATE VRAM");
 
 	migration_state = drm_gpusvm_scan_mm(&range->base,

@@ -648,7 +648,7 @@ static int adt7411_probe(struct i2c_client *client)
 	struct device *hwmon_dev;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

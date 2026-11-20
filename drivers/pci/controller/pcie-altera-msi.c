@@ -206,7 +206,8 @@ static int altera_msi_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	msi = devm_kzalloc_obj(&pdev->dev, struct altera_msi);
+	msi = devm_kzalloc(&pdev->dev, sizeof(struct altera_msi),
+			   GFP_KERNEL);
 	if (!msi)
 		return -ENOMEM;
 

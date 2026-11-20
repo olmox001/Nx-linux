@@ -112,10 +112,20 @@ int ili9806e_probe(struct device *dev, void *transport,
 	if (set_prepare_prev_first)
 		ctx->panel.prepare_prev_first = true;
 
-	return devm_drm_panel_add(dev, &ctx->panel);
+	drm_panel_add(&ctx->panel);
+
+	return 0;
 
 }
 EXPORT_SYMBOL_GPL(ili9806e_probe);
+
+void ili9806e_remove(struct device *dev)
+{
+	struct ili9806e *ctx = dev_get_drvdata(dev);
+
+	drm_panel_remove(&ctx->panel);
+}
+EXPORT_SYMBOL_GPL(ili9806e_remove);
 
 MODULE_AUTHOR("Dario Binacchi <dario.binacchi@amarulasolutions.com>");
 MODULE_AUTHOR("Gunnar Dibbern <gunnar.dibbern@lht.dlh.de>");

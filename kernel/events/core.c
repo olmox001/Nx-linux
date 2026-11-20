@@ -1072,13 +1072,8 @@ static void perf_cgroup_switch(struct task_struct *task)
 	 * must not be done before ctxswout due
 	 * to update_cgrp_time_from_cpuctx() in
 	 * ctx_sched_out()
-	 *
-	 * ctx_sched_out() can consume a pending disable and drop the last cgroup
-	 * event, which clear the cpuctx->cgrp. Cgroup tracking follow active cgroup
-	 * event, so do not resurrect it
 	 */
-	if (cpuctx->ctx.nr_cgroups)
-		cpuctx->cgrp = cgrp;
+	cpuctx->cgrp = cgrp;
 	/*
 	 * set cgrp before ctxsw in to allow
 	 * perf_cgroup_set_timestamp() in ctx_sched_in()
@@ -1337,19 +1332,14 @@ static int perf_mux_hrtimer_restart(struct perf_cpu_pmu_context *cpc)
 	return 0;
 }
 
+static int perf_mux_hrtimer_restart_ipi(void *arg)
+{
+	return perf_mux_hrtimer_restart(arg);
+}
+
 static __always_inline struct perf_cpu_pmu_context *this_cpc(struct pmu *pmu)
 {
 	return *this_cpu_ptr(pmu->cpu_pmu_context);
-}
-
-static int perf_mux_hrtimer_interval_ipi(void *arg)
-{
-	struct pmu *pmu = arg;
-	struct perf_cpu_pmu_context *cpc = this_cpc(pmu);
-	int ms = pmu->hrtimer_interval_ms;
-
-	cpc->hrtimer_interval = ns_to_ktime(NSEC_PER_MSEC * ms);
-	return perf_mux_hrtimer_restart(cpc);
 }
 
 void perf_pmu_disable(struct pmu *pmu)
@@ -2600,7 +2590,6 @@ __perf_remove_from_context(struct perf_event *event,
 	enum perf_event_state state = PERF_EVENT_STATE_OFF;
 	unsigned long flags = (unsigned long)info;
 
-	perf_pmu_disable(pmu_ctx->pmu);
 	ctx_time_update(cpuctx, ctx);
 
 	/*
@@ -2613,13 +2602,6 @@ __perf_remove_from_context(struct perf_event *event,
 		state = PERF_EVENT_STATE_REVOKED;
 	if (flags & DETACH_DEAD)
 		state = PERF_EVENT_STATE_DEAD;
-
-	/*
-	 * When disabling a group leader, the whole group becomes ineligible
-	 * to run, so schedule out the full group.
-	 */
-	if (!(flags & DETACH_GROUP) && event == event->group_leader)
-		group_sched_out(event, ctx);
 
 	__event_disable(event, ctx, state);
 
@@ -2650,7 +2632,6 @@ __perf_remove_from_context(struct perf_event *event,
 			cpuctx->task_ctx = NULL;
 		}
 	}
-	perf_pmu_enable(pmu_ctx->pmu);
 }
 
 /*
@@ -5366,7 +5347,7 @@ static bool is_sb_event(struct perf_event *event)
 	    attr->comm || attr->comm_exec ||
 	    attr->task || attr->ksymbol ||
 	    attr->context_switch || attr->text_poke ||
-	    attr->bpf_event || attr->defer_output)
+	    attr->bpf_event)
 		return true;
 
 	return false;
@@ -5453,9 +5434,6 @@ attach_task_ctx_data(struct task_struct *task, struct kmem_cache *ctx_cache,
 		return -ENOMEM;
 
 	for (;;) {
-		/* Protect @old until inc_not_zero(&old->refcount) */
-		guard(rcu)();
-
 		if (try_cmpxchg(&task->perf_ctx_data, &old, cd)) {
 			if (old)
 				perf_free_ctx_data_rcu(old);
@@ -7038,7 +7016,7 @@ static void perf_mmap_open(struct vm_area_struct *vma)
 	refcount_inc(&event->mmap_count);
 	refcount_inc(&event->rb->mmap_count);
 
-	if (vma_start_pgoff(vma))
+	if (vma->vm_pgoff)
 		refcount_inc(&event->rb->aux_mmap_count);
 
 	if (mapped)
@@ -7071,7 +7049,7 @@ static void perf_mmap_close(struct vm_area_struct *vma)
 	 * The AUX buffer is strictly a sub-buffer, serialize using aux_mutex
 	 * to avoid complications.
 	 */
-	if (rb_has_aux(rb) && vma_start_pgoff(vma) == rb->aux_pgoff &&
+	if (rb_has_aux(rb) && vma->vm_pgoff == rb->aux_pgoff &&
 	    refcount_dec_and_mutex_lock(&rb->aux_mmap_count, &rb->aux_mutex)) {
 		/*
 		 * Stop all AUX events that are writing to this buffer,
@@ -7232,8 +7210,7 @@ static int map_range(struct perf_buffer *rb, struct vm_area_struct *vma)
 	 */
 	for (pagenum = 0; pagenum < nr_pages; pagenum++) {
 		unsigned long va = vma->vm_start + PAGE_SIZE * pagenum;
-		struct page *page = perf_mmap_to_page(rb,
-				vma_start_pgoff(vma) + pagenum);
+		struct page *page = perf_mmap_to_page(rb, vma->vm_pgoff + pagenum);
 
 		if (page == NULL) {
 			err = -EINVAL;
@@ -7387,7 +7364,6 @@ static int perf_mmap_rb(struct vm_area_struct *vma, struct perf_event *event,
 static int perf_mmap_aux(struct vm_area_struct *vma, struct perf_event *event,
 			 unsigned long nr_pages)
 {
-	const pgoff_t pgoff_start = vma_start_pgoff(vma);
 	long extra = 0, user_extra = nr_pages;
 	u64 aux_offset, aux_size;
 	struct perf_buffer *rb;
@@ -7410,11 +7386,11 @@ static int perf_mmap_aux(struct vm_area_struct *vma, struct perf_event *event,
 	if (aux_offset < perf_data_size(rb) + PAGE_SIZE)
 		return -EINVAL;
 
-	if (aux_offset != pgoff_start << PAGE_SHIFT)
+	if (aux_offset != vma->vm_pgoff << PAGE_SHIFT)
 		return -EINVAL;
 
 	/* already mapped with a different offset */
-	if (rb_has_aux(rb) && rb->aux_pgoff != pgoff_start)
+	if (rb_has_aux(rb) && rb->aux_pgoff != vma->vm_pgoff)
 		return -EINVAL;
 
 	if (aux_size != nr_pages * PAGE_SIZE)
@@ -7444,7 +7420,7 @@ static int perf_mmap_aux(struct vm_area_struct *vma, struct perf_event *event,
 		if (vma->vm_flags & VM_WRITE)
 			rb_flags |= RING_BUFFER_WRITABLE;
 
-		ret = rb_alloc_aux(rb, event, pgoff_start, nr_pages,
+		ret = rb_alloc_aux(rb, event, vma->vm_pgoff, nr_pages,
 				   event->attr.aux_watermark, rb_flags);
 		if (ret) {
 			refcount_dec(&rb->mmap_count);
@@ -7501,7 +7477,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 		if (event->state <= PERF_EVENT_STATE_REVOKED)
 			return -ENODEV;
 
-		if (!vma_start_pgoff(vma))
+		if (vma->vm_pgoff == 0)
 			ret = perf_mmap_rb(vma, event, nr_pages);
 		else
 			ret = perf_mmap_aux(vma, event, nr_pages);
@@ -7654,15 +7630,6 @@ static void perf_sigtrap(struct perf_event *event)
 	 * ctx->task to TASK_TOMBSTONE, has already been called.
 	 */
 	if (event->ctx->task == TASK_TOMBSTONE)
-		return;
-
-	/*
-	 * The event was removed after this signal was queued, e.g. by exec()
-	 * (remove_on_exec), which may also have closed its fd (close-on-exec).
-	 * The new program has default signal handlers, so a SIGTRAP would
-	 * kill it.
-	 */
-	if (READ_ONCE(event->state) <= PERF_EVENT_STATE_EXIT)
 		return;
 
 	/*
@@ -7846,100 +7813,30 @@ unsigned long perf_misc_flags(struct perf_event *event,
 unsigned long perf_instruction_pointer(struct perf_event *event,
 				       struct pt_regs *regs)
 {
-	/*
-	 * Hardware skid can lead to a scenario where a PMI is
-	 * delivered after the CPU has already entered kernel mode.
-	 * In that case, user-space sampling must not expose kernel
-	 * register state.
-	 */
-	if (should_sample_guest(event)) {
-		return event->attr.exclude_kernel &&
-		       !(perf_guest_state() & PERF_GUEST_USER) ?
-			0 : perf_guest_get_ip();
-	}
+	if (should_sample_guest(event))
+		return perf_guest_get_ip();
 
-	return event->attr.exclude_kernel && !user_mode(regs) ?
-		0 : perf_arch_instruction_pointer(regs);
+	return perf_arch_instruction_pointer(regs);
 }
-
-u64 __weak perf_reg_value(struct pt_regs *regs, int idx)
-{
-	return 0;
-}
-
-int __weak perf_reg_validate(u64 mask, bool simd_enabled)
-{
-	return mask ? -ENOSYS : 0;
-}
-
-u64 __weak perf_reg_abi(struct task_struct *task)
-{
-	return PERF_SAMPLE_REGS_ABI_NONE;
-}
-
-void __weak perf_get_regs_user(struct perf_regs *regs_user,
-			       struct pt_regs *regs)
-{
-	regs_user->regs = task_pt_regs(current);
-	regs_user->abi = perf_reg_abi(current);
-}
-
-#define word_for_each_set_bit(bit, val)			\
-	for (unsigned long long __v = (val);		\
-	     __v && ((bit = __builtin_ctzll(__v)), 1);	\
-	     __v &= __v - 1)
 
 static void
 perf_output_sample_regs(struct perf_output_handle *handle,
 			struct pt_regs *regs, u64 mask)
 {
 	int bit;
+	DECLARE_BITMAP(_mask, 64);
 
-	word_for_each_set_bit(bit, mask) {
-		u64 val = perf_reg_value(regs, bit);
+	bitmap_from_u64(_mask, mask);
+	for_each_set_bit(bit, _mask, sizeof(mask) * BITS_PER_BYTE) {
+		u64 val;
+
+		val = perf_reg_value(regs, bit);
 		perf_output_put(handle, val);
 	}
 }
 
-static void
-perf_output_sample_simd_regs(struct perf_output_handle *handle,
-			     struct perf_event *event,
-			     struct pt_regs *regs,
-			     u64 mask, u32 pred_mask)
-{
-	u64 pred_qwords = event->attr.sample_simd_pred_reg_qwords;
-	u64 vec_qwords = event->attr.sample_simd_vec_reg_qwords;
-	u64 nr_vectors = hweight64(mask);
-	u64 nr_pred = hweight32(pred_mask);
-	int bit;
-
-	perf_output_put(handle, nr_vectors);
-	perf_output_put(handle, vec_qwords);
-	perf_output_put(handle, nr_pred);
-	perf_output_put(handle, pred_qwords);
-
-	if (nr_vectors) {
-		word_for_each_set_bit(bit, mask) {
-			for (int i = 0; i < vec_qwords; i++) {
-				u64 val = perf_simd_reg_value(regs, bit,
-							      i, false);
-				perf_output_put(handle, val);
-			}
-		}
-	}
-	if (nr_pred) {
-		word_for_each_set_bit(bit, pred_mask) {
-			for (int i = 0; i < pred_qwords; i++) {
-				u64 val = perf_simd_reg_value(regs, bit,
-							      i, true);
-				perf_output_put(handle, val);
-			}
-		}
-	}
-}
-
-void perf_sample_regs_user(struct perf_regs *regs_user,
-			   struct pt_regs *regs)
+static void perf_sample_regs_user(struct perf_regs *regs_user,
+				  struct pt_regs *regs)
 {
 	if (user_mode(regs)) {
 		regs_user->abi = perf_reg_abi(current);
@@ -7952,36 +7849,13 @@ void perf_sample_regs_user(struct perf_regs *regs_user,
 	}
 }
 
-void perf_sample_regs_intr(struct perf_regs *regs_intr,
-			   struct pt_regs *regs,
-			   bool exclude_kernel)
+static void perf_sample_regs_intr(struct perf_regs *regs_intr,
+				  struct pt_regs *regs)
 {
-	/*
-	 * Hardware skid can lead to a scenario where a PMI is
-	 * delivered after the CPU has already entered kernel mode.
-	 * In that case, user-space sampling must not expose kernel
-	 * register state.
-	 */
-	if (exclude_kernel && !user_mode(regs)) {
-		regs_intr->abi = PERF_SAMPLE_REGS_ABI_NONE;
-		regs_intr->regs = NULL;
-	} else {
-		regs_intr->regs = regs;
-		regs_intr->abi = perf_reg_abi(current);
-	}
+	regs_intr->regs = regs;
+	regs_intr->abi  = perf_reg_abi(current);
 }
 
-int __weak perf_simd_reg_validate(u16 vec_qwords, u64 vec_mask,
-				  u16 pred_qwords, u32 pred_mask)
-{
-	return -EINVAL;
-}
-
-u64 __weak perf_simd_reg_value(struct pt_regs *regs, int idx,
-			       u16 qwords_idx, bool pred)
-{
-	return 0;
-}
 
 /*
  * Get remaining task size from user stack pointer.
@@ -8517,17 +8391,10 @@ void perf_output_sample(struct perf_output_handle *handle,
 		perf_output_put(handle, abi);
 
 		if (abi) {
-			struct perf_event_attr *attr = &event->attr;
-			u64 mask = attr->sample_regs_user;
+			u64 mask = event->attr.sample_regs_user;
 			perf_output_sample_regs(handle,
 						data->regs_user.regs,
 						mask);
-			if (abi & PERF_SAMPLE_REGS_ABI_SIMD) {
-				perf_output_sample_simd_regs(handle, event,
-							     data->regs_user.regs,
-							     attr->sample_simd_vec_reg_user,
-							     attr->sample_simd_pred_reg_user);
-			}
 		}
 	}
 
@@ -8555,18 +8422,11 @@ void perf_output_sample(struct perf_output_handle *handle,
 		perf_output_put(handle, abi);
 
 		if (abi) {
-			struct perf_event_attr *attr = &event->attr;
-			u64 mask = attr->sample_regs_intr;
+			u64 mask = event->attr.sample_regs_intr;
 
 			perf_output_sample_regs(handle,
 						data->regs_intr.regs,
 						mask);
-			if (abi & PERF_SAMPLE_REGS_ABI_SIMD) {
-				perf_output_sample_simd_regs(handle, event,
-							     data->regs_intr.regs,
-							     attr->sample_simd_vec_reg_intr,
-							     attr->sample_simd_pred_reg_intr);
-			}
 		}
 	}
 
@@ -8769,29 +8629,6 @@ static __always_inline u64 __cond_set(u64 flags, u64 s, u64 d)
 	return d * !!(flags & s);
 }
 
-u64 perf_update_xregs_size(struct perf_event *event, bool intr)
-{
-	u16 pred_qwords = event->attr.sample_simd_pred_reg_qwords;
-	u16 vec_qwords = event->attr.sample_simd_vec_reg_qwords;
-	u64 pred_mask;
-	u64 mask;
-	int size;
-
-	if (intr) {
-		mask = event->attr.sample_simd_vec_reg_intr;
-		pred_mask = event->attr.sample_simd_pred_reg_intr;
-	} else {
-		mask = event->attr.sample_simd_vec_reg_user;
-		pred_mask = event->attr.sample_simd_pred_reg_user;
-	}
-
-	size = sizeof(u64) * 4;
-	size += (hweight64(mask) * vec_qwords +
-		 hweight64(pred_mask) * pred_qwords) * sizeof(u64);
-
-	return size;
-}
-
 void perf_prepare_sample(struct perf_sample_data *data,
 			 struct perf_event *event,
 			 struct pt_regs *regs)
@@ -8854,12 +8691,7 @@ void perf_prepare_sample(struct perf_sample_data *data,
 
 		if (data->regs_user.regs) {
 			u64 mask = event->attr.sample_regs_user;
-
 			size += hweight64(mask) * sizeof(u64);
-			if (event_has_simd_regs(event)) {
-				size += perf_update_xregs_size(event, false);
-				data->regs_user.abi |= PERF_SAMPLE_REGS_ABI_SIMD;
-			}
 		}
 
 		data->dyn_size += size;
@@ -8917,17 +8749,12 @@ void perf_prepare_sample(struct perf_sample_data *data,
 		/* regs dump ABI info */
 		int size = sizeof(u64);
 
-		perf_sample_regs_intr(&data->regs_intr, regs,
-				      event->attr.exclude_kernel);
+		perf_sample_regs_intr(&data->regs_intr, regs);
 
 		if (data->regs_intr.regs) {
 			u64 mask = event->attr.sample_regs_intr;
 
 			size += hweight64(mask) * sizeof(u64);
-			if (event_has_simd_regs(event)) {
-				size += perf_update_xregs_size(event, true);
-				data->regs_intr.abi |= PERF_SAMPLE_REGS_ABI_SIMD;
-			}
 		}
 
 		data->dyn_size += size;
@@ -9946,7 +9773,7 @@ static void perf_event_mmap_event(struct perf_mmap_event *mmap_event)
 
 	if (vma->vm_flags & VM_LOCKED)
 		flags |= MAP_LOCKED;
-	if (vma_is_hugetlb(vma))
+	if (is_vm_hugetlb_page(vma))
 		flags |= MAP_HUGETLB;
 
 	if (file) {
@@ -10051,7 +9878,7 @@ static bool perf_addr_filter_vma_adjust(struct perf_addr_filter *filter,
 					struct perf_addr_filter_range *fr)
 {
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
-	unsigned long off = vma_start_pgoff(vma) << PAGE_SHIFT;
+	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
 	struct file *file = vma->vm_file;
 
 	if (!perf_addr_filter_match(filter, file, off, vma_size))
@@ -10137,7 +9964,7 @@ void perf_event_mmap(struct vm_area_struct *vma)
 			/* .tid */
 			.start  = vma->vm_start,
 			.len    = vma->vm_end - vma->vm_start,
-			.pgoff  = (u64)vma_start_pgoff(vma) << PAGE_SHIFT,
+			.pgoff  = (u64)vma->vm_pgoff << PAGE_SHIFT,
 		},
 		/* .maj (attr_mmap2 only) */
 		/* .min (attr_mmap2 only) */
@@ -10533,6 +10360,8 @@ struct perf_callchain_deferred_event {
 	struct {
 		struct perf_event_header	header;
 		u64				cookie;
+		u64				nr;
+		u64				ips[];
 	} event;
 };
 
@@ -10541,18 +10370,11 @@ static void perf_callchain_deferred_output(struct perf_event *event, void *data)
 	struct perf_callchain_deferred_event *deferred_event = data;
 	struct perf_output_handle handle;
 	struct perf_sample_data sample;
-	u64 nr = deferred_event->trace->nr;
-	u16 size, id_size, max_payload;
 	int ret;
+	u16 size = sizeof(deferred_event->event) + (deferred_event->trace->nr * sizeof(u64));
 
 	if (!event->attr.defer_output)
 		return;
-
-	id_size = event->attr.sample_id_all ? event->id_header_size : 0;
-	max_payload = round_down(U16_MAX - sizeof(deferred_event->event) -
-				 sizeof(u64) - id_size, sizeof(u64));
-	nr = min_t(u64, nr, max_payload / sizeof(u64));
-	size = sizeof(deferred_event->event) + sizeof(u64) + nr * sizeof(u64);
 
 	/* XXX do we really need sample_id_all for this ??? */
 	perf_event_header__init(&deferred_event->event.header, &sample,
@@ -10567,10 +10389,8 @@ static void perf_callchain_deferred_output(struct perf_event *event, void *data)
 		return;
 
 	perf_output_put(&handle, deferred_event->event);
-	perf_output_put(&handle, nr);
-	for (u64 i = 0; i < nr; i++) {
+	for (int i = 0; i < deferred_event->trace->nr; i++) {
 		u64 entry = deferred_event->trace->entries[i];
-
 		perf_output_put(&handle, entry);
 	}
 	perf_event__output_id_sample(event, &handle, &sample);
@@ -10585,6 +10405,7 @@ static void perf_unwind_deferred_callback(struct unwind_work *work,
 		.trace = trace,
 		.event = {
 			.cookie = cookie,
+			.nr = trace->nr,
 		},
 	};
 
@@ -10681,7 +10502,6 @@ void perf_event_itrace_started(struct perf_event *event)
 {
 	WRITE_ONCE(event->attach_state, event->attach_state | PERF_ATTACH_ITRACE);
 }
-EXPORT_SYMBOL_GPL(perf_event_itrace_started);
 
 static void perf_log_itrace_start(struct perf_event *event)
 {
@@ -12790,8 +12610,13 @@ perf_event_mux_interval_ms_store(struct device *dev,
 
 	/* update all cpuctx for this PMU */
 	cpus_read_lock();
-	for_each_online_cpu(cpu)
-		cpu_function_call(cpu, perf_mux_hrtimer_interval_ipi, pmu);
+	for_each_online_cpu(cpu) {
+		struct perf_cpu_pmu_context *cpc;
+		cpc = *per_cpu_ptr(pmu->cpu_pmu_context, cpu);
+		cpc->hrtimer_interval = ns_to_ktime(NSEC_PER_MSEC * timer);
+
+		cpu_function_call(cpu, perf_mux_hrtimer_restart_ipi, cpc);
+	}
 	cpus_read_unlock();
 	mutex_unlock(&mux_interval_mutex);
 
@@ -12842,7 +12667,7 @@ static ssize_t cpumask_show(struct device *dev, struct device_attribute *attr,
 	struct cpumask *mask = perf_scope_cpumask(pmu->scope);
 
 	if (mask)
-		return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(mask));
+		return cpumap_print_to_pagebuf(true, buf, mask);
 	return 0;
 }
 
@@ -13220,6 +13045,12 @@ int perf_pmu_unregister(struct pmu *pmu)
 }
 EXPORT_SYMBOL_GPL(perf_pmu_unregister);
 
+static inline bool has_extended_regs(struct perf_event *event)
+{
+	return (event->attr.sample_regs_user & PERF_REG_EXTENDED_MASK) ||
+	       (event->attr.sample_regs_intr & PERF_REG_EXTENDED_MASK);
+}
+
 static int perf_try_init_event(struct pmu *pmu, struct perf_event *event)
 {
 	struct perf_event_context *ctx = NULL;
@@ -13253,14 +13084,8 @@ static int perf_try_init_event(struct pmu *pmu, struct perf_event *event)
 	if (ret)
 		goto err_pmu;
 
-	if (!(pmu->capabilities & PERF_PMU_CAP_SIMD_REGS) &&
-	    event_has_simd_regs(event)) {
-		ret = -EOPNOTSUPP;
-		goto err_destroy;
-	}
-
 	if (!(pmu->capabilities & PERF_PMU_CAP_EXTENDED_REGS) &&
-	    event_has_extended_regs(event)) {
+	    has_extended_regs(event)) {
 		ret = -EOPNOTSUPP;
 		goto err_destroy;
 	}
@@ -13673,8 +13498,9 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
 		return ERR_PTR(err);
 
 	if (has_addr_filter(event)) {
-		event->addr_filter_ranges = kzalloc_objs(struct perf_addr_filter_range,
-							 pmu->nr_addr_filters);
+		event->addr_filter_ranges = kcalloc(pmu->nr_addr_filters,
+						    sizeof(struct perf_addr_filter_range),
+						    GFP_KERNEL);
 		if (!event->addr_filter_ranges)
 			return ERR_PTR(-ENOMEM);
 
@@ -13754,8 +13580,7 @@ static int perf_copy_attr(struct perf_event_attr __user *uattr,
 
 	attr->size = size;
 
-	if (attr->__reserved_1 || attr->__reserved_2 ||
-	    attr->__reserved_3 || attr->__reserved_4)
+	if (attr->__reserved_1 || attr->__reserved_2 || attr->__reserved_3)
 		return -EINVAL;
 
 	if (attr->sample_type & ~(PERF_SAMPLE_MAX-1))
@@ -13801,18 +13626,9 @@ static int perf_copy_attr(struct perf_event_attr __user *uattr,
 	}
 
 	if (attr->sample_type & PERF_SAMPLE_REGS_USER) {
-		ret = perf_reg_validate(attr->sample_regs_user,
-					attr->sample_simd_regs_enabled);
+		ret = perf_reg_validate(attr->sample_regs_user);
 		if (ret)
 			return ret;
-		if (attr->sample_simd_regs_enabled) {
-			ret = perf_simd_reg_validate(attr->sample_simd_vec_reg_qwords,
-						     attr->sample_simd_vec_reg_user,
-						     attr->sample_simd_pred_reg_qwords,
-						     attr->sample_simd_pred_reg_user);
-			if (ret)
-				return ret;
-		}
 	}
 
 	if (attr->sample_type & PERF_SAMPLE_STACK_USER) {
@@ -13833,20 +13649,8 @@ static int perf_copy_attr(struct perf_event_attr __user *uattr,
 	if (!attr->sample_max_stack)
 		attr->sample_max_stack = sysctl_perf_event_max_stack;
 
-	if (attr->sample_type & PERF_SAMPLE_REGS_INTR) {
-		ret = perf_reg_validate(attr->sample_regs_intr,
-					attr->sample_simd_regs_enabled);
-		if (ret)
-			return ret;
-		if (attr->sample_simd_regs_enabled) {
-			ret = perf_simd_reg_validate(attr->sample_simd_vec_reg_qwords,
-						     attr->sample_simd_vec_reg_intr,
-						     attr->sample_simd_pred_reg_qwords,
-						     attr->sample_simd_pred_reg_intr);
-			if (ret)
-				return ret;
-		}
-	}
+	if (attr->sample_type & PERF_SAMPLE_REGS_INTR)
+		ret = perf_reg_validate(attr->sample_regs_intr);
 
 #ifndef CONFIG_CGROUP_PERF
 	if (attr->sample_type & PERF_SAMPLE_CGROUP)
@@ -14940,24 +14744,6 @@ int perf_allow_kernel(void)
 	return security_perf_event_open(PERF_SECURITY_KERNEL);
 }
 EXPORT_SYMBOL_GPL(perf_allow_kernel);
-
-int perf_allow_cpu(void)
-{
-	if (sysctl_perf_event_paranoid > 0 && !perfmon_capable())
-		return -EACCES;
-
-	return security_perf_event_open(PERF_SECURITY_CPU);
-}
-EXPORT_SYMBOL_GPL(perf_allow_cpu);
-
-int perf_allow_tracepoint(void)
-{
-	if (sysctl_perf_event_paranoid > -1 && !perfmon_capable())
-		return -EPERM;
-
-	return security_perf_event_open(PERF_SECURITY_TRACEPOINT);
-}
-EXPORT_SYMBOL_GPL(perf_allow_tracepoint);
 
 /*
  * Inherit an event from parent task to child task.

@@ -649,7 +649,7 @@ static int max77759_probe(struct i2c_client *client)
 	unsigned int pmic_id;
 	int ret;
 
-	max77759 = devm_kzalloc_obj(&client->dev, *max77759);
+	max77759 = devm_kzalloc(&client->dev, sizeof(*max77759), GFP_KERNEL);
 	if (!max77759)
 		return -ENOMEM;
 

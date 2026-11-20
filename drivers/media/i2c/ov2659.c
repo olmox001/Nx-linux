@@ -1080,7 +1080,6 @@ static void __ov2659_try_frame_size(struct v4l2_mbus_framefmt *mf,
 }
 
 static int ov2659_set_fmt(struct v4l2_subdev *sd,
-			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
@@ -1400,7 +1399,7 @@ ov2659_get_pdata(struct i2c_client *client)
 		goto done;
 	}
 
-	pdata = devm_kzalloc_obj(&client->dev, *pdata);
+	pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		goto done;
 
@@ -1431,7 +1430,7 @@ static int ov2659_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	ov2659 = devm_kzalloc_obj(&client->dev, *ov2659);
+	ov2659 = devm_kzalloc(&client->dev, sizeof(*ov2659), GFP_KERNEL);
 	if (!ov2659)
 		return -ENOMEM;
 

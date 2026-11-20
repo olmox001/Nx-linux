@@ -110,6 +110,14 @@ static inline bool file_thp_enabled(const struct vm_area_struct *vma)
 	return S_ISREG(inode->i_mode);
 }
 
+/* If returns true, we are unable to access the VMA's folios. */
+static bool vma_is_special_huge(const struct vm_area_struct *vma)
+{
+	if (vma_is_dax(vma))
+		return false;
+	return vma_test_any(vma, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT);
+}
+
 static bool vma_file_bypass_thp_tuneables(const struct vm_area_struct *vma,
 		enum tva_type type)
 {
@@ -184,7 +192,7 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 	/* Check the intersection of requested and supported orders. */
 	if (vma_is_anonymous(vma))
 		supported_orders = THP_ORDERS_ALL_ANON;
-	else if (vma_is_dax(vma) || !vma_is_mm_managed(vma))
+	else if (vma_is_dax(vma) || vma_is_special_huge(vma))
 		supported_orders = THP_ORDERS_ALL_SPECIAL_DAX;
 	else
 		supported_orders = THP_ORDERS_ALL_FILE_DEFAULT;
@@ -204,13 +212,11 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 		return in_pf ? orders : 0;
 
 	/*
-	 * khugepaged moves data from VMAs once collapsed, after they have been
-	 * faulted in, relying on refaulting for file-backed memory.
-	 *
-	 * Only mm-backed mappings can be reliably reconstructed from page
-	 * faults, and hugetlb mappings cannot be collapsed.
+	 * khugepaged special VMA and hugetlb VMA.
+	 * Must be checked after dax since some dax mappings may have
+	 * VM_MIXEDMAP set.
 	 */
-	if (!in_pf && !smaps && (!vma_is_mm_backed(vma) || vma_is_hugetlb(vma)))
+	if (!in_pf && !smaps && (vm_flags & VM_NO_KHUGEPAGED))
 		return 0;
 
 	/*
@@ -242,7 +248,7 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 	 */
 	if (!in_pf && shmem_file(vma->vm_file))
 		return orders & shmem_allowable_huge_orders(file_inode(vma->vm_file),
-						   vma, vma_start_pgoff(vma), 0,
+						   vma, vma->vm_pgoff, 0,
 						   forced_collapse);
 
 	if (!vma_is_anonymous(vma))
@@ -253,12 +259,12 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 
 	/*
 	 * THPeligible bit of smaps should show 1 for proper VMAs even
-	 * though they don't have an anon rmap yet.
+	 * though anon_vma is not initialized yet.
 	 *
-	 * Allow page fault since the VMA may not have an anon rmap until the
-	 * first page fault.
+	 * Allow page fault since anon_vma may be not initialized until
+	 * the first page fault.
 	 */
-	if (!vma_has_anon_rmap(vma))
+	if (!vma->anon_vma)
 		return (smaps || in_pf) ? orders : 0;
 
 	return orders;
@@ -922,8 +928,10 @@ static struct thpsize *thpsize_create(int order, struct kobject *parent)
 
 	ret = kobject_init_and_add(&thpsize->kobj, &thpsize_ktype, parent,
 				   "hugepages-%lukB", size);
-	if (ret)
-		goto err_put;
+	if (ret) {
+		kfree(thpsize);
+		goto err;
+	}
 
 
 	ret = sysfs_add_group(&thpsize->kobj, &any_ctrl_attr_grp);
@@ -1140,7 +1148,6 @@ subsys_initcall(hugepage_init);
 static int __init setup_transparent_hugepage(char *str)
 {
 	int ret = 0;
-
 	if (!str)
 		goto out;
 	if (!strcmp(str, "always")) {
@@ -1274,7 +1281,7 @@ static inline bool is_transparent_hugepage(const struct folio *folio)
 static unsigned long __thp_get_unmapped_area(struct file *filp,
 		unsigned long addr, unsigned long len,
 		loff_t off, unsigned long flags, unsigned long size,
-		vma_flags_t vma_flags)
+		vm_flags_t vm_flags)
 {
 	loff_t off_end = off + len;
 	loff_t off_align = round_up(off, size);
@@ -1290,9 +1297,8 @@ static unsigned long __thp_get_unmapped_area(struct file *filp,
 	if (len_pad < len || (off + len_pad) < off)
 		return 0;
 
-	ret = mm_get_unmapped_area_vmaflags(filp, addr, len_pad,
-					    off >> PAGE_SHIFT, flags,
-					    vma_flags);
+	ret = mm_get_unmapped_area_vmflags(filp, addr, len_pad,
+					   off >> PAGE_SHIFT, flags, vm_flags);
 
 	/*
 	 * The failure might be due to length padding. The caller will retry
@@ -1317,27 +1323,25 @@ static unsigned long __thp_get_unmapped_area(struct file *filp,
 	return ret;
 }
 
-unsigned long thp_get_unmapped_area_vmaflags(struct file *filp, unsigned long addr,
+unsigned long thp_get_unmapped_area_vmflags(struct file *filp, unsigned long addr,
 		unsigned long len, unsigned long pgoff, unsigned long flags,
-		vma_flags_t vma_flags)
+		vm_flags_t vm_flags)
 {
 	unsigned long ret;
 	loff_t off = (loff_t)pgoff << PAGE_SHIFT;
 
-	ret = __thp_get_unmapped_area(filp, addr, len, off, flags, PMD_SIZE,
-				      vma_flags);
+	ret = __thp_get_unmapped_area(filp, addr, len, off, flags, PMD_SIZE, vm_flags);
 	if (ret)
 		return ret;
 
-	return mm_get_unmapped_area_vmaflags(filp, addr, len, pgoff, flags,
-					     vma_flags);
+	return mm_get_unmapped_area_vmflags(filp, addr, len, pgoff, flags,
+					    vm_flags);
 }
 
 unsigned long thp_get_unmapped_area(struct file *filp, unsigned long addr,
 		unsigned long len, unsigned long pgoff, unsigned long flags)
 {
-	return thp_get_unmapped_area_vmaflags(filp, addr, len, pgoff, flags,
-					      EMPTY_VMA_FLAGS);
+	return thp_get_unmapped_area_vmflags(filp, addr, len, pgoff, flags, 0);
 }
 EXPORT_SYMBOL_GPL(thp_get_unmapped_area);
 
@@ -1547,7 +1551,6 @@ static void set_huge_zero_folio(pgtable_t pgtable, struct mm_struct *mm,
 		struct folio *zero_folio)
 {
 	pmd_t entry;
-
 	entry = folio_mk_pmd(zero_folio, vma->vm_page_prot);
 	entry = pmd_mkspecial(entry);
 	pgtable_trans_huge_deposit(mm, pmd, pgtable);
@@ -1626,7 +1629,6 @@ static vm_fault_t insert_pmd(struct vm_area_struct *vma, unsigned long addr,
 {
 	struct mm_struct *mm = vma->vm_mm;
 	pgtable_t pgtable = NULL;
-	vm_fault_t ret = VM_FAULT_NOPAGE;
 	spinlock_t *ptl;
 	pmd_t entry;
 
@@ -1663,10 +1665,6 @@ static vm_fault_t insert_pmd(struct vm_area_struct *vma, unsigned long addr,
 		if (is_huge_zero_folio(fop.folio)) {
 			entry = pmd_mkspecial(entry);
 		} else {
-			if (unlikely(folio_ref_count_over_limit(fop.folio))) {
-				ret = VM_FAULT_SIGBUS;
-				goto out_unlock;
-			}
 			folio_get(fop.folio);
 			folio_add_file_rmap_pmd(fop.folio, &fop.folio->page, vma);
 			add_mm_counter(mm, mm_counter_file(fop.folio), HPAGE_PMD_NR);
@@ -1693,7 +1691,7 @@ out_unlock:
 	spin_unlock(ptl);
 	if (pgtable)
 		pte_free(mm, pgtable);
-	return ret;
+	return VM_FAULT_NOPAGE;
 }
 
 /**
@@ -1724,10 +1722,7 @@ vm_fault_t vmf_insert_pfn_pmd(struct vm_fault *vmf, unsigned long pfn,
 	BUG_ON(!(vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)));
 	BUG_ON((vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)) ==
 						(VM_PFNMAP|VM_MIXEDMAP));
-	BUG_ON((vma->vm_flags & VM_PFNMAP) && vma_is_cow_mapping(vma));
-
-	if (unlikely(is_huge_zero_pfn(pfn)))
-		return VM_FAULT_SIGBUS;
+	BUG_ON((vma->vm_flags & VM_PFNMAP) && is_cow_mapping(vma->vm_flags));
 
 	pfnmap_setup_cachemode_pfn(pfn, &pgprot);
 
@@ -1764,7 +1759,6 @@ static vm_fault_t insert_pud(struct vm_area_struct *vma, unsigned long addr,
 		pud_t *pud, struct folio_or_pfn fop, pgprot_t prot, bool write)
 {
 	struct mm_struct *mm = vma->vm_mm;
-	vm_fault_t ret = VM_FAULT_NOPAGE;
 	spinlock_t *ptl;
 	pud_t entry;
 
@@ -1790,10 +1784,6 @@ static vm_fault_t insert_pud(struct vm_area_struct *vma, unsigned long addr,
 	if (fop.is_folio) {
 		entry = folio_mk_pud(fop.folio, vma->vm_page_prot);
 
-		if (unlikely(folio_ref_count_over_limit(fop.folio))) {
-			ret = VM_FAULT_SIGBUS;
-			goto out_unlock;
-		}
 		folio_get(fop.folio);
 		folio_add_file_rmap_pud(fop.folio, &fop.folio->page, vma);
 		add_mm_counter(mm, mm_counter_file(fop.folio), HPAGE_PUD_NR);
@@ -1809,7 +1799,7 @@ static vm_fault_t insert_pud(struct vm_area_struct *vma, unsigned long addr,
 	update_mmu_cache_pud(vma, addr, pud);
 out_unlock:
 	spin_unlock(ptl);
-	return ret;
+	return VM_FAULT_NOPAGE;
 }
 
 /**
@@ -1840,7 +1830,7 @@ vm_fault_t vmf_insert_pfn_pud(struct vm_fault *vmf, unsigned long pfn,
 	BUG_ON(!(vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)));
 	BUG_ON((vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)) ==
 						(VM_PFNMAP|VM_MIXEDMAP));
-	BUG_ON((vma->vm_flags & VM_PFNMAP) && vma_is_cow_mapping(vma));
+	BUG_ON((vma->vm_flags & VM_PFNMAP) && is_cow_mapping(vma->vm_flags));
 
 	pfnmap_setup_cachemode_pfn(pfn, &pgprot);
 
@@ -1914,11 +1904,11 @@ static void copy_huge_non_present_pmd(
 	if (softleaf_is_migration_write(entry) ||
 	    softleaf_is_migration_read_exclusive(entry)) {
 		entry = make_readable_migration_entry(swp_offset(entry));
-		pmd = softleaf_to_pmd(entry);
+		pmd = swp_entry_to_pmd(entry);
 		if (pmd_swp_soft_dirty(*src_pmd))
 			pmd = pmd_swp_mksoft_dirty(pmd);
-		if (pmd_swp_uffd(*src_pmd))
-			pmd = pmd_swp_mkuffd(pmd);
+		if (pmd_swp_uffd_wp(*src_pmd))
+			pmd = pmd_swp_mkuffd_wp(pmd);
 		set_pmd_at(src_mm, addr, src_pmd, pmd);
 	} else if (softleaf_is_device_private(entry)) {
 		/*
@@ -1927,12 +1917,12 @@ static void copy_huge_non_present_pmd(
 		 */
 		if (softleaf_is_device_private_write(entry)) {
 			entry = make_readable_device_private_entry(swp_offset(entry));
-			pmd = softleaf_to_pmd(entry);
+			pmd = swp_entry_to_pmd(entry);
 
 			if (pmd_swp_soft_dirty(*src_pmd))
 				pmd = pmd_swp_mksoft_dirty(pmd);
-			if (pmd_swp_uffd(*src_pmd))
-				pmd = pmd_swp_mkuffd(pmd);
+			if (pmd_swp_uffd_wp(*src_pmd))
+				pmd = pmd_swp_mkuffd_wp(pmd);
 			set_pmd_at(src_mm, addr, src_pmd, pmd);
 		}
 
@@ -1951,8 +1941,8 @@ static void copy_huge_non_present_pmd(
 	add_mm_counter(dst_mm, MM_ANONPAGES, HPAGE_PMD_NR);
 	mm_inc_nr_ptes(dst_mm);
 	pgtable_trans_huge_deposit(dst_mm, dst_pmd, pgtable);
-	if (!userfaultfd_protected(dst_vma))
-		pmd = pmd_swp_clear_uffd(pmd);
+	if (!userfaultfd_wp(dst_vma))
+		pmd = pmd_swp_clear_uffd_wp(pmd);
 	set_pmd_at(dst_mm, addr, dst_pmd, pmd);
 }
 
@@ -1982,7 +1972,7 @@ int copy_huge_pmd(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		 * applied special bit, or we made the PRIVATE mapping be
 		 * able to wrongly write to the backend MMIO.
 		 */
-		VM_WARN_ON_ONCE(vma_is_cow_mapping(src_vma) && pmd_write(pmd));
+		VM_WARN_ON_ONCE(is_cow_mapping(src_vma->vm_flags) && pmd_write(pmd));
 		goto set_pmd;
 	}
 
@@ -2046,15 +2036,9 @@ int copy_huge_pmd(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 out_zero_page:
 	mm_inc_nr_ptes(dst_mm);
 	pgtable_trans_huge_deposit(dst_mm, dst_pmd, pgtable);
-
-	/* See __copy_present_ptes(): restore accessible protection. */
-	if (!userfaultfd_protected(dst_vma)) {
-		if (userfaultfd_rwp(src_vma) && pmd_uffd(pmd))
-			pmd = pmd_modify(pmd, dst_vma->vm_page_prot);
-		pmd = pmd_clear_uffd(pmd);
-	}
-
 	pmdp_set_wrprotect(src_mm, addr, src_pmd);
+	if (!userfaultfd_wp(dst_vma))
+		pmd = pmd_clear_uffd_wp(pmd);
 	pmd = pmd_wrprotect(pmd);
 set_pmd:
 	pmd = pmd_mkold(pmd);
@@ -2082,13 +2066,11 @@ void touch_pud(struct vm_area_struct *vma, unsigned long addr,
 		update_mmu_cache_pud(vma, addr, pud);
 }
 
-int copy_huge_pud(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
-		pud_t *dst_pud, pud_t *src_pud, unsigned long addr)
+int copy_huge_pud(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+		  pud_t *dst_pud, pud_t *src_pud, unsigned long addr,
+		  struct vm_area_struct *vma)
 {
-	struct mm_struct *dst_mm = dst_vma->vm_mm;
-	struct mm_struct *src_mm = src_vma->vm_mm;
 	spinlock_t *dst_ptl, *src_ptl;
-	struct page *page;
 	pud_t pud;
 	int ret;
 
@@ -2101,28 +2083,11 @@ int copy_huge_pud(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 	if (unlikely(!pud_trans_huge(pud)))
 		goto out_unlock;
 
-	page = vm_normal_page_pud(src_vma, addr, pud);
-	if (page) {
-		struct folio *folio = page_folio(page);
-
-		if (unlikely(folio_ref_count_over_limit(folio))) {
-			/*
-			 * VM_MIXEDMAP may contain driver-inserted pages with no
-			 * fault handler to reconstruct the mapping.
-			 */
-			ret = (dst_vma->vm_flags & VM_MIXEDMAP) ? -ENOMEM : 0;
-			goto out_unlock;
-		}
-		folio_get(folio);
-		/*
-		 * TODO: once we support anonymous pages, use
-		 * folio_try_dup_anon_rmap_*() and split if duplicating fails.
-		 */
-		folio_add_file_rmap_pud(folio, page, dst_vma);
-		add_mm_counter(dst_mm, mm_counter_file(folio), HPAGE_PUD_NR);
-	}
-
-	if (vma_is_cow_mapping(src_vma) && pud_write(pud)) {
+	/*
+	 * TODO: once we support anonymous pages, use
+	 * folio_try_dup_anon_rmap_*() and split if duplicating fails.
+	 */
+	if (is_cow_mapping(vma->vm_flags) && pud_write(pud)) {
 		pudp_set_wrprotect(src_mm, addr, src_pud);
 		pud = pud_wrprotect(pud);
 	}
@@ -2202,7 +2167,7 @@ vm_fault_t do_huge_pmd_wp_page(struct vm_fault *vmf)
 	pmd_t orig_pmd = vmf->orig_pmd;
 
 	vmf->ptl = pmd_lockptr(vma->vm_mm, vmf->pmd);
-	VM_BUG_ON_VMA(!vma_has_anon_rmap(vma), vma);
+	VM_BUG_ON_VMA(!vma->anon_vma, vma);
 
 	if (is_huge_zero_pmd(orig_pmd)) {
 		vm_fault_t ret = do_huge_zero_wp_pmd(vmf);
@@ -2316,34 +2281,6 @@ static inline bool can_change_pmd_writable(struct vm_area_struct *vma,
 	return pmd_dirty(pmd);
 }
 
-vm_fault_t do_huge_pmd_uffd_rwp(struct vm_fault *vmf)
-{
-	struct vm_area_struct *vma = vmf->vma;
-	pmd_t pmd;
-
-	if (!userfaultfd_rwp_async(vma))
-		return handle_userfault(vmf, VM_UFFD_RWP);
-
-	vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
-	if (unlikely(!pmd_same(pmdp_get(vmf->pmd), vmf->orig_pmd))) {
-		spin_unlock(vmf->ptl);
-		return 0;
-	}
-	pmd = pmd_modify(vmf->orig_pmd, vma->vm_page_prot);
-	/* pmd_modify() preserves _PAGE_UFFD; drop it on resolution */
-	pmd = pmd_clear_uffd(pmd);
-	pmd = pmd_mkyoung(pmd);
-	if (!pmd_write(pmd) &&
-	    vma_wants_manual_pte_write_upgrade(vma) &&
-	    can_change_pmd_writable(vma, vmf->address, pmd))
-		pmd = pmd_mkwrite(pmd, vma);
-	set_pmd_at(vma->vm_mm, vmf->address & HPAGE_PMD_MASK,
-		   vmf->pmd, pmd);
-	update_mmu_cache_pmd(vma, vmf->address, vmf->pmd);
-	spin_unlock(vmf->ptl);
-	return 0;
-}
-
 /* NUMA hinting page fault entry point for trans huge pmds */
 vm_fault_t do_huge_pmd_numa_page(struct vm_fault *vmf)
 {
@@ -2451,10 +2388,6 @@ bool madvise_free_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	}
 
 	folio = pmd_folio(orig_pmd);
-
-	if (folio_is_zone_device(folio))
-		goto out;
-
 	/*
 	 * If other processes are mapping this folio, we couldn't discard
 	 * the folio unless they all do MADV_FREE so let's skip the folio.
@@ -2511,7 +2444,11 @@ static inline void zap_deposited_table(struct mm_struct *mm, pmd_t *pmd)
 static void zap_huge_pmd_folio(struct mm_struct *mm, struct vm_area_struct *vma,
 		pmd_t pmdval, struct folio *folio, bool is_present)
 {
-	const bool is_device_private = pmd_is_device_private_entry(pmdval);
+	const bool is_device_private = folio_is_device_private(folio);
+
+	/* Present and device private folios are rmappable. */
+	if (is_present || is_device_private)
+		folio_remove_rmap_pmd(folio, &folio->page, vma);
 
 	if (folio_test_anon(folio)) {
 		add_mm_counter(mm, MM_ANONPAGES, -HPAGE_PMD_NR);
@@ -2525,13 +2462,6 @@ static void zap_huge_pmd_folio(struct mm_struct *mm, struct vm_area_struct *vma,
 		    likely(vma_has_recency(vma)))
 			folio_mark_accessed(folio);
 	}
-
-	/*
-	 * Present and device private folios are rmappable. Remove the
-	 * rmap after transferring young+dirty to the folio.
-	 */
-	if (is_present || is_device_private)
-		folio_remove_rmap_pmd(folio, &folio->page, vma);
 
 	/* Device private folios are pinned. */
 	if (is_device_private)
@@ -2549,13 +2479,25 @@ static struct folio *normal_or_softleaf_folio_pmd(struct vm_area_struct *vma,
 	return pmd_to_softleaf_folio(pmdval);
 }
 
-static bool vma_has_deposited_pgtable(struct vm_area_struct *vma)
+static bool has_deposited_pgtable(struct vm_area_struct *vma, pmd_t pmdval,
+		struct folio *folio)
 {
+	/* Some architectures require unconditional depositing. */
+	if (arch_needs_pgtable_deposit())
+		return true;
+
 	/*
-	 * PMDs in anonymous VMAs always have a deposited page table. PMDs in
-	 * other VMAs only have one when required by the architecture.
+	 * Huge zero always deposited except for DAX which handles itself, see
+	 * set_huge_zero_folio().
 	 */
-	return arch_needs_pgtable_deposit() || vma_is_anonymous(vma);
+	if (is_huge_zero_pmd(pmdval))
+		return !vma_is_dax(vma);
+
+	/*
+	 * Otherwise, only anonymous folios are deposited, see
+	 * __do_huge_pmd_anonymous_page().
+	 */
+	return folio && folio_test_anon(folio);
 }
 
 /**
@@ -2595,7 +2537,7 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 
 	is_present = pmd_present(orig_pmd);
 	folio = normal_or_softleaf_folio_pmd(vma, addr, orig_pmd, is_present);
-	has_deposit = vma_has_deposited_pgtable(vma);
+	has_deposit = has_deposited_pgtable(vma, orig_pmd, folio);
 	if (folio)
 		zap_huge_pmd_folio(mm, vma, orig_pmd, folio, is_present);
 	if (has_deposit)
@@ -2639,9 +2581,9 @@ static pmd_t clear_uffd_wp_pmd(pmd_t pmd)
 	if (pmd_none(pmd))
 		return pmd;
 	if (pmd_present(pmd))
-		pmd = pmd_clear_uffd(pmd);
+		pmd = pmd_clear_uffd_wp(pmd);
 	else
-		pmd = pmd_swp_clear_uffd(pmd);
+		pmd = pmd_swp_clear_uffd_wp(pmd);
 
 	return pmd;
 }
@@ -2664,11 +2606,15 @@ bool move_huge_pmd(struct vm_area_struct *vma, unsigned long old_addr,
 		return false;
 	}
 
-	old_ptl = pmd_lockptr(mm, old_pmd);
-	new_ptl = pmd_lockptr(mm, new_pmd);
-
-	double_pt_lock(old_ptl, new_ptl);
-	if (likely(pmd_is_huge(*old_pmd))) {
+	/*
+	 * We don't have to worry about the ordering of src and dst
+	 * ptlocks because exclusive mmap_lock prevents deadlock.
+	 */
+	old_ptl = __pmd_trans_huge_lock(old_pmd, vma);
+	if (old_ptl) {
+		new_ptl = pmd_lockptr(mm, new_pmd);
+		if (new_ptl != old_ptl)
+			spin_lock_nested(new_ptl, SINGLE_DEPTH_NESTING);
 		pmd = pmdp_huge_get_and_clear(mm, old_addr, old_pmd);
 		if (pmd_present(pmd))
 			force_flush = true;
@@ -2676,45 +2622,33 @@ bool move_huge_pmd(struct vm_area_struct *vma, unsigned long old_addr,
 
 		if (pmd_move_must_withdraw(new_ptl, old_ptl, vma)) {
 			pgtable_t pgtable;
-
 			pgtable = pgtable_trans_huge_withdraw(mm, old_pmd);
 			pgtable_trans_huge_deposit(mm, new_pmd, pgtable);
 		}
 		pmd = move_soft_dirty_pmd(pmd);
-		if (vma_has_uffd_without_event_remap(vma)) {
-			/*
-			 * See __copy_present_ptes(): normalise the RWP marker
-			 * so the destination starts accessible instead of
-			 * taking a numa-hinting fault on first access. Only the
-			 * marker (protnone + uffd) needs it; leave other present
-			 * PMDs in the VMA untouched.
-			 */
-			if (pmd_present(pmd) && userfaultfd_rwp(vma) &&
-			    pmd_uffd(pmd))
-				pmd = pmd_modify(pmd, vma->vm_page_prot);
+		if (vma_has_uffd_without_event_remap(vma))
 			pmd = clear_uffd_wp_pmd(pmd);
-		}
 		set_pmd_at(mm, new_addr, new_pmd, pmd);
 		if (force_flush)
 			flush_pmd_tlb_range(vma, old_addr, old_addr + PMD_SIZE);
-		double_pt_unlock(old_ptl, new_ptl);
+		if (new_ptl != old_ptl)
+			spin_unlock(new_ptl);
+		spin_unlock(old_ptl);
 		return true;
 	}
-	double_pt_unlock(old_ptl, new_ptl);
 	return false;
 }
 
 static void change_non_present_huge_pmd(struct mm_struct *mm,
-		unsigned long addr, pmd_t *pmd, bool uffd_prot,
-		bool uffd_prot_resolve)
+		unsigned long addr, pmd_t *pmd, bool uffd_wp,
+		bool uffd_wp_resolve)
 {
 	softleaf_t entry = softleaf_from_pmd(*pmd);
+	const struct folio *folio = softleaf_to_folio(entry);
 	pmd_t newpmd;
 
 	VM_WARN_ON(!pmd_is_valid_softleaf(*pmd));
 	if (softleaf_is_migration_write(entry)) {
-		const struct folio *folio = softleaf_to_folio(entry);
-
 		/*
 		 * A protection check is difficult so
 		 * just be safe and disable write
@@ -2723,22 +2657,22 @@ static void change_non_present_huge_pmd(struct mm_struct *mm,
 			entry = make_readable_exclusive_migration_entry(swp_offset(entry));
 		else
 			entry = make_readable_migration_entry(swp_offset(entry));
-		newpmd = softleaf_to_pmd(entry);
+		newpmd = swp_entry_to_pmd(entry);
 		if (pmd_swp_soft_dirty(*pmd))
 			newpmd = pmd_swp_mksoft_dirty(newpmd);
 	} else if (softleaf_is_device_private_write(entry)) {
 		entry = make_readable_device_private_entry(swp_offset(entry));
-		newpmd = softleaf_to_pmd(entry);
-		if (pmd_swp_uffd(*pmd))
-			newpmd = pmd_swp_mkuffd(newpmd);
+		newpmd = swp_entry_to_pmd(entry);
+		if (pmd_swp_uffd_wp(*pmd))
+			newpmd = pmd_swp_mkuffd_wp(newpmd);
 	} else {
 		newpmd = *pmd;
 	}
 
-	if (uffd_prot)
-		newpmd = pmd_swp_mkuffd(newpmd);
-	else if (uffd_prot_resolve)
-		newpmd = pmd_swp_clear_uffd(newpmd);
+	if (uffd_wp)
+		newpmd = pmd_swp_mkuffd_wp(newpmd);
+	else if (uffd_wp_resolve)
+		newpmd = pmd_swp_clear_uffd_wp(newpmd);
 	if (!pmd_same(*pmd, newpmd))
 		set_pmd_at(mm, addr, pmd, newpmd);
 }
@@ -2758,9 +2692,8 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	spinlock_t *ptl;
 	pmd_t oldpmd, entry;
 	bool prot_numa = cp_flags & MM_CP_PROT_NUMA;
-	bool uffd_prot = cp_flags & (MM_CP_UFFD_WP | MM_CP_UFFD_RWP);
-	bool uffd_prot_resolve = cp_flags &
-		(MM_CP_UFFD_WP_RESOLVE | MM_CP_UFFD_RWP_RESOLVE);
+	bool uffd_wp = cp_flags & MM_CP_UFFD_WP;
+	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 	int ret = 1;
 
 	tlb_change_page_size(tlb, HPAGE_PMD_SIZE);
@@ -2773,16 +2706,10 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		return 0;
 
 	if (thp_migration_supported() && pmd_is_valid_softleaf(*pmd)) {
-		change_non_present_huge_pmd(mm, addr, pmd, uffd_prot,
-					    uffd_prot_resolve);
+		change_non_present_huge_pmd(mm, addr, pmd, uffd_wp,
+					    uffd_wp_resolve);
 		goto unlock;
 	}
-
-	/* Already in the desired state */
-	if (prot_numa && pmd_protnone(*pmd))
-		goto unlock;
-	if ((cp_flags & MM_CP_UFFD_RWP) && pmd_protnone(*pmd) && pmd_uffd(*pmd))
-		goto unlock;
 
 	if (prot_numa) {
 
@@ -2792,6 +2719,9 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		 * local/remote hits to the zero page are not interesting.
 		 */
 		if (is_huge_zero_pmd(*pmd))
+			goto unlock;
+
+		if (pmd_protnone(*pmd))
 			goto unlock;
 
 		if (!folio_can_map_prot_numa(pmd_folio(*pmd), vma,
@@ -2822,19 +2752,15 @@ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	oldpmd = pmdp_invalidate_ad(vma, addr, pmd);
 
 	entry = pmd_modify(oldpmd, newprot);
-	if (uffd_prot)
-		entry = pmd_mkuffd(entry);
-	else if (uffd_prot_resolve)
+	if (uffd_wp)
+		entry = pmd_mkuffd_wp(entry);
+	else if (uffd_wp_resolve)
 		/*
 		 * Leave the write bit to be handled by PF interrupt
 		 * handler, then things like COW could be properly
 		 * handled.
 		 */
-		entry = pmd_clear_uffd(entry);
-
-	/* See change_pte_range(): preserve RWP protection across mprotect() */
-	if (userfaultfd_rwp(vma) && pmd_uffd(entry))
-		entry = pmd_modify(entry, PAGE_NONE);
+		entry = pmd_clear_uffd_wp(entry);
 
 	/* See change_pte_range(). */
 	if ((cp_flags & MM_CP_TRY_CHANGE_WRITABLE) && !pmd_write(entry) &&
@@ -2874,10 +2800,10 @@ int change_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		return 1;
 
 	/*
-	 * Huge entries on userfault-wp or userfault-rwp only work with
-	 * anonymous, while we don't have anonymous PUDs yet.
+	 * Huge entries on userfault-wp only works with anonymous, while we
+	 * don't have anonymous PUDs yet.
 	 */
-	if (WARN_ON_ONCE(cp_flags & (MM_CP_UFFD_WP_ALL | MM_CP_UFFD_RWP_ALL)))
+	if (WARN_ON_ONCE(cp_flags & MM_CP_UFFD_WP_ALL))
 		return 1;
 
 	ptl = __pud_trans_huge_lock(pudp, vma);
@@ -2993,7 +2919,7 @@ int move_pages_huge_pmd(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd, pm
 		}
 
 		folio_move_anon_rmap(src_folio, dst_vma);
-		src_folio->index = linear_anon_page_index(dst_vma, dst_addr);
+		src_folio->index = linear_page_index(dst_vma, dst_addr);
 
 		_dst_pmd = folio_mk_pmd(src_folio, dst_vma->vm_page_prot);
 		/* Follow mremap() behavior and treat the entry dirty after the move */
@@ -3003,13 +2929,6 @@ int move_pages_huge_pmd(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd, pm
 		_dst_pmd = move_soft_dirty_pmd(src_pmdval);
 		_dst_pmd = clear_uffd_wp_pmd(_dst_pmd);
 	}
-
-	/* Re-arm RWP on the moved PMD if dst_vma is RWP-registered. */
-	if (userfaultfd_rwp(dst_vma)) {
-		_dst_pmd = pmd_modify(_dst_pmd, PAGE_NONE);
-		_dst_pmd = pmd_mkuffd(_dst_pmd);
-	}
-
 	set_pmd_at(mm, dst_addr, dst_pmd, _dst_pmd);
 
 	src_pgtable = pgtable_trans_huge_withdraw(mm, src_pmd);
@@ -3067,8 +2986,6 @@ int zap_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	spinlock_t *ptl;
 	pud_t orig_pud;
 
-	tlb_change_page_size(tlb, HPAGE_PUD_SIZE);
-
 	ptl = __pud_trans_huge_lock(pud, vma);
 	if (!ptl)
 		return 0;
@@ -3076,7 +2993,7 @@ int zap_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	orig_pud = pudp_huge_get_and_clear_full(vma, addr, pud, tlb->fullmm);
 	arch_check_zapped_pud(vma, orig_pud);
 	tlb_remove_pud_tlb_entry(tlb, pud, addr);
-	if (!vma_is_mm_managed(vma)) {
+	if (vma_is_special_huge(vma)) {
 		spin_unlock(ptl);
 		/* No zero page support yet */
 	} else {
@@ -3186,13 +3103,8 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 
 		entry = pfn_pte(zero_pfn(addr), vma->vm_page_prot);
 		entry = pte_mkspecial(entry);
-		if (pmd_uffd(old_pmd))
-			entry = pte_mkuffd(entry);
-
-		/* Restore PAGE_NONE so an RWP marker keeps trapping */
-		if (userfaultfd_rwp(vma) && pmd_uffd(old_pmd))
-			entry = pte_modify(entry, PAGE_NONE);
-
+		if (pmd_uffd_wp(old_pmd))
+			entry = pte_mkuffd_wp(entry);
 		VM_BUG_ON(!pte_none(ptep_get(pte)));
 		set_pte_at(mm, addr, pte, entry);
 		pte++;
@@ -3232,7 +3144,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		 */
 		if (arch_needs_pgtable_deposit())
 			zap_deposited_table(mm, pmd);
-		if (!vma_is_mm_managed(vma))
+		if (vma_is_special_huge(vma))
 			return;
 		if (unlikely(pmd_is_migration_entry(old_pmd))) {
 			const softleaf_t old_entry = softleaf_from_pmd(old_pmd);
@@ -3278,7 +3190,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		folio = page_folio(page);
 
 		soft_dirty = pmd_swp_soft_dirty(old_pmd);
-		uffd_wp = pmd_swp_uffd(old_pmd);
+		uffd_wp = pmd_swp_uffd_wp(old_pmd);
 
 		write = softleaf_is_migration_write(entry);
 		if (PageAnon(page))
@@ -3294,7 +3206,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		folio = page_folio(page);
 
 		soft_dirty = pmd_swp_soft_dirty(old_pmd);
-		uffd_wp = pmd_swp_uffd(old_pmd);
+		uffd_wp = pmd_swp_uffd_wp(old_pmd);
 
 		write = softleaf_is_device_private_write(entry);
 		anon_exclusive = PageAnonExclusive(page);
@@ -3351,7 +3263,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		write = pmd_write(old_pmd);
 		young = pmd_young(old_pmd);
 		soft_dirty = pmd_soft_dirty(old_pmd);
-		uffd_wp = pmd_uffd(old_pmd);
+		uffd_wp = pmd_uffd_wp(old_pmd);
 
 		VM_WARN_ON_FOLIO(!folio_ref_count(folio), folio);
 		VM_WARN_ON_FOLIO(!folio_test_anon(folio), folio);
@@ -3422,7 +3334,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 			if (soft_dirty)
 				entry = pte_swp_mksoft_dirty(entry);
 			if (uffd_wp)
-				entry = pte_swp_mkuffd(entry);
+				entry = pte_swp_mkuffd_wp(entry);
 			VM_WARN_ON(!pte_none(ptep_get(pte + i)));
 			set_pte_at(mm, addr, pte + i, entry);
 		}
@@ -3443,13 +3355,13 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 				swp_entry = make_readable_device_private_entry(
 							page_to_pfn(page + i));
 			/*
-			 * Young and dirty bits are not propagated via swp_entry
+			 * Young and dirty bits are not progated via swp_entry
 			 */
 			entry = swp_entry_to_pte(swp_entry);
 			if (soft_dirty)
 				entry = pte_swp_mksoft_dirty(entry);
 			if (uffd_wp)
-				entry = pte_swp_mkuffd(entry);
+				entry = pte_swp_mkuffd_wp(entry);
 			VM_WARN_ON(!pte_none(ptep_get(pte + i)));
 			set_pte_at(mm, addr, pte + i, entry);
 		}
@@ -3467,11 +3379,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		if (soft_dirty)
 			entry = pte_mksoft_dirty(entry);
 		if (uffd_wp)
-			entry = pte_mkuffd(entry);
-
-		/* Restore PAGE_NONE so an RWP marker keeps trapping */
-		if (userfaultfd_rwp(vma) && uffd_wp)
-			entry = pte_modify(entry, PAGE_NONE);
+			entry = pte_mkuffd_wp(entry);
 
 		for (i = 0; i < HPAGE_PMD_NR; i++)
 			VM_WARN_ON(!pte_none(ptep_get(pte + i)));
@@ -3524,66 +3432,16 @@ void split_huge_pmd_address(struct vm_area_struct *vma, unsigned long address,
 	__split_huge_pmd(vma, pmd, address, freeze);
 }
 
-static bool pud_split_required(const struct vm_area_struct *vma,
-		unsigned long address)
+static inline void split_huge_pmd_if_needed(struct vm_area_struct *vma, unsigned long address)
 {
-	if (!IS_ENABLED(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD))
-		return false;
-	if (IS_ALIGNED(address, HPAGE_PUD_SIZE))
-		return false;
 	/*
-	 * Only selected VMAs support mapping PUDs for now. Lift the
-	 * restriction once this changes.
+	 * If the new address isn't hpage aligned and it could previously
+	 * contain an hugepage: check if we need to split an huge pmd.
 	 */
-	if (!vma_is_dax(vma) && !vma_test_any(vma, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT))
-		return false;
-	return range_in_vma(vma, ALIGN_DOWN(address, HPAGE_PUD_SIZE),
-			    ALIGN(address, HPAGE_PUD_SIZE));
-}
-
-static bool pmd_split_required(const struct vm_area_struct *vma,
-		unsigned long address)
-{
-	if (IS_ALIGNED(address, HPAGE_PMD_SIZE))
-		return false;
-
-	return range_in_vma(vma, ALIGN_DOWN(address, HPAGE_PMD_SIZE),
-			    ALIGN(address, HPAGE_PMD_SIZE));
-}
-
-static void split_huge_leaf(struct vm_area_struct *vma,
-		unsigned long address)
-{
-	const bool split_pud = pud_split_required(vma, address);
-	const bool split_pmd = pmd_split_required(vma, address);
-	pgd_t *pgd;
-	p4d_t *p4d;
-	pud_t *pud;
-	pmd_t *pmd;
-
-	/*
-	 * mmap, VMA and rmap write locks protect the walk; the split helpers
-	 * take the page table locks.
-	 */
-	if (!split_pud && !split_pmd)
-		return;
-
-	pgd = pgd_offset(vma->vm_mm, address);
-	if (!pgd_present(*pgd))
-		return;
-
-	p4d = p4d_offset(pgd, address);
-	if (!p4d_present(*p4d))
-		return;
-
-	pud = pud_offset(p4d, address);
-	if (pud_leaf(*pud))
-		__split_huge_pud(vma, pud, address);
-	if (!split_pmd || !pud_present(*pud))
-		return;
-
-	pmd = pmd_offset(pud, address);
-	__split_huge_pmd(vma, pmd, address, false);
+	if (!IS_ALIGNED(address, HPAGE_PMD_SIZE) &&
+	    range_in_vma(vma, ALIGN_DOWN(address, HPAGE_PMD_SIZE),
+			 ALIGN(address, HPAGE_PMD_SIZE)))
+		split_huge_pmd_address(vma, address, false);
 }
 
 void vma_adjust_trans_huge(struct vm_area_struct *vma,
@@ -3592,31 +3450,22 @@ void vma_adjust_trans_huge(struct vm_area_struct *vma,
 			   struct vm_area_struct *next)
 {
 	/* Check if we need to split start first. */
-	split_huge_leaf(vma, start);
+	split_huge_pmd_if_needed(vma, start);
 
 	/* Check if we need to split end next. */
-	split_huge_leaf(vma, end);
+	split_huge_pmd_if_needed(vma, end);
 
 	/* If we're incrementing next->vm_start, we might need to split it. */
 	if (next)
-		split_huge_leaf(next, end);
+		split_huge_pmd_if_needed(next, end);
 }
 
-/*
- * A return value of 0 does not mean that unmapping succeeded. It might
- * still have failed, but remap_anon_folio() must be called afterwards,
- * for anon folios.
- */
-static int unmap_folio(struct folio *folio)
+static void unmap_folio(struct folio *folio)
 {
 	enum ttu_flags ttu_flags = TTU_RMAP_LOCKED | TTU_SYNC |
 		TTU_BATCH_FLUSH;
 
 	VM_BUG_ON_FOLIO(!folio_test_large(folio), folio);
-
-	/* Racy check if we can split the page, before we split PMDs */
-	if (folio_expected_ref_count(folio) != folio_ref_count(folio) - 1)
-		return -EAGAIN;
 
 	if (folio_test_pmd_mappable(folio))
 		ttu_flags |= TTU_SPLIT_HUGE_PMD;
@@ -3624,6 +3473,7 @@ static int unmap_folio(struct folio *folio)
 	/*
 	 * Anon pages need migration entries to preserve them, but file
 	 * pages can simply be left unmapped, then faulted back on demand.
+	 * If that is ever changed (perhaps for mlock), update remap_page().
 	 */
 	if (folio_test_anon(folio))
 		try_to_migrate(folio, ttu_flags);
@@ -3631,8 +3481,6 @@ static int unmap_folio(struct folio *folio)
 		try_to_unmap(folio, ttu_flags | TTU_IGNORE_MLOCK);
 
 	try_to_unmap_flush();
-
-	return 0;
 }
 
 static bool __discard_anon_folio_pmd_locked(struct vm_area_struct *vma,
@@ -3710,17 +3558,13 @@ bool unmap_huge_pmd_locked(struct vm_area_struct *vma, unsigned long addr,
 	return __discard_anon_folio_pmd_locked(vma, addr, pmdp, folio);
 }
 
-static void remap_anon_folio(struct folio *folio, unsigned long nr, int flags)
+static void remap_page(struct folio *folio, unsigned long nr, int flags)
 {
 	int i = 0;
 
-	/*
-	 * unmap_folio() installs migration entries only for anon folios,
-	 * so currently only anon folios need to be remapped. File folios
-	 * stay unmapped after the split and are faulted back on demand.
-	 */
-	VM_WARN_ON_FOLIO(!folio_test_anon(folio), folio);
-
+	/* If unmap_folio() uses try_to_migrate() on file, remove this check */
+	if (!folio_test_anon(folio))
+		return;
 	for (;;) {
 		remove_migration_ptes(folio, folio, TTU_RMAP_LOCKED | flags);
 		i += folio_nr_pages(folio);
@@ -3793,7 +3637,6 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
 		 * Don't pass it around before clear_compound_head().
 		 */
 		struct folio *new_folio = (struct folio *)new_head;
-		memdesc_flags_t new_flags;
 
 		VM_BUG_ON_PAGE(atomic_read(&new_folio->_mapcount) != -1, new_head);
 
@@ -3805,20 +3648,13 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
 		 *
 		 * Note that for mapped sub-pages of an anonymous THP,
 		 * PG_anon_exclusive has been cleared in unmap_folio() and is stored in
-		 * the migration entry instead from where remap_anon_folio() will restore it.
+		 * the migration entry instead from where remap_page() will restore it.
 		 * We can still have PG_anon_exclusive set on effectively unmapped and
 		 * unreferenced sub-pages of an anonymous THP: we can simply drop
 		 * PG_anon_exclusive (-> PG_mappedtodisk) for these here.
 		 */
-		new_flags.f = new_folio->flags.f & ~PAGE_FLAGS_CHECK_AT_PREP;
-		/*
-		 * data_race() is used because folio->flags is only read here,
-		 * but a reference-less writer can still write to it, e.g.,
-		 * PG_waiters update from softleaf_entry_wait_on_locked().
-		 * The flag is not transferred to new_flags as it is
-		 * folio specific, so it is not lost.
-		 */
-		new_flags.f |= data_race(folio->flags.f) &
+		new_folio->flags.f &= ~PAGE_FLAGS_CHECK_AT_PREP;
+		new_folio->flags.f |= (folio->flags.f &
 				((1L << PG_referenced) |
 				 (1L << PG_swapbacked) |
 				 (1L << PG_swapcache) |
@@ -3836,34 +3672,11 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
 #endif
 				 (1L << PG_dirty) |
 				 (1L << PG_dropbehind) |
-				 LRU_GEN_MASK | LRU_REFS_MASK);
-
-		/*
-		 * Set PG_head before smp_wmb() and clear_compound_head().
-		 * After clear_compound_head() marks new_head as a folio of its
-		 * own, new_head->flags must not be modified by plain RMWs.
-		 * A plain RMW can cause a loss of atomic PG_* updates from
-		 * a reference-less writer, e.g., setting PG_waiters via
-		 * softleaf_entry_wait_on_locked().
-		 */
-		if (new_order)
-			new_flags.f |= 1L << PG_head;
-		WRITE_ONCE(new_folio->flags.f, new_flags.f);
+				 LRU_GEN_MASK | LRU_REFS_MASK));
 
 		new_folio->mapping = folio->mapping;
 		new_folio->index = folio->index + i;
 
-		/*
-		 * page->private should not be set in tail pages. Warn once
-		 * if private is unexpectedly set. Do it before swap.val assignment
-		 * since private overlaps with swap.val.
-		 */
-		VM_WARN_ON_ONCE_PAGE(new_folio->private, new_head);
-
-		/*
-		 * Not all folio fields are valid during a split, so open-code
-		 * the swap entry rather than using folio_swap_entry().
-		 */
 		if (folio_test_swapcache(folio))
 			new_folio->swap.val = folio->swap.val + i;
 
@@ -3878,11 +3691,7 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
 		 */
 		clear_compound_head(new_head);
 		if (new_order) {
-			/*
-			 * PG_head is set above, so only set up the remaining
-			 * metadata on head page and tail pages.
-			 */
-			__prep_compound_page(new_head, new_order);
+			prep_compound_page(new_head, new_order);
 			folio_set_large_rmappable(new_folio);
 		}
 
@@ -3912,8 +3721,8 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
 }
 
 /**
- * __split_frozen_folio() - splits a frozen @folio to lower order folios
- * in two ways: uniform split or non-uniform split.
+ * __split_unmapped_folio() - splits an unmapped @folio to lower order folios in
+ * two ways: uniform split or non-uniform split.
  * @folio: the to-be-split folio
  * @new_order: the smallest order of the after split folios (since buddy
  *             allocator like split generates folios with orders from @folio's
@@ -3921,6 +3730,7 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
  * @split_at: in buddy allocator like split, the folio containing @split_at
  *            will be split until its order becomes @new_order.
  * @xas: xa_state pointing to folio->mapping->i_pages and locked by caller
+ * @mapping: @folio->mapping
  * @split_type: if the split is uniform or not (buddy allocator like split)
  *
  *
@@ -3951,18 +3761,15 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
  * Return: 0 - successful, <0 - failed (if -ENOMEM is returned, @folio might be
  * split but not to @new_order, the caller needs to check)
  */
-static int __split_frozen_folio(struct folio *folio, int new_order,
+static int __split_unmapped_folio(struct folio *folio, int new_order,
 		struct page *split_at, struct xa_state *xas,
-		enum split_type split_type)
+		struct address_space *mapping, enum split_type split_type)
 {
 	const bool is_anon = folio_test_anon(folio);
 	int old_order = folio_order(folio);
 	int start_order = split_type == SPLIT_TYPE_UNIFORM ? new_order : old_order - 1;
 	struct folio *old_folio = folio;
 	int split_order;
-
-	/* Frozen implies unmapped, callers unmap before splitting. */
-	VM_WARN_ON_ONCE_FOLIO(folio_mapped(folio), folio);
 
 	/*
 	 * split to new_order one order at a time. For uniform split,
@@ -3977,7 +3784,7 @@ static int __split_frozen_folio(struct folio *folio, int new_order,
 		if (is_anon && split_order == 1)
 			continue;
 
-		if (xas) {
+		if (mapping) {
 			/*
 			 * uniform split has xas_split_alloc() called before
 			 * irq is disabled to allocate enough memory, whereas
@@ -4037,9 +3844,6 @@ static int __split_frozen_folio(struct folio *folio, int new_order,
 int folio_check_splittable(struct folio *folio, unsigned int new_order,
 			   enum split_type split_type)
 {
-	const bool is_anon = folio_test_anon(folio);
-	const bool is_swapcache = folio_test_swapcache(folio);
-
 	VM_WARN_ON_FOLIO(!folio_test_locked(folio), folio);
 	/*
 	 * Folios that just got truncated cannot get split. Signal to the
@@ -4048,11 +3852,11 @@ int folio_check_splittable(struct folio *folio, unsigned int new_order,
 	 * TODO: this will also currently refuse folios without a mapping in the
 	 * swapcache (shmem or to-be-anon folios).
 	 */
-	if (!folio->mapping && !is_anon)
+	if (!folio->mapping && !folio_test_anon(folio))
 		return -EBUSY;
 
 	/* order-1 is not supported for anonymous THP. */
-	if (is_anon && new_order == 1)
+	if (folio_test_anon(folio) && new_order == 1)
 		return -EINVAL;
 
 	/*
@@ -4063,8 +3867,9 @@ int folio_check_splittable(struct folio *folio, unsigned int new_order,
 	 * swapcache folio split. Only uniform split to order-0 can be used
 	 * here.
 	 */
-	if ((split_type == SPLIT_TYPE_NON_UNIFORM || new_order) && is_swapcache)
+	if ((split_type == SPLIT_TYPE_NON_UNIFORM || new_order) && folio_test_swapcache(folio)) {
 		return -EINVAL;
+	}
 
 	if (is_huge_zero_folio(folio))
 		return -EINVAL;
@@ -4072,310 +3877,169 @@ int folio_check_splittable(struct folio *folio, unsigned int new_order,
 	if (folio_test_writeback(folio))
 		return -EBUSY;
 
-	/*
-	 * A non-anon swapcache folio that still has a mapping can only be a
-	 * shmem folio under SWAP IO, it's removed from either swap cache or
-	 * shmem mapping afterward. There is little benefit in splitting them
-	 * hence reject it here up front before touching anything.
-	 */
-	if (!is_anon && is_swapcache && folio->mapping)
-		return -EBUSY;
-
 	return 0;
 }
 
-/* Number of folio references from the swapcache. */
-static unsigned int folio_swapcache_ref_count(const struct folio *folio)
+/* Number of folio references from the pagecache or the swapcache. */
+static unsigned int folio_cache_ref_count(const struct folio *folio)
 {
-	if (!folio_test_swapcache(folio))
+	if (folio_test_anon(folio) && !folio_test_swapcache(folio))
 		return 0;
 	return folio_nr_pages(folio);
 }
 
-static void folio_reset_partially_mapped(struct folio *folio)
-{
-	/* Folio must be frozen. */
-	VM_WARN_ON_FOLIO(folio_ref_count(folio), folio);
-
-	if (!folio_test_partially_mapped(folio))
-		return;
-
-	/*
-	 * Order-1 folios have no _deferred_list. The flag is only ever set
-	 * on folios that do, so the list can be checked after the flag.
-	 */
-	VM_WARN_ON_FOLIO(!list_empty(&folio->_deferred_list), folio);
-
-	folio_clear_partially_mapped(folio);
-	mod_mthp_stat(folio_order(folio),
-		      MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
-}
-
-static int __folio_freeze_split_anon(struct folio *folio,
-		unsigned int new_order, struct page *split_at, bool do_lru,
-		struct list_head *list, enum split_type split_type)
+static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int new_order,
+					     struct page *split_at, struct xa_state *xas,
+					     struct address_space *mapping, bool do_lru,
+					     struct list_head *list, enum split_type split_type,
+					     pgoff_t end, int *nr_shmem_dropped)
 {
 	struct folio *end_folio = folio_next(folio);
-	struct swap_cluster_info *ci = NULL;
-	const int old_order = folio_order(folio);
 	struct folio *new_folio, *next;
-	struct anon_vma *anon_vma = NULL;
-	enum ttu_flags ttu_flags = 0;
-	struct lruvec *lruvec;
+	int old_order = folio_order(folio);
+	struct list_lru_one *lru;
+	bool dequeue_deferred;
 	int ret = 0;
 
+	VM_WARN_ON_ONCE(!mapping && end);
 	/*
-	 * Unmap/remap needs the anon_vma, so we first take a reference on
-	 * it to prevent it from disappearing, and lock it for write here,
-	 * letting unmap_folio() walk the rmap with TTU_RMAP_LOCKED.
-	 *
-	 * folio_mapped() is not stable here, but it can only change in
-	 * one direction while the folio is locked. The mapcount can drop
-	 * to zero at any time, zap_pte_range() takes no folio lock. It
-	 * cannot go up: swapin, migration and uffd move all lock the folio
-	 * before mapping it, and fork only copies PTEs that already exist.
-	 *
-	 * So if we see the folio mapped, the worst case is an empty rmap
-	 * walk. If we see it unmapped, it stays unmapped and needs neither
-	 * the reference nor the lock. Anything else needs a reference
-	 * first and folio_ref_freeze() below catches it.
-	 *
-	 * Note that entirely swapped-out THPs are unmapped but can be split.
+	 * If this folio can be on the deferred split queue, lock out
+	 * the shrinker before freezing the ref. If the shrinker sees
+	 * a 0-ref folio, it assumes it beat folio_put() to the list
+	 * lock and must clean up the LRU state - the same dequeue we
+	 * will do below as part of the split.
 	 */
-	if (folio_mapped(folio)) {
-		anon_vma = folio_get_anon_vma(folio);
-		if (!anon_vma)
-			return -EBUSY;
-		anon_vma_lock_write(anon_vma);
-		ret = unmap_folio(folio);
-		if (ret)
-			goto out_unlock;
+	dequeue_deferred = folio_test_anon(folio) && old_order > 1;
+	if (dequeue_deferred) {
+		struct mem_cgroup *memcg;
+
+		rcu_read_lock();
+		memcg = folio_memcg(folio);
+		lru = list_lru_lock(&deferred_split_lru,
+				    folio_nid(folio), &memcg);
 	}
+	if (folio_ref_freeze(folio, folio_cache_ref_count(folio) + 1)) {
+		struct swap_cluster_info *ci = NULL;
+		struct lruvec *lruvec;
 
-	local_irq_disable();
+		if (dequeue_deferred) {
+			__list_lru_del(&deferred_split_lru, lru,
+				       &folio->_deferred_list, folio_nid(folio));
+			if (folio_test_partially_mapped(folio)) {
+				folio_clear_partially_mapped(folio);
+				mod_mthp_stat(old_order,
+					MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
+			}
+			list_lru_unlock(lru);
+			rcu_read_unlock();
+		}
 
-	if (!folio_ref_freeze(folio, folio_swapcache_ref_count(folio) + 1)) {
-		ret = -EAGAIN;
-		goto out_no_split;
-	}
+		if (mapping) {
+			int nr = folio_nr_pages(folio);
 
-	/* Take off the deferred split queue while frozen and memcg set */
-	folio_unqueue_deferred_split(folio);
+			if (folio_test_pmd_mappable(folio) &&
+			    new_order < HPAGE_PMD_ORDER) {
+				if (folio_test_swapbacked(folio)) {
+					lruvec_stat_mod_folio(folio,
+							NR_SHMEM_THPS, -nr);
+				} else {
+					lruvec_stat_mod_folio(folio,
+							NR_FILE_THPS, -nr);
+				}
+			}
+		}
 
-	/*
-	 * deferred_split_scan() takes the folio off the queue before it
-	 * splits it, so the unqueue above finds an empty list and
-	 * leaves PG_partially_mapped set.
-	 * Clear it here: the flag does not survive the split.
-	 */
-	folio_reset_partially_mapped(folio);
+		if (folio_test_swapcache(folio)) {
+			if (mapping) {
+				VM_WARN_ON_ONCE_FOLIO(mapping, folio);
+				return -EINVAL;
+			}
 
-	if (folio_test_swapcache(folio))
-		ci = swap_cluster_get_and_lock(folio);
+			ci = swap_cluster_get_and_lock(folio);
+		}
 
-	if (do_lru)
-		lruvec = folio_lruvec_lock(folio);
-
-	ret = __split_frozen_folio(folio, new_order, split_at, NULL, split_type);
-
-	/*
-	 * Unfreeze the after-split folios and put them back to the right
-	 * place. Keep the head @folio frozen until the end: sub entries
-	 * in swap cache must be updated first, so a concurrent
-	 * swap_cache_get_folio() cannot return the head folio for a sub
-	 * entry (folio_try_get() will fail on the head @folio until unfreeze).
-	 */
-	for (new_folio = folio_next(folio); new_folio != end_folio;
-	     new_folio = next) {
-		next = folio_next(new_folio);
-		zone_device_private_split_cb(folio, new_folio);
-		folio_ref_unfreeze(new_folio,
-				   folio_swapcache_ref_count(new_folio) + 1);
+		/* lock lru list/PageCompound, ref frozen by page_ref_freeze */
 		if (do_lru)
-			lru_add_split_folio(folio, new_folio, lruvec, list);
+			lruvec = folio_lruvec_lock(folio);
+
+		ret = __split_unmapped_folio(folio, new_order, split_at, xas,
+					     mapping, split_type);
+
+		/*
+		 * Unfreeze after-split folios and put them back to the right
+		 * list. @folio should be kept frozon until page cache
+		 * entries are updated with all the other after-split folios
+		 * to prevent others seeing stale page cache entries.
+		 * As a result, new_folio starts from the next folio of
+		 * @folio.
+		 */
+		for (new_folio = folio_next(folio); new_folio != end_folio;
+		     new_folio = next) {
+			unsigned long nr_pages = folio_nr_pages(new_folio);
+
+			next = folio_next(new_folio);
+
+			zone_device_private_split_cb(folio, new_folio);
+
+			folio_ref_unfreeze(new_folio,
+					   folio_cache_ref_count(new_folio) + 1);
+
+			if (do_lru)
+				lru_add_split_folio(folio, new_folio, lruvec, list);
+
+			/*
+			 * Anonymous folio with swap cache.
+			 * NOTE: shmem in swap cache is not supported yet.
+			 */
+			if (ci) {
+				__swap_cache_replace_folio(ci, folio, new_folio);
+				continue;
+			}
+
+			/* Anonymous folio without swap cache */
+			if (!mapping)
+				continue;
+
+			/* Add the new folio to the page cache. */
+			if (new_folio->index < end) {
+				__xa_store(&mapping->i_pages, new_folio->index,
+					   new_folio, 0);
+				continue;
+			}
+
+			VM_WARN_ON_ONCE(!nr_shmem_dropped);
+			/* Drop folio beyond EOF: ->index >= end */
+			if (shmem_mapping(mapping) && nr_shmem_dropped)
+				*nr_shmem_dropped += nr_pages;
+			else if (folio_test_clear_dirty(new_folio))
+				folio_account_cleaned(
+					new_folio, inode_to_wb(mapping->host));
+			__filemap_remove_folio(new_folio, NULL);
+			folio_put_refs(new_folio, nr_pages);
+		}
+
+		zone_device_private_split_cb(folio, NULL);
+		/*
+		 * Unfreeze @folio only after all page cache entries, which
+		 * used to point to it, have been updated with new folios.
+		 * Otherwise, a parallel folio_try_get() can grab @folio
+		 * and its caller can see stale page cache entries.
+		 */
+		folio_ref_unfreeze(folio, folio_cache_ref_count(folio) + 1);
+
+		if (do_lru)
+			lruvec_unlock(lruvec);
+
 		if (ci)
-			__swap_cache_replace_folio(ci, folio, new_folio);
-	}
-
-	zone_device_private_split_cb(folio, NULL);
-	folio_ref_unfreeze(folio, folio_swapcache_ref_count(folio) + 1);
-
-	if (do_lru)
-		lruvec_unlock(lruvec);
-	if (ci)
-		swap_cluster_unlock(ci);
-out_no_split:
-	local_irq_enable();
-	if (anon_vma) {
-		if (!ret && !folio_is_device_private(folio))
-			ttu_flags = TTU_USE_SHARED_ZEROPAGE;
-		remap_anon_folio(folio, 1 << old_order, ttu_flags);
-	}
-out_unlock:
-	if (anon_vma) {
-		anon_vma_unlock_write(anon_vma);
-		put_anon_vma(anon_vma);
-	}
-
-	return ret;
-}
-
-static int __folio_freeze_split_file(struct folio *folio,
-		unsigned int new_order, struct page *split_at,
-		struct list_head *list, enum split_type split_type)
-{
-	const long old_nr_pages = folio_nr_pages(folio);
-	struct address_space *mapping = folio->mapping;
-	XA_STATE(xas, &mapping->i_pages, folio->index);
-	struct folio *end_folio = folio_next(folio);
-	struct mem_cgroup *memcg, *old_memcg;
-	struct folio *new_folio, *next;
-	int nr_shmem_dropped = 0;
-	unsigned int min_order;
-	struct lruvec *lruvec;
-	pgoff_t end;
-	gfp_t gfp;
-	int ret = 0;
-
-	min_order = mapping_min_folio_order(mapping);
-	if (new_order < min_order)
-		return -EINVAL;
-
-	/*
-	 * Switch to folio's memcg as xarray node allocation can happen and
-	 * needs to charge to it.
-	 */
-	memcg = get_mem_cgroup_from_folio(folio);
-	old_memcg = set_active_memcg(memcg);
-
-	gfp = current_gfp_context(mapping_gfp_mask(mapping) & GFP_RECLAIM_MASK);
-	if (!filemap_release_folio(folio, gfp)) {
-		ret = -EBUSY;
-		goto fail_free;
-	}
-
-	mapping_set_update(&xas, mapping);
-
-	if (split_type == SPLIT_TYPE_UNIFORM) {
-		const int old_order = folio_order(folio);
-
-		xas_set_order(&xas, folio->index, new_order);
-		xas_split_alloc(&xas, folio, old_order, gfp);
-		if (xas_error(&xas)) {
-			ret = xas_error(&xas);
-			goto fail_free;
+			swap_cluster_unlock(ci);
+	} else {
+		if (dequeue_deferred) {
+			list_lru_unlock(lru);
+			rcu_read_unlock();
 		}
+		return -EAGAIN;
 	}
 
-	i_mmap_lock_read(mapping);
-
-	/* Currently device private folios can only back anonymous memory. */
-	VM_WARN_ON_ONCE_FOLIO(folio_is_device_private(folio), folio);
-
-	/*
-	 * The loop below may need to trim off pages beyond
-	 * EOF: but on 32-bit, i_size_read() takes an irq-unsafe
-	 * seqlock, which cannot be nested inside the page tree lock.
-	 * So note end now: i_size itself may be changed at any moment,
-	 * but folio lock is good enough to serialize the trimming.
-	 */
-	end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE);
-	if (shmem_mapping(mapping))
-		end = shmem_fallocend(mapping->host, end);
-
-	ret = unmap_folio(folio);
-	if (ret)
-		goto fail_mmap_unlock;
-
-	xas_lock_irq(&xas);
-
-	/*
-	 * Check if the folio is present in page cache.
-	 * We assume all tail are present too, if folio is there.
-	 */
-	if (xas_load(&xas) != folio) {
-		ret = -EAGAIN;
-		goto fail;
-	}
-
-	if (!folio_ref_freeze(folio, old_nr_pages + 1)) {
-		ret = -EAGAIN;
-		goto fail;
-	}
-
-	if (folio_test_pmd_mappable(folio) && new_order < HPAGE_PMD_ORDER) {
-		if (folio_test_swapbacked(folio))
-			lruvec_stat_mod_folio(folio, NR_SHMEM_THPS, -old_nr_pages);
-		else
-			lruvec_stat_mod_folio(folio, NR_FILE_THPS, -old_nr_pages);
-	}
-
-	/* lock lru list/PageCompound, ref frozen by page_ref_freeze */
-	lruvec = folio_lruvec_lock(folio);
-	ret = __split_frozen_folio(folio, new_order, split_at, &xas, split_type);
-
-	/*
-	 * Unfreeze after-split folios and put them back to the right
-	 * list. @folio should be kept frozen until page cache
-	 * entries are updated with all the other after-split folios
-	 * to prevent others seeing stale page cache entries.
-	 * As a result, new_folio starts from the next folio of
-	 * @folio.
-	 */
-	for (new_folio = folio_next(folio); new_folio != end_folio;
-	     new_folio = next) {
-		unsigned long nr_pages = folio_nr_pages(new_folio);
-
-		/* compute next before the folio can be freed below */
-		next = folio_next(new_folio);
-
-		folio_ref_unfreeze(new_folio,
-				   folio_nr_pages(new_folio) + 1);
-
-		lru_add_split_folio(folio, new_folio, lruvec, list);
-
-		/* Add the new folio to the page cache. */
-		if (new_folio->index < end) {
-			__xa_store(&mapping->i_pages, new_folio->index,
-				   new_folio, 0);
-			continue;
-		}
-
-		/* Drop folio beyond EOF: ->index >= end */
-		if (shmem_mapping(mapping))
-			nr_shmem_dropped += nr_pages;
-		else if (folio_test_clear_dirty(new_folio))
-			folio_account_cleaned(
-				new_folio, inode_to_wb(mapping->host));
-		__filemap_remove_folio(new_folio, NULL);
-		folio_put_refs(new_folio, nr_pages);
-	}
-
-	/*
-	 * Unfreeze @folio only after all page cache entries, which
-	 * used to point to it, have been updated with new folios.
-	 * Otherwise, a parallel folio_try_get() can grab @folio
-	 * and its caller can see stale page cache entries.
-	 */
-	folio_ref_unfreeze(folio, folio_nr_pages(folio) + 1);
-	lruvec_unlock(lruvec);
-fail:
-	xas_unlock_irq(&xas);
-fail_mmap_unlock:
-	if (nr_shmem_dropped)
-		shmem_uncharge(mapping->host, nr_shmem_dropped);
-	/*
-	 * Drop the mapping while the inode is still pinned. @folio stays
-	 * locked and present in the page cache, so eviction cannot free
-	 * the inode yet, nothing past this point may touch the inode or
-	 * the mapping.
-	 */
-	i_mmap_unlock_read(mapping);
-fail_free:
-	/* Restore the previously active memcg */
-	set_active_memcg(old_memcg);
-	mem_cgroup_put(memcg);
-	xas_destroy(&xas);
 	return ret;
 }
 
@@ -4388,9 +4052,9 @@ fail_free:
  * @list: after-split folios will be put on it if non NULL
  * @split_type: perform uniform split or not (non-uniform split)
  *
- * It calls __split_frozen_folio() to perform uniform and non-uniform split.
+ * It calls __split_unmapped_folio() to perform uniform and non-uniform split.
  * It is in charge of checking whether the split is supported or not and
- * preparing @folio for __split_frozen_folio().
+ * preparing @folio for __split_unmapped_folio().
  *
  * After splitting, the after-split folio containing @lock_at remains locked
  * and others are unlocked:
@@ -4404,11 +4068,17 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
 		struct page *split_at, struct page *lock_at,
 		struct list_head *list, enum split_type split_type)
 {
+	XA_STATE(xas, &folio->mapping->i_pages, folio->index);
 	struct folio *end_folio = folio_next(folio);
-	const bool is_anon = folio_test_anon(folio);
-	const bool is_swapcache = folio_test_swapcache(folio);
+	bool is_anon = folio_test_anon(folio);
+	struct mem_cgroup *memcg, *old_memcg;
+	struct address_space *mapping = NULL;
+	struct anon_vma *anon_vma = NULL;
 	int old_order = folio_order(folio);
 	struct folio *new_folio, *next;
+	int nr_shmem_dropped = 0;
+	enum ttu_flags ttu_flags = 0;
+	pgoff_t end = 0;
 	int ret;
 
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
@@ -4416,26 +4086,141 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
 
 	if (folio != page_folio(split_at) || folio != page_folio(lock_at)) {
 		ret = -EINVAL;
-		goto out;
+		goto out_no_memcg;
 	}
 
 	if (new_order >= old_order) {
 		ret = -EINVAL;
-		goto out;
+		goto out_no_memcg;
 	}
 
 	ret = folio_check_splittable(folio, new_order, split_type);
 	if (ret) {
 		VM_WARN_ONCE(ret == -EINVAL, "Tried to split an unsplittable folio");
-		goto out;
+		goto out_no_memcg;
 	}
 
-	if (is_anon)
-		ret = __folio_freeze_split_anon(folio, new_order, split_at,
-						true, list, split_type);
-	else
-		ret = __folio_freeze_split_file(folio, new_order, split_at,
-						list, split_type);
+	/*
+	 * switch to folio's memcg as xarray node allocation can happen and
+	 * needs to charge to it.
+	 */
+	memcg = get_mem_cgroup_from_folio(folio);
+	old_memcg = set_active_memcg(memcg);
+
+	if (is_anon) {
+		/*
+		 * The caller does not necessarily hold an mmap_lock that would
+		 * prevent the anon_vma disappearing so we first we take a
+		 * reference to it and then lock the anon_vma for write. This
+		 * is similar to folio_lock_anon_vma_read except the write lock
+		 * is taken to serialise against parallel split or collapse
+		 * operations.
+		 */
+		anon_vma = folio_get_anon_vma(folio);
+		if (!anon_vma) {
+			ret = -EBUSY;
+			goto out;
+		}
+		anon_vma_lock_write(anon_vma);
+		mapping = NULL;
+	} else {
+		unsigned int min_order;
+		gfp_t gfp;
+
+		mapping = folio->mapping;
+		min_order = mapping_min_folio_order(mapping);
+		if (new_order < min_order) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		gfp = current_gfp_context(mapping_gfp_mask(mapping) &
+							GFP_RECLAIM_MASK);
+
+		if (!filemap_release_folio(folio, gfp)) {
+			ret = -EBUSY;
+			goto out;
+		}
+
+		mapping_set_update(&xas, mapping);
+
+		if (split_type == SPLIT_TYPE_UNIFORM) {
+			xas_set_order(&xas, folio->index, new_order);
+			xas_split_alloc(&xas, folio, old_order, gfp);
+			if (xas_error(&xas)) {
+				ret = xas_error(&xas);
+				goto out;
+			}
+		}
+
+		anon_vma = NULL;
+		i_mmap_lock_read(mapping);
+
+		/*
+		 *__split_unmapped_folio() may need to trim off pages beyond
+		 * EOF: but on 32-bit, i_size_read() takes an irq-unsafe
+		 * seqlock, which cannot be nested inside the page tree lock.
+		 * So note end now: i_size itself may be changed at any moment,
+		 * but folio lock is good enough to serialize the trimming.
+		 */
+		end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE);
+		if (shmem_mapping(mapping))
+			end = shmem_fallocend(mapping->host, end);
+	}
+
+	/*
+	 * Racy check if we can split the page, before unmap_folio() will
+	 * split PMDs
+	 */
+	if (folio_expected_ref_count(folio) != folio_ref_count(folio) - 1) {
+		ret = -EAGAIN;
+		goto out_unlock;
+	}
+
+	unmap_folio(folio);
+
+	/* block interrupt reentry in xa_lock and spinlock */
+	local_irq_disable();
+	if (mapping) {
+		/*
+		 * Check if the folio is present in page cache.
+		 * We assume all tail are present too, if folio is there.
+		 */
+		xas_lock(&xas);
+		xas_reset(&xas);
+		if (xas_load(&xas) != folio) {
+			ret = -EAGAIN;
+			goto fail;
+		}
+	}
+
+	ret = __folio_freeze_and_split_unmapped(folio, new_order, split_at, &xas, mapping,
+						true, list, split_type, end, &nr_shmem_dropped);
+fail:
+	if (mapping)
+		xas_unlock(&xas);
+
+	local_irq_enable();
+
+	if (nr_shmem_dropped)
+		shmem_uncharge(mapping->host, nr_shmem_dropped);
+
+	if (!ret && is_anon && !folio_is_device_private(folio))
+		ttu_flags = TTU_USE_SHARED_ZEROPAGE;
+
+	remap_page(folio, 1 << old_order, ttu_flags);
+
+	/*
+	 * Drop the mapping while the inode is still pinned. @folio stays
+	 * locked and present in the page cache until the loop below, so
+	 * eviction cannot free the inode yet; @lock_at is not enough, it may
+	 * be a tail beyond EOF that the split already dropped from the page
+	 * cache. Nothing past this point may touch the inode or the mapping.
+	 */
+	if (mapping) {
+		i_mmap_unlock_read(mapping);
+		mapping = NULL;
+	}
 
 	/*
 	 * Unlock all after-split folios except the one containing
@@ -4446,19 +4231,29 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
 		if (new_folio == page_folio(lock_at))
 			continue;
 
+		folio_unlock(new_folio);
 		/*
 		 * Subpages whose mapping has been zapped may be freed
 		 * earlier, but freeing them requires taking the
-		 * lru_lock, so we defer folio_put() on tail pages until
+		 * lru_lock, so we defer put_page() on tail pages until
 		 * after the split completes.
 		 */
-		if (is_swapcache && !folio_mapped(new_folio))
-			folio_free_swap(new_folio);
-		folio_unlock(new_folio);
-		folio_put(new_folio);
+		free_folio_and_swap_cache(new_folio);
 	}
 
+out_unlock:
+	if (anon_vma) {
+		anon_vma_unlock_write(anon_vma);
+		put_anon_vma(anon_vma);
+	}
+	if (mapping)
+		i_mmap_unlock_read(mapping);
 out:
+	/* restore to caller's old_memcg */
+	set_active_memcg(old_memcg);
+	mem_cgroup_put(memcg);
+out_no_memcg:
+	xas_destroy(&xas);
 	if (is_pmd_order(old_order))
 		count_vm_event(!ret ? THP_SPLIT_PAGE : THP_SPLIT_PAGE_FAILED);
 	count_mthp_stat(old_order, !ret ? MTHP_STAT_SPLIT : MTHP_STAT_SPLIT_FAILED);
@@ -4475,27 +4270,36 @@ out:
  * THP pages in the middle of migration, due to allocation issues on either
  * side.
  *
- * The anon rmap lock is not required to be held, mmap_read_lock() or
+ * anon_vma_lock is not required to be held, mmap_read_lock() or
  * mmap_write_lock() should be held. @folio is expected to be locked by the
  * caller. device-private and non device-private folios are supported along
  * with folios that are in the swapcache. @folio should also be unmapped and
  * isolated from LRU (if applicable)
  *
  * Upon return, the folio is not remapped, split folios are not added to LRU,
- * folio_free_swap() is not called, and new folios remain locked.
+ * free_folio_and_swap_cache() is not called, and new folios remain locked.
  *
  * Return: 0 on success, -EAGAIN if the folio cannot be split (e.g., due to
  *         insufficient reference count or extra pins).
  */
 int folio_split_unmapped(struct folio *folio, unsigned int new_order)
 {
+	int ret = 0;
+
 	VM_WARN_ON_ONCE_FOLIO(folio_mapped(folio), folio);
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_large(folio), folio);
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(folio), folio);
 
-	return __folio_freeze_split_anon(folio, new_order, &folio->page,
-					 false, NULL, SPLIT_TYPE_UNIFORM);
+	if (folio_expected_ref_count(folio) != folio_ref_count(folio) - 1)
+		return -EAGAIN;
+
+	local_irq_disable();
+	ret = __folio_freeze_and_split_unmapped(folio, new_order, &folio->page, NULL,
+						NULL, false, NULL, SPLIT_TYPE_UNIFORM,
+						0, NULL);
+	local_irq_enable();
+	return ret;
 }
 
 /*
@@ -4593,14 +4397,10 @@ int folio_split(struct folio *folio, unsigned int new_order,
  * If a file-backed folio is truncated, 0 will be returned. Any subsequent
  * split attempt should get -EBUSY from split checking code.
  *
- * Context: @folio must be locked.
- *
  * Return: @folio's minimum order for split
  */
 unsigned int min_order_for_split(struct folio *folio)
 {
-	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
-
 	if (folio_test_anon(folio))
 		return 0;
 
@@ -4629,7 +4429,8 @@ int split_folio_to_list(struct folio *folio, struct list_head *list)
  *
  * It is unsafe to call folio_unqueue_deferred_split() until folio refcount is
  * zero: because even when the list_lru lock is held, a non-empty
- * _deferred_list might be in use on deferred_split_scan()'s on-stack list.
+ * _deferred_list might be in use on deferred_split_scan()'s unlocked
+ * on-stack list.
  *
  * The list_lru sublist is determined by folio's memcg: it is therefore
  * important to unqueue deferred split before changing folio memcg.
@@ -4649,7 +4450,11 @@ bool __folio_unqueue_deferred_split(struct folio *folio)
 	memcg = folio_memcg(folio);
 	lru = list_lru_lock_irqsave(&deferred_split_lru, nid, &memcg, &flags);
 	if (__list_lru_del(&deferred_split_lru, lru, &folio->_deferred_list, nid)) {
-		folio_reset_partially_mapped(folio);
+		if (folio_test_partially_mapped(folio)) {
+			folio_clear_partially_mapped(folio);
+			mod_mthp_stat(folio_order(folio),
+				      MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
+		}
 		unqueued = true;
 	}
 	list_lru_unlock_irqrestore(lru, &flags);
@@ -4751,11 +4556,22 @@ static enum lru_status deferred_split_isolate(struct list_head *item,
 	struct folio *folio = container_of(item, struct folio, _deferred_list);
 	struct list_head *freeable = cb_arg;
 
-	/* Lost race to folio_put() or the folio is under folio_ref_freeze() */
-	if (!folio_try_get(folio))
-		return LRU_SKIP;
+	if (folio_try_get(folio)) {
+		list_lru_isolate_move(lru, item, freeable);
+		return LRU_REMOVED;
+	}
 
-	list_lru_isolate_move(lru, item, freeable);
+	/*
+	 * We lost race with folio_put(). Read folio state before the
+	 * isolate: folio_unqueue_deferred_split() checks list_empty()
+	 * locklessly, so once removed the folio can be freed any time.
+	 */
+	if (folio_test_partially_mapped(folio)) {
+		folio_clear_partially_mapped(folio);
+		mod_mthp_stat(folio_order(folio),
+			      MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
+	}
+	list_lru_isolate(lru, item);
 	return LRU_REMOVED;
 }
 
@@ -4771,22 +4587,10 @@ static unsigned long deferred_split_scan(struct shrinker *shrink,
 					    deferred_split_isolate, &dispose);
 
 	list_for_each_entry_safe(folio, next, &dispose, _deferred_list) {
-		struct mem_cgroup *memcg;
-		struct list_lru_one *lru;
 		bool did_split = false;
 		bool underused = false;
 
-		/*
-		 * Sync with deferred_split_folio(), which can requeue the
-		 * folio once list_empty() is true, and sets PG_partially_mapped.
-		 */
-		rcu_read_lock();
-		memcg = folio_memcg(folio);
-		lru = list_lru_lock_irq(&deferred_split_lru, folio_nid(folio),
-					&memcg);
 		list_del_init(&folio->_deferred_list);
-		list_lru_unlock_irq(lru);
-		rcu_read_unlock();
 
 		if (!folio_test_partially_mapped(folio)) {
 			/*
@@ -4888,9 +4692,11 @@ static inline bool vma_not_suitable_for_thp_split(struct vm_area_struct *vma)
 {
 	if (vma_is_dax(vma))
 		return true;
-	if (!vma_is_mm_managed(vma))
+	if (vma_is_special_huge(vma))
 		return true;
-	if (vma_is_hugetlb(vma))
+	if (vma_test(vma, VMA_IO_BIT))
+		return true;
+	if (is_vm_hugetlb_page(vma))
 		return true;
 
 	return false;
@@ -4970,7 +4776,7 @@ static int split_huge_pages_pid(int pid, unsigned long vaddr_start,
 		 * will try to drop it before split and then check if the folio
 		 * can be split or not. So skip the check here.
 		 */
-		if (!folio_has_attached_private(folio) &&
+		if (!folio_test_private(folio) &&
 		    folio_expected_ref_count(folio) != folio_ref_count(folio))
 			goto next;
 
@@ -5174,7 +4980,7 @@ static int __init split_huge_pages_debugfs(void)
 late_initcall(split_huge_pages_debugfs);
 #endif
 
-#ifdef CONFIG_ARCH_HAS_PMD_SOFTLEAVES
+#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
 int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
 		struct page *page)
 {
@@ -5198,7 +5004,7 @@ int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
 
 		writable = pmd_write(pmdval);
 		softdirty = pmd_soft_dirty(pmdval);
-		uffd_wp = pmd_uffd(pmdval);
+		uffd_wp = pmd_uffd_wp(pmdval);
 	} else {
 		softleaf_t old_entry;
 
@@ -5207,7 +5013,7 @@ int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
 
 		writable = softleaf_is_device_private_write(old_entry);
 		softdirty = pmd_swp_soft_dirty(pmdval);
-		uffd_wp = pmd_swp_uffd(pmdval);
+		uffd_wp = pmd_swp_uffd_wp(pmdval);
 	}
 
 	/* See folio_try_share_anon_rmap_pmd(): invalidate PMD first. */
@@ -5234,11 +5040,11 @@ int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
 	}
 
 	/* Set PMD. */
-	pmdswp = softleaf_to_pmd(entry);
+	pmdswp = swp_entry_to_pmd(entry);
 	if (softdirty)
 		pmdswp = pmd_swp_mksoft_dirty(pmdswp);
 	if (uffd_wp)
-		pmdswp = pmd_swp_mkuffd(pmdswp);
+		pmdswp = pmd_swp_mkuffd_wp(pmdswp);
 	set_pmd_at(mm, address, pvmw->pmd, pmdswp);
 
 	/* Migration entry installed: cleanup rmap, folio. */
@@ -5249,8 +5055,9 @@ int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
 	return 0;
 }
 
-void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct folio *folio)
+void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct page *new)
 {
+	struct folio *folio = page_folio(new);
 	struct vm_area_struct *vma = pvmw->vma;
 	struct mm_struct *mm = vma->vm_mm;
 	unsigned long address = pvmw->address;
@@ -5261,16 +5068,6 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct folio *folio
 	if (!(pvmw->pmd && !pvmw->pte))
 		return;
 
-	if (!folio_test_anon(folio) && unlikely(folio_ref_count_over_limit(folio))) {
-		/* Leave the file mapping absent so it can be faulted in. */
-		pmd_clear(pvmw->pmd);
-		if (arch_needs_pgtable_deposit())
-			zap_deposited_table(mm, pvmw->pmd);
-		update_hiwater_rss(mm);
-		add_mm_counter(mm, mm_counter_file(folio), -HPAGE_PMD_NR);
-		return;
-	}
-
 	entry = softleaf_from_pmd(*pvmw->pmd);
 	folio_get(folio);
 	pmde = folio_mk_pmd(folio, READ_ONCE(vma->vm_page_prot));
@@ -5279,13 +5076,8 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct folio *folio
 		pmde = pmd_mksoft_dirty(pmde);
 	if (softleaf_is_migration_write(entry))
 		pmde = pmd_mkwrite(pmde, vma);
-	if (pmd_swp_uffd(*pvmw->pmd))
-		pmde = pmd_mkuffd(pmde);
-
-	/* See do_swap_page(): restore PAGE_NONE for RWP */
-	if (pmd_swp_uffd(*pvmw->pmd) && userfaultfd_rwp(vma))
-		pmde = pmd_modify(pmde, PAGE_NONE);
-
+	if (pmd_swp_uffd_wp(*pvmw->pmd))
+		pmde = pmd_mkuffd_wp(pmde);
 	if (!softleaf_is_migration_young(entry))
 		pmde = pmd_mkold(pmde);
 	/* NOTE: this may contain setting soft-dirty on some archs */
@@ -5296,15 +5088,17 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct folio *folio
 		swp_entry_t entry;
 
 		if (pmd_write(pmde))
-			entry = make_writable_device_private_entry(folio_pfn(folio));
+			entry = make_writable_device_private_entry(
+							page_to_pfn(new));
 		else
-			entry = make_readable_device_private_entry(folio_pfn(folio));
-		pmde = softleaf_to_pmd(entry);
+			entry = make_readable_device_private_entry(
+							page_to_pfn(new));
+		pmde = swp_entry_to_pmd(entry);
 
 		if (pmd_swp_soft_dirty(*pvmw->pmd))
 			pmde = pmd_swp_mksoft_dirty(pmde);
-		if (pmd_swp_uffd(*pvmw->pmd))
-			pmde = pmd_swp_mkuffd(pmde);
+		if (pmd_swp_uffd_wp(*pvmw->pmd))
+			pmde = pmd_swp_mkuffd_wp(pmde);
 	}
 
 	if (folio_test_anon(folio)) {
@@ -5313,12 +5107,11 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct folio *folio
 		if (!softleaf_is_migration_read(entry))
 			rmap_flags |= RMAP_EXCLUSIVE;
 
-		folio_add_anon_rmap_pmd(folio, &folio->page, vma, haddr, rmap_flags);
+		folio_add_anon_rmap_pmd(folio, new, vma, haddr, rmap_flags);
 	} else {
-		folio_add_file_rmap_pmd(folio, &folio->page, vma);
+		folio_add_file_rmap_pmd(folio, new, vma);
 	}
-	VM_WARN_ON_ONCE(pmd_write(pmde) && folio_test_anon(folio) &&
-			!PageAnonExclusive(&folio->page));
+	VM_BUG_ON(pmd_write(pmde) && folio_test_anon(folio) && !PageAnonExclusive(new));
 	set_pmd_at(mm, haddr, pvmw->pmd, pmde);
 
 	/* No need to invalidate - it was non-present before */

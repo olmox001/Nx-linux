@@ -480,7 +480,7 @@ static int max17040_probe(struct i2c_client *client)
 	bool enable_irq = false;
 	int ret;
 
-	chip = devm_kzalloc_obj(&client->dev, *chip);
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -655,4 +655,3 @@ module_i2c_driver(max17040_i2c_driver);
 MODULE_AUTHOR("Minkyu Kang <mk7.kang@samsung.com>");
 MODULE_DESCRIPTION("MAX17040 Fuel Gauge");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("IIO_CONSUMER");

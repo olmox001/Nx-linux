@@ -181,7 +181,7 @@ static int ls1x_dwmac_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	dwmac = devm_kzalloc_obj(&pdev->dev, *dwmac);
+	dwmac = devm_kzalloc(&pdev->dev, sizeof(*dwmac), GFP_KERNEL);
 	if (!dwmac)
 		return -ENOMEM;
 

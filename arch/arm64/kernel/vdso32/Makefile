@@ -45,7 +45,11 @@ endif
 # From arm Makefile
 VDSO_CAFLAGS += $(call cc32-option,-fno-dwarf2-cfi-asm)
 VDSO_CAFLAGS += -mabi=aapcs-linux -mfloat-abi=soft
+ifeq ($(CONFIG_CPU_BIG_ENDIAN), y)
+VDSO_CAFLAGS += -mbig-endian
+else
 VDSO_CAFLAGS += -mlittle-endian
+endif
 
 # From arm vDSO Makefile
 VDSO_CAFLAGS += -fPIC -fno-builtin -fno-stack-protector

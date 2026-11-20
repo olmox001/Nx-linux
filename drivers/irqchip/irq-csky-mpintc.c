@@ -240,7 +240,7 @@ csky_mpintc_init(struct device_node *node, struct device_node *parent)
 	if (ret < 0)
 		nr_irq = INTC_IRQS;
 
-	__trigger  = kzalloc_objs(unsigned long, nr_irq);
+	__trigger  = kcalloc(nr_irq, sizeof(unsigned long), GFP_KERNEL);
 	if (__trigger == NULL)
 		return -ENXIO;
 

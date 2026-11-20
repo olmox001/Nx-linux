@@ -446,7 +446,7 @@ static int max77976_probe(struct i2c_client *client)
 	int err;
 	int i;
 
-	chg = devm_kzalloc_obj(dev, *chg);
+	chg = devm_kzalloc(dev, sizeof(*chg), GFP_KERNEL);
 	if (!chg)
 		return -ENOMEM;
 

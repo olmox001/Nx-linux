@@ -352,8 +352,8 @@ static int init_sensor_group_data(struct platform_device *pdev,
 	if (!pdata->nr_sensor_groups)
 		goto out;
 
-	sgrp_data = devm_kzalloc_objs(&pdev->dev, *sgrp_data,
-				      pdata->nr_sensor_groups);
+	sgrp_data = devm_kcalloc(&pdev->dev, pdata->nr_sensor_groups,
+				 sizeof(*sgrp_data), GFP_KERNEL);
 	if (!sgrp_data) {
 		ret = -ENOMEM;
 		goto out;
@@ -465,9 +465,10 @@ static int populate_attr_groups(struct platform_device *pdev)
 	of_node_put(opal);
 
 	for (type = 0; type < MAX_SENSOR_TYPE; type++) {
-		sensor_groups[type].group.attrs = devm_kzalloc_objs(&pdev->dev,
-								    struct attribute *,
-								    sensor_groups[type].attr_count + 1);
+		sensor_groups[type].group.attrs = devm_kcalloc(&pdev->dev,
+					sensor_groups[type].attr_count + 1,
+					sizeof(struct attribute *),
+					GFP_KERNEL);
 		if (!sensor_groups[type].group.attrs)
 			return -ENOMEM;
 
@@ -557,7 +558,9 @@ static int create_device_attrs(struct platform_device *pdev)
 	u32 count = 0;
 	u32 group_attr_id[MAX_SENSOR_TYPE] = {0};
 
-	sdata = devm_kzalloc_objs(&pdev->dev, *sdata, pdata->sensors_count);
+	sdata = devm_kcalloc(&pdev->dev,
+			     pdata->sensors_count, sizeof(*sdata),
+			     GFP_KERNEL);
 	if (!sdata)
 		return -ENOMEM;
 
@@ -662,7 +665,7 @@ static int ibmpowernv_probe(struct platform_device *pdev)
 	struct device *hwmon_dev;
 	int err;
 
-	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 

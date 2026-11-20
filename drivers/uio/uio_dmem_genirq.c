@@ -160,7 +160,7 @@ static int uio_dmem_genirq_probe(struct platform_device *pdev)
 
 	if (pdev->dev.of_node) {
 		/* alloc uioinfo for one device */
-		uioinfo = devm_kzalloc_obj(&pdev->dev, *uioinfo);
+		uioinfo = devm_kzalloc(&pdev->dev, sizeof(*uioinfo), GFP_KERNEL);
 		if (!uioinfo) {
 			dev_err(&pdev->dev, "unable to kmalloc\n");
 			return -ENOMEM;
@@ -183,7 +183,7 @@ static int uio_dmem_genirq_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
 		dev_err(&pdev->dev, "unable to kmalloc\n");
 		return -ENOMEM;

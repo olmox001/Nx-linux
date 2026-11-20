@@ -297,9 +297,10 @@ static int otx2vf_register_mbox_intr(struct otx2_nic *vf, bool probe_pf)
 
 	err = otx2_sync_mbox_msg(&vf->mbox);
 	if (err) {
-		otx2vf_disable_mbox_intr(vf);
-		return dev_err_probe(vf->dev, -EPROBE_DEFER,
+		dev_warn(vf->dev,
 			 "AF not responding to mailbox, deferring probe\n");
+		otx2vf_disable_mbox_intr(vf);
+		return -EPROBE_DEFER;
 	}
 	return 0;
 }
@@ -553,7 +554,7 @@ static int otx2vf_realloc_msix_vectors(struct otx2_nic *vf)
 	int num_vec, err;
 
 	num_vec = hw->nix_msixoff;
-	num_vec += NIX_LF_POISON_VEC + 1;
+	num_vec += NIX_LF_CINT_VEC_START + hw->max_queues;
 
 	otx2vf_disable_mbox_intr(vf);
 	pci_free_irq_vectors(hw->pdev);
@@ -596,7 +597,7 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_set_master(pdev);
 
-	qcount = min_t(int, num_online_cpus(), OTX2_MAX_CQ_CNT);
+	qcount = num_online_cpus();
 	qos_txqs = min_t(int, qcount, OTX2_QOS_MAX_LEAF_NODES);
 	netdev = alloc_etherdev_mqs(sizeof(*vf), qcount + qos_txqs, qcount);
 	if (!netdev)
@@ -628,8 +629,8 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_free_netdev;
 	}
 
-	hw->affinity_mask = devm_kzalloc_objs(&hw->pdev->dev, cpumask_var_t,
-					      num_vec);
+	hw->affinity_mask = devm_kcalloc(&hw->pdev->dev, num_vec,
+					 sizeof(cpumask_var_t), GFP_KERNEL);
 	if (!hw->affinity_mask) {
 		err = -ENOMEM;
 		goto err_free_netdev;

@@ -527,20 +527,12 @@ static void verbose_unum(struct bpf_verifier_env *env, u64 num)
 		verbose(env, "%#llx", num);
 }
 
-void bpf_verbose_snum(struct bpf_verifier_env *env, s64 num)
+static void verbose_snum(struct bpf_verifier_env *env, s64 num)
 {
 	if (is_snum_decimal(num))
 		verbose(env, "%lld", num);
 	else
 		verbose(env, "%#llx", num);
-}
-
-void bpf_verbose_snum32(struct bpf_verifier_env *env, s32 num)
-{
-	if (is_snum_decimal(num))
-		verbose(env, "%d", num);
-	else
-		verbose(env, "%#x", (u32)num);
 }
 
 int tnum_strn(char *str, size_t size, struct tnum a)
@@ -617,9 +609,20 @@ static void print_scalar_ranges(struct bpf_verifier_env *env,
 		}
 
 		if (m1->name[0] == 's')
-			bpf_verbose_snum(env, m1->val);
+			verbose_snum(env, m1->val);
 		else
 			verbose_unum(env, m1->val);
+	}
+}
+
+static bool type_is_map_ptr(enum bpf_reg_type t) {
+	switch (base_type(t)) {
+	case CONST_PTR_TO_MAP:
+	case PTR_TO_MAP_KEY:
+	case PTR_TO_MAP_VALUE:
+		return true;
+	default:
+		return false;
 	}
 }
 
@@ -640,7 +643,7 @@ static void print_reg_state(struct bpf_verifier_env *env,
 	if (t == SCALAR_VALUE && reg->precise)
 		verbose(env, "P");
 	if (t == SCALAR_VALUE && tnum_is_const(reg->var_off)) {
-		bpf_verbose_snum(env, reg->var_off.value);
+		verbose_snum(env, reg->var_off.value);
 		return;
 	}
 
@@ -651,7 +654,7 @@ static void print_reg_state(struct bpf_verifier_env *env,
 		if (state->frameno != reg->frameno)
 			verbose(env, "[%d]", reg->frameno);
 		if (tnum_is_const(reg->var_off)) {
-			bpf_verbose_snum(env, reg->var_off.value + reg->delta);
+			verbose_snum(env, reg->var_off.value + reg->delta);
 			return;
 		}
 	}
@@ -675,7 +678,7 @@ static void print_reg_state(struct bpf_verifier_env *env,
 	}
 	if (t != SCALAR_VALUE && reg->delta) {
 		verbose_a("off=");
-		bpf_verbose_snum(env, reg->delta);
+		verbose_snum(env, reg->delta);
 	}
 	if (type_is_pkt_pointer(t)) {
 		verbose_a("r=");
@@ -684,8 +687,6 @@ static void print_reg_state(struct bpf_verifier_env *env,
 	if (base_type(t) == PTR_TO_MEM) {
 		verbose_a("sz=");
 		verbose_unum(env, reg->mem_size);
-		if (reg->buf.size)
-			verbose_a("buf=fp[%u]%d+%u", reg->buf.frameno, reg->buf.off, reg->buf.size);
 	}
 	if (t == CONST_PTR_TO_DYNPTR)
 		verbose_a("type=%s",  dynptr_type_str(reg->dynptr.type));
@@ -693,7 +694,7 @@ static void print_reg_state(struct bpf_verifier_env *env,
 		/* a pointer register with fixed offset */
 		if (reg->var_off.value) {
 			verbose_a("imm=");
-			bpf_verbose_snum(env, reg->var_off.value);
+			verbose_snum(env, reg->var_off.value);
 		}
 	} else {
 		print_scalar_ranges(env, reg, &sep);
@@ -703,8 +704,6 @@ static void print_reg_state(struct bpf_verifier_env *env,
 			tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
 			verbose_a("var_off=%s", tn_buf);
 		}
-		if (reg->base != 0 || reg->step != 1)
-			verbose_a("step=%d+%d", reg->base, reg->step);
 	}
 	verbose(env, ")");
 }
@@ -728,8 +727,7 @@ void print_verifier_state(struct bpf_verifier_env *env, const struct bpf_verifie
 		verbose(env, "=");
 		print_reg_state(env, state, reg);
 	}
-	for (i = 0; i < bpf_stack_nr_slots(state); i++) {
-		struct bpf_stack_state *slot = bpf_stack_slot(state, i);
+	for (i = 0; i < state->allocated_stack / BPF_REG_SIZE; i++) {
 		char types_buf[BPF_REG_SIZE + 1];
 		const char *sep = "";
 		bool valid = false;
@@ -740,7 +738,7 @@ void print_verifier_state(struct bpf_verifier_env *env, const struct bpf_verifie
 			continue;
 
 		for (j = 0; j < BPF_REG_SIZE; j++) {
-			slot_type = slot->slot_type[j];
+			slot_type = state->stack[i].slot_type[j];
 			if (slot_type != STACK_INVALID && slot_type != STACK_POISON)
 				valid = true;
 			types_buf[j] = slot_type_char[slot_type];
@@ -749,12 +747,12 @@ void print_verifier_state(struct bpf_verifier_env *env, const struct bpf_verifie
 		if (!valid)
 			continue;
 
-		reg = &slot->spilled_ptr;
-		switch (slot->slot_type[BPF_REG_SIZE - 1]) {
+		reg = &state->stack[i].spilled_ptr;
+		switch (state->stack[i].slot_type[BPF_REG_SIZE - 1]) {
 		case STACK_SPILL:
 			/* print MISC/ZERO/INVALID slots above subreg spill */
 			for (j = 0; j < BPF_REG_SIZE; j++)
-				if (slot->slot_type[j] == STACK_SPILL)
+				if (state->stack[i].slot_type[j] == STACK_SPILL)
 					break;
 			types_buf[j] = '\0';
 
@@ -764,7 +762,7 @@ void print_verifier_state(struct bpf_verifier_env *env, const struct bpf_verifie
 		case STACK_DYNPTR:
 			/* skip to main dynptr slot */
 			i += BPF_DYNPTR_NR_SLOTS - 1;
-			reg = &bpf_stack_slot(state, i)->spilled_ptr;
+			reg = &state->stack[i].spilled_ptr;
 
 			verbose(env, " fp%d", (-i - 1) * BPF_REG_SIZE);
 			verbose(env, "=dynptr_%s(", dynptr_type_str(reg->dynptr.type));
@@ -802,11 +800,6 @@ void print_verifier_state(struct bpf_verifier_env *env, const struct bpf_verifie
 		verbose(env, " cb");
 	if (state->in_async_callback_fn)
 		verbose(env, " async_cb");
-	if (state->loop_stack_cnt) {
-		verbose(env, " loop_stack=");
-		for (i = 0; i < state->loop_stack_cnt; i++)
-			verbose(env, "%s%d", i ? "," : "", state->loop_stack[i].loop_id);
-	}
 	verbose(env, "\n");
 	if (!print_all)
 		mark_verifier_state_clean(env);
@@ -880,7 +873,7 @@ struct bpf_verifier_log *bpf_log_attr_create_vlog(struct bpf_log_attr *attr_log,
 	if (!size)
 		return NULL;
 
-	log = kzalloc_obj(*log);
+	log = kzalloc_obj(*log, GFP_KERNEL);
 	if (!log)
 		return ERR_PTR(-ENOMEM);
 

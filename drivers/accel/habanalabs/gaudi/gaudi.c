@@ -8989,12 +8989,14 @@ static int gaudi_print_fences_single_engine(
 	int rc = -ENOMEM, i;
 	u32 *statuses, *fences;
 
-	statuses = kzalloc_objs(*statuses, sds->props[SP_ENGINE_NUM_OF_QUEUES]);
+	statuses = kcalloc(sds->props[SP_ENGINE_NUM_OF_QUEUES],
+			sizeof(*statuses), GFP_KERNEL);
 	if (!statuses)
 		goto out;
 
-	fences = kzalloc_objs(*fences,
-			      sds->props[SP_ENGINE_NUM_OF_FENCES] * sds->props[SP_ENGINE_NUM_OF_QUEUES]);
+	fences = kcalloc(sds->props[SP_ENGINE_NUM_OF_FENCES] *
+				sds->props[SP_ENGINE_NUM_OF_QUEUES],
+			 sizeof(*fences), GFP_KERNEL);
 	if (!fences)
 		goto free_status;
 

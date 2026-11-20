@@ -127,7 +127,7 @@ static int imx8ulp_pcc_reset_init(struct platform_device *pdev, void __iomem *ba
 	struct device *dev = &pdev->dev;
 	struct pcc_reset_dev *pcc_reset;
 
-	pcc_reset = devm_kzalloc_obj(dev, *pcc_reset);
+	pcc_reset = devm_kzalloc(dev, sizeof(*pcc_reset), GFP_KERNEL);
 	if (!pcc_reset)
 		return -ENOMEM;
 
@@ -149,7 +149,8 @@ static int imx8ulp_clk_cgc1_init(struct platform_device *pdev)
 	struct clk_hw **clks;
 	void __iomem *base;
 
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws, IMX8ULP_CLK_CGC1_END);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, IMX8ULP_CLK_CGC1_END),
+			   GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
@@ -232,7 +233,8 @@ static int imx8ulp_clk_cgc2_init(struct platform_device *pdev)
 	struct clk_hw **clks;
 	void __iomem *base;
 
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws, IMX8ULP_CLK_CGC2_END);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, IMX8ULP_CLK_CGC2_END),
+			   GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
@@ -314,7 +316,8 @@ static int imx8ulp_clk_pcc3_init(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws, IMX8ULP_CLK_PCC3_END);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, IMX8ULP_CLK_PCC3_END),
+			   GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
@@ -396,7 +399,8 @@ static int imx8ulp_clk_pcc4_init(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws, IMX8ULP_CLK_PCC4_END);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, IMX8ULP_CLK_PCC4_END),
+			   GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
@@ -450,7 +454,8 @@ static int imx8ulp_clk_pcc5_init(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws, IMX8ULP_CLK_PCC5_END);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, IMX8ULP_CLK_PCC5_END),
+			   GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 

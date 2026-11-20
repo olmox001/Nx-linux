@@ -164,7 +164,8 @@ static int cros_ec_regulator_probe(struct platform_device *pdev)
 	struct regulator_desc *desc;
 	int ret;
 
-	drvdata = devm_kzalloc_obj(&pdev->dev, struct cros_ec_regulator_data);
+	drvdata = devm_kzalloc(
+		&pdev->dev, sizeof(struct cros_ec_regulator_data), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 

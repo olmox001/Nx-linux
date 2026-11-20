@@ -434,13 +434,13 @@ static int nvdec_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	nvdec = devm_kzalloc_obj(dev, *nvdec);
+	nvdec = devm_kzalloc(dev, sizeof(*nvdec), GFP_KERNEL);
 	if (!nvdec)
 		return -ENOMEM;
 
 	nvdec->config = of_device_get_match_data(dev);
 
-	syncpts = devm_kzalloc_obj(dev, *syncpts);
+	syncpts = devm_kzalloc(dev, sizeof(*syncpts), GFP_KERNEL);
 	if (!syncpts)
 		return -ENOMEM;
 

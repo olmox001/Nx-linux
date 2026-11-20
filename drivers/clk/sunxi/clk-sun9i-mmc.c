@@ -101,7 +101,7 @@ static int sun9i_a80_mmc_config_clk_probe(struct platform_device *pdev)
 	struct resource *r;
 	int count, i, ret;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -116,7 +116,8 @@ static int sun9i_a80_mmc_config_clk_probe(struct platform_device *pdev)
 
 	clk_data = &data->clk_data;
 	clk_data->clk_num = count;
-	clk_data->clks = devm_kzalloc_objs(&pdev->dev, struct clk *, count);
+	clk_data->clks = devm_kcalloc(&pdev->dev, count, sizeof(struct clk *),
+				      GFP_KERNEL);
 	if (!clk_data->clks)
 		return -ENOMEM;
 

@@ -681,7 +681,7 @@ static int lp8788_charger_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	pchg = devm_kzalloc_obj(dev, struct lp8788_charger);
+	pchg = devm_kzalloc(dev, sizeof(struct lp8788_charger), GFP_KERNEL);
 	if (!pchg)
 		return -ENOMEM;
 
@@ -727,4 +727,3 @@ MODULE_DESCRIPTION("TI LP8788 Charger Driver");
 MODULE_AUTHOR("Milo Kim");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:lp8788-charger");
-MODULE_IMPORT_NS("IIO_CONSUMER");

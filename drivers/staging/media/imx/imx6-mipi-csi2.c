@@ -525,7 +525,6 @@ static int csi2_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int csi2_set_fmt(struct v4l2_subdev *sd,
-			const struct v4l2_subdev_client_info *ci,
 			struct v4l2_subdev_state *sd_state,
 			struct v4l2_subdev_format *sdformat)
 {
@@ -722,7 +721,7 @@ static int csi2_probe(struct platform_device *pdev)
 	struct csi2_dev *csi2;
 	int i, ret;
 
-	csi2 = devm_kzalloc_obj(&pdev->dev, *csi2);
+	csi2 = devm_kzalloc(&pdev->dev, sizeof(*csi2), GFP_KERNEL);
 	if (!csi2)
 		return -ENOMEM;
 

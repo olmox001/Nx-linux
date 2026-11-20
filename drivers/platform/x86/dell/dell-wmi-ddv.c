@@ -196,30 +196,40 @@ static int dell_wmi_ddv_query_integer(struct wmi_device *wdev, enum dell_ddv_met
 static int dell_wmi_ddv_query_buffer(struct wmi_device *wdev, enum dell_ddv_method method,
 				     u32 arg, struct dell_wmi_buffer **result)
 {
+	struct dell_wmi_buffer *buffer;
 	struct wmi_buffer output;
 	size_t buffer_size;
 	int ret;
 
-	ret = dell_wmi_ddv_query(wdev, method, arg, &output, sizeof(struct dell_wmi_buffer));
+	ret = dell_wmi_ddv_query(wdev, method, arg, &output, sizeof(*buffer));
 	if (ret < 0)
 		return ret;
 
-	struct dell_wmi_buffer *buffer __free(kfree) = output.data;
+	buffer = output.data;
+	if (!le32_to_cpu(buffer->raw_size)) {
+		ret = -ENODATA;
 
-	if (!le32_to_cpu(buffer->raw_size))
-		return -ENODATA;
+		goto err_free;
+	}
 
 	buffer_size = struct_size(buffer, raw_data, le32_to_cpu(buffer->raw_size));
 	if (buffer_size > output.length) {
 		dev_warn(&wdev->dev,
 			 FW_WARN "Dell WMI buffer size (%zu) exceeds WMI buffer size (%zu)\n",
 			 buffer_size, output.length);
-		return -EMSGSIZE;
+		ret = -EMSGSIZE;
+
+		goto err_free;
 	}
 
-	*result = no_free_ptr(buffer);
+	*result = buffer;
 
 	return 0;
+
+err_free:
+	kfree(output.data);
+
+	return ret;
 }
 
 static ssize_t dell_wmi_ddv_query_string(struct wmi_device *wdev, enum dell_ddv_method method,
@@ -519,7 +529,7 @@ static struct hwmon_channel_info *dell_wmi_ddv_channel_create(struct device *dev
 	struct combined_channel_info *cinfo;
 	int i;
 
-	cinfo = devm_kzalloc_flex(dev, *cinfo, config, count + 1);
+	cinfo = devm_kzalloc(dev, struct_size(cinfo, config, count + 1), GFP_KERNEL);
 	if (!cinfo)
 		return ERR_PTR(-ENOMEM);
 
@@ -592,7 +602,7 @@ static int dell_wmi_ddv_hwmon_add(struct dell_wmi_ddv_data *data)
 	if (!devres_open_group(&wdev->dev, dell_wmi_ddv_hwmon_add, GFP_KERNEL))
 		return -ENOMEM;
 
-	cinfo = devm_kzalloc_flex(&wdev->dev, *cinfo, info, 4);
+	cinfo = devm_kzalloc(&wdev->dev, struct_size(cinfo, info, 4), GFP_KERNEL);
 	if (!cinfo) {
 		ret = -ENOMEM;
 
@@ -1044,7 +1054,7 @@ static int dell_wmi_ddv_probe(struct wmi_device *wdev, const void *context)
 			 version);
 	}
 
-	data = devm_kzalloc_obj(&wdev->dev, *data);
+	data = devm_kzalloc(&wdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

@@ -237,54 +237,6 @@
 		pinctrl-names = "default";
 	};
 
-	sound {
-		compatible = "qcom,glymur-sndcard";
-		model = "GLYMUR-CRD";
-		audio-routing = "WooferLeft IN", "WSA WSA_SPK1 OUT",
-				"TweeterLeft IN", "WSA WSA_SPK2 OUT",
-				"WooferRight IN", "WSA2 WSA_SPK1 OUT",
-				"TweeterRight IN", "WSA2 WSA_SPK2 OUT",
-				"VA DMIC0", "vdd-micb",
-				"VA DMIC1", "vdd-micb",
-				"VA DMIC2", "vdd-micb",
-				"VA DMIC3", "vdd-micb";
-
-		wsa-dai-link {
-			link-name = "WSA Playback";
-
-			cpu {
-				sound-dai = <&q6apmbedai WSA_CODEC_DMA_RX_0>;
-			};
-
-			codec {
-				sound-dai = <&left_woofer>, <&left_tweeter>,
-					    <&swr0 0>, <&lpass_wsamacro 0>,
-					    <&right_woofer>, <&right_tweeter>,
-					    <&swr3 0>, <&lpass_wsa2macro 0>;
-			};
-
-			platform {
-				sound-dai = <&q6apm>;
-			};
-		};
-
-		va-dai-link {
-			link-name = "VA Capture";
-
-			cpu {
-				sound-dai = <&q6apmbedai VA_CODEC_DMA_TX_0>;
-			};
-
-			codec {
-				sound-dai = <&lpass_vamacro 0>;
-			};
-
-			platform {
-				sound-dai = <&q6apm>;
-			};
-		};
-	};
-
 	wcn7850-pmu {
 		compatible = "qcom,wcn7850-pmu";
 
@@ -373,7 +325,7 @@
 
 		vreg_l2b_e0_2p9: ldo2 {
 			regulator-name = "vreg_l2b_e0_2p9";
-			regulator-min-microvolt = <1804000>;
+			regulator-min-microvolt = <2904000>;
 			regulator-max-microvolt = <2904000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
@@ -392,10 +344,10 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l9b_e0_2p9: ldo9 {
-			regulator-name = "vreg_l9b_e0_2p9";
-			regulator-min-microvolt = <2960000>;
-			regulator-max-microvolt = <2960000>;
+		vreg_l9b_e0_2p7: ldo9 {
+			regulator-name = "vreg_l9b_e0_2p7";
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <2704000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -694,13 +646,6 @@
 	};
 };
 
-&lpass_vamacro {
-	pinctrl-0 = <&dmic01_default>, <&dmic23_default>;
-	pinctrl-names = "default";
-	qcom,dmic-sample-rate = <4800000>;
-	vdd-micb-supply = <&vreg_l1b_e0_1p8>;
-};
-
 &mdss {
 	status = "okay";
 };
@@ -747,6 +692,11 @@
 
 	pinctrl-0 = <&pcie3b_default>;
 	pinctrl-names = "default";
+};
+
+&pcie3b_phy {
+	vdda-phy-supply = <&vreg_l3c_e1_0p89>;
+	vdda-pll-supply = <&vreg_l2c_e1_1p14>;
 };
 
 &pcie3b_port0 {
@@ -899,88 +849,10 @@
 	vdd3-supply = <&vreg_l7b_e0_2p79>;
 };
 
-&sdhc_2 {
-	vmmc-supply = <&vreg_l9b_e0_2p9>;
-	vqmmc-supply = <&vreg_l2b_e0_2p9>;
-
-	pinctrl-0 = <&sdc2_default_state &sdc2_card_det_n>;
-	pinctrl-1 = <&sdc2_sleep_state &sdc2_card_det_n>;
-	pinctrl-names = "default", "sleep";
-
-	cd-gpios = <&tlmm 221 GPIO_ACTIVE_LOW>;
-
-	no-mmc;
-	no-sdio;
-
-	status = "okay";
-};
-
-&swr0 {
-	status = "okay";
-
-	/* WSA8845, Left Woofer */
-	left_woofer: speaker@0,0 {
-		compatible = "sdw20217020400";
-		reg = <0 0>;
-		reset-gpios = <&lpass_tlmm 12 GPIO_ACTIVE_LOW>;
-		#sound-dai-cells = <0>;
-		sound-name-prefix = "WooferLeft";
-		vdd-1p8-supply = <&vreg_l15b_e0_1p8>;
-		vdd-io-supply = <&vreg_l18b_e0_1p2>;
-		qcom,port-mapping = <1 2 3 7 12 14>;
-	};
-
-	/* WSA8845, Left Tweeter */
-	left_tweeter: speaker@0,1 {
-		compatible = "sdw20217020400";
-		reg = <0 1>;
-		reset-gpios = <&lpass_tlmm 12 GPIO_ACTIVE_LOW>;
-		#sound-dai-cells = <0>;
-		sound-name-prefix = "TweeterLeft";
-		vdd-1p8-supply = <&vreg_l15b_e0_1p8>;
-		vdd-io-supply = <&vreg_l18b_e0_1p2>;
-		qcom,port-mapping = <4 5 6 7 13 15>;
-	};
-};
-
-&swr3 {
-	status = "okay";
-
-	/* WSA8845, Right Woofer */
-	right_woofer: speaker@0,0 {
-		compatible = "sdw20217020400";
-		reg = <0 0>;
-		reset-gpios = <&lpass_tlmm 13 GPIO_ACTIVE_LOW>;
-		#sound-dai-cells = <0>;
-		sound-name-prefix = "WooferRight";
-		vdd-1p8-supply = <&vreg_l15b_e0_1p8>;
-		vdd-io-supply = <&vreg_l18b_e0_1p2>;
-		qcom,port-mapping = <1 2 3 7 12 14>;
-	};
-
-	/* WSA8845, Right Tweeter */
-	right_tweeter: speaker@0,1 {
-		compatible = "sdw20217020400";
-		reg = <0 1>;
-		reset-gpios = <&lpass_tlmm 13 GPIO_ACTIVE_LOW>;
-		#sound-dai-cells = <0>;
-		sound-name-prefix = "TweeterRight";
-		vdd-1p8-supply = <&vreg_l15b_e0_1p8>;
-		vdd-io-supply = <&vreg_l18b_e0_1p2>;
-		qcom,port-mapping = <4 5 6 7 13 15>;
-	};
-};
-
-&remoteproc_soccp {
-	firmware-name = "qcom/glymur/soccp.mbn",
-			"qcom/glymur/soccp_dtb.mbn";
-};
-
 &tlmm {
 	gpio-reserved-ranges = <4 4>, /* EC TZ Secure I3C */
 			       <10 2>, /* OOB UART */
-			       <44 4>, /* Security SPI (TPM) */
-			       <65 1>; /* EC reset */
+			       <44 4>; /* Security SPI (TPM) */
 
 	edp_bl_en: edp-bl-en-state {
 		pins = "gpio18";
@@ -1106,13 +978,6 @@
 		};
 	};
 
-	sdc2_card_det_n: sd-card-det-n-state {
-		pins = "gpio221";
-		function = "gpio";
-		drive-strength = <2>;
-		bias-disable;
-	};
-
 	tpad_default: tpad-default-state {
 		pins = "gpio3";
 		function = "gpio";
@@ -1232,8 +1097,6 @@
 };
 
 &usb_hs {
-	dr_mode = "host";
-
 	status = "okay";
 };
 

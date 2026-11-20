@@ -12,6 +12,11 @@
 /* Workaround to allow gradual conversion of architecture code */
 void __weak arch_do_signal_or_restart(struct pt_regs *regs) { }
 
+/*
+ * How many bytes to clear from the stack
+ */
+#define KSPLICE_CLEAR_STACK_BYTES 0x400
+
 #ifdef CONFIG_HAVE_GENERIC_TIF_BITS
 #define EXIT_TO_USER_MODE_WORK_LOOP	(EXIT_TO_USER_MODE_WORK & ~_TIF_RSEQ)
 #else
@@ -63,6 +68,10 @@ static __always_inline unsigned long __exit_to_user_mode_loop(struct pt_regs *re
 
 		if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL)) {
 			futex_fixup_robust_unlock(regs);
+			if (ti_work & _TIF_KSPLICE_FREEZING)
+				/* clear garbage left on the stack */
+				memset((void*)(current_stack_pointer - KSPLICE_CLEAR_STACK_BYTES),
+				       0x0, KSPLICE_CLEAR_STACK_BYTES);
 			arch_do_signal_or_restart(regs);
 		}
 
@@ -123,7 +132,7 @@ noinstr irqentry_state_t irqentry_enter(struct pt_regs *regs)
 /**
  * arch_irqentry_exit_need_resched - Architecture specific need resched function
  *
- * Invoked from irqentry_exit_cond_resched() to check if resched is needed.
+ * Invoked from raw_irqentry_exit_cond_resched() to check if resched is needed.
  * Defaults return true.
  *
  * The main purpose is to permit arch to avoid preemption of a task from an IRQ.
@@ -134,7 +143,7 @@ static inline bool arch_irqentry_exit_need_resched(void);
 static inline bool arch_irqentry_exit_need_resched(void) { return true; }
 #endif
 
-void irqentry_exit_cond_resched(void)
+void raw_irqentry_exit_cond_resched(void)
 {
 	if (!preempt_count()) {
 		/* Sanity check RCU and thread stack */
@@ -145,6 +154,19 @@ void irqentry_exit_cond_resched(void)
 			preempt_schedule_irq();
 	}
 }
+#ifdef CONFIG_PREEMPT_DYNAMIC
+#if defined(CONFIG_HAVE_PREEMPT_DYNAMIC_CALL)
+DEFINE_STATIC_CALL(irqentry_exit_cond_resched, raw_irqentry_exit_cond_resched);
+#elif defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
+DEFINE_STATIC_KEY_TRUE(sk_dynamic_irqentry_exit_cond_resched);
+void dynamic_irqentry_exit_cond_resched(void)
+{
+	if (!static_branch_unlikely(&sk_dynamic_irqentry_exit_cond_resched))
+		return;
+	raw_irqentry_exit_cond_resched();
+}
+#endif
+#endif
 
 noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
 {

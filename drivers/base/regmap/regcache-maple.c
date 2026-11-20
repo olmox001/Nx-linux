@@ -73,7 +73,7 @@ static int regcache_maple_write(struct regmap *map, unsigned int reg,
 
 	rcu_read_unlock();
 
-	entry = kmalloc_objs(*entry, last - index + 1, map->alloc_flags);
+	entry = kmalloc_array(last - index + 1, sizeof(*entry), map->alloc_flags);
 	if (!entry)
 		return -ENOMEM;
 
@@ -112,7 +112,7 @@ static int regcache_maple_drop(struct regmap *map, unsigned int min,
 	unsigned long *entry, *lower, *upper;
 	/* initialized to work around false-positive -Wuninitialized warning */
 	unsigned long lower_index = 0, lower_last = 0;
-	unsigned long upper_index = 0, upper_last = 0;
+	unsigned long upper_index, upper_last;
 	int ret = 0;
 
 	lower = NULL;
@@ -307,7 +307,7 @@ static int regcache_maple_init(struct regmap *map)
 	return 0;
 }
 
-static void regcache_maple_exit(struct regmap *map)
+static int regcache_maple_exit(struct regmap *map)
 {
 	struct maple_tree *mt = map->cache;
 	MA_STATE(mas, mt, 0, UINT_MAX);
@@ -316,7 +316,7 @@ static void regcache_maple_exit(struct regmap *map)
 
 	/* if we've already been called then just return */
 	if (!mt)
-		return;
+		return 0;
 
 	/*
 	 * Register access may take the Maple lock from hard IRQ context, so
@@ -330,6 +330,8 @@ static void regcache_maple_exit(struct regmap *map)
 
 	kfree(mt);
 	map->cache = NULL;
+
+	return 0;
 }
 
 static int regcache_maple_insert_block(struct regmap *map, int first,
@@ -340,7 +342,7 @@ static int regcache_maple_insert_block(struct regmap *map, int first,
 	unsigned long *entry;
 	int i, ret;
 
-	entry = kmalloc_objs(*entry, last - first + 1, map->alloc_flags);
+	entry = kmalloc_array(last - first + 1, sizeof(*entry), map->alloc_flags);
 	if (!entry)
 		return -ENOMEM;
 

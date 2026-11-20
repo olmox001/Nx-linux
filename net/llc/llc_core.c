@@ -7,13 +7,16 @@
  */
 
 #include <linux/module.h>
+#include <linux/interrupt.h>
 #include <linux/if_ether.h>
 #include <linux/netdevice.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/init.h>
+#include <net/net_namespace.h>
 #include <net/llc.h>
 
-static LIST_HEAD(llc_sap_list);
+LIST_HEAD(llc_sap_list);
 static DEFINE_SPINLOCK(llc_sap_list_lock);
 
 /**
@@ -24,9 +27,16 @@ static DEFINE_SPINLOCK(llc_sap_list_lock);
 static struct llc_sap *llc_sap_alloc(void)
 {
 	struct llc_sap *sap = kzalloc_obj(*sap, GFP_ATOMIC);
+	int i;
 
-	if (sap)
+	if (sap) {
+		/* sap->laddr.mac - leave as a null, it's filled by bind */
+		sap->state = LLC_SAP_STATE_ACTIVE;
+		spin_lock_init(&sap->sk_lock);
+		for (i = 0; i < LLC_SK_LADDR_HASH_ENTRIES; i++)
+			INIT_HLIST_NULLS_HEAD(&sap->sk_laddr_hash[i], i);
 		refcount_set(&sap->refcnt, 1);
+	}
 	return sap;
 }
 
@@ -35,7 +45,7 @@ static struct llc_sap *__llc_sap_find(unsigned char sap_value)
 	struct llc_sap *sap;
 
 	list_for_each_entry(sap, &llc_sap_list, node)
-		if (sap->lsap == sap_value)
+		if (sap->laddr.lsap == sap_value)
 			goto out;
 	sap = NULL;
 out:
@@ -43,9 +53,10 @@ out:
 }
 
 /**
- *	llc_sap_find - searches for a SAP by its number
+ *	llc_sap_find - searches a SAP in station
  *	@sap_value: sap to be found
  *
+ *	Searches for a sap in the sap list of the LLC's station upon the sap ID.
  *	If the sap is found it will be refcounted and the user will have to do
  *	a llc_sap_put after use.
  *	Returns the sap or %NULL if not found.
@@ -85,7 +96,7 @@ struct llc_sap *llc_sap_open(unsigned char lsap,
 	sap = llc_sap_alloc();
 	if (!sap)
 		goto out;
-	sap->lsap	= lsap;
+	sap->laddr.lsap = lsap;
 	sap->rcv_func	= func;
 	list_add_tail_rcu(&sap->node, &llc_sap_list);
 out:
@@ -99,10 +110,13 @@ out:
  *
  *	Close interface function to upper layer. Each one who wants to
  *	close an open SAP (for example NetBEUI) should call this function.
- *	Removes this sap from the SAP list and then frees the memory for it.
+ * 	Removes this sap from the list of saps in the station and then
+ * 	frees the memory for this sap.
  */
 void llc_sap_close(struct llc_sap *sap)
 {
+	WARN_ON(sap->sk_count);
+
 	spin_lock_bh(&llc_sap_list_lock);
 	list_del_rcu(&sap->node);
 	spin_unlock_bh(&llc_sap_list_lock);
@@ -129,6 +143,8 @@ static void __exit llc_exit(void)
 module_init(llc_init);
 module_exit(llc_exit);
 
+EXPORT_SYMBOL(llc_sap_list);
+EXPORT_SYMBOL(llc_sap_find);
 EXPORT_SYMBOL(llc_sap_open);
 EXPORT_SYMBOL(llc_sap_close);
 

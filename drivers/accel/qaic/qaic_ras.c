@@ -5,7 +5,6 @@
 
 #include <asm/byteorder.h>
 #include <linux/device.h>
-#include <linux/device-id/mhi.h>
 #include <linux/kernel.h>
 #include <linux/mhi.h>
 

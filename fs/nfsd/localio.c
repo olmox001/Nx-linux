@@ -11,9 +11,11 @@
 #include <linux/exportfs.h>
 #include <linux/sunrpc/svcauth.h>
 #include <linux/sunrpc/clnt.h>
+#include <linux/nfs.h>
 #include <linux/nfs_common.h>
-#include <linux/nfs_fh.h>
 #include <linux/nfslocalio.h>
+#include <linux/nfs_fs.h>
+#include <linux/nfs_xdr.h>
 #include <linux/string.h>
 
 #include "nfsd.h"
@@ -53,7 +55,7 @@ nfsd_open_local_fh(struct net *net, struct auth_domain *dom,
 	struct nfsd_file *localio;
 	__be32 beres;
 
-	if (nfs_fh->size > NFS_MAXFHSIZE)
+	if (nfs_fh->size > NFS4_FHSIZE)
 		return ERR_PTR(-EINVAL);
 
 	if (!nfsd_net_try_get(net))
@@ -66,7 +68,7 @@ nfsd_open_local_fh(struct net *net, struct auth_domain *dom,
 		return localio;
 
 	/* nfs_fh -> svc_fh */
-	fh_init(&fh, NFSD_FHSIZE_UNSPEC);
+	fh_init(&fh, NFS4_FHSIZE);
 	fh.fh_handle.fh_size = nfs_fh->size;
 	memcpy(fh.fh_handle.fh_raw, nfs_fh->data, nfs_fh->size);
 
@@ -177,7 +179,7 @@ static bool localio_decode_uuidarg(struct svc_rqst *rqstp,
 	struct localio_uuidarg *argp = rqstp->rq_argp;
 	u8 uuid[UUID_SIZE];
 
-	if (xdr_stream_decode_opaque_fixed(xdr, uuid, UUID_SIZE) < 0)
+	if (decode_opaque_fixed(xdr, uuid, UUID_SIZE))
 		return false;
 	import_uuid(&argp->uuid, uuid);
 
@@ -208,11 +210,14 @@ static const struct svc_procedure localio_procedures1[] = {
 };
 
 #define LOCALIO_NR_PROCEDURES ARRAY_SIZE(localio_procedures1)
+static DEFINE_PER_CPU_ALIGNED(unsigned long,
+			      localio_count[LOCALIO_NR_PROCEDURES]);
 const struct svc_version localio_version1 = {
 	.vs_vers	= 1,
 	.vs_nproc	= LOCALIO_NR_PROCEDURES,
 	.vs_proc	= localio_procedures1,
 	.vs_dispatch	= nfsd_dispatch,
+	.vs_count	= localio_count,
 	.vs_xdrsize	= XDR_QUADLEN(UUID_SIZE),
 	.vs_hidden	= true,
 };

@@ -235,7 +235,8 @@ static int palmas_rtc_probe(struct platform_device *pdev)
 					"ti,backup-battery-charge-high-current");
 	}
 
-	palmas_rtc = devm_kzalloc_obj(&pdev->dev, struct palmas_rtc);
+	palmas_rtc = devm_kzalloc(&pdev->dev, sizeof(struct palmas_rtc),
+			GFP_KERNEL);
 	if (!palmas_rtc)
 		return -ENOMEM;
 

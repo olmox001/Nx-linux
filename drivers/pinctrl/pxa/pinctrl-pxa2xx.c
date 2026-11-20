@@ -272,7 +272,8 @@ static int pxa2xx_build_functions(struct pxa_pinctrl *pctl)
 	 * alternate function, 6 * npins is an absolute high limit of the number
 	 * of functions.
 	 */
-	functions = devm_kzalloc_objs(pctl->dev, *functions, pctl->npins * 6);
+	functions = devm_kcalloc(pctl->dev, pctl->npins * 6,
+				 sizeof(*functions), GFP_KERNEL);
 	if (!functions)
 		return -ENOMEM;
 
@@ -296,7 +297,8 @@ static int pxa2xx_build_groups(struct pxa_pinctrl *pctl)
 	struct pinfunction *func;
 	const char **gtmp;
 
-	gtmp = devm_kmalloc_objs(pctl->dev, *gtmp, pctl->npins);
+	gtmp = devm_kmalloc_array(pctl->dev, pctl->npins, sizeof(*gtmp),
+				  GFP_KERNEL);
 	if (!gtmp)
 		return -ENOMEM;
 
@@ -333,7 +335,7 @@ static int pxa2xx_build_state(struct pxa_pinctrl *pctl,
 	pctl->ngroups = npins;
 
 	pctl->desc.npins = npins;
-	pins = devm_kzalloc_objs(pctl->dev, *pins, npins);
+	pins = devm_kcalloc(pctl->dev, npins, sizeof(*pins), GFP_KERNEL);
 	if (!pins)
 		return -ENOMEM;
 
@@ -341,8 +343,8 @@ static int pxa2xx_build_state(struct pxa_pinctrl *pctl,
 	for (i = 0; i < npins; i++)
 		pins[i] = ppins[i].pin;
 
-	pctl->groups = devm_kmalloc_objs(pctl->dev, *pctl->groups,
-					 pctl->ngroups);
+	pctl->groups = devm_kmalloc_array(pctl->dev, pctl->ngroups,
+					  sizeof(*pctl->groups), GFP_KERNEL);
 	if (!pctl->groups)
 		return -ENOMEM;
 
@@ -375,15 +377,15 @@ int pxa2xx_pinctrl_init(struct platform_device *pdev,
 	for (i = 0; i < npins; i++)
 		maxpin = max_t(int, ppins[i].pin.number, maxpin);
 
-	pctl = devm_kzalloc_obj(&pdev->dev, *pctl);
+	pctl = devm_kzalloc(&pdev->dev, sizeof(*pctl), GFP_KERNEL);
 	if (!pctl)
 		return -ENOMEM;
-	pctl->base_gafr = devm_kzalloc_objs(&pdev->dev, *pctl->base_gafr,
-					    roundup(maxpin, 16));
-	pctl->base_gpdr = devm_kzalloc_objs(&pdev->dev, *pctl->base_gpdr,
-					    roundup(maxpin, 32));
-	pctl->base_pgsr = devm_kzalloc_objs(&pdev->dev, *pctl->base_pgsr,
-					    roundup(maxpin, 32));
+	pctl->base_gafr = devm_kcalloc(&pdev->dev, roundup(maxpin, 16),
+				       sizeof(*pctl->base_gafr), GFP_KERNEL);
+	pctl->base_gpdr = devm_kcalloc(&pdev->dev, roundup(maxpin, 32),
+				       sizeof(*pctl->base_gpdr), GFP_KERNEL);
+	pctl->base_pgsr = devm_kcalloc(&pdev->dev, roundup(maxpin, 32),
+				       sizeof(*pctl->base_pgsr), GFP_KERNEL);
 	if (!pctl->base_gafr || !pctl->base_gpdr || !pctl->base_pgsr)
 		return -ENOMEM;
 

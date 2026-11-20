@@ -968,7 +968,7 @@ static int max77675_regulator_probe(struct i2c_client *client)
 	struct regulator_config config = {};
 	int i, ret;
 
-	maxreg = devm_kzalloc_obj(&client->dev, *maxreg);
+	maxreg = devm_kzalloc(&client->dev, sizeof(*maxreg), GFP_KERNEL);
 	if (!maxreg)
 		return -ENOMEM;
 
@@ -1028,7 +1028,7 @@ static int max77675_regulator_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max77675_i2c_id[] = {
-	{ .name = "max77675" },
+	{ "max77675", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max77675_i2c_id);

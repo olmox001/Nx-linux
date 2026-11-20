@@ -10,12 +10,10 @@
 
 #define pr_fmt(fmt) "ACPI: battery: " fmt
 
-#include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
-#include <linux/kfifo.h>
 #include <linux/list.h>
 #include <linux/lockdep.h>
 #include <linux/module.h>
@@ -24,7 +22,6 @@
 #include <linux/slab.h>
 #include <linux/suspend.h>
 #include <linux/types.h>
-#include <linux/workqueue.h>
 
 #include <linux/unaligned.h>
 
@@ -46,9 +43,6 @@
 #define ACPI_BATTERY_STATE_CHARGE_LIMITING	0x8
 
 #define MAX_STRING_LENGTH	64
-
-#define MAX_QUEUED_EVENTS	16
-#define NOTIF_MERGING_MS	10
 
 MODULE_AUTHOR("Paul Diefenbaugh");
 MODULE_AUTHOR("Alexey Starikovskiy <astarikovskiy@suse.de>");
@@ -102,8 +96,6 @@ struct acpi_battery {
 	struct power_supply_desc bat_desc;
 	struct acpi_device *device;
 	struct device *phys_dev;
-	struct kfifo acpi_notif_fifo;
-	struct delayed_work acpi_notif_dwork;
 	struct notifier_block pm_nb;
 	struct list_head list;
 	unsigned long flags;
@@ -341,78 +333,11 @@ static int acpi_battery_get_property(struct power_supply *psy,
 	return ret;
 }
 
-/* For devices supporting the _BIX ACPI control method */
-
-static const enum power_supply_property charge_battery_extended_props[] = {
-	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_PRESENT,
-	POWER_SUPPLY_PROP_TECHNOLOGY,
-	POWER_SUPPLY_PROP_CYCLE_COUNT,
-	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
-	POWER_SUPPLY_PROP_VOLTAGE_NOW,
-	POWER_SUPPLY_PROP_CURRENT_NOW,
-	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
-	POWER_SUPPLY_PROP_CHARGE_FULL,
-	POWER_SUPPLY_PROP_CHARGE_NOW,
-	POWER_SUPPLY_PROP_CAPACITY,
-	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
-	POWER_SUPPLY_PROP_MODEL_NAME,
-	POWER_SUPPLY_PROP_MANUFACTURER,
-	POWER_SUPPLY_PROP_SERIAL_NUMBER,
-};
-
-static const enum power_supply_property charge_battery_full_cap_broken_extended_props[] = {
-	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_PRESENT,
-	POWER_SUPPLY_PROP_TECHNOLOGY,
-	POWER_SUPPLY_PROP_CYCLE_COUNT,
-	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
-	POWER_SUPPLY_PROP_VOLTAGE_NOW,
-	POWER_SUPPLY_PROP_CURRENT_NOW,
-	POWER_SUPPLY_PROP_CHARGE_NOW,
-	POWER_SUPPLY_PROP_MODEL_NAME,
-	POWER_SUPPLY_PROP_MANUFACTURER,
-	POWER_SUPPLY_PROP_SERIAL_NUMBER,
-};
-
-static const enum power_supply_property energy_battery_extended_props[] = {
-	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_PRESENT,
-	POWER_SUPPLY_PROP_TECHNOLOGY,
-	POWER_SUPPLY_PROP_CYCLE_COUNT,
-	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
-	POWER_SUPPLY_PROP_VOLTAGE_NOW,
-	POWER_SUPPLY_PROP_POWER_NOW,
-	POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN,
-	POWER_SUPPLY_PROP_ENERGY_FULL,
-	POWER_SUPPLY_PROP_ENERGY_NOW,
-	POWER_SUPPLY_PROP_CAPACITY,
-	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
-	POWER_SUPPLY_PROP_MODEL_NAME,
-	POWER_SUPPLY_PROP_MANUFACTURER,
-	POWER_SUPPLY_PROP_SERIAL_NUMBER,
-};
-
-static const enum power_supply_property energy_battery_full_cap_broken_extended_props[] = {
-	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_PRESENT,
-	POWER_SUPPLY_PROP_TECHNOLOGY,
-	POWER_SUPPLY_PROP_CYCLE_COUNT,
-	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
-	POWER_SUPPLY_PROP_VOLTAGE_NOW,
-	POWER_SUPPLY_PROP_POWER_NOW,
-	POWER_SUPPLY_PROP_ENERGY_NOW,
-	POWER_SUPPLY_PROP_MODEL_NAME,
-	POWER_SUPPLY_PROP_MANUFACTURER,
-	POWER_SUPPLY_PROP_SERIAL_NUMBER,
-};
-
-/* For devices supporting only the _BIF ACPI control method */
-
 static const enum power_supply_property charge_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
@@ -430,6 +355,7 @@ static const enum power_supply_property charge_battery_full_cap_broken_props[] =
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
@@ -443,6 +369,7 @@ static const enum power_supply_property energy_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_POWER_NOW,
@@ -460,6 +387,7 @@ static const enum power_supply_property energy_battery_full_cap_broken_props[] =
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_POWER_NOW,
@@ -574,15 +502,6 @@ static int acpi_battery_get_status(struct acpi_battery *battery)
 	return 0;
 }
 
-static void acpi_battery_clean_unprintable_chars(char *str, size_t length)
-{
-	for (unsigned int i = 0; i < length; i++) {
-		if (!isascii(str[i]) || !isprint(str[i])) {
-			str[i] = '\0';
-			break;
-		}
-	}
-}
 
 static int extract_battery_info(const int use_bix,
 			 struct acpi_battery *battery,
@@ -624,10 +543,6 @@ static int extract_battery_info(const int use_bix,
 	    battery->capacity_now > battery->full_charge_capacity)
 		battery->capacity_now = battery->full_charge_capacity;
 
-	if (!result)
-		acpi_battery_clean_unprintable_chars(battery->model_number,
-					ARRAY_SIZE(battery->model_number));
-
 	return result;
 }
 
@@ -647,8 +562,9 @@ static int acpi_battery_get_info(struct acpi_battery *battery)
 		struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
 		acpi_status status = AE_ERROR;
 
-		status = acpi_evaluate_object_exclusive(battery->device->handle,
-							use_bix ? "_BIX" : "_BIF", NULL, &buffer);
+		status = acpi_evaluate_object(battery->device->handle,
+					      use_bix ? "_BIX":"_BIF",
+					      NULL, &buffer);
 
 		if (ACPI_FAILURE(status)) {
 			acpi_handle_info(battery->device->handle,
@@ -687,7 +603,8 @@ static int acpi_battery_get_state(struct acpi_battery *battery)
 			msecs_to_jiffies(cache_time)))
 		return 0;
 
-	status = acpi_evaluate_object_exclusive(battery->device->handle, "_BST", NULL, &buffer);
+	status = acpi_evaluate_object(battery->device->handle, "_BST",
+				      NULL, &buffer);
 	if (ACPI_FAILURE(status)) {
 		acpi_handle_info(battery->device->handle,
 				 "_BST evaluation failed: %s",
@@ -737,8 +654,8 @@ static int acpi_battery_set_alarm(struct acpi_battery *battery)
 	    !test_bit(ACPI_BATTERY_ALARM_PRESENT, &battery->flags))
 		return -ENODEV;
 
-	status = acpi_execute_simple_method_exclusive(battery->device->handle, "_BTP",
-						      battery->alarm);
+	status = acpi_execute_simple_method(battery->device->handle, "_BTP",
+					    battery->alarm);
 	if (ACPI_FAILURE(status))
 		return -ENODEV;
 
@@ -966,7 +883,6 @@ static void __exit battery_hook_exit(void)
 
 static int sysfs_add_battery(struct acpi_battery *battery)
 {
-	bool extended_info_available = test_bit(ACPI_BATTERY_XINFO_PRESENT, &battery->flags);
 	struct power_supply_config psy_cfg = {
 		.drv_data = battery,
 		.attr_grp = acpi_battery_groups,
@@ -985,55 +901,25 @@ static int sysfs_add_battery(struct acpi_battery *battery)
 
 	if (power_unit == ACPI_BATTERY_POWER_UNIT_MA) {
 		if (full_cap_broken) {
-			if (extended_info_available) {
-				battery->bat_desc.properties =
-					charge_battery_full_cap_broken_extended_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(charge_battery_full_cap_broken_extended_props);
-			} else {
-				battery->bat_desc.properties =
-					charge_battery_full_cap_broken_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(charge_battery_full_cap_broken_props);
-			}
+			battery->bat_desc.properties =
+			    charge_battery_full_cap_broken_props;
+			battery->bat_desc.num_properties =
+			    ARRAY_SIZE(charge_battery_full_cap_broken_props);
 		} else {
-			if (extended_info_available) {
-				battery->bat_desc.properties =
-					charge_battery_extended_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(charge_battery_extended_props);
-			} else {
-				battery->bat_desc.properties =
-					charge_battery_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(charge_battery_props);
-			}
+			battery->bat_desc.properties = charge_battery_props;
+			battery->bat_desc.num_properties =
+			    ARRAY_SIZE(charge_battery_props);
 		}
 	} else {
 		if (full_cap_broken) {
-			if (extended_info_available) {
-				battery->bat_desc.properties =
-					energy_battery_full_cap_broken_extended_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(energy_battery_full_cap_broken_extended_props);
-			} else {
-				battery->bat_desc.properties =
-					energy_battery_full_cap_broken_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(energy_battery_full_cap_broken_props);
-			}
+			battery->bat_desc.properties =
+			    energy_battery_full_cap_broken_props;
+			battery->bat_desc.num_properties =
+			    ARRAY_SIZE(energy_battery_full_cap_broken_props);
 		} else {
-			if (extended_info_available) {
-				battery->bat_desc.properties =
-					energy_battery_extended_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(energy_battery_extended_props);
-			} else {
-				battery->bat_desc.properties =
-					energy_battery_props;
-				battery->bat_desc.num_properties =
-					ARRAY_SIZE(energy_battery_props);
-			}
+			battery->bat_desc.properties = energy_battery_props;
+			battery->bat_desc.num_properties =
+			    ARRAY_SIZE(energy_battery_props);
 		}
 	}
 
@@ -1226,23 +1112,13 @@ static void acpi_battery_refresh(struct acpi_battery *battery)
 }
 
 /* Driver Interface */
-static void acpi_battery_notification_worker(struct work_struct *work)
+static void acpi_battery_notify(acpi_handle handle, u32 event, void *data)
 {
-	struct acpi_battery *battery = container_of(work, struct acpi_battery,
-						    acpi_notif_dwork.work);
+	struct acpi_battery *battery = data;
 	struct acpi_device *device = battery->device;
-	u32 events[MAX_QUEUED_EVENTS];
 	struct power_supply *old;
-	unsigned int count, i;
 
 	guard(mutex)(&battery->update_lock);
-
-	count = kfifo_out(&battery->acpi_notif_fifo, events, sizeof(events));
-	count /= sizeof(events[0]);
-	if (!count)
-		return;
-
-	pr_debug("merged %u battery notifications within %dms\n", count, NOTIF_MERGING_MS);
 
 	old = battery->bat;
 	/*
@@ -1253,44 +1129,17 @@ static void acpi_battery_notification_worker(struct work_struct *work)
 	 */
 	if (battery_notification_delay_ms > 0)
 		msleep(battery_notification_delay_ms);
-
-	for (i = 0; i < count; i++) {
-		if (events[i] == ACPI_BATTERY_NOTIFY_INFO) {
-			acpi_battery_refresh(battery);
-			break;
-		}
-	}
-
+	if (event == ACPI_BATTERY_NOTIFY_INFO)
+		acpi_battery_refresh(battery);
 	acpi_battery_update(battery, false);
-
-	for (i = 0; i < count; i++) {
-		acpi_bus_generate_netlink_event(ACPI_BATTERY_CLASS,
-						dev_name(&device->dev), events[i],
-						acpi_battery_present(battery));
-		acpi_notifier_call_chain(ACPI_BATTERY_CLASS, acpi_device_bid(device),
-					 events[i], acpi_battery_present(battery));
-	}
-
+	acpi_bus_generate_netlink_event(ACPI_BATTERY_CLASS,
+					dev_name(&device->dev), event,
+					acpi_battery_present(battery));
+	acpi_notifier_call_chain(ACPI_BATTERY_CLASS, acpi_device_bid(device),
+				 event, acpi_battery_present(battery));
 	/* acpi_battery_update could remove power_supply object */
 	if (old && battery->bat)
 		power_supply_changed(battery->bat);
-}
-
-static void acpi_battery_notify(acpi_handle handle, u32 event, void *data)
-{
-	struct acpi_battery *battery = data;
-
-	guard(mutex)(&battery->update_lock);
-
-	if (kfifo_avail(&battery->acpi_notif_fifo) >= sizeof(event)) {
-		kfifo_in(&battery->acpi_notif_fifo, &event, sizeof(event));
-		schedule_delayed_work(&battery->acpi_notif_dwork,
-				      msecs_to_jiffies(NOTIF_MERGING_MS));
-
-		return;
-	}
-
-	pr_err_ratelimited("too many battery notifications within %dms\n", NOTIF_MERGING_MS);
 }
 
 static int battery_notify(struct notifier_block *nb,
@@ -1439,29 +1288,6 @@ static int devm_acpi_battery_update_retry(struct device *dev,
 	return ret;
 }
 
-static void acpi_battery_notify_dwork_cleanup(void *data)
-{
-	struct acpi_battery *battery = data;
-
-	cancel_delayed_work_sync(&battery->acpi_notif_dwork);
-	kfifo_free(&battery->acpi_notif_fifo);
-}
-
-static int devm_acpi_battery_init_notify_dwork(struct device *dev,
-					       struct acpi_battery *battery)
-{
-	int ret;
-
-	INIT_DELAYED_WORK(&battery->acpi_notif_dwork, acpi_battery_notification_worker);
-
-	ret = kfifo_alloc(&battery->acpi_notif_fifo,
-			  MAX_QUEUED_EVENTS * sizeof(u32), GFP_KERNEL);
-	if (ret)
-		return ret;
-
-	return devm_add_action_or_reset(dev, acpi_battery_notify_dwork_cleanup, battery);
-}
-
 static int acpi_battery_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1476,7 +1302,7 @@ static int acpi_battery_probe(struct platform_device *pdev)
 	if (device->dep_unmet)
 		return -EPROBE_DEFER;
 
-	battery = devm_kzalloc_obj(dev, *battery);
+	battery = devm_kzalloc(dev, sizeof(*battery), GFP_KERNEL);
 	if (!battery)
 		return -ENOMEM;
 
@@ -1504,10 +1330,6 @@ static int acpi_battery_probe(struct platform_device *pdev)
 		device->status.battery_present ? "present" : "absent");
 
 	result = devm_acpi_battery_init_wakeup(dev);
-	if (result)
-		return result;
-
-	result = devm_acpi_battery_init_notify_dwork(dev, battery);
 	if (result)
 		return result;
 

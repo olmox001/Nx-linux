@@ -329,7 +329,7 @@ static int isl68137_probe(struct i2c_client *client)
 	struct isl68137_data *data;
 	int i, err;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -456,8 +456,6 @@ static const struct i2c_device_id raa_dmpvr_id[] = {
 	{ .name = "raa229004", .driver_data = raa_dmpvr2_2rail },
 	{ .name = "raa229141", .driver_data = raa_dmpvr2_2rail_pmbus },
 	{ .name = "raa229621", .driver_data = raa_dmpvr2_2rail },
-	{ .name = "raa229639", .driver_data = raa_dmpvr2_2rail_nontc },
-	{ .name = "raa229640", .driver_data = raa_dmpvr2_2rail_nontc },
 	{ }
 };
 
@@ -508,8 +506,6 @@ static const struct of_device_id isl68137_of_match[] = {
 	{ .compatible = "renesas,raa229001", .data = (void *)raa_dmpvr2_2rail },
 	{ .compatible = "renesas,raa229004", .data = (void *)raa_dmpvr2_2rail },
 	{ .compatible = "renesas,raa229621", .data = (void *)raa_dmpvr2_2rail },
-	{ .compatible = "renesas,raa229639", .data = (void *)raa_dmpvr2_2rail_nontc },
-	{ .compatible = "renesas,raa229640", .data = (void *)raa_dmpvr2_2rail_nontc },
 	{ },
 };
 

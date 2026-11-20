@@ -1114,7 +1114,7 @@ static struct device *s5p_mfc_alloc_memdev(struct device *dev,
 	struct device *child;
 	int ret;
 
-	child = devm_kzalloc_obj(dev, *child);
+	child = devm_kzalloc(dev, sizeof(*child), GFP_KERNEL);
 	if (!child)
 		return NULL;
 
@@ -1124,7 +1124,8 @@ static struct device *s5p_mfc_alloc_memdev(struct device *dev,
 	child->coherent_dma_mask = dev->coherent_dma_mask;
 	child->dma_mask = dev->dma_mask;
 	child->release = s5p_mfc_memdev_release;
-	child->dma_parms = devm_kzalloc_obj(dev, *child->dma_parms);
+	child->dma_parms = devm_kzalloc(dev, sizeof(*child->dma_parms),
+					GFP_KERNEL);
 	if (!child->dma_parms)
 		goto err;
 
@@ -1304,7 +1305,7 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 	int ret;
 
 	pr_debug("%s++\n", __func__);
-	dev = devm_kzalloc_obj(&pdev->dev, *dev);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 
@@ -1473,8 +1474,8 @@ static void s5p_mfc_remove(struct platform_device *pdev)
 	}
 	mutex_unlock(&dev->mfc_mutex);
 
-	timer_shutdown_sync(&dev->watchdog_timer);
-	cancel_work_sync(&dev->watchdog_work);
+	timer_delete_sync(&dev->watchdog_timer);
+	flush_work(&dev->watchdog_work);
 
 	video_unregister_device(dev->vfd_enc);
 	video_unregister_device(dev->vfd_dec);

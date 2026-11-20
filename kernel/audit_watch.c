@@ -284,7 +284,6 @@ static void audit_update_watch(struct audit_parent *parent,
 			nentry = audit_dupe_rule(&oentry->rule, ctx);
 			if (IS_ERR(nentry)) {
 				list_del(&oentry->rule.list);
-				audit_rule_unaccount(r);
 				audit_panic("error updating watch, removing");
 			} else {
 				int h = audit_hash_ino(ino);
@@ -337,7 +336,6 @@ static void audit_remove_parent_watches(struct audit_parent *parent)
 			list_del(&r->rlist);
 			list_del(&r->list);
 			list_del_rcu(&e->list);
-			audit_rule_unaccount(r);
 			call_rcu(&e->rcu, audit_free_rule_rcu);
 		}
 		audit_remove_watch(w);
@@ -374,7 +372,7 @@ static void audit_add_to_parent(struct audit_krule *krule,
 	struct audit_watch *w, *watch = krule->watch;
 	int watch_found = 0;
 
-	lockdep_assert_held(&audit_filter_mutex);
+	BUG_ON(!mutex_is_locked(&audit_filter_mutex));
 
 	list_for_each_entry(w, &parent->watches, wlist) {
 		if (strcmp(watch->path, w->path))

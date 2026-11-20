@@ -6,7 +6,6 @@
  */
 
 #include <linux/arm-smccc.h>
-#include <linux/of.h>
 #include <linux/types.h>
 #include <linux/cpu.h>
 #include <asm/cpu.h>
@@ -14,7 +13,6 @@
 #include <asm/cpufeature.h>
 #include <asm/fpsimd.h>
 #include <asm/kvm_asm.h>
-#include <asm/kvm_host.h>
 #include <asm/smp_plat.h>
 
 static u64 target_impl_cpu_num;
@@ -205,33 +203,6 @@ cpu_enable_cache_maint_trap(const struct arm64_cpu_capabilities *__unused)
 	sysreg_clear_set(sctlr_el1, SCTLR_EL1_UCI, 0);
 }
 
-#ifdef CONFIG_NXP_IMX8QM_ERRATUM_ERR050104
-static bool
-is_imx8qm_soc(const struct arm64_cpu_capabilities *entry, int scope)
-{
-	static const char * const compats[] = {
-		"fsl,imx8qm",
-		"fsl,imx8qp",
-		NULL
-	};
-
-	return of_machine_compatible_match(compats);
-}
-
-static void
-cpu_enable_imx8qm_err050104(const struct arm64_cpu_capabilities *__unused)
-{
-	/* Trap the EL0 IC IVAU so that it can be upgraded to IC IALLUIS */
-	sysreg_clear_set(sctlr_el1, SCTLR_EL1_UCI, 0);
-
-	/*
-	 * TLB maintenance cannot be guaranteed correct for guests, so
-	 * disable KVM as if kvm-arm.mode=none was passed on the command line.
-	 */
-	kvm_force_disabled();
-}
-#endif
-
 #define CAP_MIDR_RANGE(model, v_min, r_min, v_max, r_max)	\
 	.matches = is_affected_midr_range,			\
 	.midr_range = MIDR_RANGE(model, v_min, r_min, v_max, r_max)
@@ -304,7 +275,7 @@ has_neoverse_n1_erratum_1542419(const struct arm64_cpu_capabilities *entry,
 	return is_midr_in_range(&range) && has_dic;
 }
 
-static const struct midr_range apple_cpus[] = {
+static const struct midr_range impdef_pmuv3_cpus[] = {
 	MIDR_ALL_VERSIONS(MIDR_APPLE_M1_ICESTORM),
 	MIDR_ALL_VERSIONS(MIDR_APPLE_M1_FIRESTORM),
 	MIDR_ALL_VERSIONS(MIDR_APPLE_M1_ICESTORM_PRO),
@@ -333,14 +304,7 @@ static bool has_impdef_pmuv3(const struct arm64_cpu_capabilities *entry, int sco
 	if (pmuver != ID_AA64DFR0_EL1_PMUVer_IMP_DEF)
 		return false;
 
-	return is_midr_in_range_list(apple_cpus);
-}
-
-static bool has_broken_gic_v3_seis(const struct arm64_cpu_capabilities *entry, int scope)
-{
-	return (is_kernel_in_hyp_mode() &&
-		is_midr_in_range_list(apple_cpus) &&
-		(read_sysreg_s(SYS_ICH_VTR_EL2) & ICH_VTR_EL2_SEIS));
+	return is_midr_in_range_list(impdef_pmuv3_cpus);
 }
 
 static void cpu_enable_impdef_pmuv3_traps(const struct arm64_cpu_capabilities *__unused)
@@ -348,7 +312,7 @@ static void cpu_enable_impdef_pmuv3_traps(const struct arm64_cpu_capabilities *_
 	sysreg_clear_set_s(SYS_HACR_EL2, 0, BIT(56));
 }
 
-#ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI_SYNC
+#ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI
 static const struct arm64_cpu_capabilities arm64_repeat_tlbi_list[] = {
 #ifdef CONFIG_QCOM_FALKOR_ERRATUM_1009
 	{
@@ -413,40 +377,6 @@ static const struct arm64_cpu_capabilities arm64_repeat_tlbi_list[] = {
 };
 #endif
 
-#ifdef CONFIG_ARM64_WORKAROUND_BROKEN_AMU_CONSTCNT
-static const struct midr_range workaround_amu_constcnt_list[] = {
-#ifdef CONFIG_ARM64_ERRATUM_2457168
-	/* Cortex-A510 r0p0-r1p1 */
-	MIDR_RANGE(MIDR_CORTEX_A510, 0, 0, 1, 1),
-#endif
-#ifdef CONFIG_ARM64_ERRATUM_3821522
-	/* Cortex-A720 r0p0 - r0p2 */
-	MIDR_RANGE(MIDR_CORTEX_A720, 0, 0, 0, 2),
-	/* Cortex-A720AE r0p0 - r0p1 */
-	MIDR_RANGE(MIDR_CORTEX_A720AE, 0, 0, 0, 1),
-	/* Cortex-A725 r0p0 - r0p2 */
-	MIDR_RANGE(MIDR_CORTEX_A725, 0, 0, 0, 2),
-	/* Neoverse N3 r0p0 - r0p1 */
-	MIDR_RANGE(MIDR_NEOVERSE_N3, 0, 0, 0, 1),
-	/* C1-Pro r0p0 - r1p3 */
-	MIDR_RANGE(MIDR_C1_PRO, 0, 0, 1, 3),
-#endif
-	{}
-};
-#endif /* CONFIG_ARM64_WORKAROUND_BROKEN_AMU_CONSTCNT */
-
-#ifdef CONFIG_ARM64_WORKAROUND_BROKEN_AMU_CORECNT
-static const struct midr_range workaround_amu_corecnt_list[] = {
-#ifdef CONFIG_ARM64_ERRATUM_2738461
-	/* Cortex-A715 r0p0 - r1p3 */
-	MIDR_RANGE(MIDR_CORTEX_A715, 0, 0, 1, 3),
-	/* Cortex-A720 r0p0 - r0p1 */
-	MIDR_RANGE(MIDR_CORTEX_A720, 0, 0, 0, 1),
-#endif
-	{}
-};
-#endif /* CONFIG_ARM64_WORKAROUND_BROKEN_AMU_CORECNT */
-
 #ifdef CONFIG_CAVIUM_ERRATUM_23154
 static const struct midr_range cavium_erratum_23154_cpus[] = {
 	MIDR_ALL_VERSIONS(MIDR_THUNDERX),
@@ -468,6 +398,8 @@ static const struct midr_range cavium_erratum_27456_cpus[] = {
 	MIDR_RANGE(MIDR_THUNDERX, 0, 0, 1, 1),
 	/* Cavium ThunderX, T81 pass 1.0 */
 	MIDR_REV(MIDR_THUNDERX_81XX, 0, 0),
+	/* Cavium ThunderX, T83 pass 1.0 */
+	MIDR_RANGE(MIDR_THUNDERX_83XX, 0, 0, 0, 0),
 	{},
 };
 #endif
@@ -806,10 +738,10 @@ const struct arm64_cpu_capabilities arm64_errata[] = {
 		.match_list = qcom_erratum_1003_list,
 	},
 #endif
-#ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI_SYNC
+#ifdef CONFIG_ARM64_WORKAROUND_REPEAT_TLBI
 	{
 		.desc = "Broken broadcast TLBI completion",
-		.capability = ARM64_WORKAROUND_REPEAT_TLBI_SYNC,
+		.capability = ARM64_WORKAROUND_REPEAT_TLBI,
 		.type = ARM64_CPUCAP_LOCAL_CPU_ERRATUM,
 		.matches = cpucap_multi_entry_cap_matches,
 		.match_list = arm64_repeat_tlbi_list,
@@ -923,14 +855,6 @@ const struct arm64_cpu_capabilities arm64_errata[] = {
 		ERRATA_MIDR_RANGE_LIST(cnp_erratum_cpus),
 	},
 #endif
-#ifdef CONFIG_NVIDIA_OLYMPUS_1027_ERRATUM
-	{
-		/* NVIDIA Olympus core */
-		.desc = "NVIDIA Olympus device store/load ordering erratum",
-		.capability = ARM64_WORKAROUND_NVIDIA_OLYMPUS_1027,
-		ERRATA_MIDR_ALL_VERSIONS(MIDR_NVIDIA_OLYMPUS),
-	},
-#endif
 #ifdef CONFIG_ARM64_WORKAROUND_TRBE_OVERWRITE_FILL_MODE
 	{
 		/*
@@ -982,20 +906,14 @@ const struct arm64_cpu_capabilities arm64_errata[] = {
 		ERRATA_MIDR_REV_RANGE(MIDR_CORTEX_A510, 0, 0, 2)
 	},
 #endif
-#ifdef CONFIG_ARM64_WORKAROUND_BROKEN_AMU_CONSTCNT
+#ifdef CONFIG_ARM64_ERRATUM_2457168
 	{
-		.desc = "Broken AMU AMEVCNTR01 (const counter)",
-		.capability = ARM64_WORKAROUND_BROKEN_AMU_CONSTCNT,
+		.desc = "ARM erratum 2457168",
+		.capability = ARM64_WORKAROUND_2457168,
 		.type = ARM64_CPUCAP_WEAK_LOCAL_CPU_FEATURE,
-		CAP_MIDR_RANGE_LIST(workaround_amu_constcnt_list)
-	},
-#endif
-#ifdef CONFIG_ARM64_WORKAROUND_BROKEN_AMU_CORECNT
-	{
-		.desc = "Broken AMU AMEVCNTR00 (core cycle counter)",
-		.capability = ARM64_WORKAROUND_BROKEN_AMU_CORECNT,
-		.type = ARM64_CPUCAP_WEAK_LOCAL_CPU_FEATURE,
-		CAP_MIDR_RANGE_LIST(workaround_amu_corecnt_list)
+
+		/* Cortex-A510 r0p0-r1p1 */
+		CAP_MIDR_RANGE(MIDR_CORTEX_A510, 0, 0, 1, 1)
 	},
 #endif
 #ifdef CONFIG_ARM64_ERRATUM_2038923
@@ -1043,7 +961,7 @@ const struct arm64_cpu_capabilities arm64_errata[] = {
 #ifdef CONFIG_ARM64_ERRATUM_4311569
 	{
 		.capability = ARM64_WORKAROUND_4311569,
-		.type = ARM64_CPUCAP_SOC_ERRATUM,
+		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
 		.matches = need_arm_si_l1_workaround_4311569,
 	},
 #endif
@@ -1096,21 +1014,6 @@ const struct arm64_cpu_capabilities arm64_errata[] = {
 		.matches = has_impdef_pmuv3,
 		.cpu_enable = cpu_enable_impdef_pmuv3_traps,
 	},
-	{
-		.desc = "Known broken GICv3 SEIS implementation",
-		.capability = ARM64_WORKAROUND_GICv3_BROKEN_SEIS,
-		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
-		.matches = has_broken_gic_v3_seis,
-	},
-#ifdef CONFIG_NXP_IMX8QM_ERRATUM_ERR050104
-	{
-		.desc = "NXP erratum ERR050104",
-		.capability = ARM64_WORKAROUND_NXP_ERR050104,
-		.type = ARM64_CPUCAP_SOC_ERRATUM,
-		.matches = is_imx8qm_soc,
-		.cpu_enable = cpu_enable_imx8qm_err050104,
-	},
-#endif
 	{
 	}
 };

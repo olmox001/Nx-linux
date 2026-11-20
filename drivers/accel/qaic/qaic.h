@@ -35,7 +35,6 @@
 enum aic_families {
 	FAMILY_AIC100,
 	FAMILY_AIC200,
-	FAMILY_AIC200_VF,
 	FAMILY_MAX,
 };
 

@@ -5,7 +5,6 @@
  * Copyright (C) 2024 Renesas Electronics Corp.
  */
 
-#include <linux/auxiliary_bus.h>
 #include <linux/bitfield.h>
 #include <linux/cleanup.h>
 #include <linux/io.h>
@@ -46,7 +45,7 @@ static int rz_sysc_soc_init(struct rz_sysc *sysc, const struct of_device_id *mat
 		size = sizeof(soc_id);
 	strscpy(soc_id, soc_id_start, size);
 
-	soc_dev_attr = devm_kzalloc_obj(sysc->dev, *soc_dev_attr);
+	soc_dev_attr = devm_kzalloc(sysc->dev, sizeof(*soc_dev_attr), GFP_KERNEL);
 	if (!soc_dev_attr)
 		return -ENOMEM;
 
@@ -124,7 +123,7 @@ static int rz_sysc_probe(struct platform_device *pdev)
 
 	data = match->data;
 
-	sysc = devm_kzalloc_obj(dev, *sysc);
+	sysc = devm_kzalloc(dev, sizeof(*sysc), GFP_KERNEL);
 	if (!sysc)
 		return -ENOMEM;
 
@@ -149,10 +148,6 @@ static int rz_sysc_probe(struct platform_device *pdev)
 	regmap = devm_regmap_init_mmio(dev, sysc->base, regmap_cfg);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
-
-	if (data->soc_id_init_data->pwrrdy_pwrseq &&
-	    !devm_auxiliary_device_create(dev, "pwrseq-pwrrdy", regmap))
-		return -ENODEV;
 
 	return of_syscon_register_regmap(dev->of_node, regmap);
 }

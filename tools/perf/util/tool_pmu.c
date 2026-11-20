@@ -349,7 +349,7 @@ out_close:
 			FD(evsel, idx, thread) = -1;
 		}
 		thread = nthreads;
-	} while (--idx >= start_cpu_map_idx);
+	} while (--idx >= 0);
 	errno = old_errno;
 	return err;
 }

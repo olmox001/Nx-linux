@@ -1414,7 +1414,7 @@ static int intel_gpio_probe(struct intel_pinctrl *pctrl, int irq)
 			       IRQF_SHARED | IRQF_NO_THREAD,
 			       dev_name(pctrl->dev), pctrl);
 	if (ret)
-		return ret;
+		return dev_err_probe(pctrl->dev, ret, "failed to request interrupt\n");
 
 	/* Setup IRQ chip */
 	girq = &pctrl->chip.irq;
@@ -1440,7 +1440,7 @@ static int intel_pinctrl_add_padgroups_by_gpps(struct intel_pinctrl *pctrl,
 	unsigned int padown_num = 0;
 	size_t i, ngpps = community->ngpps;
 
-	gpps = devm_kzalloc_objs(pctrl->dev, *gpps, ngpps);
+	gpps = devm_kcalloc(pctrl->dev, ngpps, sizeof(*gpps), GFP_KERNEL);
 	if (!gpps)
 		return -ENOMEM;
 
@@ -1484,7 +1484,7 @@ static int intel_pinctrl_add_padgroups_by_size(struct intel_pinctrl *pctrl,
 	if (community->gpp_size > INTEL_PINCTRL_MAX_GPP_SIZE)
 		return -EINVAL;
 
-	gpps = devm_kzalloc_objs(pctrl->dev, *gpps, ngpps);
+	gpps = devm_kcalloc(pctrl->dev, ngpps, sizeof(*gpps), GFP_KERNEL);
 	if (!gpps)
 		return -ENOMEM;
 
@@ -1516,12 +1516,12 @@ static int intel_pinctrl_pm_init(struct intel_pinctrl *pctrl)
 	struct intel_pad_context *pads;
 	int i;
 
-	pads = devm_kzalloc_objs(pctrl->dev, *pads, soc->npins);
+	pads = devm_kcalloc(pctrl->dev, soc->npins, sizeof(*pads), GFP_KERNEL);
 	if (!pads)
 		return -ENOMEM;
 
-	communities = devm_kzalloc_objs(pctrl->dev, *communities,
-					pctrl->ncommunities);
+	communities = devm_kcalloc(pctrl->dev, pctrl->ncommunities,
+				   sizeof(*communities), GFP_KERNEL);
 	if (!communities)
 		return -ENOMEM;
 
@@ -1530,15 +1530,15 @@ static int intel_pinctrl_pm_init(struct intel_pinctrl *pctrl)
 		struct intel_community *community = &pctrl->communities[i];
 		u32 *intmask, *hostown;
 
-		intmask = devm_kzalloc_objs(pctrl->dev, *intmask,
-					    community->ngpps);
+		intmask = devm_kcalloc(pctrl->dev, community->ngpps,
+				       sizeof(*intmask), GFP_KERNEL);
 		if (!intmask)
 			return -ENOMEM;
 
 		communities[i].intmask = intmask;
 
-		hostown = devm_kzalloc_objs(pctrl->dev, *hostown,
-					    community->ngpps);
+		hostown = devm_kcalloc(pctrl->dev, community->ngpps,
+				       sizeof(*hostown), GFP_KERNEL);
 		if (!hostown)
 			return -ENOMEM;
 
@@ -1582,7 +1582,7 @@ int intel_pinctrl_probe(struct platform_device *pdev,
 	struct intel_pinctrl *pctrl;
 	int i, ret, irq;
 
-	pctrl = devm_kzalloc_obj(dev, *pctrl);
+	pctrl = devm_kzalloc(dev, sizeof(*pctrl), GFP_KERNEL);
 	if (!pctrl)
 		return -ENOMEM;
 
@@ -1702,42 +1702,35 @@ int intel_pinctrl_probe(struct platform_device *pdev,
 }
 EXPORT_SYMBOL_NS_GPL(intel_pinctrl_probe, "PINCTRL_INTEL");
 
-static const struct intel_pinctrl_soc_data *
-intel_pinctrl_get_soc_data_by_hid(const struct platform_device *pdev)
-{
-	const struct intel_pinctrl_soc_data *data;
-	const struct device *dev = &pdev->dev;
-	const struct platform_device_id *id;
-
-	data = device_get_match_data(dev);
-	if (data)
-		return data;
-
-	id = platform_get_device_id(pdev);
-	if (!id)
-		return ERR_PTR(-ENODEV);
-
-	data = (const struct intel_pinctrl_soc_data *)id->driver_data;
-	return data ?: ERR_PTR(-ENODATA);
-}
-
 int intel_pinctrl_probe_by_hid(struct platform_device *pdev)
 {
 	const struct intel_pinctrl_soc_data *data;
 
-	data = intel_pinctrl_get_soc_data_by_hid(pdev);
-	if (IS_ERR(data))
-		return PTR_ERR(data);
+	data = device_get_match_data(&pdev->dev);
+	if (!data)
+		return -ENODATA;
 
 	return intel_pinctrl_probe(pdev, data);
 }
 EXPORT_SYMBOL_NS_GPL(intel_pinctrl_probe_by_hid, "PINCTRL_INTEL");
 
-const struct intel_pinctrl_soc_data *intel_pinctrl_get_soc_data(const struct platform_device *pdev)
+int intel_pinctrl_probe_by_uid(struct platform_device *pdev)
+{
+	const struct intel_pinctrl_soc_data *data;
+
+	data = intel_pinctrl_get_soc_data(pdev);
+	if (IS_ERR(data))
+		return PTR_ERR(data);
+
+	return intel_pinctrl_probe(pdev, data);
+}
+EXPORT_SYMBOL_NS_GPL(intel_pinctrl_probe_by_uid, "PINCTRL_INTEL");
+
+const struct intel_pinctrl_soc_data *intel_pinctrl_get_soc_data(struct platform_device *pdev)
 {
 	const struct intel_pinctrl_soc_data * const *table;
 	const struct intel_pinctrl_soc_data *data;
-	const struct device *dev = &pdev->dev;
+	struct device *dev = &pdev->dev;
 
 	table = device_get_match_data(dev);
 	if (table) {
@@ -1763,18 +1756,6 @@ const struct intel_pinctrl_soc_data *intel_pinctrl_get_soc_data(const struct pla
 	return data ?: ERR_PTR(-ENODATA);
 }
 EXPORT_SYMBOL_NS_GPL(intel_pinctrl_get_soc_data, "PINCTRL_INTEL");
-
-int intel_pinctrl_probe_by_uid(struct platform_device *pdev)
-{
-	const struct intel_pinctrl_soc_data *data;
-
-	data = intel_pinctrl_get_soc_data(pdev);
-	if (IS_ERR(data))
-		return PTR_ERR(data);
-
-	return intel_pinctrl_probe(pdev, data);
-}
-EXPORT_SYMBOL_NS_GPL(intel_pinctrl_probe_by_uid, "PINCTRL_INTEL");
 
 static bool __intel_gpio_is_direct_irq(u32 value)
 {

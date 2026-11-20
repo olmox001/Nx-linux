@@ -262,7 +262,7 @@ int idma32_dma_probe(struct dw_dma_chip *chip)
 {
 	struct dw_dma *dw;
 
-	dw = devm_kzalloc_obj(chip->dev, *dw);
+	dw = devm_kzalloc(chip->dev, sizeof(*dw), GFP_KERNEL);
 	if (!dw)
 		return -ENOMEM;
 

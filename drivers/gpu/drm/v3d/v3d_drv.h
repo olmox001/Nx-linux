@@ -75,21 +75,20 @@ struct v3d_queue_state {
 	spinlock_t queue_lock;
 };
 
-/* Performance monitor object
- *
- * The performance monitor (perfmon) lifetime is controlled by userspace using
- * perfmon related ioctls. A perfmon can be attached to a CL or CSD submission
- * request, and when it is, HW performance counters will be activated just
- * before the job is submitted to the GPU and disabled when the job is done.
- * This way, only events related to a specific submission will be counted.
+/* Performance monitor object. The perform lifetime is controlled by userspace
+ * using perfmon related ioctls. A perfmon can be attached to a submit_cl
+ * request, and when this is the case, HW perf counters will be activated just
+ * before the submit_cl is submitted to the GPU and disabled when the job is
+ * done. This way, only events related to a specific job will be counted.
  */
 struct v3d_perfmon {
-	struct v3d_dev *v3d;
-
 	/* Tracks the number of users of the perfmon, when this counter reaches
 	 * zero the perfmon is destroyed.
 	 */
 	refcount_t refcnt;
+
+	/* Protects perfmon stop, as it can be invoked from multiple places. */
+	struct mutex lock;
 
 	/* Number of counters activated in this perfmon instance
 	 * (should be less than DRM_V3D_MAX_PERF_COUNTERS).
@@ -172,43 +171,17 @@ struct v3d_dev {
 
 	struct v3d_queue_state queue[V3D_MAX_QUEUES];
 
-	/*
-	 * Tracks the performance monitor state and consistency.
-	 *
-	 * When a non-global perfmon is attached to a job, the scheduler must
-	 * not run any other job on the HW concurrently (otherwise, the
-	 * counters would be polluted by unrelated work).
-	 */
-	struct {
-		/* Protects @active. */
-		spinlock_t lock;
-
-		/* Perfmon currently programmed in HW (or NULL if none). */
-		struct v3d_perfmon *active;
-
-		/* Number of perfmons alive on this device. Jobs are not
-		 * serialized if the number is zero.
-		 */
-		atomic_t nperfmons;
-
-		/* Finished fence of the most recently submitted job that
-		 * opened a serialization window (i.e. a job with a non-global
-		 * perfmon attached).
-		 */
-		struct dma_fence *fence;
-
-		/* Finished fence of the most recently submitted job on each HW
-		 * queue, which is used so that a new perfmon-carrying job can
-		 * depend on every job currently in-flight across all queues.
-		 *
-		 * Finished fences are only tracked if @nperfmons > 0 and no
-		 * global perfmon is set.
-		 */
-		struct dma_fence *last_hw_fence[V3D_MAX_QUEUES];
-	} perfmon_state;
+	/* Used to track the active perfmon if any. */
+	struct v3d_perfmon *active_perfmon;
 
 	/* Protects bo_stats */
 	struct mutex bo_lock;
+
+	/* Lock taken when resetting the GPU, to keep multiple
+	 * processes from trying to park the scheduler threads and
+	 * reset at once.
+	 */
+	struct mutex reset_lock;
 
 	/* Ordered workqueue shared by every queue's scheduler timeout work.
 	 * V3D reset is global to all queues, so the timeout handlers must not
@@ -464,6 +437,9 @@ struct v3d_indirect_csd_info {
 	/* Indirect CSD */
 	struct v3d_csd_job *job;
 
+	/* Clean cache job associated to the Indirect CSD job */
+	struct v3d_job *clean_job;
+
 	/* Indirect CSD args, stashed by the extension parser and later used
 	 * to create the CSD job from them.
 	 */
@@ -482,6 +458,9 @@ struct v3d_indirect_csd_info {
 
 	/* Indirect BO */
 	struct drm_gem_object *indirect;
+
+	/* Context of the Indirect CSD job */
+	struct drm_exec exec;
 };
 
 struct v3d_timestamp_query_info {
@@ -587,6 +566,16 @@ struct v3d_submit_ext {
 #define _wait_for(COND, US, Wmin, Wmax)	__wait_for(, (COND), (US), (Wmin), \
 						   (Wmax))
 #define wait_for(COND, MS)		_wait_for((COND), (MS) * 1000, 10, 1000)
+
+static inline unsigned long nsecs_to_jiffies_timeout(const u64 n)
+{
+	/* nsecs_to_jiffies64() does not guard against overflow */
+	if ((NSEC_PER_SEC % HZ) != 0 &&
+	    div_u64(n, NSEC_PER_SEC) >= MAX_JIFFY_OFFSET / HZ)
+		return MAX_JIFFY_OFFSET;
+
+	return min_t(u64, MAX_JIFFY_OFFSET, nsecs_to_jiffies64(n) + 1);
+}
 
 /* v3d_bo.c */
 struct drm_gem_object *v3d_create_object(struct drm_device *dev, size_t size);
@@ -697,8 +686,6 @@ void v3d_perfmon_put(struct v3d_perfmon *perfmon);
 void v3d_perfmon_start(struct v3d_dev *v3d, struct v3d_perfmon *perfmon);
 void v3d_perfmon_stop(struct v3d_dev *v3d, struct v3d_perfmon *perfmon,
 		      bool capture);
-void v3d_perfmon_suspend(struct v3d_dev *v3d);
-void v3d_perfmon_resume(struct v3d_dev *v3d);
 struct v3d_perfmon *v3d_perfmon_find(struct v3d_file_priv *v3d_priv, int id);
 void v3d_perfmon_open_file(struct v3d_file_priv *v3d_priv);
 void v3d_perfmon_close_file(struct v3d_file_priv *v3d_priv);

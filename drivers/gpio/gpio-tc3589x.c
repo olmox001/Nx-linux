@@ -312,7 +312,8 @@ static int tc3589x_gpio_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	tc3589x_gpio = devm_kzalloc_obj(&pdev->dev, struct tc3589x_gpio);
+	tc3589x_gpio = devm_kzalloc(&pdev->dev, sizeof(struct tc3589x_gpio),
+				    GFP_KERNEL);
 	if (!tc3589x_gpio)
 		return -ENOMEM;
 

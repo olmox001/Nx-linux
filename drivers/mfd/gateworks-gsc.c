@@ -202,7 +202,7 @@ static int gsc_probe(struct i2c_client *client)
 	int ret;
 	unsigned int reg;
 
-	gsc = devm_kzalloc_obj(dev, *gsc);
+	gsc = devm_kzalloc(dev, sizeof(*gsc), GFP_KERNEL);
 	if (!gsc)
 		return -ENOMEM;
 

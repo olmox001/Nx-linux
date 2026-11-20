@@ -329,6 +329,9 @@ struct ib_pd *__ib_alloc_pd(struct ib_device *device, unsigned int flags,
 
 	pd->device = device;
 	pd->flags = flags;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	pd->shpd = NULL;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	rdma_restrack_new(&pd->res, RDMA_RESTRACK_PD);
 	rdma_restrack_set_name(&pd->res, caller);
@@ -1011,8 +1014,7 @@ int rdma_modify_ah(struct ib_ah *ah, struct rdma_ah_attr *ah_attr)
 		ah->device->ops.modify_ah(ah, ah_attr) :
 		-EOPNOTSUPP;
 
-	if (!ret)
-		ah->sgid_attr = rdma_update_sgid_attr(ah_attr, ah->sgid_attr);
+	ah->sgid_attr = rdma_update_sgid_attr(ah_attr, ah->sgid_attr);
 	rdma_unfill_sgid_attr(ah_attr, old_sgid_attr);
 	return ret;
 }
@@ -1301,7 +1303,6 @@ static struct ib_qp *create_qp(struct ib_device *dev, struct ib_pd *pd,
 	qp->qp_context = attr->qp_context;
 
 	spin_lock_init(&qp->mr_lock);
-	xa_init(&qp->comp_cntrs);
 	INIT_LIST_HEAD(&qp->rdma_mrs);
 	INIT_LIST_HEAD(&qp->sig_mrs);
 	init_completion(&qp->srq_completion);
@@ -1332,10 +1333,10 @@ static struct ib_qp *create_qp(struct ib_device *dev, struct ib_pd *pd,
 	return qp;
 
 err_security:
-	qp->device->ops.destroy_qp(qp, uverbs_get_cleared_udata(uattrs));
+	qp->device->ops.destroy_qp(
+		qp, uattrs ? uverbs_get_cleared_udata(uattrs) : NULL);
 err_create:
 	rdma_restrack_put(&qp->res);
-	xa_destroy(&qp->comp_cntrs);
 	kfree(qp);
 	return ERR_PTR(ret);
 
@@ -2059,7 +2060,7 @@ int ib_get_eth_speed(struct ib_device *dev, u32 port_num, u16 *speed, u8 *width)
 
 	rtnl_lock();
 	if (READ_ONCE(netdev->reg_state) != NETREG_REGISTERED) {
-		dev_put(netdev);
+	dev_put(netdev);
 		rtnl_unlock();
 		return -ENODEV;
 	}
@@ -2157,8 +2158,6 @@ int ib_destroy_qp_user(struct ib_qp *qp, struct ib_udata *udata)
 	const struct ib_gid_attr *alt_path_sgid_attr = qp->alt_path_sgid_attr;
 	const struct ib_gid_attr *av_sgid_attr = qp->av_sgid_attr;
 	struct ib_qp_security *sec;
-	struct ib_comp_cntr *cc;
-	unsigned long index;
 	int ret;
 
 	WARN_ON_ONCE(qp->mrs_used > 0);
@@ -2191,10 +2190,6 @@ int ib_destroy_qp_user(struct ib_qp *qp, struct ib_udata *udata)
 		rdma_put_gid_attr(alt_path_sgid_attr);
 	if (av_sgid_attr)
 		rdma_put_gid_attr(av_sgid_attr);
-
-	xa_for_each(&qp->comp_cntrs, index, cc)
-		atomic_dec(&cc->usecnt);
-	xa_destroy(&qp->comp_cntrs);
 
 	ib_qp_usecnt_dec(qp);
 	if (sec)
@@ -2362,7 +2357,7 @@ EXPORT_SYMBOL(ib_dereg_mr_user);
  * @max_num_sg:    maximum sg entries available for registration.
  *
  * Notes:
- * Memory registration page/sg lists must not exceed max_num_sg.
+ * Memory registeration page/sg lists must not exceed max_num_sg.
  * For mr_type IB_MR_TYPE_MEM_REG, the total length cannot exceed
  * max_num_sg * used_page_size.
  *
@@ -3186,8 +3181,8 @@ struct rdma_hw_stats *rdma_alloc_hw_stats_struct(
 	if (!stats)
 		return NULL;
 
-	stats->is_disabled = kzalloc_objs(*stats->is_disabled,
-					  BITS_TO_LONGS(num_counters));
+	stats->is_disabled = kcalloc(BITS_TO_LONGS(num_counters),
+				     sizeof(*stats->is_disabled), GFP_KERNEL);
 	if (!stats->is_disabled)
 		goto err;
 

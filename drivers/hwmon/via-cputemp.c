@@ -114,7 +114,8 @@ static int via_cputemp_probe(struct platform_device *pdev)
 	int err;
 	u64 val;
 
-	data = devm_kzalloc_obj(&pdev->dev, struct via_cputemp_data);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct via_cputemp_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

@@ -48,10 +48,6 @@ enum {
 };
 
 typedef struct {
-	int	counter;
-} __attribute__((preserve_access_index)) atomic_t;
-
-typedef struct {
 	s64	counter;
 } __attribute__((preserve_access_index)) atomic64_t;
 
@@ -69,10 +65,6 @@ typedef struct {
 
 struct sighand_struct {
 	spinlock_t siglock;
-} __attribute__((preserve_access_index));
-
-struct signal_struct {
-	atomic_t live;
 } __attribute__((preserve_access_index));
 
 struct rw_semaphore {
@@ -111,7 +103,6 @@ struct task_struct {
 	pid_t		      pid;
 	pid_t		      tgid;
 	char		      comm[16];
-	struct signal_struct  *signal;
 	struct sighand_struct *sighand;
 	struct css_set	      *cgroups;
 } __attribute__((preserve_access_index));

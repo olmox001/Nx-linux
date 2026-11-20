@@ -304,19 +304,6 @@ nouveau_svmm_fini(struct nouveau_svmm **psvmm)
 {
 	struct nouveau_svmm *svmm = *psvmm;
 	if (svmm) {
-		struct nouveau_svm *svm = svmm->vmm->cli->drm->svm;
-
-		/* The fault handler caches svmm pointers under svm->mutex and
-		 * dereferences them after dropping it, across blocking faults.
-		 * The instance is already unlinked (nouveau_svmm_part), so drain
-		 * the handler before the free to release any in-flight reference.
-		 *
-		 * On device teardown nouveau_svm_fini() ran first and freed
-		 * drm->svm (NULL) after draining the buffer; nothing to flush.
-		 */
-		if (svm)
-			flush_work(&svm->buffer[0].work);
-
 		mutex_lock(&svmm->mutex);
 		svmm->vmm = NULL;
 		mutex_unlock(&svmm->mutex);
@@ -691,22 +678,20 @@ static int nouveau_range_fault(struct nouveau_svmm *svmm,
 	range.end = notifier->notifier.interval_tree.last + 1;
 
 	while (true) {
-		long remaining = timeout - jiffies;
-
-		/*
-		 * The HMM timeout only bounds retries while HMM is walking and
-		 * faulting the range. This fault is handled by a kernel worker,
-		 * so fatal signals from the faulting process cannot stop an
-		 * endless stream of invalidations here.
-		 */
-		if (time_after_eq(jiffies, timeout)) {
+		if (time_after(jiffies, timeout)) {
 			ret = -EBUSY;
 			goto out;
 		}
 
-		ret = hmm_range_fault_unlocked_timeout(&range, remaining);
-		if (ret)
+		range.notifier_seq = mmu_interval_read_begin(range.notifier);
+		mmap_read_lock(mm);
+		ret = hmm_range_fault(&range);
+		mmap_read_unlock(mm);
+		if (ret) {
+			if (ret == -EBUSY)
+				continue;
 			goto out;
+		}
 
 		mutex_lock(&svmm->mutex);
 		if (mmu_interval_read_retry(range.notifier,

@@ -639,7 +639,6 @@ static int ov2680_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov2680_set_fmt(struct v4l2_subdev *sd,
-			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *format)
 {
@@ -704,7 +703,6 @@ unlock:
 }
 
 static int ov2680_get_selection(struct v4l2_subdev *sd,
-				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -735,7 +733,6 @@ static int ov2680_get_selection(struct v4l2_subdev *sd,
 }
 
 static int ov2680_set_selection(struct v4l2_subdev *sd,
-				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -1174,7 +1171,7 @@ static int ov2680_probe(struct i2c_client *client)
 	struct ov2680_dev *sensor;
 	int ret;
 
-	sensor = devm_kzalloc_obj(dev, *sensor);
+	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
 

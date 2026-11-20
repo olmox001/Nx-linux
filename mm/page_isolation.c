@@ -11,7 +11,6 @@
 #include <linux/page_owner.h>
 #include <linux/migrate.h>
 #include "internal.h"
-#include "page_alloc.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/page_isolation.h>
@@ -73,13 +72,6 @@ bool page_is_unmovable(struct zone *zone, struct page *page,
 		*step = (pfn | (nr_pages - 1)) + 1 - pfn;
 		return false;
 	}
-
-	/*
-	 * Slab pages are frozen: do not take their reference count of zero
-	 * for that of a free page.
-	 */
-	if (PageSlab(page))
-		return true;
 
 	/*
 	 * We can't use page_count without pin a page
@@ -395,19 +387,13 @@ static int isolate_single_pageblock(unsigned long boundary_pfn,
 		}
 
 		if (PageBuddy(page)) {
-			unsigned int order = buddy_order_unsafe(page);
+			int order = buddy_order(page);
 
-			/* buddy_order_unsafe() is racy. Validate the order before shifting. */
-			if (order <= MAX_PAGE_ORDER &&
-				/*
-				 * pageblock_isolate_and_move_free_pages() splits
-				 * cross-boundary PageBuddy, verify it.
-				 */
-			    pfn + (1UL << order) <= boundary_pfn) {
-				pfn += 1UL << order;
-				continue;
-			}
-			goto failed;
+			/* pageblock_isolate_and_move_free_pages() handled this */
+			VM_WARN_ON_ONCE(pfn + (1 << order) > boundary_pfn);
+
+			pfn += 1UL << order;
+			continue;
 		}
 
 		/*
@@ -426,28 +412,10 @@ static int isolate_single_pageblock(unsigned long boundary_pfn,
 		if (PageCompound(page)) {
 			struct page *head = compound_head(page);
 			unsigned long head_pfn = page_to_pfn(head);
-			unsigned int order = compound_order(head);
-			unsigned long nr_pages;
-
-			/* compound_order() is racy. Cap it at MAX_FOLIO_ORDER. */
-			if (order > MAX_FOLIO_ORDER)
-				goto failed;
-
-			nr_pages = 1UL << order;
-
-			/*
-			 * compound_head() is also racy, so the derived head_pfn
-			 * needs additional checks to make sure it is valid.
-			 * Otherwise, just fail the check. pfn comes from
-			 * __first_valid_page() as a legitimate PFN, so use it to
-			 * check head_pfn.
-			 */
-			if (head_pfn > pfn || !IS_ALIGNED(head_pfn, nr_pages) ||
-			    pfn - head_pfn >= nr_pages)
-				goto failed;
+			unsigned long nr_pages = compound_nr(head);
 
 			if (head_pfn + nr_pages <= boundary_pfn ||
-			    PageHuge(head)) {
+			    PageHuge(page)) {
 				pfn = head_pfn + nr_pages;
 				continue;
 			}

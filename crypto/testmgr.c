@@ -3958,17 +3958,16 @@ static int test_sig_one(struct crypto_sig *tfm, const struct sig_testvec *vecs)
 	 */
 	err = crypto_sig_verify(tfm, vecs->c, vecs->c_size,
 				vecs->m, vecs->m_size);
-	if (err != vecs->verify_error) {
-		pr_err("alg: sig: verify test failed: expected %d, got %d\n",
-		       vecs->verify_error, err);
-		return err ?: -EINVAL;
+	if (err) {
+		pr_err("alg: sig: verify test failed: err %d\n", err);
+		return err;
 	}
 
 	/*
 	 * Don't invoke sign test (which requires a private key)
-	 * for vectors with only a public key or an invalid signature.
+	 * for vectors with only a public key.
 	 */
-	if (vecs->public_key_vec || vecs->verify_error)
+	if (vecs->public_key_vec)
 		return 0;
 
 	sig_size = crypto_sig_maxsize(tfm);

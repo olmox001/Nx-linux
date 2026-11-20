@@ -391,8 +391,7 @@ static int recent_mt_check(const struct xt_mtchk_param *par,
 		goto out;
 	}
 
-	t = kvzalloc_flex(*t, iphash, ip_list_hash_size,
-			  GFP_KERNEL_ACCOUNT);
+	t = kvzalloc_flex(*t, iphash, ip_list_hash_size);
 	if (t == NULL) {
 		ret = -ENOMEM;
 		goto out;
@@ -401,7 +400,7 @@ static int recent_mt_check(const struct xt_mtchk_param *par,
 	t->nstamps_max_mask = nstamp_mask;
 
 	memcpy(&t->mask, &info->mask, sizeof(t->mask));
-	strscpy(t->name, info->name);
+	strcpy(t->name, info->name);
 	INIT_LIST_HEAD(&t->lru_list);
 	for (i = 0; i < ip_list_hash_size; i++)
 		INIT_LIST_HEAD(&t->iphash[i]);
@@ -650,15 +649,14 @@ static void __net_exit recent_proc_net_exit(struct net *net)
 
 	/* recent_net_exit() is called before recent_mt_destroy(). Make sure
 	 * that the parent xt_recent proc entry is empty before trying to
-	 * remove it. Use recent_mutex instead of recent_lock since
-	 * remove_proc_entry() may sleep.
+	 * remove it.
 	 */
-	mutex_lock(&recent_mutex);
+	spin_lock_bh(&recent_lock);
 	list_for_each_entry(t, &recent_net->tables, list)
 	        remove_proc_entry(t->name, recent_net->xt_recent);
 
 	recent_net->xt_recent = NULL;
-	mutex_unlock(&recent_mutex);
+	spin_unlock_bh(&recent_lock);
 
 	remove_proc_entry("xt_recent", net->proc_net);
 }

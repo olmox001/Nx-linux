@@ -33,15 +33,18 @@
 /* Global variables */
 bool pciehp_poll_mode;
 int pciehp_poll_time;
+bool pciehp_user_ledctrl = true;
 
 /*
  * not really modular, but the easiest way to keep compat with existing
  * bootargs behaviour is to continue using module_param here.
  */
-module_param(pciehp_poll_mode, bool, 0444);
+module_param(pciehp_poll_mode, bool, 0644);
 module_param(pciehp_poll_time, int, 0644);
+module_param(pciehp_user_ledctrl, bool, 0644);
 MODULE_PARM_DESC(pciehp_poll_mode, "Using polling mechanism for hot-plug events or not");
 MODULE_PARM_DESC(pciehp_poll_time, "Polling mechanism frequency, in seconds");
+MODULE_PARM_DESC(pciehp_user_ledctrl, "Allowing user application to control LEDs (default=true)");
 
 static int set_attention_status(struct hotplug_slot *slot, u8 value);
 static int get_power_status(struct hotplug_slot *slot, u8 *value);
@@ -64,6 +67,7 @@ static int init_slot(struct controller *ctrl)
 	ops->get_power_status = get_power_status;
 	ops->get_adapter_status = get_adapter_status;
 	ops->reset_slot = pciehp_reset_slot;
+	ops->force_power_slot = pciehp_force_power_slot;
 	if (MRL_SENS(ctrl))
 		ops->get_latch_status = get_latch_status;
 	if (ATTN_LED(ctrl)) {
@@ -258,7 +262,7 @@ static bool pme_is_native(struct pcie_device *dev)
 	const struct pci_host_bridge *host;
 
 	host = pci_find_host_bridge(dev->port->bus);
-	return host->native_pme;
+	return pcie_ports_native || host->native_pme;
 }
 
 static void pciehp_disable_interrupt(struct pcie_device *dev)

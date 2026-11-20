@@ -337,15 +337,10 @@ static int sp7021_spi_host_transfer_one(struct spi_controller *ctlr, struct spi_
 				      SP7021_SPI_START_FD;
 		writel(reg_temp, pspim->m_base + SP7021_SPI_STATUS_REG);
 
-		{
-			long ret = wait_for_completion_interruptible_timeout(
-						&pspim->isr_done, timeout);
-			if (ret <= 0) {
-				dev_err(&spi->dev, ret == 0 ? "SPI transfer timeout\n"
-							    : "SPI transfer interrupted\n");
-				mutex_unlock(&pspim->buf_lock);
-				return ret == 0 ? -ETIMEDOUT : -EINTR;
-			}
+		if (!wait_for_completion_interruptible_timeout(&pspim->isr_done, timeout)) {
+			dev_err(&spi->dev, "wait_for_completion err\n");
+			mutex_unlock(&pspim->buf_lock);
+			return -ETIMEDOUT;
 		}
 
 		reg_temp = readl(pspim->m_base + SP7021_SPI_STATUS_REG);
@@ -503,7 +498,7 @@ static void sp7021_spi_controller_remove(struct platform_device *pdev)
 	pm_runtime_set_suspended(&pdev->dev);
 }
 
-static int sp7021_spi_controller_suspend(struct device *dev)
+static int __maybe_unused sp7021_spi_controller_suspend(struct device *dev)
 {
 	struct spi_controller *ctlr = dev_get_drvdata(dev);
 	struct sp7021_spi_ctlr *pspim = spi_controller_get_devdata(ctlr);
@@ -511,7 +506,7 @@ static int sp7021_spi_controller_suspend(struct device *dev)
 	return reset_control_assert(pspim->rstc);
 }
 
-static int sp7021_spi_controller_resume(struct device *dev)
+static int __maybe_unused sp7021_spi_controller_resume(struct device *dev)
 {
 	struct spi_controller *ctlr = dev_get_drvdata(dev);
 	struct sp7021_spi_ctlr *pspim = spi_controller_get_devdata(ctlr);
@@ -520,6 +515,7 @@ static int sp7021_spi_controller_resume(struct device *dev)
 	return clk_prepare_enable(pspim->spi_clk);
 }
 
+#ifdef CONFIG_PM
 static int sp7021_spi_runtime_suspend(struct device *dev)
 {
 	struct spi_controller *ctlr = dev_get_drvdata(dev);
@@ -535,12 +531,13 @@ static int sp7021_spi_runtime_resume(struct device *dev)
 
 	return reset_control_deassert(pspim->rstc);
 }
+#endif
 
 static const struct dev_pm_ops sp7021_spi_pm_ops = {
-	RUNTIME_PM_OPS(sp7021_spi_runtime_suspend,
-		       sp7021_spi_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(sp7021_spi_controller_suspend,
-			    sp7021_spi_controller_resume)
+	SET_RUNTIME_PM_OPS(sp7021_spi_runtime_suspend,
+			   sp7021_spi_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(sp7021_spi_controller_suspend,
+				sp7021_spi_controller_resume)
 };
 
 static const struct of_device_id sp7021_spi_controller_ids[] = {
@@ -555,7 +552,7 @@ static struct platform_driver sp7021_spi_controller_driver = {
 	.driver = {
 		.name = "sunplus,sp7021-spi-controller",
 		.of_match_table = sp7021_spi_controller_ids,
-		.pm     = pm_ptr(&sp7021_spi_pm_ops),
+		.pm     = &sp7021_spi_pm_ops,
 	},
 };
 module_platform_driver(sp7021_spi_controller_driver);

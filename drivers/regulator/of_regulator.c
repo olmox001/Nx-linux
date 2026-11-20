@@ -355,7 +355,7 @@ struct regulator_init_data *of_get_regulator_init_data(struct device *dev,
 	if (!node)
 		return NULL;
 
-	init_data = devm_kzalloc_obj(dev, *init_data);
+	init_data = devm_kzalloc(dev, sizeof(*init_data), GFP_KERNEL);
 	if (!init_data)
 		return NULL; /* Out of memory? */
 
@@ -928,11 +928,6 @@ static int is_supply_name(const char *name)
  * acquired then any regulators that were allocated will be freed
  * before returning to the caller, and @consumers will not be
  * changed.
- *
- * On success the array is allocated here and handed to the caller, which
- * owns it from then on: release the regulators with regulator_bulk_free()
- * and free the array itself with kfree(). The supply names live in the
- * same allocation, so they are gone once the array is freed.
  *
  * Return: Number of regulators on success, or a negative error number
  *	   on failure.

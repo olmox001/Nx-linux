@@ -563,7 +563,6 @@ static int saa6752hs_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int saa6752hs_set_fmt(struct v4l2_subdev *sd,
-		const struct v4l2_subdev_client_info *ci,
 		struct v4l2_subdev_state *sd_state,
 		struct v4l2_subdev_format *format)
 {
@@ -669,7 +668,7 @@ static int saa6752hs_probe(struct i2c_client *client)
 	v4l_info(client, "chip found @ 0x%x (%s)\n",
 			client->addr << 1, client->adapter->name);
 
-	h = devm_kzalloc_obj(&client->dev, *h);
+	h = devm_kzalloc(&client->dev, sizeof(*h), GFP_KERNEL);
 	if (h == NULL)
 		return -ENOMEM;
 	sd = &h->sd;

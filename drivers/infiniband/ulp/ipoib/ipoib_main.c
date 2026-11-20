@@ -34,6 +34,9 @@
 
 #include "ipoib.h"
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#include <linux/ctype.h>
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 #include <linux/module.h>
 
 #include <linux/init.h>
@@ -72,6 +75,13 @@ int ipoib_debug_level;
 module_param_named(debug_level, ipoib_debug_level, int, 0644);
 MODULE_PARM_DESC(debug_level, "Enable debug tracing if > 0");
 #endif
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+int cm_ibcrc_as_csum = 1;
+module_param_named(cm_ibcrc_as_csum, cm_ibcrc_as_csum, int, 0444);
+MODULE_PARM_DESC(cm_ibcrc_as_csum,
+		 "Indicates whether to utilize IB-CRC as CSUM in connected mode, (default: 1)");
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 struct ipoib_path_iter {
 	struct net_device *dev;
@@ -230,13 +240,6 @@ static int ipoib_stop(struct net_device *dev)
 
 	clear_bit(IPOIB_FLAG_ADMIN_UP, &priv->flags);
 
-	/* Normal flush runs without RTNL and may bring the device back
-	 * up. Cancel it before the device down transition.
-	 * Heavy flush is already serialized by RTNL and must not be
-	 * waited on here while RTNL is held.
-	 */
-	cancel_work_sync(&priv->flush_normal);
-
 	netif_stop_queue(dev);
 
 	ipoib_ib_dev_down(dev);
@@ -259,8 +262,17 @@ static netdev_features_t ipoib_fix_features(struct net_device *dev, netdev_featu
 {
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	if (test_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags))
 		features &= ~(NETIF_F_IP_CSUM | NETIF_F_TSO);
+#else
+	if (test_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags)) {
+		features &= ~NETIF_F_TSO;
+		if (!(cm_ibcrc_as_csum && test_bit(IPOIB_FLAG_CSUM,
+					           &priv->flags)))
+			features &= ~NETIF_F_IP_CSUM;
+	}
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 	return features;
 }
@@ -581,7 +593,14 @@ int ipoib_set_mode(struct net_device *dev, const char *buf)
 		netif_set_real_num_tx_queues(dev, 1);
 		netdev_unlock_ops(dev);
 		rtnl_unlock();
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		priv->tx_wr.wr.send_flags &= ~IB_SEND_IP_CSUM;
+#else
+		if (cm_ibcrc_as_csum && test_bit(IPOIB_FLAG_CSUM, &priv->flags))
+			priv->tx_wr.wr.send_flags |= IB_SEND_IP_CSUM;
+		else
+			priv->tx_wr.wr.send_flags &= ~IB_SEND_IP_CSUM;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 		ipoib_flush_paths(dev);
 		return (!rtnl_trylock()) ? -EBUSY : 0;
@@ -1385,8 +1404,7 @@ out_unlock:
 	return neigh;
 }
 
-static void __ipoib_reap_neigh(struct ipoib_dev_priv *priv,
-			       int gc_interval)
+static void __ipoib_reap_neigh(struct ipoib_dev_priv *priv)
 {
 	struct ipoib_neigh_table *ntbl = &priv->ntbl;
 	struct ipoib_neigh_hash *htbl;
@@ -1405,7 +1423,7 @@ static void __ipoib_reap_neigh(struct ipoib_dev_priv *priv,
 		goto out_unlock;
 
 	/* neigh is obsolete if it was idle for two GC periods */
-	dt = 2 * gc_interval;
+	dt = 2 * arp_tbl.gc_interval;
 	neigh_obsolete = jiffies - dt;
 
 	for (i = 0; i < htbl->size; i++) {
@@ -1441,16 +1459,11 @@ static void ipoib_reap_neigh(struct work_struct *work)
 {
 	struct ipoib_dev_priv *priv =
 		container_of(work, struct ipoib_dev_priv, neigh_reap_task.work);
-	struct net_device *dev = priv->dev;
-	struct net *net = dev_net(dev);
-	struct neigh_table *tbl;
-	int gc_interval;
 
-	tbl = arp_table(net);
-	gc_interval = tbl->gc_interval;
-	__ipoib_reap_neigh(priv, gc_interval);
+	__ipoib_reap_neigh(priv);
 
-	queue_delayed_work(priv->wq, &priv->neigh_reap_task, gc_interval);
+	queue_delayed_work(priv->wq, &priv->neigh_reap_task,
+			   arp_tbl.gc_interval);
 }
 
 
@@ -1603,11 +1616,8 @@ void ipoib_neigh_free(struct ipoib_neigh *neigh)
 static int ipoib_neigh_hash_init(struct ipoib_dev_priv *priv)
 {
 	struct ipoib_neigh_table *ntbl = &priv->ntbl;
-	struct ipoib_neigh __rcu **buckets;
-	struct net_device *dev = priv->dev;
-	struct net *net = dev_net(dev);
 	struct ipoib_neigh_hash *htbl;
-	struct neigh_table *tbl;
+	struct ipoib_neigh __rcu **buckets;
 	u32 size;
 
 	clear_bit(IPOIB_NEIGH_TBL_FLUSH, &priv->flags);
@@ -1615,9 +1625,7 @@ static int ipoib_neigh_hash_init(struct ipoib_dev_priv *priv)
 	htbl = kzalloc_obj(*htbl);
 	if (!htbl)
 		return -ENOMEM;
-
-	tbl = arp_table(net);
-	size = roundup_pow_of_two(tbl->gc_thresh3);
+	size = roundup_pow_of_two(arp_tbl.gc_thresh3);
 	buckets = kvzalloc_objs(*buckets, size);
 	if (!buckets) {
 		kfree(htbl);
@@ -1632,7 +1640,7 @@ static int ipoib_neigh_hash_init(struct ipoib_dev_priv *priv)
 
 	/* start garbage collection */
 	queue_delayed_work(priv->wq, &priv->neigh_reap_task,
-			   tbl->gc_interval);
+			   arp_tbl.gc_interval);
 
 	return 0;
 }
@@ -1967,6 +1975,9 @@ static void ipoib_set_dev_features(struct ipoib_dev_priv *priv)
 	priv->kernel_caps = priv->ca->attrs.kernel_cap_flags;
 
 	if (priv->hca_caps & IB_DEVICE_UD_IP_CSUM) {
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		set_bit(IPOIB_FLAG_CSUM, &priv->flags);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		priv->dev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_RXCSUM;
 
 		if (priv->kernel_caps & IBK_UD_TSO)
@@ -2514,6 +2525,134 @@ static int ipoib_set_mac(struct net_device *dev, void *addr)
 	return 0;
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+/*
+ * PKEY_HEXSTRING_MAXWIDTH - number of hex
+ *   digits needed to represent max width of
+ *   pkey value.
+ */
+#define PKEY_HEXSTRING_MAXWIDTH 4
+
+/*
+ * Check if a buffer has name of the format
+ *
+ * <network-device-name>.<4hexcharacters>
+ * e.g. ib1.8004 etc.
+ *
+ * Such names are generated by create_child() by
+ * concatenating parent device with 16-bit pkey
+ * in hex, and disallowed from usage with
+ * create_named_child() interface.
+ *
+ */
+static bool ipoib_disallowed_named_child_namespace(const char *buf)
+{
+	char localbuf[IFNAMSIZ];
+	char *dotp = NULL;
+	char *buf_before_dot = NULL;
+	char *buf_after_dot = NULL;
+	unsigned int ii;
+
+	memcpy(localbuf, buf, IFNAMSIZ);
+	localbuf[IFNAMSIZ-1] = '\0'; /* paranoia! */
+
+	dotp = strnchr(localbuf, IFNAMSIZ, '.');
+	/* no dot or dot at end! */
+	if (dotp == NULL || dotp == localbuf+IFNAMSIZ-2)
+		return false;
+
+	*dotp = '\0';		/* split buffer at "dot"  */
+	buf_before_dot = localbuf;
+	buf_after_dot = dotp + 1;
+
+	/*
+	 * Check if buf_after_dot is hexstring of width
+	 * that could be a pkey!
+	 */
+	if (strlen(buf_after_dot) != PKEY_HEXSTRING_MAXWIDTH)
+		return false;
+
+	for (ii = 0; ii < PKEY_HEXSTRING_MAXWIDTH; ii++) {
+		if (!isxdigit(buf_after_dot[ii]))
+			return false;
+	}
+
+	/*
+	 * (1) buf_after_dot check above makes it valid hexdigit .XXXX format
+	 *
+	 * Now verify if buf_before_dot is a valid net device name -
+	 * (if it is not, then we are not in disallowed namespace)
+	 */
+	if (__dev_get_by_name(&init_net, buf_before_dot) == NULL)
+		return false;
+
+	/*
+	 * (2) buf_before_dot is valid net device name
+	 *    - reserved namespace is being used!
+	 *
+	 * Note: No check on netdev->type to be ARPHRD_INFINIBAND etc
+	 *       We implicitly treat even misleading names such as eth1.XXXX
+	 *       (ethernet device prefix) for child interface name of an
+	 *       infiniband device as intrusion of reserved namespace!
+	 */
+	return true;
+}
+
+static int parse_named_child(struct device *dev, const char *buf,
+			     char *child_name_buf, int *pkeyp)
+{
+	int ret;
+	struct ipoib_dev_priv *priv = ipoib_priv(to_net_dev(dev));
+
+	if (pkeyp)
+		*pkeyp = -1;
+
+	/*
+	 * First parameter is child interface name, after that
+	 * 'pkey' is required if we were passed a pkey buffer
+	 * (Note: From create_named_child, we are passed a pkey
+	 * buffer to parse input, from delete_named_child we are
+	 * not!)
+	 * Note: IFNAMSIZ is 16, allowing for tail null
+	 * we only scan 15 characters for name.
+	 */
+	if (pkeyp) {
+		ret = sscanf(buf, "%15s %i", child_name_buf, pkeyp);
+		if (ret != 2)
+			return -EINVAL;
+	} else {
+		ret = sscanf(buf, "%15s", child_name_buf);
+		if (ret != 1)
+			return -EINVAL;
+	}
+
+	if (strlen(child_name_buf) <= 0 || !dev_valid_name(child_name_buf))
+		return -EINVAL;
+
+	if (pkeyp && (*pkeyp <= 0 || *pkeyp > 0xffff || *pkeyp == 0x8000))
+		return -EINVAL;
+
+	if (ipoib_disallowed_named_child_namespace(child_name_buf)) {
+		pr_warn("child name %s not allowed  to be used "
+			"with create_named_child as it uses "
+			"<network-device-name>.XXXX format reserved "
+			"for create_child/delete_child interfaces!\n",
+			child_name_buf);
+		return -EINVAL;
+	}
+
+	if (pkeyp)
+		ipoib_dbg(priv, "parse_named_child inp %s out "
+			  "child_name_buf %s, pkey %04x\n",
+			  buf, child_name_buf, *pkeyp);
+	else
+		ipoib_dbg(priv, "parse_named_child inp %s out "
+			  "child_name_buf %s\n",
+			  buf, child_name_buf);
+	return 0;
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static ssize_t create_child_store(struct device *dev,
 				  struct device_attribute *attr,
 				  const char *buf, size_t count)
@@ -2552,6 +2691,45 @@ static ssize_t delete_child_store(struct device *dev,
 
 }
 static DEVICE_ATTR_WO(delete_child);
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static ssize_t create_named_child(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	int pkey;
+	char child_name[IFNAMSIZ];
+	int ret = 0;
+
+	child_name[0] = '\0';
+
+	if (parse_named_child(dev, buf, child_name, &pkey))
+		return -EINVAL;
+
+	ret = ipoib_named_vlan_add(to_net_dev(dev), pkey, child_name);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR(create_named_child, S_IWUSR, NULL, create_named_child);
+
+static ssize_t delete_named_child(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	char child_name[IFNAMSIZ];
+	int ret = 0;
+
+	child_name[0] = '\0';
+
+	if (parse_named_child(dev, buf, child_name, NULL))
+		return -EINVAL;
+
+	ret = ipoib_named_vlan_delete(to_net_dev(dev), child_name);
+
+	return ret ? ret : count;
+
+}
+static DEVICE_ATTR(delete_named_child, S_IWUSR, NULL, delete_named_child);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 int ipoib_add_pkey_attr(struct net_device *dev)
 {
@@ -2666,6 +2844,12 @@ static struct net_device *ipoib_add_port(const char *format,
 		goto sysfs_failed;
 	if (device_create_file(&ndev->dev, &dev_attr_delete_child))
 		goto sysfs_failed;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	if (device_create_file(&priv->dev->dev, &dev_attr_create_named_child))
+		goto sysfs_failed;
+	if (device_create_file(&priv->dev->dev, &dev_attr_delete_named_child))
+		goto sysfs_failed;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	return ndev;
 
@@ -2739,6 +2923,29 @@ static struct notifier_block ipoib_netdev_notifier = {
 	.notifier_call = ipoib_netdev_event,
 };
 #endif
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+int
+ipoib_get_netdev_pkey(struct net_device *dev, u16 *pkey)
+{
+	struct ipoib_dev_priv *priv;
+
+	if (dev->type != ARPHRD_INFINIBAND)
+		return -EINVAL;
+
+	/* only for ipoib net devices! */
+	if (dev->netdev_ops != &ipoib_netdev_ops_pf &&
+	    dev->netdev_ops != &ipoib_netdev_ops_vf)
+		return -EINVAL;
+
+	priv = ipoib_priv(dev);
+
+	*pkey = priv->pkey;
+
+	return 0;
+}
+EXPORT_SYMBOL(ipoib_get_netdev_pkey);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 static int __init ipoib_init_module(void)
 {

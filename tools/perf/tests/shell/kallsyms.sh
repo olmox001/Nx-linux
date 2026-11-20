@@ -1,5 +1,5 @@
 #!/bin/bash
-# perf kallsyms tests (no_mlock)
+# perf kallsyms tests
 # SPDX-License-Identifier: GPL-2.0
 
 err=0

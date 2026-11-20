@@ -1097,8 +1097,8 @@ static int pmic_arb_init_apid_v1(struct spmi_pmic_arb_bus *bus, int index)
 		return -EINVAL;
 	}
 
-	mapping_table = devm_kzalloc_objs(&bus->spmic->dev, *mapping_table,
-					  pmic_arb->max_periphs);
+	mapping_table = devm_kcalloc(&bus->spmic->dev, pmic_arb->max_periphs,
+				     sizeof(*mapping_table), GFP_KERNEL);
 	if (!mapping_table)
 		return -ENOMEM;
 
@@ -1965,13 +1965,15 @@ static int spmi_pmic_arb_bus_init(struct platform_device *pdev,
 
 	raw_spin_lock_init(&bus->lock);
 
-	bus->ppid_to_apid = devm_kzalloc_objs(dev, *bus->ppid_to_apid,
-					      PMIC_ARB_MAX_PPID);
+	bus->ppid_to_apid = devm_kcalloc(dev, PMIC_ARB_MAX_PPID,
+					 sizeof(*bus->ppid_to_apid),
+					 GFP_KERNEL);
 	if (!bus->ppid_to_apid)
 		return -ENOMEM;
 
-	bus->apid_data = devm_kzalloc_objs(dev, *bus->apid_data,
-					   pmic_arb->max_periphs);
+	bus->apid_data = devm_kcalloc(dev, pmic_arb->max_periphs,
+				      sizeof(*bus->apid_data),
+				      GFP_KERNEL);
 	if (!bus->apid_data)
 		return -ENOMEM;
 
@@ -2058,7 +2060,7 @@ static int spmi_pmic_arb_register_buses(struct spmi_pmic_arb *pmic_arb,
 		}
 	}
 
-	return 0;
+	return ret;
 }
 
 static void spmi_pmic_arb_deregister_buses(struct spmi_pmic_arb *pmic_arb)
@@ -2083,7 +2085,7 @@ static int spmi_pmic_arb_probe(struct platform_device *pdev)
 	u32 channel, ee, hw_ver;
 	int err;
 
-	pmic_arb = devm_kzalloc_obj(dev, *pmic_arb);
+	pmic_arb = devm_kzalloc(dev, sizeof(*pmic_arb), GFP_KERNEL);
 	if (!pmic_arb)
 		return -ENOMEM;
 

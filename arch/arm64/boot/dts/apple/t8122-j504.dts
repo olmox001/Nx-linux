@@ -20,14 +20,13 @@
 
 	led-controller {
 		compatible = "pwm-leds";
-
 		led-0 {
-			color = <LED_COLOR_ID_WHITE>;
-			default-state = "keep";
-			function = LED_FUNCTION_KBD_BACKLIGHT;
-			label = "kbd_backlight";
-			max-brightness = <255>;
 			pwms = <&fpwm1 0 40000>;
+			label = "kbd_backlight";
+			function = LED_FUNCTION_KBD_BACKLIGHT;
+			color = <LED_COLOR_ID_WHITE>;
+			max-brightness = <255>;
+			default-state = "keep";
 		};
 	};
 };
@@ -35,3 +34,4 @@
 &fpwm1 {
 	status = "okay";
 };
+

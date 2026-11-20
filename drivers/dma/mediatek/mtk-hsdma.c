@@ -848,27 +848,17 @@ static int mtk_hsdma_hw_init(struct mtk_hsdma_device *hsdma)
 {
 	int err;
 
-	err = devm_pm_runtime_enable(hsdma2dev(hsdma));
-	if (err)
-		return err;
-
-	err = pm_runtime_resume_and_get(hsdma2dev(hsdma));
-	if (err < 0)
-		return err;
+	pm_runtime_enable(hsdma2dev(hsdma));
+	pm_runtime_get_sync(hsdma2dev(hsdma));
 
 	err = clk_prepare_enable(hsdma->clk);
 	if (err)
-		goto err_put_pm;
+		return err;
 
 	mtk_dma_write(hsdma, MTK_HSDMA_INT_ENABLE, 0);
 	mtk_dma_write(hsdma, MTK_HSDMA_GLO, MTK_HSDMA_GLO_DEFAULT);
 
 	return 0;
-
-err_put_pm:
-	pm_runtime_put_sync(hsdma2dev(hsdma));
-
-	return err;
 }
 
 static int mtk_hsdma_hw_deinit(struct mtk_hsdma_device *hsdma)
@@ -878,6 +868,7 @@ static int mtk_hsdma_hw_deinit(struct mtk_hsdma_device *hsdma)
 	clk_disable_unprepare(hsdma->clk);
 
 	pm_runtime_put_sync(hsdma2dev(hsdma));
+	pm_runtime_disable(hsdma2dev(hsdma));
 
 	return 0;
 }
@@ -906,7 +897,7 @@ static int mtk_hsdma_probe(struct platform_device *pdev)
 	struct dma_device *dd;
 	int i, err;
 
-	hsdma = devm_kzalloc_obj(&pdev->dev, *hsdma);
+	hsdma = devm_kzalloc(&pdev->dev, sizeof(*hsdma), GFP_KERNEL);
 	if (!hsdma)
 		return -ENOMEM;
 
@@ -962,13 +953,13 @@ static int mtk_hsdma_probe(struct platform_device *pdev)
 			 MTK_HSDMA_NR_VCHANS);
 	}
 
-	hsdma->pc = devm_kzalloc_objs(&pdev->dev, *hsdma->pc,
-				      MTK_HSDMA_NR_MAX_PCHANS);
+	hsdma->pc = devm_kcalloc(&pdev->dev, MTK_HSDMA_NR_MAX_PCHANS,
+				 sizeof(*hsdma->pc), GFP_KERNEL);
 	if (!hsdma->pc)
 		return -ENOMEM;
 
-	hsdma->vc = devm_kzalloc_objs(&pdev->dev, *hsdma->vc,
-				      hsdma->dma_requests);
+	hsdma->vc = devm_kcalloc(&pdev->dev, hsdma->dma_requests,
+				 sizeof(*hsdma->vc), GFP_KERNEL);
 	if (!hsdma->vc)
 		return -ENOMEM;
 
@@ -992,9 +983,7 @@ static int mtk_hsdma_probe(struct platform_device *pdev)
 		goto err_unregister;
 	}
 
-	err = mtk_hsdma_hw_init(hsdma);
-	if (err)
-		goto err_free;
+	mtk_hsdma_hw_init(hsdma);
 
 	err = devm_request_irq(&pdev->dev, hsdma->irq,
 			       mtk_hsdma_irq, 0,
@@ -1002,7 +991,7 @@ static int mtk_hsdma_probe(struct platform_device *pdev)
 	if (err) {
 		dev_err(&pdev->dev,
 			"request_irq failed with err %d\n", err);
-		goto err_deinit;
+		goto err_free;
 	}
 
 	platform_set_drvdata(pdev, hsdma);
@@ -1011,9 +1000,8 @@ static int mtk_hsdma_probe(struct platform_device *pdev)
 
 	return 0;
 
-err_deinit:
-	mtk_hsdma_hw_deinit(hsdma);
 err_free:
+	mtk_hsdma_hw_deinit(hsdma);
 	of_dma_controller_free(pdev->dev.of_node);
 err_unregister:
 	dma_async_device_unregister(dd);

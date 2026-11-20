@@ -115,7 +115,8 @@ static struct wspace *alloc_ws(struct rs_codec *rs)
 	if (!ws)
 		return NULL;
 
-	ws->c = kmalloc_objs(uint16_t, 2 * (nn + nroots));
+	ws->c = kmalloc_array(2 * (nn + nroots),
+				sizeof(uint16_t), GFP_KERNEL);
 	if (!ws->c)
 		goto err;
 

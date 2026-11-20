@@ -542,7 +542,7 @@ static void __nft_ct_set_destroy(const struct nft_ctx *ctx, struct nft_ct *priv)
 #endif
 #ifdef CONFIG_NF_CONNTRACK_ZONES
 	case NFT_CT_ZONE:
-		nf_queue_nf_hook_drop(ctx->net, NULL);
+		nf_queue_nf_hook_drop(ctx->net);
 		mutex_lock(&nft_ct_pcpu_mutex);
 		if (--nft_ct_pcpu_template_refcnt == 0)
 			nft_ct_tmpl_put_pcpu();
@@ -848,8 +848,7 @@ nft_ct_timeout_parse_policy(void *timeouts,
 	struct nlattr **tb;
 	int ret = 0;
 
-	tb = kzalloc_objs(*tb, l4proto->ctnl_timeout.nlattr_max + 1,
-			  GFP_KERNEL_ACCOUNT);
+	tb = kzalloc_objs(*tb, l4proto->ctnl_timeout.nlattr_max + 1);
 
 	if (!tb)
 		return -ENOMEM;
@@ -935,7 +934,7 @@ static int nft_ct_timeout_obj_init(const struct nft_ctx *ctx,
 	}
 
 	timeout = kzalloc(sizeof(struct nf_ct_timeout) +
-			  l4proto->ctnl_timeout.obj_size, GFP_KERNEL_ACCOUNT);
+			  l4proto->ctnl_timeout.obj_size, GFP_KERNEL);
 	if (timeout == NULL) {
 		ret = -ENOMEM;
 		goto err_proto_put;

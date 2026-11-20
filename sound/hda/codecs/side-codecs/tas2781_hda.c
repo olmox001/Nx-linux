@@ -50,31 +50,6 @@ static void cali_cnv(unsigned char *data, unsigned int base, int offset)
 		(u32 *)&reg_data, TASDEV_CALIB_N);
 }
 
-/*
- * V1 data without CRC is only trusted if every expected device has a
- * populated, self-consistent entry: R0 (Q27) * 1/R0 (Q31) must be
- * close to 1.0 in Q58.
- */
-static bool tas2781_v1_nocrc_valid(const unsigned int *v, int ndev)
-{
-	const u64 one = 1ULL << 58;
-	int i;
-
-	if (ndev <= 0 || ndev > 4)
-		return false;
-
-	for (i = 0; i < ndev; i++) {
-		const unsigned int *e = &v[i * 5];
-		u64 prod = (u64)e[0] * e[1];
-
-		if (!e[0] || !e[1] ||
-		    prod < one - one / 10 || prod > one + one / 10)
-			return false;
-	}
-
-	return true;
-}
-
 static void tas2781_apply_calib(struct tasdevice_priv *p)
 {
 	struct calidata *cali_data = &p->cali_data;
@@ -89,7 +64,6 @@ static void tas2781_apply_calib(struct tasdevice_priv *p)
 		TASDEVICE_REG(0, 0x18, 0x7c),
 	};
 	unsigned int crc, oft, node_num;
-	bool custom_addr = false;
 	unsigned char *buf;
 	int i, j, k, l;
 
@@ -130,7 +104,6 @@ static void tas2781_apply_calib(struct tasdevice_priv *p)
 		for (j = 0, k = 0; j < node_num; j++) {
 			oft = j * 6 + 3;
 			if (tmp_val[oft] == TASDEV_UEFI_CALI_REG_ADDR_FLG) {
-				custom_addr = true;
 				for (i = 0; i < TASDEV_CALIB_N; i++) {
 					buf = &data[(oft + i + 1) * 4];
 					cali_reg[i] = TASDEVICE_REG(buf[1],
@@ -172,7 +145,7 @@ static void tas2781_apply_calib(struct tasdevice_priv *p)
 			 * but leave TimeStamp and CRC zeroed.
 			 */
 			if (!tmp_val[20] && !tmp_val[21] &&
-			    tas2781_v1_nocrc_valid(tmp_val, p->ndev)) {
+			    tmp_val[0] && tmp_val[1]) {
 				dev_warn(p->dev,
 					 "%s: V1 data without CRC, accepting\n",
 					 __func__);
@@ -190,7 +163,7 @@ static void tas2781_apply_calib(struct tasdevice_priv *p)
 		}
 	}
 
-	if (custom_addr || p->dspbin_typ == TASDEV_BASIC) {
+	if (p->dspbin_typ == TASDEV_BASIC) {
 		r->r0_reg = cali_reg[0];
 		r->invr0_reg = cali_reg[1];
 		r->r0_low_reg = cali_reg[2];

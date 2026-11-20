@@ -435,9 +435,10 @@ static int cfg_device(struct xen_snd_front_info *front_info,
 
 	if (pcm_instance->num_streams_pb) {
 		pcm_instance->streams_pb =
-				devm_kzalloc_objs(&front_info->xb_dev->dev,
-						  struct xen_front_cfg_stream,
-						  pcm_instance->num_streams_pb);
+				devm_kcalloc(&front_info->xb_dev->dev,
+					     pcm_instance->num_streams_pb,
+					     sizeof(struct xen_front_cfg_stream),
+					     GFP_KERNEL);
 		if (!pcm_instance->streams_pb) {
 			ret = -ENOMEM;
 			goto fail;
@@ -446,9 +447,10 @@ static int cfg_device(struct xen_snd_front_info *front_info,
 
 	if (pcm_instance->num_streams_cap) {
 		pcm_instance->streams_cap =
-				devm_kzalloc_objs(&front_info->xb_dev->dev,
-						  struct xen_front_cfg_stream,
-						  pcm_instance->num_streams_cap);
+				devm_kcalloc(&front_info->xb_dev->dev,
+					     pcm_instance->num_streams_cap,
+					     sizeof(struct xen_front_cfg_stream),
+					     GFP_KERNEL);
 		if (!pcm_instance->streams_cap) {
 			ret = -ENOMEM;
 			goto fail;
@@ -499,9 +501,9 @@ int xen_snd_front_cfg_card(struct xen_snd_front_info *front_info,
 	cfg_read_pcm_hw(xb_dev->nodename, NULL, &cfg->pcm_hw);
 
 	cfg->pcm_instances =
-			devm_kzalloc_objs(&front_info->xb_dev->dev,
-					  struct xen_front_cfg_pcm_instance,
-					  num_devices);
+			devm_kcalloc(&front_info->xb_dev->dev, num_devices,
+				     sizeof(struct xen_front_cfg_pcm_instance),
+				     GFP_KERNEL);
 	if (!cfg->pcm_instances)
 		return -ENOMEM;
 

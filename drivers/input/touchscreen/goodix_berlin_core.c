@@ -737,7 +737,7 @@ int goodix_berlin_probe(struct device *dev, int irq, const struct input_id *id,
 		return -EINVAL;
 	}
 
-	cd = devm_kzalloc_obj(dev, *cd);
+	cd = devm_kzalloc(dev, sizeof(*cd), GFP_KERNEL);
 	if (!cd)
 		return -ENOMEM;
 

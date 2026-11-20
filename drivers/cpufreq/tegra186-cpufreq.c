@@ -309,7 +309,8 @@ static struct cpufreq_frequency_table *tegra_cpufreq_bpmp_read_lut(
 		(*num_rates)++;
 	}
 
-	table = devm_kzalloc_objs(&pdev->dev, *table, *num_rates + 1);
+	table = devm_kcalloc(&pdev->dev, *num_rates + 1, sizeof(*table),
+			     GFP_KERNEL);
 	if (!table) {
 		table = ERR_PTR(-ENOMEM);
 		goto free;
@@ -355,8 +356,9 @@ static int tegra186_cpufreq_probe(struct platform_device *pdev)
 	int num_rates = 0;
 	u32 edvd_val, cpu;
 
-	data = devm_kzalloc_flex(&pdev->dev, *data, clusters,
-				 TEGRA186_NUM_CLUSTERS);
+	data = devm_kzalloc(&pdev->dev,
+			    struct_size(data, clusters, TEGRA186_NUM_CLUSTERS),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

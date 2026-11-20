@@ -16,7 +16,7 @@ int __mcfgpio_request(unsigned gpio);
 void __mcfgpio_free(unsigned gpio);
 
 #ifdef CONFIG_GPIOLIB
-#include <linux/gpio/legacy.h>
+#include <linux/gpio.h>
 #else
 
 /* our alternate 'gpiolib' functions */

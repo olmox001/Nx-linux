@@ -1702,7 +1702,7 @@ static int tegra234_cbb_probe(struct platform_device *pdev)
 		}
 	}
 
-	cbb = devm_kzalloc_obj(&pdev->dev, *cbb);
+	cbb = devm_kzalloc(&pdev->dev, sizeof(*cbb), GFP_KERNEL);
 	if (!cbb)
 		return -ENOMEM;
 

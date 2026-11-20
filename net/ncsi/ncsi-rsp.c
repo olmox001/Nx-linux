@@ -820,8 +820,9 @@ static int ncsi_rsp_handler_gc(struct ncsi_request *nr)
 	nc->mac_filter.n_mc = rsp->mc_cnt;
 	nc->mac_filter.n_mixed = rsp->mixed_cnt;
 
-	nc->vlan_filter.vids = kzalloc_objs(*nc->vlan_filter.vids,
-					    rsp->vlan_cnt, GFP_ATOMIC);
+	nc->vlan_filter.vids = kcalloc(rsp->vlan_cnt,
+				       sizeof(*nc->vlan_filter.vids),
+				       GFP_ATOMIC);
 	if (!nc->vlan_filter.vids)
 		return -ENOMEM;
 	/* Set VLAN filters active so they are cleared in the first
@@ -883,7 +884,10 @@ static int ncsi_rsp_handler_gp(struct ncsi_request *nr)
 	spin_lock_irqsave(&nc->lock, flags);
 	bitmap = &ncmf->bitmap;
 	for (i = 0; i < rsp->mac_cnt; i++, pdata += 6) {
-		assign_bit(i, bitmap, enable & (0x1 << i));
+		if (!(enable & (0x1 << i)))
+			clear_bit(i, bitmap);
+		else
+			set_bit(i, bitmap);
 
 		memcpy(&ncmf->addrs[i * ETH_ALEN], pdata, ETH_ALEN);
 	}
@@ -895,7 +899,10 @@ static int ncsi_rsp_handler_gp(struct ncsi_request *nr)
 	bitmap = &ncvf->bitmap;
 	spin_lock_irqsave(&nc->lock, flags);
 	for (i = 0; i < rsp->vlan_cnt; i++, pdata += 2) {
-		assign_bit(i, bitmap, enable & (0x1 << i));
+		if (!(enable & (0x1 << i)))
+			clear_bit(i, bitmap);
+		else
+			set_bit(i, bitmap);
 
 		ncvf->vids[i] = ntohs(*(__be16 *)pdata);
 	}

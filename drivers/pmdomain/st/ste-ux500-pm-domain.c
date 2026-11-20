@@ -17,8 +17,6 @@
 
 #include <dt-bindings/arm/ux500_pm_domains.h>
 
-#define NR_DOMAINS		(DOMAIN_VAPE + 1)
-
 static int pd_power_off(struct generic_pm_domain *domain)
 {
 	/*

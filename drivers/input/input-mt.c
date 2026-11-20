@@ -126,8 +126,9 @@ EXPORT_SYMBOL(input_mt_destroy_slots);
  *
  * Reports a contact via ABS_MT_TRACKING_ID, and optionally
  * ABS_MT_TOOL_TYPE. If active is true and the slot is currently
- * inactive, a new tracking id is assigned to the slot. The tool
- * type is only reported if the corresponding absbit field is set.
+ * inactive, or if the tool type is changed, a new tracking id is
+ * assigned to the slot. The tool type is only reported if the
+ * corresponding absbit field is set.
  *
  * Returns true if contact is active.
  */

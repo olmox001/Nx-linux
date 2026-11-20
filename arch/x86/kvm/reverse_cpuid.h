@@ -66,7 +66,7 @@
 #define X86_FEATURE_AVX10_512		KVM_X86_FEATURE(CPUID_24_0_EBX, 18)
 
 /* Intel-defined sub-features, CPUID level 0x00000024:1 (ECX) */
-#define X86_FEATURE_AVX10_V1_AUX	KVM_X86_FEATURE(CPUID_24_1_ECX, 2)
+#define X86_FEATURE_AVX10_VNNI_INT	KVM_X86_FEATURE(CPUID_24_1_ECX, 2)
 
 /* CPUID level 0x80000007 (EDX). */
 #define KVM_X86_FEATURE_CONSTANT_TSC	KVM_X86_FEATURE(CPUID_8000_0007_EDX, 8)
@@ -77,7 +77,6 @@
 /* CPUID level 0x80000021 (ECX) */
 #define KVM_X86_FEATURE_TSA_SQ_NO	KVM_X86_FEATURE(CPUID_8000_0021_ECX, 1)
 #define KVM_X86_FEATURE_TSA_L1_NO	KVM_X86_FEATURE(CPUID_8000_0021_ECX, 2)
-#define KVM_X86_FEATURE_TSA_FILL_NO	KVM_X86_FEATURE(CPUID_8000_0021_ECX, 7)
 
 struct cpuid_reg {
 	u32 function;
@@ -130,6 +129,8 @@ static __always_inline void reverse_cpuid_check(unsigned int x86_leaf)
 	BUILD_BUG_ON(x86_leaf == CPUID_LNX_3);
 	BUILD_BUG_ON(x86_leaf == CPUID_LNX_4);
 	BUILD_BUG_ON(x86_leaf == CPUID_LNX_5);
+	BUILD_BUG_ON(x86_leaf == CPUID_KABI_RESERVED_1);
+	BUILD_BUG_ON(x86_leaf == CPUID_KABI_RESERVED_2);
 	BUILD_BUG_ON(x86_leaf >= ARRAY_SIZE(reverse_cpuid));
 	BUILD_BUG_ON(reverse_cpuid[x86_leaf].function == 0);
 }
@@ -154,7 +155,6 @@ static __always_inline u32 __feature_translate(int x86_feature)
 	KVM_X86_TRANSLATE_FEATURE(TSA_SQ_NO);
 	KVM_X86_TRANSLATE_FEATURE(TSA_L1_NO);
 	KVM_X86_TRANSLATE_FEATURE(MSR_IMM);
-	KVM_X86_TRANSLATE_FEATURE(TSA_FILL_NO);
 	default:
 		return x86_feature;
 	}

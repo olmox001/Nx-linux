@@ -192,8 +192,13 @@ EXPORT_SYMBOL(rb532_gpio_set_func);
 static int rb532_gpio_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 
-	rb532_gpio_chip->regbase = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -EINVAL;
+
+	rb532_gpio_chip->regbase = devm_ioremap_resource(dev, res);
 	if (IS_ERR(rb532_gpio_chip->regbase))
 		return PTR_ERR(rb532_gpio_chip->regbase);
 

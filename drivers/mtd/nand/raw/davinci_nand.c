@@ -542,7 +542,9 @@ nand_davinci_get_pdata(struct platform_device *pdev)
 		const char *mode;
 		u32 prop;
 
-		pdata =  devm_kzalloc_obj(&pdev->dev, struct davinci_nand_pdata);
+		pdata =  devm_kzalloc(&pdev->dev,
+				sizeof(struct davinci_nand_pdata),
+				GFP_KERNEL);
 		pdev->dev.platform_data = pdata;
 		if (!pdata)
 			return ERR_PTR(-ENOMEM);
@@ -917,7 +919,7 @@ static int nand_davinci_probe(struct platform_device *pdev)
 	if (pdata->core_chipsel > 3)
 		return -ENODEV;
 
-	info = devm_kzalloc_obj(&pdev->dev, *info);
+	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
-#include <linux/cleanup.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/gpio/driver.h>
@@ -459,20 +458,22 @@ static int wm8903_put_deemph(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wm8903_priv *wm8903 = snd_soc_component_get_drvdata(component);
 	unsigned int deemph = ucontrol->value.integer.value[0];
+	int ret = 0;
 
 	if (deemph > 1)
 		return -EINVAL;
 
-	guard(mutex)(&wm8903->lock);
+	mutex_lock(&wm8903->lock);
 	if (wm8903->deemph != deemph) {
 		wm8903->deemph = deemph;
 
 		wm8903_set_deemph(component);
 
-		return 1;
+		ret = 1;
 	}
+	mutex_unlock(&wm8903->lock);
 
-	return 0;
+	return ret;
 }
 
 /* ALSA can only do steps of .01dB */
@@ -1733,30 +1734,12 @@ static irqreturn_t wm8903_irq(int irq, void *data)
 			SNDRV_PCM_FMTBIT_S20_3LE |\
 			SNDRV_PCM_FMTBIT_S24_LE)
 
-static const u64 wm8903_selectable_formats[] = {
-	/* 1st priority */
-	SND_SOC_POSSIBLE_DAIFMT_I2S	|
-	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_IF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_IF,
-	/* 2nd priority */
-	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
-	SND_SOC_POSSIBLE_DAIFMT_DSP_B	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_NF,
-};
-
 static const struct snd_soc_dai_ops wm8903_dai_ops = {
 	.hw_params	= wm8903_hw_params,
 	.mute_stream	= wm8903_mute,
 	.set_fmt	= wm8903_set_dai_fmt,
 	.set_sysclk	= wm8903_set_dai_sysclk,
 	.no_capture_mute = 1,
-	.auto_selectable_formats	= wm8903_selectable_formats,
-	.num_auto_selectable_formats	= ARRAY_SIZE(wm8903_selectable_formats),
 };
 
 static struct snd_soc_dai_driver wm8903_dai = {
@@ -2009,7 +1992,7 @@ static int wm8903_i2c_probe(struct i2c_client *i2c)
 	unsigned int val, irq_pol;
 	int ret, i;
 
-	wm8903 = devm_kzalloc_obj(&i2c->dev, *wm8903);
+	wm8903 = devm_kzalloc(&i2c->dev, sizeof(*wm8903), GFP_KERNEL);
 	if (wm8903 == NULL)
 		return -ENOMEM;
 
@@ -2030,7 +2013,8 @@ static int wm8903_i2c_probe(struct i2c_client *i2c)
 	if (pdata) {
 		wm8903->pdata = pdata;
 	} else {
-		wm8903->pdata = devm_kzalloc_obj(&i2c->dev, *wm8903->pdata);
+		wm8903->pdata = devm_kzalloc(&i2c->dev, sizeof(*wm8903->pdata),
+					     GFP_KERNEL);
 		if (!wm8903->pdata)
 			return -ENOMEM;
 

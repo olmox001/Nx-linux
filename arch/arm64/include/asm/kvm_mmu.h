@@ -7,8 +7,6 @@
 #ifndef __ARM64_KVM_MMU_H__
 #define __ARM64_KVM_MMU_H__
 
-#include <linux/compiler.h>
-
 #include <asm/page.h>
 #include <asm/memory.h>
 #include <asm/mmu.h>
@@ -128,9 +126,6 @@ static __always_inline unsigned long __kern_hyp_va(unsigned long v)
  * replace the instructions with `nop`s.
  */
 #ifndef __KVM_VHE_HYPERVISOR__
-	if (is_protected_kvm_enabled() && !is_ttbr1_addr(v))
-		return v;
-
 	asm volatile(ALTERNATIVE_CB("and %0, %0, #1\n"         /* mask with va_mask */
 				    "ror %0, %0, #1\n"         /* rotate to the first tag bit */
 				    "add %0, %0, #0\n"         /* insert the low 12 bits of the tag */
@@ -144,14 +139,6 @@ static __always_inline unsigned long __kern_hyp_va(unsigned long v)
 }
 
 #define kern_hyp_va(v) 	((typeof(v))(__kern_hyp_va((unsigned long)(v))))
-
-/*
- * Translate a __kern-tagged host VA, dropping the tag: the only sanctioned
- * unwrap. Translation only, no ownership or bounds validation; the result
- * carries the pointee type stripped of the tag and of any cv-qualifiers.
- */
-#define kern_hyp_va_host(v)						\
-	((TYPEOF_UNQUAL(*(v)) *)__kern_hyp_va((unsigned long)(__force void *)(v)))
 
 extern u32 __hyp_va_bits;
 
@@ -333,8 +320,14 @@ static __always_inline u64 kvm_get_vttbr(struct kvm_s2_mmu *mmu)
  */
 static __always_inline void __load_stage2(struct kvm_s2_mmu *mmu)
 {
+	u64 vttbr;
+
 	write_sysreg(mmu->vtcr, vtcr_el2);
-	write_sysreg(kvm_get_vttbr(mmu), vttbr_el2);
+
+	/* UEK-only test, upstream writes unconditionally */
+	vttbr = kvm_get_vttbr(mmu);
+	if (read_sysreg(vttbr_el2) != vttbr)
+		write_sysreg(kvm_get_vttbr(mmu), vttbr_el2);
 
 	/*
 	 * ARM errata 1165522 and 1530923 require the actual execution of the
@@ -405,10 +398,12 @@ static inline bool kvm_supports_cacheable_pfnmap(void)
 
 #ifdef CONFIG_PTDUMP_STAGE2_DEBUGFS
 void kvm_s2_ptdump_create_debugfs(struct kvm *kvm);
-void kvm_nested_s2_ptdump_create_debugfs(struct kvm_s2_mmu *mmu, int idx);
+void kvm_nested_s2_ptdump_create_debugfs(struct kvm_s2_mmu *mmu);
+void kvm_nested_s2_ptdump_remove_debugfs(struct kvm_s2_mmu *mmu);
 #else
 static inline void kvm_s2_ptdump_create_debugfs(struct kvm *kvm) {}
-static inline void kvm_nested_s2_ptdump_create_debugfs(struct kvm_s2_mmu *mmu, int idx) {}
+static inline void kvm_nested_s2_ptdump_create_debugfs(struct kvm_s2_mmu *mmu) {}
+static inline void kvm_nested_s2_ptdump_remove_debugfs(struct kvm_s2_mmu *mmu) {}
 #endif /* CONFIG_PTDUMP_STAGE2_DEBUGFS */
 
 #endif /* __ASSEMBLER__ */

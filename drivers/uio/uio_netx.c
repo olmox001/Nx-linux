@@ -53,7 +53,7 @@ static int netx_pci_probe(struct pci_dev *dev,
 	struct uio_info *info;
 	int bar;
 
-	info = devm_kzalloc_obj(&dev->dev, struct uio_info);
+	info = devm_kzalloc(&dev->dev, sizeof(struct uio_info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

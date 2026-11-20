@@ -297,7 +297,7 @@ static int mt7621_pci_phy_probe(struct platform_device *pdev)
 	struct phy_provider *provider;
 	struct mt7621_pci_phy *phy;
 
-	phy = devm_kzalloc_obj(dev, *phy);
+	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
 

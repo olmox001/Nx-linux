@@ -68,7 +68,7 @@ struct spi_offload *devm_spi_offload_alloc(struct device *dev,
 	struct spi_offload *offload;
 	void *priv;
 
-	offload = devm_kzalloc_obj(dev, *offload);
+	offload = devm_kzalloc(dev, sizeof(*offload), GFP_KERNEL);
 	if (!offload)
 		return ERR_PTR(-ENOMEM);
 
@@ -434,7 +434,7 @@ int devm_spi_offload_trigger_register(struct device *dev,
 	if (!info->fwnode || !info->ops || !info->ops->match)
 		return -EINVAL;
 
-	trigger = kzalloc_obj(*trigger);
+	trigger = kzalloc(sizeof(*trigger), GFP_KERNEL);
 	if (!trigger)
 		return -ENOMEM;
 

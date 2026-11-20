@@ -100,10 +100,7 @@ properties:
     maxItems: 1
 
   interrupts:
-    minItems: 1
-    maxItems: 5
-    description:
-      A single interrupt or one interrupt per bank.
+    maxItems: 1
 
   clocks:
     items:
@@ -158,19 +155,6 @@ required:
   - '#iommu-cells'
 
 allOf:
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: mediatek,mt8195-iommu-infra
-    then:
-      properties:
-        interrupts:
-          minItems: 5
-    else:
-      properties:
-        interrupts:
-          maxItems: 1
   - if:
       properties:
         compatible:

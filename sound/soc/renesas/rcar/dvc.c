@@ -338,7 +338,7 @@ int rsnd_dvc_probe(struct rsnd_priv *priv)
 		goto rsnd_dvc_probe_done;
 	}
 
-	dvc	= devm_kzalloc_objs(dev, *dvc, nr);
+	dvc	= devm_kcalloc(dev, nr, sizeof(*dvc), GFP_KERNEL);
 	if (!dvc) {
 		ret = -ENOMEM;
 		goto rsnd_dvc_probe_done;

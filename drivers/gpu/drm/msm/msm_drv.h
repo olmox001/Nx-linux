@@ -261,6 +261,8 @@ const struct msm_format *msm_framebuffer_format(struct drm_framebuffer *fb);
 struct drm_framebuffer *msm_framebuffer_create(struct drm_device *dev,
 		struct drm_file *file, const struct drm_format_info *info,
 		const struct drm_mode_fb_cmd2 *mode_cmd);
+struct drm_framebuffer * msm_alloc_stolen_fb(struct drm_device *dev,
+		int w, int h, int p, uint32_t format);
 
 #ifdef CONFIG_DRM_MSM_KMS_FBDEV
 int msm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
@@ -394,11 +396,9 @@ static inline bool msm_dp_wide_bus_available(const struct msm_dp *dp_display)
 #ifdef CONFIG_DRM_MSM_MDP4
 void msm_mdp4_register(void);
 void msm_mdp4_unregister(void);
-int msm_count_mdp4(void);
 #else
 static inline void msm_mdp4_register(void) {}
 static inline void msm_mdp4_unregister(void) {}
-static inline int msm_count_mdp4(void) { return 0; }
 #endif
 
 #ifdef CONFIG_DRM_MSM_MDP5
@@ -420,11 +420,9 @@ static inline void msm_dpu_unregister(void) {}
 #ifdef CONFIG_DRM_MSM_MDSS
 void msm_mdss_register(void);
 void msm_mdss_unregister(void);
-int msm_count_mdss(void);
 #else
 static inline void msm_mdss_register(void) {}
 static inline void msm_mdss_unregister(void) {}
-static inline int msm_count_mdss(void) { return 0; }
 #endif
 
 #ifdef CONFIG_DEBUG_FS
@@ -497,6 +495,13 @@ void msm_hrtimer_work_init(struct msm_hrtimer_work *work,
 #define DBG(fmt, ...) DRM_DEBUG_DRIVER(fmt"\n", ##__VA_ARGS__)
 #define VERB(fmt, ...) if (0) DRM_DEBUG_DRIVER(fmt"\n", ##__VA_ARGS__)
 
+static inline int align_pitch(int width, int bpp)
+{
+	int bytespp = (bpp + 7) / 8;
+	/* adreno needs pitch aligned to 32 pixels: */
+	return bytespp * ALIGN(width, 32);
+}
+
 /* for the generated headers: */
 #define INVALID_IDX(idx) ({BUG(); 0;})
 #define fui(x)                ({BUG(); 0;})
@@ -538,6 +543,6 @@ void msm_kms_shutdown(struct platform_device *pdev);
 
 bool msm_disp_drv_should_bind(struct device *dev, bool dpu_driver);
 
-bool msm_separate_gpu_kms_components(void);
+bool msm_gpu_no_components(void);
 
 #endif /* __MSM_DRV_H__ */

@@ -646,7 +646,8 @@ static int j721e_soc_probe_cpb(struct j721e_priv *priv, int *link_idx,
 	 * Link 2: McASP10 <- pcm3168a_1 ADC
 	 */
 	comp_count = 6;
-	compnent = devm_kzalloc_objs(priv->dev, *compnent, comp_count);
+	compnent = devm_kcalloc(priv->dev, comp_count, sizeof(*compnent),
+				GFP_KERNEL);
 	if (!compnent) {
 		ret = -ENOMEM;
 		goto put_codec_node;
@@ -759,7 +760,8 @@ static int j721e_soc_probe_ivi(struct j721e_priv *priv, int *link_idx,
 	 *		   \ pcm3168a_b ADC
 	 */
 	comp_count = 8;
-	compnent = devm_kzalloc_objs(priv->dev, *compnent, comp_count);
+	compnent = devm_kcalloc(priv->dev, comp_count, sizeof(*compnent),
+				GFP_KERNEL);
 	if (!compnent) {
 		ret = -ENOMEM;
 		goto put_codecb_node;
@@ -848,7 +850,8 @@ static int j721e_soc_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	priv = devm_kzalloc_flex(&pdev->dev, *priv, dai_links, match->num_links);
+	priv = devm_kzalloc(&pdev->dev,
+			struct_size(priv, dai_links, match->num_links), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -867,9 +870,10 @@ static int j721e_soc_probe(struct platform_device *pdev)
 	card->num_dapm_routes = ARRAY_SIZE(j721e_cpb_dapm_routes);
 	card->fully_routed = 1;
 
-	ret = snd_soc_of_parse_card_name(card, "model");
-	if (ret)
-		return ret;
+	if (snd_soc_of_parse_card_name(card, "model")) {
+		dev_err(&pdev->dev, "Card name is not provided\n");
+		return -ENODEV;
+	}
 
 	link_cnt = 0;
 	conf_cnt = 0;

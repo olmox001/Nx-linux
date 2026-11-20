@@ -45,7 +45,6 @@
  */
 
 #define CPU_MAP_BULK_SIZE 8  /* 8 == one cacheline on 64-bit archs */
-#define CPU_MAP_HELD_DEVS 2048
 struct bpf_cpu_map_entry;
 struct bpf_cpu_map;
 
@@ -75,13 +74,6 @@ struct bpf_cpu_map_entry {
 
 	struct completion kthread_running;
 	struct rcu_work free_work;
-
-	/*
-	 * Every frame and skb in the queue holds a reference to its device.
-	 * The kthread keeps it until nothing is left in GRO.
-	 */
-	struct net_device *held[CPU_MAP_HELD_DEVS];
-	u32 nr_held;
 };
 
 struct bpf_cpu_map {
@@ -137,11 +129,9 @@ static void __cpu_map_ring_cleanup(struct ptr_ring *ring)
 		WARN_ON_ONCE(1);
 		if (unlikely(__ptr_test_bit(0, &ptr))) {
 			__ptr_clear_bit(0, &ptr);
-			dev_put(((struct sk_buff *)ptr)->dev);
 			kfree_skb(ptr);
 			continue;
 		}
-		dev_put(((struct xdp_frame *)ptr)->dev_rx);
 		xdp_return_frame(ptr);
 	}
 }
@@ -321,7 +311,7 @@ static int cpu_map_kthread_run(void *data)
 		void *frames[CPUMAP_BATCH];
 		void *skbs[CPUMAP_BATCH];
 		u32 i, n, m;
-		bool empty, full;
+		bool empty;
 
 		/* Release CPU reschedule checks */
 		if (__ptr_ring_empty(rcpu->queue)) {
@@ -354,12 +344,10 @@ static int cpu_map_kthread_run(void *data)
 				struct sk_buff *skb = f;
 
 				__ptr_clear_bit(0, &skb);
-				rcpu->held[rcpu->nr_held++] = skb->dev;
 				skbs[ret.skb_n++] = skb;
 				continue;
 			}
 
-			rcpu->held[rcpu->nr_held++] = ((struct xdp_frame *)f)->dev_rx;
 			frames[ret.xdp_n++] = f;
 			page = virt_to_page(f);
 
@@ -410,13 +398,10 @@ stats:
 		/* Flush either every 64 packets or in case of empty ring */
 		packets += n;
 		empty = __ptr_ring_empty(rcpu->queue);
-		full = empty || rcpu->nr_held > CPU_MAP_HELD_DEVS - CPUMAP_BATCH;
-		if (packets >= NAPI_POLL_WEIGHT || full) {
-			cpu_map_gro_flush(rcpu, full);
+		if (packets >= NAPI_POLL_WEIGHT || empty) {
+			cpu_map_gro_flush(rcpu, empty);
 			packets = 0;
 		}
-		while (full && rcpu->nr_held)
-			dev_put(rcpu->held[--rcpu->nr_held]);
 
 		local_bh_enable(); /* resched point, may call do_softirq() */
 	}
@@ -753,14 +738,12 @@ static void bq_flush_to_queue(struct xdp_bulk_queue *bq)
 
 	for (i = 0; i < bq->count; i++) {
 		struct xdp_frame *xdpf = bq->q[i];
+		int err;
 
-		if (__ptr_ring_full(q)) {
+		err = __ptr_ring_produce(q, xdpf);
+		if (err) {
 			drops++;
 			xdp_return_frame_rx_napi(xdpf);
-		} else {
-			/* The device cannot go before the flush, from now on it can */
-			dev_hold(xdpf->dev_rx);
-			__ptr_ring_produce(q, xdpf);
 		}
 		processed++;
 	}
@@ -824,15 +807,11 @@ int cpu_map_generic_redirect(struct bpf_cpu_map_entry *rcpu,
 
 	__skb_pull(skb, skb->mac_len);
 	skb_set_redirected(skb, false);
-	dev_hold(skb->dev);
 	__ptr_set_bit(0, &skb);
 
 	ret = ptr_ring_produce(rcpu->queue, skb);
-	if (ret < 0) {
-		__ptr_clear_bit(0, &skb);
-		dev_put(skb->dev);
+	if (ret < 0)
 		goto trace;
-	}
 
 	wake_up_process(rcpu->kthread);
 trace:

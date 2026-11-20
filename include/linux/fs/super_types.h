@@ -86,8 +86,6 @@ struct super_operations {
 	void (*free_inode)(struct inode *inode);
 	void (*dirty_inode)(struct inode *inode, int flags);
 	int (*write_inode)(struct inode *inode, struct writeback_control *wbc);
-	int (*sync_inode_metadata)(struct inode *inode,
-				   struct writeback_control *wbc);
 	int (*drop_inode)(struct inode *inode);
 	void (*evict_inode)(struct inode *inode);
 	void (*put_super)(struct super_block *sb);
@@ -131,18 +129,9 @@ struct super_operations {
 	void (*report_error)(const struct fserror_event *event);
 };
 
-/* A superblock's claim on a device, see fs/super.c. */
-struct super_dev {
-	struct hlist_node			sd_hash;
-	struct super_block			*sd_sb;
-	dev_t					sd_dev;
-	unsigned int				sd_claims;
-};
-
 struct super_block {
 	struct list_head			s_list;		/* Keep this first */
 	dev_t					s_dev;		/* search index; _not_ kdev_t */
-	struct super_dev			s_super_dev;	/* claim on s_dev */
 	unsigned char				s_blocksize_bits;
 	unsigned long				s_blocksize;
 	loff_t					s_maxbytes;	/* Max file size */
@@ -173,7 +162,7 @@ struct super_block {
 	struct unicode_map			*s_encoding;
 	__u16					s_encoding_flags;
 #endif
-	struct hlist_head			s_roots;	/* alternate root dentries for NFS and ex-mountpoints */
+	struct hlist_head			s_roots;	/* alternate root dentries for NFS */
 	spinlock_t				s_roots_lock;
 	struct mount				*s_mounts;	/* list of mounts; _not_ for fs use */
 	struct block_device			*s_bdev;	/* can go away once we use an accessor for @s_bdev_file */
@@ -311,7 +300,7 @@ struct super_block {
 #define SB_NODIRATIME   BIT(11)	/* Do not update directory access times */
 #define SB_SILENT       BIT(15)
 #define SB_POSIXACL     BIT(16)	/* Supports POSIX ACLs */
-#define SB_INLINECRYPT  BIT(17)	/* Use inline crypto hardware if available */
+#define SB_INLINECRYPT  BIT(17)	/* Use blk-crypto for encrypted files */
 #define SB_KERNMOUNT    BIT(22)	/* this is a kern_mount call */
 #define SB_I_VERSION    BIT(23)	/* Update inode I_version field */
 #define SB_LAZYTIME     BIT(25)	/* Update the on-disk [acm]times lazily */

@@ -1787,20 +1787,6 @@ xfs_da3_node_lookup_int(
 		} else
 			expected_level--;
 
-		/*
-		 * The node verifier cannot tell whether this block belongs to
-		 * the directory or the attribute tree, so it only bounds the
-		 * entry count against the larger of the two geometries.  Here
-		 * args->geo is the geometry of the fork we are actually
-		 * searching, so reject a count that would walk btree[] off the
-		 * end of this node buffer.
-		 */
-		if (nodehdr.count > args->geo->node_ents) {
-			xfs_buf_mark_corrupt(blk->bp);
-			xfs_da_mark_sick(args);
-			return -EFSCORRUPTED;
-		}
-
 		max = nodehdr.count;
 		blk->hashval = be32_to_cpu(btree[max - 1].hashval);
 
@@ -2368,7 +2354,8 @@ xfs_da_grow_inode_int(
 		 * If we didn't get it and the block might work if fragmented,
 		 * try without the CONTIG flag.  Loop until we get it all.
 		 */
-		mapp = kmalloc_objs(*mapp, count, GFP_KERNEL | __GFP_NOFAIL);
+		mapp = kmalloc(sizeof(*mapp) * count,
+				GFP_KERNEL | __GFP_NOFAIL);
 		for (b = *bno, mapi = 0; b < *bno + count; ) {
 			c = (int)(*bno + count - b);
 			nmap = min(XFS_BMAP_MAX_NMAP, c);
@@ -2398,7 +2385,6 @@ xfs_da_grow_inode_int(
 	}
 
 	/* account for newly allocated blocks in reserved blocks total */
-	ASSERT(args->total >= dp->i_nblocks - nblks);
 	args->total -= dp->i_nblocks - nblks;
 
 out_free_map:
@@ -2761,8 +2747,8 @@ xfs_dabuf_map(
 	 * larger one that needs to be free by the caller.
 	 */
 	if (nirecs > 1) {
-		map = kzalloc_objs(struct xfs_buf_map, nirecs,
-				   GFP_KERNEL | __GFP_NOLOCKDEP | __GFP_NOFAIL);
+		map = kcalloc(nirecs, sizeof(struct xfs_buf_map),
+			      GFP_KERNEL | __GFP_NOLOCKDEP | __GFP_NOFAIL);
 		*mapp = map;
 	}
 

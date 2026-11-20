@@ -128,11 +128,11 @@ static int icy_probe(struct zorro_dev *z,
 		.swnode		= &icy_ltc2990_node,
 	};
 
-	i2c = devm_kzalloc_obj(&z->dev, *i2c);
+	i2c = devm_kzalloc(&z->dev, sizeof(*i2c), GFP_KERNEL);
 	if (!i2c)
 		return -ENOMEM;
 
-	algo_data = devm_kzalloc_obj(&z->dev, *algo_data);
+	algo_data = devm_kzalloc(&z->dev, sizeof(*algo_data), GFP_KERNEL);
 	if (!algo_data)
 		return -ENOMEM;
 

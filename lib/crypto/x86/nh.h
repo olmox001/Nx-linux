@@ -37,7 +37,9 @@ static void nh_mod_init_arch(void)
 {
 	if (boot_cpu_has(X86_FEATURE_XMM2)) {
 		static_branch_enable(&have_sse2);
-		if (boot_cpu_has(X86_FEATURE_AVX2))
+		if (boot_cpu_has(X86_FEATURE_AVX2) &&
+		    cpu_has_xfeatures(XFEATURE_MASK_SSE | XFEATURE_MASK_YMM,
+				      NULL))
 			static_branch_enable(&have_avx2);
 	}
 }

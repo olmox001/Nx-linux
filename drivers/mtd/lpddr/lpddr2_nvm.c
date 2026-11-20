@@ -415,18 +415,18 @@ static int lpddr2_nvm_probe(struct platform_device *pdev)
 	struct pcm_int_data *pcm_data;
 
 	/* Allocate memory control_regs data structures */
-	pcm_data = devm_kzalloc_obj(&pdev->dev, *pcm_data);
+	pcm_data = devm_kzalloc(&pdev->dev, sizeof(*pcm_data), GFP_KERNEL);
 	if (!pcm_data)
 		return -ENOMEM;
 
 	pcm_data->bus_width = BUS_WIDTH;
 
 	/* Allocate memory for map_info & mtd_info data structures */
-	map = devm_kzalloc_obj(&pdev->dev, *map);
+	map = devm_kzalloc(&pdev->dev, sizeof(*map), GFP_KERNEL);
 	if (!map)
 		return -ENOMEM;
 
-	mtd = devm_kzalloc_obj(&pdev->dev, *mtd);
+	mtd = devm_kzalloc(&pdev->dev, sizeof(*mtd), GFP_KERNEL);
 	if (!mtd)
 		return -ENOMEM;
 

@@ -347,7 +347,7 @@ static int bu21029_probe(struct i2c_client *client)
 		return -EIO;
 	}
 
-	bu21029 = devm_kzalloc_obj(dev, *bu21029);
+	bu21029 = devm_kzalloc(dev, sizeof(*bu21029), GFP_KERNEL);
 	if (!bu21029)
 		return -ENOMEM;
 

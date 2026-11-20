@@ -696,7 +696,7 @@ static int aml_serdev_probe(struct serdev_device *serdev)
 	struct aml_serdev *amldev;
 	int err;
 
-	amldev = devm_kzalloc_obj(&serdev->dev, *amldev);
+	amldev = devm_kzalloc(&serdev->dev, sizeof(*amldev), GFP_KERNEL);
 	if (!amldev)
 		return -ENOMEM;
 

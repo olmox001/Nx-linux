@@ -458,9 +458,30 @@ const struct snd_soc_dai_ops asoc_qcom_lpass_cpu_dai_ops2 = {
 };
 EXPORT_SYMBOL_GPL(asoc_qcom_lpass_cpu_dai_ops2);
 
+static int asoc_qcom_of_xlate_dai_name(struct snd_soc_component *component,
+				   const struct of_phandle_args *args,
+				   const char **dai_name)
+{
+	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
+	const struct lpass_variant *variant = drvdata->variant;
+	int id = args->args[0];
+	int ret = -EINVAL;
+	int i;
+
+	for (i = 0; i  < variant->num_dai; i++) {
+		if (variant->dai_driver[i].id == id) {
+			*dai_name = variant->dai_driver[i].name;
+			ret = 0;
+			break;
+		}
+	}
+
+	return ret;
+}
+
 static const struct snd_soc_component_driver lpass_cpu_comp_driver = {
 	.name = "lpass-cpu",
-	.of_xlate_dai_name = snd_soc_of_xlate_dai_name,
+	.of_xlate_dai_name = asoc_qcom_of_xlate_dai_name,
 	.legacy_dai_naming = 1,
 };
 
@@ -605,7 +626,7 @@ static int lpass_hdmi_init_bitfields(struct device *dev, struct regmap *map)
 	struct lpass_hdmitx_dmactl *tx_dmactl;
 	int rval;
 
-	tx_ctl = devm_kzalloc_obj(dev, *tx_ctl);
+	tx_ctl = devm_kzalloc(dev, sizeof(*tx_ctl), GFP_KERNEL);
 	if (!tx_ctl)
 		return -ENOMEM;
 
@@ -616,7 +637,7 @@ static int lpass_hdmi_init_bitfields(struct device *dev, struct regmap *map)
 	QCOM_REGMAP_FIELD_ALLOC(dev, map, v->legacy_en, legacy_en);
 	drvdata->hdmitx_legacy_en = legacy_en;
 
-	vbit_ctl = devm_kzalloc_obj(dev, *vbit_ctl);
+	vbit_ctl = devm_kzalloc(dev, sizeof(*vbit_ctl), GFP_KERNEL);
 	if (!vbit_ctl)
 		return -ENOMEM;
 
@@ -628,7 +649,7 @@ static int lpass_hdmi_init_bitfields(struct device *dev, struct regmap *map)
 	QCOM_REGMAP_FIELD_ALLOC(dev, map, v->calc_en, tx_parity);
 	drvdata->hdmitx_parity_calc_en = tx_parity;
 
-	meta_ctl = devm_kzalloc_obj(dev, *meta_ctl);
+	meta_ctl = devm_kzalloc(dev, sizeof(*meta_ctl), GFP_KERNEL);
 	if (!meta_ctl)
 		return -ENOMEM;
 
@@ -637,7 +658,7 @@ static int lpass_hdmi_init_bitfields(struct device *dev, struct regmap *map)
 		return rval;
 	drvdata->meta_ctl = meta_ctl;
 
-	sstream_ctl = devm_kzalloc_obj(dev, *sstream_ctl);
+	sstream_ctl = devm_kzalloc(dev, sizeof(*sstream_ctl), GFP_KERNEL);
 	if (!sstream_ctl)
 		return -ENOMEM;
 
@@ -654,7 +675,7 @@ static int lpass_hdmi_init_bitfields(struct device *dev, struct regmap *map)
 		QCOM_REGMAP_FIELD_ALLOC(dev, map, v->lsb_bits, ch_lsb);
 		drvdata->hdmitx_ch_lsb[i] = ch_lsb;
 
-		tx_dmactl = devm_kzalloc_obj(dev, *tx_dmactl);
+		tx_dmactl = devm_kzalloc(dev, sizeof(*tx_dmactl), GFP_KERNEL);
 		if (!tx_dmactl)
 			return -ENOMEM;
 
@@ -1094,7 +1115,7 @@ int asoc_qcom_lpass_cpu_platform_probe(struct platform_device *pdev)
 		return -EBUSY;
 	}
 
-	drvdata = devm_kzalloc_obj(dev, struct lpass_data);
+	drvdata = devm_kzalloc(dev, sizeof(struct lpass_data), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, drvdata);
@@ -1219,7 +1240,8 @@ int asoc_qcom_lpass_cpu_platform_probe(struct platform_device *pdev)
 	}
 
 	/* Allocation for i2sctl regmap fields */
-	drvdata->i2sctl = devm_kzalloc_obj(&pdev->dev, struct lpaif_i2sctl);
+	drvdata->i2sctl = devm_kzalloc(&pdev->dev, sizeof(struct lpaif_i2sctl),
+					GFP_KERNEL);
 	if (!drvdata->i2sctl)
 		return -ENOMEM;
 

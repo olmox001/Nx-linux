@@ -58,11 +58,6 @@ static inline u32 riscv_v_flags(void)
 	return READ_ONCE(current->thread.riscv_v_flags);
 }
 
-static inline void riscv_v_flags_set(u32 flags)
-{
-	WRITE_ONCE(current->thread.riscv_v_flags, flags);
-}
-
 static __always_inline bool has_vector(void)
 {
 	return riscv_has_extension_unlikely(RISCV_ISA_EXT_ZVE32X);
@@ -377,12 +372,12 @@ static inline void __switch_to_vector(struct task_struct *prev,
 	struct pt_regs *regs;
 
 	if (riscv_preempt_v_started(prev)) {
-		if (!(current->thread.riscv_v_flags & RISCV_V_CTX_DEPTH_MASK)) {
-			/* Voluntary schedule(): nesting_end closed any dirty. */
-			WARN_ON(riscv_preempt_v_dirty(prev));
+		if (riscv_v_is_on()) {
+			WARN_ON(prev->thread.riscv_v_flags & RISCV_V_CTX_DEPTH_MASK);
 			riscv_v_disable();
 			prev->thread.riscv_v_flags |= RISCV_PREEMPT_V_IN_SCHEDULE;
-		} else if (riscv_preempt_v_dirty(prev)) {
+		}
+		if (riscv_preempt_v_dirty(prev)) {
 			__riscv_v_vstate_save(&prev->thread.kernel_vstate,
 					      prev->thread.kernel_vstate.datap);
 			riscv_preempt_v_clear_dirty(prev);

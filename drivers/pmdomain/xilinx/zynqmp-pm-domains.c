@@ -247,17 +247,18 @@ static int zynqmp_gpd_probe(struct platform_device *pdev)
 	struct zynqmp_pm_domain *pd;
 	struct device *dev = &pdev->dev;
 
-	pd = devm_kzalloc_objs(dev, *pd, ZYNQMP_NUM_DOMAINS);
+	pd = devm_kcalloc(dev, ZYNQMP_NUM_DOMAINS, sizeof(*pd), GFP_KERNEL);
 	if (!pd)
 		return -ENOMEM;
 
-	zynqmp_pd_data = devm_kzalloc_obj(dev, *zynqmp_pd_data);
+	zynqmp_pd_data = devm_kzalloc(dev, sizeof(*zynqmp_pd_data), GFP_KERNEL);
 	if (!zynqmp_pd_data)
 		return -ENOMEM;
 
 	zynqmp_pd_data->xlate = zynqmp_gpd_xlate;
 
-	domains = devm_kzalloc_objs(dev, *domains, ZYNQMP_NUM_DOMAINS);
+	domains = devm_kcalloc(dev, ZYNQMP_NUM_DOMAINS, sizeof(*domains),
+			       GFP_KERNEL);
 	if (!domains)
 		return -ENOMEM;
 

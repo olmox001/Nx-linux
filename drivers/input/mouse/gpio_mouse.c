@@ -73,7 +73,7 @@ static int gpio_mouse_probe(struct platform_device *pdev)
 	struct input_dev *input;
 	int error;
 
-	gmouse = devm_kzalloc_obj(dev, *gmouse);
+	gmouse = devm_kzalloc(dev, sizeof(*gmouse), GFP_KERNEL);
 	if (!gmouse)
 		return -ENOMEM;
 

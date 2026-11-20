@@ -225,8 +225,7 @@ extern void kdb_kbd_cleanup_state(void);
 #define kdb_kbd_cleanup_state()
 #endif /* ! CONFIG_KDB_KEYBOARD */
 
-#define CMD_BUFLEN 256
-extern char kdb_prompt_str[CMD_BUFLEN];
+extern char kdb_prompt_str[];
 
 #define	KDB_WORD_SIZE	((int)sizeof(unsigned long))
 

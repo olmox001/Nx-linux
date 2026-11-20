@@ -252,7 +252,7 @@ static int ws16c48_probe(struct device *dev, unsigned int id)
 	struct regmap_irq_chip *chip;
 	struct regmap_irq_chip_data *chip_data;
 
-	ws16c48gpio = devm_kzalloc_obj(dev, *ws16c48gpio);
+	ws16c48gpio = devm_kzalloc(dev, sizeof(*ws16c48gpio), GFP_KERNEL);
 	if (!ws16c48gpio)
 		return -ENOMEM;
 
@@ -271,7 +271,7 @@ static int ws16c48_probe(struct device *dev, unsigned int id)
 		return dev_err_probe(dev, PTR_ERR(ws16c48gpio->map),
 				     "Unable to initialize register map\n");
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

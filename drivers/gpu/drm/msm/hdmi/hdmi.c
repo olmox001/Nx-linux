@@ -276,7 +276,7 @@ static int msm_hdmi_dev_probe(struct platform_device *pdev)
 	if (!config)
 		return -EINVAL;
 
-	hdmi = devm_kzalloc_obj(dev, *hdmi);
+	hdmi = devm_kzalloc(dev, sizeof(*hdmi), GFP_KERNEL);
 	if (!hdmi)
 		return -ENOMEM;
 
@@ -320,8 +320,9 @@ static int msm_hdmi_dev_probe(struct platform_device *pdev)
 		goto err_put_bridge;
 	}
 
-	hdmi->pwr_regs = devm_kzalloc_objs(dev, hdmi->pwr_regs[0],
-					   config->pwr_reg_cnt);
+	hdmi->pwr_regs = devm_kcalloc(dev, config->pwr_reg_cnt,
+				      sizeof(hdmi->pwr_regs[0]),
+				      GFP_KERNEL);
 	if (!hdmi->pwr_regs) {
 		ret = -ENOMEM;
 		goto err_put_bridge;
@@ -336,8 +337,9 @@ static int msm_hdmi_dev_probe(struct platform_device *pdev)
 		goto err_put_bridge;
 	}
 
-	hdmi->pwr_clks = devm_kzalloc_objs(dev, hdmi->pwr_clks[0],
-					   config->pwr_clk_cnt);
+	hdmi->pwr_clks = devm_kcalloc(dev, config->pwr_clk_cnt,
+				      sizeof(hdmi->pwr_clks[0]),
+				      GFP_KERNEL);
 	if (!hdmi->pwr_clks) {
 		ret = -ENOMEM;
 		goto err_put_bridge;

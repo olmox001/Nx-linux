@@ -88,7 +88,7 @@ void uninit_queue(struct queue *q)
 
 #if IS_ENABLED(CONFIG_HSA_AMD_SVM)
 
-int kfd_queue_buffer_svm_get(struct kfd_process_device *pdd, u64 addr, u64 size)
+static int kfd_queue_buffer_svm_get(struct kfd_process_device *pdd, u64 addr, u64 size)
 {
 	struct kfd_process *p = pdd->process;
 	struct list_head update_list;
@@ -102,7 +102,7 @@ int kfd_queue_buffer_svm_get(struct kfd_process_device *pdd, u64 addr, u64 size)
 	mutex_lock(&p->svms.lock);
 
 	/*
-	 * range may split to multiple svm pranges aligned to granularity boundary.
+	 * range may split to multiple svm pranges aligned to granularity boundaery.
 	 */
 	while (size) {
 		uint32_t gpuid, gpuidx;
@@ -112,10 +112,11 @@ int kfd_queue_buffer_svm_get(struct kfd_process_device *pdd, u64 addr, u64 size)
 		if (!prange)
 			break;
 
+		if (!prange->mapped_to_gpu)
+			break;
+
 		r = kfd_process_gpuid_from_node(p, pdd->dev, &gpuid, &gpuidx);
 		if (r < 0)
-			break;
-		if (!test_bit(gpuidx, prange->bitmap_mapped))
 			break;
 		if (!test_bit(gpuidx, prange->bitmap_access) &&
 		    !test_bit(gpuidx, prange->bitmap_aip))
@@ -182,7 +183,7 @@ static void kfd_queue_buffer_svm_put(struct kfd_process_device *pdd, u64 addr, u
 }
 #else
 
-int kfd_queue_buffer_svm_get(struct kfd_process_device *pdd, u64 addr, u64 size)
+static int kfd_queue_buffer_svm_get(struct kfd_process_device *pdd, u64 addr, u64 size)
 {
 	return -EINVAL;
 }
@@ -197,18 +198,18 @@ int kfd_queue_buffer_get(struct amdgpu_vm *vm, void __user *addr, struct amdgpu_
 			 u64 expected_size)
 {
 	struct amdgpu_bo_va_mapping *mapping;
-	u64 user_pfn;
+	u64 user_addr;
 	u64 size;
 
+	user_addr = (u64)addr >> AMDGPU_GPU_PAGE_SHIFT;
 	size = expected_size >> AMDGPU_GPU_PAGE_SHIFT;
 
-	mapping = amdgpu_vm_bo_lookup_mapping(vm, (u64)(uintptr_t)addr);
+	mapping = amdgpu_vm_bo_lookup_mapping(vm, user_addr);
 	if (!mapping)
 		goto out_err;
 
-	user_pfn = (u64)(uintptr_t)addr >> AMDGPU_GPU_PAGE_SHIFT;
-	if (user_pfn != mapping->start ||
-	    (size != 0 && user_pfn + size - 1 != mapping->last)) {
+	if (user_addr != mapping->start ||
+	    (size != 0 && user_addr + size - 1 != mapping->last)) {
 		pr_debug("expected size 0x%llx not equal to mapping addr 0x%llx size 0x%llx\n",
 			expected_size, mapping->start << AMDGPU_GPU_PAGE_SHIFT,
 			(mapping->last - mapping->start + 1) << AMDGPU_GPU_PAGE_SHIFT);
@@ -230,16 +231,7 @@ void kfd_queue_buffer_put(struct amdgpu_bo **bo)
 	amdgpu_bo_unref(bo);
 }
 
-static void kfd_queue_put_bos(struct queue_properties *properties)
-{
-	kfd_queue_buffer_put(&properties->wptr_bo);
-	kfd_queue_buffer_put(&properties->rptr_bo);
-	kfd_queue_buffer_put(&properties->ring_bo);
-	kfd_queue_buffer_put(&properties->eop_buf_bo);
-	kfd_queue_buffer_put(&properties->cwsr_bo);
-}
-
-int kfd_queue_acquire_buffers(struct kfd_process_device *pdd, struct queue_properties *properties, bool is_criu)
+int kfd_queue_acquire_buffers(struct kfd_process_device *pdd, struct queue_properties *properties)
 {
 	struct kfd_topology_device *topo_dev;
 	u64 expected_queue_size;
@@ -334,12 +326,6 @@ int kfd_queue_acquire_buffers(struct kfd_process_device *pdd, struct queue_prope
 
 	amdgpu_bo_unreserve(vm->root.bo);
 
-	/* CRIU svm buffers are restored at a later stage than queues. They'll be in
-	 * before the queue is actually used, so no risk here
-	 */
-	if (is_criu)
-		return 0;
-
 	err = kfd_queue_buffer_svm_get(pdd, properties->ctx_save_restore_area_address,
 				       total_cwsr_size);
 	if (err)
@@ -358,22 +344,20 @@ out_err_release:
 	 * dropping the VM reservation.
 	 */
 	kfd_queue_unref_bo_vas(pdd, properties);
-	/*
-	 * The SVM CWSR range is the last thing acquired and a failed
-	 * kfd_queue_buffer_svm_get() takes nothing, so only the BOs are held
-	 * here. Dropping the SVM reference would drop the one of another queue
-	 * using the same CWSR address.
-	 */
-	kfd_queue_put_bos(properties);
+	kfd_queue_release_buffers(pdd, properties);
 	return err;
 }
 
-int kfd_queue_release_buffers(struct kfd_process_device *pdd, struct queue_properties *properties, bool is_criu)
+int kfd_queue_release_buffers(struct kfd_process_device *pdd, struct queue_properties *properties)
 {
 	struct kfd_topology_device *topo_dev;
 	u64 total_cwsr_size;
 
-	kfd_queue_put_bos(properties);
+	kfd_queue_buffer_put(&properties->wptr_bo);
+	kfd_queue_buffer_put(&properties->rptr_bo);
+	kfd_queue_buffer_put(&properties->ring_bo);
+	kfd_queue_buffer_put(&properties->eop_buf_bo);
+	kfd_queue_buffer_put(&properties->cwsr_bo);
 
 	topo_dev = kfd_topology_device_by_id(pdd->dev->id);
 	if (!topo_dev)
@@ -386,8 +370,7 @@ int kfd_queue_release_buffers(struct kfd_process_device *pdd, struct queue_prope
 		return -EINVAL;
 	total_cwsr_size = ALIGN(total_cwsr_size, PAGE_SIZE);
 
-	if (!is_criu)
-		kfd_queue_buffer_svm_put(pdd, properties->ctx_save_restore_area_address, total_cwsr_size);
+	kfd_queue_buffer_svm_put(pdd, properties->ctx_save_restore_area_address, total_cwsr_size);
 	return 0;
 }
 

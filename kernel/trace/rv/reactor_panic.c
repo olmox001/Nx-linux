@@ -26,7 +26,8 @@ static struct rv_reactor rv_panic = {
 
 static int __init register_react_panic(void)
 {
-	return rv_register_reactor(&rv_panic);
+	rv_register_reactor(&rv_panic);
+	return 0;
 }
 
 static void __exit unregister_react_panic(void)

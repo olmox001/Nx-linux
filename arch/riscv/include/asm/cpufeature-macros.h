@@ -47,14 +47,20 @@ static __always_inline bool riscv_has_extension_unlikely(const unsigned long ext
 {
 	compiletime_assert(ext < RISCV_ISA_EXT_MAX, "ext must be < RISCV_ISA_EXT_MAX");
 
-	return __riscv_has_extension_unlikely(STANDARD_EXT, ext);
+	if (IS_ENABLED(CONFIG_RISCV_ALTERNATIVE))
+		return __riscv_has_extension_unlikely(STANDARD_EXT, ext);
+
+	return __riscv_isa_extension_available(NULL, ext);
 }
 
 static __always_inline bool riscv_has_extension_likely(const unsigned long ext)
 {
 	compiletime_assert(ext < RISCV_ISA_EXT_MAX, "ext must be < RISCV_ISA_EXT_MAX");
 
-	return __riscv_has_extension_likely(STANDARD_EXT, ext);
+	if (IS_ENABLED(CONFIG_RISCV_ALTERNATIVE))
+		return __riscv_has_extension_likely(STANDARD_EXT, ext);
+
+	return __riscv_isa_extension_available(NULL, ext);
 }
 
 #endif /* _ASM_CPUFEATURE_MACROS_H */

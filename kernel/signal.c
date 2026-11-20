@@ -130,10 +130,28 @@ static bool sig_ignored(struct task_struct *t, int sig, bool force)
  */
 static inline bool has_pending_signals(sigset_t *signal, sigset_t *blocked)
 {
-	unsigned long ready = 0;
-	for (long i = 0; i < _NSIG_WORDS; i++)
-		ready |= signal->sig[i] & ~blocked->sig[i];
-	return ready != 0;
+	unsigned long ready;
+	long i;
+
+	switch (_NSIG_WORDS) {
+	default:
+		for (i = _NSIG_WORDS, ready = 0; --i >= 0 ;)
+			ready |= signal->sig[i] &~ blocked->sig[i];
+		break;
+
+	case 4: ready  = signal->sig[3] &~ blocked->sig[3];
+		ready |= signal->sig[2] &~ blocked->sig[2];
+		ready |= signal->sig[1] &~ blocked->sig[1];
+		ready |= signal->sig[0] &~ blocked->sig[0];
+		break;
+
+	case 2: ready  = signal->sig[1] &~ blocked->sig[1];
+		ready |= signal->sig[0] &~ blocked->sig[0];
+		break;
+
+	case 1: ready  = signal->sig[0] &~ blocked->sig[0];
+	}
+	return ready !=	0;
 }
 
 #define PENDING(p,b) has_pending_signals(&(p)->signal, (b))
@@ -684,13 +702,12 @@ static int dequeue_synchronous_signal(kernel_siginfo_t *info)
 		return 0;
 
 	/*
-	 * Return the first unblocked synchronous signal in the queue.
+	 * Return the first synchronous signal in the queue.
 	 */
 	list_for_each_entry(q, &pending->list, list) {
 		/* Synchronous signals have a positive si_code */
 		if ((q->info.si_code > SI_USER) &&
-		    (sigmask(q->info.si_signo) & SYNCHRONOUS_MASK) &&
-		    !sigismember(&tsk->blocked, q->info.si_signo)) {
+		    (sigmask(q->info.si_signo) & SYNCHRONOUS_MASK)) {
 			sync = q;
 			goto next;
 		}
@@ -1207,7 +1224,7 @@ static inline bool has_si_pid_and_uid(struct kernel_siginfo *info)
 int send_signal_locked(int sig, struct kernel_siginfo *info,
 		       struct task_struct *t, enum pid_type type)
 {
-	struct kernel_siginfo __maybe_unused rewritten;
+	struct kernel_siginfo rewritten;
 	/* Should SIGKILL or SIGSTOP be received by a pid namespace init? */
 	bool force = false;
 
@@ -1219,34 +1236,27 @@ int send_signal_locked(int sig, struct kernel_siginfo *info,
 		force = true;
 	} else if (has_si_pid_and_uid(info)) {
 		/* SIGKILL and SIGSTOP is special or has ids */
-#ifdef CONFIG_USER_NS
 		struct user_namespace *t_user_ns;
-		kuid_t uid;
+
+		rewritten = *info;
+		info = &rewritten;
 
 		rcu_read_lock();
 		t_user_ns = task_cred_xxx(t, user_ns);
 		if (current_user_ns() != t_user_ns) {
-			rewritten = *info;
-			info = &rewritten;
-			uid = make_kuid(current_user_ns(), info->si_uid);
-			rewritten.si_uid = from_kuid_munged(t_user_ns, uid);
+			kuid_t uid = make_kuid(current_user_ns(), info->si_uid);
+			info->si_uid = from_kuid_munged(t_user_ns, uid);
 		}
 		rcu_read_unlock();
-#endif
+
 		/* A kernel generated signal? */
 		force = (info->si_code == SI_KERNEL);
 
-#ifdef CONFIG_PID_NS
 		/* From an ancestor pid namespace? */
 		if (!task_pid_nr_ns(current, task_active_pid_ns(t))) {
-			if (info != &rewritten) {
-				rewritten = *info;
-				info = &rewritten;
-			}
-			rewritten.si_pid = 0;
+			info->si_pid = 0;
 			force = true;
 		}
-#endif
 	}
 	return __send_signal_locked(sig, info, t, type, force);
 }
@@ -3260,16 +3270,6 @@ long do_no_restart_syscall(struct restart_block *param)
 
 static void __set_task_blocked(struct task_struct *tsk, const sigset_t *newset)
 {
-	sigset_t floor, floored;
-
-	/* A user worker never unblocks anything but SIGKILL and SIGSTOP. */
-	if (unlikely(tsk->flags & PF_USER_WORKER)) {
-		siginitsetinv(&floor, SIG_KERNEL_ONLY_MASK);
-		sigorsets(&floored, newset, &floor);
-		WARN_ON_ONCE(!sigequalsets(&floored, newset));
-		newset = &floored;
-	}
-
 	if (task_sigpending(tsk) && !thread_group_empty(tsk)) {
 		sigset_t newblocked;
 		/* A set of now blocked but previously unblocked signals. */
@@ -4026,15 +4026,6 @@ static void prepare_kill_siginfo(int sig, struct kernel_siginfo *info,
 	info->si_uid = from_kuid_munged(current_user_ns(), current_uid());
 }
 
-/*
- * Not even root can pretend to send SI_FROMKERNEL() signals.
- * Nor can they impersonate kill()/tgkill(), which have si_pid/uid
- */
-static bool si_code_reserved_to_kernel(int si_code)
-{
-	return si_code >= 0 || si_code == SI_TKILL;
-}
-
 /**
  *  sys_kill - send a signal to a process
  *  @pid: the PID of the process
@@ -4042,7 +4033,11 @@ static bool si_code_reserved_to_kernel(int si_code)
  */
 SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 {
-	return kill_something_info(sig, SEND_SIG_NOINFO, pid);
+	struct kernel_siginfo info;
+
+	prepare_kill_siginfo(sig, &info, PIDTYPE_TGID);
+
+	return kill_something_info(sig, &info, pid);
 }
 
 /*
@@ -4126,7 +4121,7 @@ static int do_pidfd_send_signal(struct pid *pid, int sig, enum pid_type type,
 
 		/* Only allow sending arbitrary signals to yourself. */
 		if ((task_pid(current) != pid || type > PIDTYPE_TGID) &&
-		    si_code_reserved_to_kernel(kinfo.si_code))
+		    (kinfo.si_code >= 0 || kinfo.si_code == SI_TKILL))
 			return -EPERM;
 	} else {
 		prepare_kill_siginfo(sig, &kinfo, type);
@@ -4281,8 +4276,11 @@ SYSCALL_DEFINE2(tkill, pid_t, pid, int, sig)
 
 static int do_rt_sigqueueinfo(pid_t pid, int sig, kernel_siginfo_t *info)
 {
-	if (si_code_reserved_to_kernel(info->si_code) &&
-	    task_pid_vnr(current) != pid)
+	/* Not even root can pretend to send signals from the kernel.
+	 * Nor can they impersonate a kill()/tgkill(), which adds source info.
+	 */
+	if ((info->si_code >= 0 || info->si_code == SI_TKILL) &&
+	    (task_pid_vnr(current) != pid))
 		return -EPERM;
 
 	/* POSIX.1b doesn't mention process groups.  */
@@ -4325,8 +4323,11 @@ static int do_rt_tgsigqueueinfo(pid_t tgid, pid_t pid, int sig, kernel_siginfo_t
 	if (pid <= 0 || tgid <= 0)
 		return -EINVAL;
 
-	if (si_code_reserved_to_kernel(info->si_code) &&
-	    task_pid_vnr(current) != pid)
+	/* Not even root can pretend to send signals from the kernel.
+	 * Nor can they impersonate a kill()/tgkill(), which adds source info.
+	 */
+	if ((info->si_code >= 0 || info->si_code == SI_TKILL) &&
+	    (task_pid_vnr(current) != pid))
 		return -EPERM;
 
 	return do_send_specific(tgid, pid, sig, info);
@@ -4554,12 +4555,11 @@ int restore_altstack(const stack_t __user *uss)
 
 int __save_altstack(stack_t __user *uss, unsigned long sp)
 {
-	scoped_user_write_access(uss, Efault)
-		unsafe_save_altstack(uss, sp, Efault);
-	return 0;
-
-Efault:
-	return -EFAULT;
+	struct task_struct *t = current;
+	int err = __put_user((void __user *)t->sas_ss_sp, &uss->ss_sp) |
+		__put_user(t->sas_ss_flags, &uss->ss_flags) |
+		__put_user(t->sas_ss_size, &uss->ss_size);
+	return err;
 }
 
 #ifdef CONFIG_COMPAT
@@ -4608,12 +4608,13 @@ int compat_restore_altstack(const compat_stack_t __user *uss)
 
 int __compat_save_altstack(compat_stack_t __user *uss, unsigned long sp)
 {
-	scoped_user_write_access(uss, Efault)
-		unsafe_compat_save_altstack(uss, sp, Efault);
-	return 0;
-
-Efault:
-	return -EFAULT;
+	int err;
+	struct task_struct *t = current;
+	err = __put_user(ptr_to_compat((void __user *)t->sas_ss_sp),
+			 &uss->ss_sp) |
+		__put_user(t->sas_ss_flags, &uss->ss_flags) |
+		__put_user(t->sas_ss_size, &uss->ss_size);
+	return err;
 }
 #endif
 
@@ -4791,12 +4792,12 @@ SYSCALL_DEFINE3(sigaction, int, sig,
 
 	if (act) {
 		old_sigset_t mask;
-		scoped_user_read_access(act, Efault) {
-			unsafe_get_user(new_ka.sa.sa_handler, &act->sa_handler, Efault);
-			unsafe_get_user(new_ka.sa.sa_restorer, &act->sa_restorer, Efault);
-			unsafe_get_user(new_ka.sa.sa_flags, &act->sa_flags, Efault);
-			unsafe_get_user(mask, &act->sa_mask, Efault);
-		}
+		if (!access_ok(act, sizeof(*act)) ||
+		    __get_user(new_ka.sa.sa_handler, &act->sa_handler) ||
+		    __get_user(new_ka.sa.sa_restorer, &act->sa_restorer) ||
+		    __get_user(new_ka.sa.sa_flags, &act->sa_flags) ||
+		    __get_user(mask, &act->sa_mask))
+			return -EFAULT;
 #ifdef __ARCH_HAS_KA_RESTORER
 		new_ka.ka_restorer = NULL;
 #endif
@@ -4806,18 +4807,15 @@ SYSCALL_DEFINE3(sigaction, int, sig,
 	ret = do_sigaction(sig, act ? &new_ka : NULL, oact ? &old_ka : NULL);
 
 	if (!ret && oact) {
-		scoped_user_write_access(oact, Efault) {
-			unsafe_put_user(old_ka.sa.sa_handler, &oact->sa_handler, Efault);
-			unsafe_put_user(old_ka.sa.sa_restorer, &oact->sa_restorer, Efault);
-			unsafe_put_user(old_ka.sa.sa_flags, &oact->sa_flags, Efault);
-			unsafe_put_user(old_ka.sa.sa_mask.sig[0], &oact->sa_mask, Efault);
-		}
+		if (!access_ok(oact, sizeof(*oact)) ||
+		    __put_user(old_ka.sa.sa_handler, &oact->sa_handler) ||
+		    __put_user(old_ka.sa.sa_restorer, &oact->sa_restorer) ||
+		    __put_user(old_ka.sa.sa_flags, &oact->sa_flags) ||
+		    __put_user(old_ka.sa.sa_mask.sig[0], &oact->sa_mask))
+			return -EFAULT;
 	}
 
 	return ret;
-
-Efault:
-	return -EFAULT;
 }
 #endif
 #ifdef CONFIG_COMPAT_OLD_SIGACTION
@@ -4831,12 +4829,12 @@ COMPAT_SYSCALL_DEFINE3(sigaction, int, sig,
 	compat_uptr_t handler, restorer;
 
 	if (act) {
-		scoped_user_read_access(act, Efault) {
-			unsafe_get_user(handler, &act->sa_handler, Efault);
-			unsafe_get_user(restorer, &act->sa_restorer, Efault);
-			unsafe_get_user(new_ka.sa.sa_flags, &act->sa_flags, Efault);
-			unsafe_get_user(mask, &act->sa_mask, Efault);
-		}
+		if (!access_ok(act, sizeof(*act)) ||
+		    __get_user(handler, &act->sa_handler) ||
+		    __get_user(restorer, &act->sa_restorer) ||
+		    __get_user(new_ka.sa.sa_flags, &act->sa_flags) ||
+		    __get_user(mask, &act->sa_mask))
+			return -EFAULT;
 
 #ifdef __ARCH_HAS_KA_RESTORER
 		new_ka.ka_restorer = NULL;
@@ -4849,19 +4847,16 @@ COMPAT_SYSCALL_DEFINE3(sigaction, int, sig,
 	ret = do_sigaction(sig, act ? &new_ka : NULL, oact ? &old_ka : NULL);
 
 	if (!ret && oact) {
-		scoped_user_write_access(oact, Efault) {
-			unsafe_put_user(ptr_to_compat(old_ka.sa.sa_handler),
-					&oact->sa_handler, Efault);
-			unsafe_put_user(ptr_to_compat(old_ka.sa.sa_restorer),
-					&oact->sa_restorer, Efault);
-			unsafe_put_user(old_ka.sa.sa_flags, &oact->sa_flags, Efault);
-			unsafe_put_user(old_ka.sa.sa_mask.sig[0], &oact->sa_mask, Efault);
-		}
+		if (!access_ok(oact, sizeof(*oact)) ||
+		    __put_user(ptr_to_compat(old_ka.sa.sa_handler),
+			       &oact->sa_handler) ||
+		    __put_user(ptr_to_compat(old_ka.sa.sa_restorer),
+			       &oact->sa_restorer) ||
+		    __put_user(old_ka.sa.sa_flags, &oact->sa_flags) ||
+		    __put_user(old_ka.sa.sa_mask.sig[0], &oact->sa_mask))
+			return -EFAULT;
 	}
 	return ret;
-
-Efault:
-	return -EFAULT;
 }
 #endif
 

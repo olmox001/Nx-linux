@@ -120,7 +120,7 @@ int meson_reset_controller_register(struct device *dev, struct regmap *map,
 {
 	struct meson_reset *data;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

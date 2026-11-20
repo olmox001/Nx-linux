@@ -85,8 +85,9 @@ int sdw_master_read_prop(struct sdw_bus *bus)
 	nval = fwnode_property_count_u32(link, "mipi-sdw-clock-frequencies-supported");
 	if (nval > 0) {
 		prop->num_clk_freq = nval;
-		prop->clk_freq = devm_kzalloc_objs(bus->dev, *prop->clk_freq,
-						   prop->num_clk_freq);
+		prop->clk_freq = devm_kcalloc(bus->dev, prop->num_clk_freq,
+					      sizeof(*prop->clk_freq),
+					      GFP_KERNEL);
 		if (!prop->clk_freq) {
 			fwnode_handle_put(link);
 			return -ENOMEM;
@@ -119,8 +120,9 @@ int sdw_master_read_prop(struct sdw_bus *bus)
 	}
 	if (nval > 0) {
 		prop->num_clk_gears = nval;
-		prop->clk_gears = devm_kzalloc_objs(bus->dev, *prop->clk_gears,
-						    prop->num_clk_gears);
+		prop->clk_gears = devm_kcalloc(bus->dev, prop->num_clk_gears,
+					       sizeof(*prop->clk_gears),
+					       GFP_KERNEL);
 		if (!prop->clk_gears) {
 			fwnode_handle_put(link);
 			return -ENOMEM;
@@ -172,8 +174,9 @@ static int sdw_slave_read_dp0(struct sdw_slave *slave,
 	if (nval > 0) {
 
 		dp0->num_words = nval;
-		dp0->words = devm_kzalloc_objs(&slave->dev, *dp0->words,
-					       dp0->num_words);
+		dp0->words = devm_kcalloc(&slave->dev,
+					  dp0->num_words, sizeof(*dp0->words),
+					  GFP_KERNEL);
 		if (!dp0->words)
 			return -ENOMEM;
 
@@ -196,8 +199,9 @@ static int sdw_slave_read_dp0(struct sdw_slave *slave,
 	nval = fwnode_property_count_u32(port, "mipi-sdw-lane-list");
 	if (nval > 0) {
 		dp0->num_lanes = nval;
-		dp0->lane_list = devm_kzalloc_objs(&slave->dev, *dp0->lane_list,
-						   dp0->num_lanes);
+		dp0->lane_list = devm_kcalloc(&slave->dev,
+					      dp0->num_lanes, sizeof(*dp0->lane_list),
+					      GFP_KERNEL);
 		if (!dp0->lane_list)
 			return -ENOMEM;
 
@@ -246,9 +250,10 @@ static int sdw_slave_read_dpn(struct sdw_slave *slave,
 		nval = fwnode_property_count_u32(node, "mipi-sdw-port-wordlength-configs");
 		if (nval > 0) {
 			dpn[i].num_words = nval;
-			dpn[i].words = devm_kzalloc_objs(&slave->dev,
-							 *dpn[i].words,
-							 dpn[i].num_words);
+			dpn[i].words = devm_kcalloc(&slave->dev,
+						    dpn[i].num_words,
+						    sizeof(*dpn[i].words),
+						    GFP_KERNEL);
 			if (!dpn[i].words) {
 				fwnode_handle_put(node);
 				return -ENOMEM;
@@ -288,9 +293,10 @@ static int sdw_slave_read_dpn(struct sdw_slave *slave,
 		nval = fwnode_property_count_u32(node, "mipi-sdw-channel-number-list");
 		if (nval > 0) {
 			dpn[i].num_channels = nval;
-			dpn[i].channels = devm_kzalloc_objs(&slave->dev,
-							    *dpn[i].channels,
-							    dpn[i].num_channels);
+			dpn[i].channels = devm_kcalloc(&slave->dev,
+						       dpn[i].num_channels,
+						       sizeof(*dpn[i].channels),
+						 GFP_KERNEL);
 			if (!dpn[i].channels) {
 				fwnode_handle_put(node);
 				return -ENOMEM;
@@ -306,9 +312,10 @@ static int sdw_slave_read_dpn(struct sdw_slave *slave,
 		nval = fwnode_property_count_u32(node, "mipi-sdw-channel-combination-list");
 		if (nval > 0) {
 			dpn[i].num_ch_combinations = nval;
-			dpn[i].ch_combinations = devm_kzalloc_objs(&slave->dev,
-								   *dpn[i].ch_combinations,
-								   dpn[i].num_ch_combinations);
+			dpn[i].ch_combinations = devm_kcalloc(&slave->dev,
+					dpn[i].num_ch_combinations,
+					sizeof(*dpn[i].ch_combinations),
+					GFP_KERNEL);
 			if (!dpn[i].ch_combinations) {
 				fwnode_handle_put(node);
 				return -ENOMEM;
@@ -337,9 +344,9 @@ static int sdw_slave_read_dpn(struct sdw_slave *slave,
 		nval = fwnode_property_count_u32(node, "mipi-sdw-lane-list");
 		if (nval > 0) {
 			dpn[i].num_lanes = nval;
-			dpn[i].lane_list = devm_kzalloc_objs(&slave->dev,
-							     *dpn[i].lane_list,
-							     dpn[i].num_lanes);
+			dpn[i].lane_list = devm_kcalloc(&slave->dev,
+							dpn[i].num_lanes, sizeof(*dpn[i].lane_list),
+							GFP_KERNEL);
 			if (!dpn[i].lane_list)
 				return -ENOMEM;
 
@@ -463,12 +470,6 @@ int sdw_slave_read_prop(struct sdw_slave *slave)
 	device_property_read_u32(dev, "mipi-sdw-sdca-interrupt-register-list",
 				 &prop->sdca_interrupt_register_list);
 
-	device_property_read_u32(dev, "mipi-sdw-bra-mode-block-alignment",
-				 &prop->bra_block_alignment);
-
-	device_property_read_u32(dev, "mipi-sdw-bra-mode-max-data-per-frame",
-				 &prop->bra_max_data_per_frame);
-
 	prop->commit_register_supported = mipi_device_property_read_bool(dev,
 			"mipi-sdw-commit-register-supported");
 
@@ -481,7 +482,9 @@ int sdw_slave_read_prop(struct sdw_slave *slave)
 	if (!port) {
 		dev_dbg(dev, "DP0 node not found!!\n");
 	} else {
-		prop->dp0_prop = devm_kzalloc_obj(&slave->dev, *prop->dp0_prop);
+		prop->dp0_prop = devm_kzalloc(&slave->dev,
+					      sizeof(*prop->dp0_prop),
+					      GFP_KERNEL);
 		if (!prop->dp0_prop) {
 			fwnode_handle_put(port);
 			return -ENOMEM;
@@ -499,8 +502,9 @@ int sdw_slave_read_prop(struct sdw_slave *slave)
 
 	/* Allocate memory for set bits in port lists */
 	nval = hweight32(prop->source_ports);
-	prop->src_dpn_prop = devm_kzalloc_objs(&slave->dev, *prop->src_dpn_prop,
-					       nval);
+	prop->src_dpn_prop = devm_kcalloc(&slave->dev, nval,
+					  sizeof(*prop->src_dpn_prop),
+					  GFP_KERNEL);
 	if (!prop->src_dpn_prop)
 		return -ENOMEM;
 
@@ -509,8 +513,9 @@ int sdw_slave_read_prop(struct sdw_slave *slave)
 			   prop->source_ports, "source");
 
 	nval = hweight32(prop->sink_ports);
-	prop->sink_dpn_prop = devm_kzalloc_objs(&slave->dev,
-						*prop->sink_dpn_prop, nval);
+	prop->sink_dpn_prop = devm_kcalloc(&slave->dev, nval,
+					   sizeof(*prop->sink_dpn_prop),
+					   GFP_KERNEL);
 	if (!prop->sink_dpn_prop)
 		return -ENOMEM;
 

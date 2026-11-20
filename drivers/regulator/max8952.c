@@ -128,7 +128,7 @@ static struct max8952_platform_data *max8952_parse_dt(struct device *dev)
 	int ret;
 	int i;
 
-	pd = devm_kzalloc_obj(dev, *pd);
+	pd = devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
 	if (!pd)
 		return NULL;
 
@@ -194,7 +194,8 @@ static int max8952_pmic_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE))
 		return -EIO;
 
-	max8952 = devm_kzalloc_obj(&client->dev, struct max8952_data);
+	max8952 = devm_kzalloc(&client->dev, sizeof(struct max8952_data),
+			       GFP_KERNEL);
 	if (!max8952)
 		return -ENOMEM;
 
@@ -306,7 +307,7 @@ static int max8952_pmic_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max8952_ids[] = {
-	{ .name = "max8952" },
+	{ "max8952" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max8952_ids);

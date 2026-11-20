@@ -42,6 +42,26 @@ static void enetc_pf_destroy_pcs(struct phylink_pcs *pcs)
 	lynx_pcs_destroy(pcs);
 }
 
+static void enetc_set_vlan_promisc(struct enetc_hw *hw, char si_map)
+{
+	u32 val = enetc_port_rd(hw, ENETC_PSIPVMR);
+
+	val &= ~ENETC_PSIPVMR_SET_VP(ENETC_VLAN_PROMISC_MAP_ALL);
+	enetc_port_wr(hw, ENETC_PSIPVMR, ENETC_PSIPVMR_SET_VP(si_map) | val);
+}
+
+static void enetc_enable_si_vlan_promisc(struct enetc_pf *pf, int si_idx)
+{
+	pf->vlan_promisc_simap |= BIT(si_idx);
+	enetc_set_vlan_promisc(&pf->si->hw, pf->vlan_promisc_simap);
+}
+
+static void enetc_disable_si_vlan_promisc(struct enetc_pf *pf, int si_idx)
+{
+	pf->vlan_promisc_simap &= ~BIT(si_idx);
+	enetc_set_vlan_promisc(&pf->si->hw, pf->vlan_promisc_simap);
+}
+
 static void enetc_set_isol_vlan(struct enetc_hw *hw, int si, u16 vlan, u8 qos)
 {
 	u32 val = 0;
@@ -60,9 +80,10 @@ static void enetc_add_mac_addr_em_filter(struct enetc_mac_filter *filter,
 	filter->mac_addr_cnt++;
 }
 
-static void enetc_sync_mac_filters(struct enetc_si *si)
+static void enetc_sync_mac_filters(struct enetc_pf *pf)
 {
-	struct enetc_mac_filter *f = si->mac_filter;
+	struct enetc_mac_filter *f = pf->mac_filter;
+	struct enetc_si *si = pf->si;
 	int i, pos;
 
 	pos = EMETC_MAC_ADDR_FILT_RES;
@@ -114,9 +135,9 @@ static void enetc_sync_mac_filters(struct enetc_si *si)
 static void enetc_pf_set_rx_mode(struct net_device *ndev)
 {
 	struct enetc_ndev_priv *priv = netdev_priv(ndev);
+	struct enetc_pf *pf = enetc_si_priv(priv->si);
 	bool uprom = false, mprom = false;
 	struct enetc_mac_filter *filter;
-	struct enetc_si *si = priv->si;
 	struct netdev_hw_addr *ha;
 	bool em;
 
@@ -132,7 +153,7 @@ static void enetc_pf_set_rx_mode(struct net_device *ndev)
 	/* first 2 filter entries belong to PF */
 	if (!uprom) {
 		/* Update unicast filters */
-		filter = &si->mac_filter[UC];
+		filter = &pf->mac_filter[UC];
 		enetc_reset_mac_addr_filter(filter);
 
 		em = (netdev_uc_count(ndev) == 1);
@@ -148,7 +169,7 @@ static void enetc_pf_set_rx_mode(struct net_device *ndev)
 
 	if (!mprom) {
 		/* Update multicast filters */
-		filter = &si->mac_filter[MC];
+		filter = &pf->mac_filter[MC];
 		enetc_reset_mac_addr_filter(filter);
 
 		netdev_for_each_mc_addr(ha, ndev) {
@@ -161,10 +182,10 @@ static void enetc_pf_set_rx_mode(struct net_device *ndev)
 
 	if (!uprom || !mprom)
 		/* update PF entries */
-		enetc_sync_mac_filters(si);
+		enetc_sync_mac_filters(pf);
 
-	enetc_set_si_uc_promisc(si, 0, uprom);
-	enetc_set_si_mc_promisc(si, 0, mprom);
+	enetc_set_si_uc_promisc(priv->si, 0, uprom);
+	enetc_set_si_mc_promisc(priv->si, 0, mprom);
 }
 
 static void enetc_set_loopback(struct net_device *ndev, bool en)
@@ -190,12 +211,33 @@ static void enetc_set_loopback(struct net_device *ndev, bool en)
 	}
 }
 
+static int enetc_pf_set_vf_mac(struct net_device *ndev, int vf, u8 *mac)
+{
+	struct enetc_ndev_priv *priv = netdev_priv(ndev);
+	struct enetc_pf *pf = enetc_si_priv(priv->si);
+	struct enetc_vf_state *vf_state;
+
+	if (vf >= pf->total_vfs)
+		return -EINVAL;
+
+	if (!is_valid_ether_addr(mac))
+		return -EADDRNOTAVAIL;
+
+	vf_state = &pf->vf_state[vf];
+
+	mutex_lock(&vf_state->lock);
+	vf_state->flags |= ENETC_VF_FLAG_PF_SET_MAC;
+	enetc_pf_set_primary_mac_addr(&priv->si->hw, vf + 1, mac);
+	mutex_unlock(&vf_state->lock);
+
+	return 0;
+}
+
 static int enetc_pf_set_vf_vlan(struct net_device *ndev, int vf, u16 vlan,
 				u8 qos, __be16 proto)
 {
 	struct enetc_ndev_priv *priv = netdev_priv(ndev);
 	struct enetc_pf *pf = enetc_si_priv(priv->si);
-	struct enetc_vf_state *vf_state;
 
 	if (priv->si->errata & ENETC_ERR_VLAN_ISOL)
 		return -EOPNOTSUPP;
@@ -208,17 +250,6 @@ static int enetc_pf_set_vf_vlan(struct net_device *ndev, int vf, u16 vlan,
 		return -EPROTONOSUPPORT;
 
 	enetc_set_isol_vlan(&priv->si->hw, vf + 1, vlan, qos);
-
-	vf_state = &pf->vf_state[vf];
-	mutex_lock(&vf_state->lock);
-	/* Currently only C-tags is supported, so tpid is always 0,
-	 * which indicates ETH_P_8021Q.
-	 */
-	vf_state->tpid = 0;
-	vf_state->qos = qos;
-	vf_state->vid = vlan;
-	mutex_unlock(&vf_state->lock);
-
 	return 0;
 }
 
@@ -226,7 +257,6 @@ static int enetc_pf_set_vf_spoofchk(struct net_device *ndev, int vf, bool en)
 {
 	struct enetc_ndev_priv *priv = netdev_priv(ndev);
 	struct enetc_pf *pf = enetc_si_priv(priv->si);
-	struct enetc_vf_state *vf_state;
 	u32 cfgr;
 
 	if (vf >= pf->total_vfs)
@@ -235,16 +265,6 @@ static int enetc_pf_set_vf_spoofchk(struct net_device *ndev, int vf, bool en)
 	cfgr = enetc_port_rd(&priv->si->hw, ENETC_PSICFGR0(vf + 1));
 	cfgr = (cfgr & ~ENETC_PSICFGR0_ASE) | (en ? ENETC_PSICFGR0_ASE : 0);
 	enetc_port_wr(&priv->si->hw, ENETC_PSICFGR0(vf + 1), cfgr);
-
-	vf_state = &pf->vf_state[vf];
-	mutex_lock(&vf_state->lock);
-
-	if (en)
-		vf_state->flags |= ENETC_VF_FLAG_SPOOFCHK;
-	else
-		vf_state->flags &= ~ENETC_VF_FLAG_SPOOFCHK;
-
-	mutex_unlock(&vf_state->lock);
 
 	return 0;
 }
@@ -421,9 +441,10 @@ static void enetc_configure_port(struct enetc_pf *pf)
 
 	/* split up RFS entries */
 	enetc_port_assign_rfs_entries(pf->si);
+
 	/* enforce VLAN promisc mode for all SIs */
-	for (int i = 0; i < pf->total_vfs + 1; i++)
-		enetc_set_si_vlan_promisc(pf->si, i, true);
+	pf->vlan_promisc_simap = ENETC_VLAN_PROMISC_MAP_ALL;
+	enetc_set_vlan_promisc(hw, pf->vlan_promisc_simap);
 
 	enetc_port_wr(hw, ENETC_PSIPMMR, 0);
 
@@ -445,9 +466,12 @@ static int enetc_pf_set_features(struct net_device *ndev,
 	}
 
 	if (changed & NETIF_F_HW_VLAN_CTAG_FILTER) {
-		bool promisc = !(features & NETIF_F_HW_VLAN_CTAG_FILTER);
+		struct enetc_pf *pf = enetc_si_priv(priv->si);
 
-		enetc_set_si_vlan_promisc(priv->si, 0, promisc);
+		if (!!(features & NETIF_F_HW_VLAN_CTAG_FILTER))
+			enetc_disable_si_vlan_promisc(pf, 0);
+		else
+			enetc_enable_si_vlan_promisc(pf, 0);
 	}
 
 	if (changed & NETIF_F_LOOPBACK)
@@ -488,7 +512,6 @@ static const struct net_device_ops enetc_ndev_ops = {
 	.ndo_set_rx_mode	= enetc_pf_set_rx_mode,
 	.ndo_vlan_rx_add_vid	= enetc_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid	= enetc_vlan_rx_del_vid,
-	.ndo_set_vf_trust	= enetc_pf_set_vf_trust,
 	.ndo_set_vf_mac		= enetc_pf_set_vf_mac,
 	.ndo_set_vf_vlan	= enetc_pf_set_vf_vlan,
 	.ndo_set_vf_spoofchk	= enetc_pf_set_vf_spoofchk,
@@ -499,7 +522,6 @@ static const struct net_device_ops enetc_ndev_ops = {
 	.ndo_xdp_xmit		= enetc_xdp_xmit,
 	.ndo_hwtstamp_get	= enetc_hwtstamp_get,
 	.ndo_hwtstamp_set	= enetc_hwtstamp_set,
-	.ndo_get_vf_config	= enetc_pf_get_vf_config,
 };
 
 static struct phylink_pcs *

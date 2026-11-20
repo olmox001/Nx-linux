@@ -522,7 +522,7 @@ static int stm32_combophy_probe(struct platform_device *pdev)
 	struct phy_provider *phy_provider;
 	int ret, irq;
 
-	combophy = devm_kzalloc_obj(dev, *combophy);
+	combophy = devm_kzalloc(dev, sizeof(*combophy), GFP_KERNEL);
 	if (!combophy)
 		return -ENOMEM;
 

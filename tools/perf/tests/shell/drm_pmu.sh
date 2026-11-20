@@ -1,5 +1,5 @@
 #!/bin/bash
-# DRM PMU (no_mlock)
+# DRM PMU
 # SPDX-License-Identifier: GPL-2.0
 
 set -e

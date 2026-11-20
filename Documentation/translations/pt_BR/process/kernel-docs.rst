@@ -1,7 +1,5 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-.. _pt_BR_kernel_docs:
-
 Índice de Documentação Adicional do Kernel
 ==========================================
 

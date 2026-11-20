@@ -250,7 +250,7 @@ static int m31eusb2_phy_probe(struct platform_device *pdev)
 	struct m31eusb2_phy *phy;
 	int ret;
 
-	phy = devm_kzalloc_obj(dev, *phy);
+	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
 

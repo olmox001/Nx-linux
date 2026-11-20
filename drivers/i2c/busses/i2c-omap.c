@@ -1355,7 +1355,7 @@ omap_i2c_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	omap = devm_kzalloc_obj(&pdev->dev, struct omap_i2c_dev);
+	omap = devm_kzalloc(&pdev->dev, sizeof(struct omap_i2c_dev), GFP_KERNEL);
 	if (!omap)
 		return -ENOMEM;
 

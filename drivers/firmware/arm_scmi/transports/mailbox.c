@@ -77,14 +77,9 @@ static void rx_callback(struct mbox_client *cl, void *m)
 		      core->shmem->read_header(smbox->shmem), NULL);
 }
 
-static bool
-mailbox_chan_available(struct fwnode_handle *fwnode, int prot_id, int idx)
+static bool mailbox_chan_available(struct device_node *of_node, int idx)
 {
 	int num_mb;
-	struct device_node *of_node = to_of_node(fwnode);
-
-	if (!of_node)
-		return false;
 
 	/*
 	 * Just check if bidirrectional channels are involved, and check the
@@ -200,7 +195,7 @@ static int mailbox_chan_setup(struct scmi_chan_info *cinfo, struct device *dev,
 	if (!tx && !p2a_chan)
 		return -ENODEV;
 
-	smbox = devm_kzalloc_obj(dev, *smbox);
+	smbox = devm_kzalloc(dev, sizeof(*smbox), GFP_KERNEL);
 	if (!smbox)
 		return -ENOMEM;
 

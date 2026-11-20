@@ -10,11 +10,15 @@ static int hws_buddy_init(struct mlx5hws_buddy_mem *buddy, u32 max_order)
 
 	buddy->max_order = max_order;
 
-	buddy->bitmap = kzalloc_objs(*buddy->bitmap, buddy->max_order + 1);
+	buddy->bitmap = kcalloc(buddy->max_order + 1,
+				sizeof(*buddy->bitmap),
+				GFP_KERNEL);
 	if (!buddy->bitmap)
 		return -ENOMEM;
 
-	buddy->num_free = kzalloc_objs(*buddy->num_free, buddy->max_order + 1);
+	buddy->num_free = kcalloc(buddy->max_order + 1,
+				  sizeof(*buddy->num_free),
+				  GFP_KERNEL);
 	if (!buddy->num_free) {
 		ret = -ENOMEM;
 		goto err_out_free_bits;

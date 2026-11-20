@@ -111,7 +111,7 @@ static int cdns_starfive_probe(struct platform_device *pdev)
 	unsigned int args;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

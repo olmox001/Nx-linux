@@ -50,7 +50,7 @@ static int bxt_wcove_tmu_probe(struct platform_device *pdev)
 	struct wcove_tmu *wctmu;
 	int ret;
 
-	wctmu = devm_kzalloc_obj(&pdev->dev, *wctmu);
+	wctmu = devm_kzalloc(&pdev->dev, sizeof(*wctmu), GFP_KERNEL);
 	if (!wctmu)
 		return -ENOMEM;
 
@@ -64,8 +64,11 @@ static int bxt_wcove_tmu_probe(struct platform_device *pdev)
 	ret = devm_request_threaded_irq(&pdev->dev, wctmu->irq,
 					NULL, bxt_wcove_tmu_irq_handler,
 					IRQF_ONESHOT, "bxt_wcove_tmu", wctmu);
-	if (ret)
+	if (ret) {
+		dev_err(&pdev->dev, "request irq failed: %d,virq: %d\n",
+			ret, wctmu->irq);
 		return ret;
+	}
 
 	/* Unmask TMU second level Wake & System alarm */
 	regmap_update_bits(wctmu->regmap, BXTWC_MTMUIRQ_REG,

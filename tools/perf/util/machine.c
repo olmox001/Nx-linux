@@ -233,12 +233,10 @@ void machine__delete(struct machine *machine)
 	}
 }
 
-int machines__init(struct machines *machines, struct perf_session *session)
+int machines__init(struct machines *machines)
 {
 	int err = machine__init(&machines->host, "", HOST_KERNEL_ID);
 
-	machines->session = session;
-	machines->host.machines = machines;
 	machines->guests = RB_ROOT_CACHED;
 	return err;
 }
@@ -2860,7 +2858,7 @@ static int thread__resolve_callchain_sample(struct thread *thread,
 	if (chain)
 		chain_nr = chain->nr;
 
-	if (chain && evsel__has_branch_callstack(evsel)) {
+	if (evsel__has_branch_callstack(evsel)) {
 		struct perf_env *env = evsel__env(evsel);
 
 		err = resolve_lbr_callchain_sample(thread, cursor, sample, parent,

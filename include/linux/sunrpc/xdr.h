@@ -244,7 +244,6 @@ struct xdr_stream {
 	unsigned int nwords;	/* Remaining decode buffer length */
 
 	struct rpc_rqst *rqst;	/* For debugging */
-	void *xdrgen_ctx;	/* Context for generated codecs */
 };
 
 /*

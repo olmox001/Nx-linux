@@ -355,7 +355,6 @@ static int prepare_nsset(unsigned flags, struct nsset *nsset)
 {
 	struct task_struct *me = current;
 
-	nsset->flags = flags;
 	nsset->nsproxy = create_new_namespaces(0, me, current_user_ns(), me->fs);
 	if (IS_ERR(nsset->nsproxy))
 		return PTR_ERR(nsset->nsproxy);
@@ -376,6 +375,7 @@ static int prepare_nsset(unsigned flags, struct nsset *nsset)
 			goto out;
 	}
 
+	nsset->flags = flags;
 	return 0;
 
 out:
@@ -385,12 +385,6 @@ out:
 
 static inline int validate_ns(struct nsset *nsset, struct ns_common *ns)
 {
-	int ret;
-
-	ret = security_namespace_install(nsset, ns);
-	if (ret)
-		return ret;
-
 	return ns->ops->install(nsset, ns);
 }
 

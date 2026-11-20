@@ -785,7 +785,7 @@ static int otx_cptvf_probe(struct pci_dev *pdev,
 	struct otx_cptvf *cptvf;
 	int err;
 
-	cptvf = devm_kzalloc_obj(dev, *cptvf);
+	cptvf = devm_kzalloc(dev, sizeof(*cptvf), GFP_KERNEL);
 	if (!cptvf)
 		return -ENOMEM;
 

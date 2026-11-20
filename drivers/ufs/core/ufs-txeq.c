@@ -482,8 +482,7 @@ static void ufshcd_evaluate_tx_eqtr_fom(struct ufs_hba *hba,
  * @h_iter: host TX EQTR iterator data structure
  * @d_iter: device TX EQTR iterator data structure
  *
- * Returns 0 on success, negative error code if get_rx_fom vops fails.
- * RX_FOM DME get failures are logged and treated as 0 FOM for that lane.
+ * Returns 0 on success, negative error code otherwise
  */
 static int ufshcd_get_rx_fom(struct ufs_hba *hba,
 			     struct ufs_pa_layer_attr *pwr_mode,
@@ -498,12 +497,8 @@ static int ufshcd_get_rx_fom(struct ufs_hba *hba,
 		ret = ufshcd_dme_peer_get(hba, UIC_ARG_MIB_SEL(RX_FOM,
 					  UIC_ARG_MPHY_RX_GEN_SEL_INDEX(lane)),
 					  &fom);
-		if (ret) {
-			h_iter->fom[lane] = 0;
-			dev_dbg(hba->dev, "Failed to get FOM for Host TX Lane %d: %d\n",
-				 lane, ret);
-			continue;
-		}
+		if (ret)
+			return ret;
 
 		h_iter->fom[lane] = (u8)fom;
 	}
@@ -513,12 +508,8 @@ static int ufshcd_get_rx_fom(struct ufs_hba *hba,
 		ret = ufshcd_dme_get(hba, UIC_ARG_MIB_SEL(RX_FOM,
 				     UIC_ARG_MPHY_RX_GEN_SEL_INDEX(lane)),
 				     &fom);
-		if (ret) {
-			d_iter->fom[lane] = 0;
-			dev_dbg(hba->dev, "Failed to get FOM for Device TX Lane %d: %d\n",
-				 lane, ret);
-			continue;
-		}
+		if (ret)
+			return ret;
 
 		d_iter->fom[lane] = (u8)fom;
 	}
@@ -1073,7 +1064,7 @@ static int __ufshcd_tx_eqtr(struct ufs_hba *hba,
 			    struct ufs_pa_layer_attr *pwr_mode)
 {
 	struct ufshcd_tx_eqtr_data *eqtr_data  __free(kfree) =
-		kzalloc_obj(*eqtr_data);
+		kzalloc(sizeof(*eqtr_data), GFP_KERNEL);
 	struct tx_eqtr_iter h_iter = {};
 	struct tx_eqtr_iter d_iter = {};
 	u32 gear = pwr_mode->gear_tx;
@@ -1227,7 +1218,6 @@ static int ufshcd_tx_eqtr(struct ufs_hba *hba,
 {
 	struct ufs_pa_layer_attr old_pwr_info;
 	unsigned int noio_flag;
-	int notify_ret;
 	int ret;
 
 	/*
@@ -1239,8 +1229,9 @@ static int ufshcd_tx_eqtr(struct ufs_hba *hba,
 	noio_flag = memalloc_noio_save();
 
 	if (!params->eqtr_record) {
-		params->eqtr_record = devm_kzalloc_obj(hba->dev,
-						       *params->eqtr_record);
+		params->eqtr_record = devm_kzalloc(hba->dev,
+						   sizeof(*params->eqtr_record),
+						   GFP_KERNEL);
 		if (!params->eqtr_record) {
 			ret = -ENOMEM;
 			goto out_noio_restore;
@@ -1256,19 +1247,14 @@ static int ufshcd_tx_eqtr(struct ufs_hba *hba,
 	}
 
 	ret = ufshcd_vops_tx_eqtr_notify(hba, PRE_CHANGE, pwr_mode);
-	if (ret) {
-		dev_err(hba->dev, "TX EQTR PRE_CHANGE notify failed: %d\n", ret);
+	if (ret)
 		goto out_unprepare;
-	}
 
 	ret = __ufshcd_tx_eqtr(hba, params, pwr_mode);
+	if (ret)
+		goto out_unprepare;
 
-	notify_ret = ufshcd_vops_tx_eqtr_notify(hba, POST_CHANGE, pwr_mode);
-	if (notify_ret)
-		dev_err(hba->dev, "TX EQTR POST_CHANGE notify failed: %d\n", notify_ret);
-
-	if (!ret)
-		ret = notify_ret;
+	ret = ufshcd_vops_tx_eqtr_notify(hba, POST_CHANGE, pwr_mode);
 
 out_unprepare:
 	if (ret)
@@ -1330,13 +1316,7 @@ int ufshcd_config_tx_eq_settings(struct ufs_hba *hba,
 	}
 
 	params = &hba->tx_eq_params[gear - 1];
-	/*
-	 * TX EQTR must run for the following cases:
-	 * 1. TX EQ settings are invalid.
-	 * 2. TX EQ settings are from Device Tree.
-	 * 3. TX EQTR procedure is forced.
-	 */
-	if (!params->is_valid || params->from_dt || force_tx_eqtr) {
+	if (!params->is_valid || force_tx_eqtr) {
 		int ret;
 
 		ret = ufshcd_tx_eqtr(hba, params, pwr_mode);
@@ -1349,8 +1329,6 @@ int ufshcd_config_tx_eq_settings(struct ufs_hba *hba,
 		/* Mark TX Equalization settings as valid */
 		params->is_valid = true;
 		params->is_trained = true;
-		/* TX EQTR succeeds, clear from_dt flag */
-		params->from_dt = false;
 		params->is_applied = false;
 	}
 
@@ -1536,11 +1514,6 @@ static void ufshcd_extract_tx_eq_settings_attrs(struct ufs_hba *hba, u8 gear)
 	}
 
 	params->is_valid = true;
-	/*
-	 * Optimal TX EQ settings are retrieved from UFS device attributes,
-	 * clear from_dt flag to avoid TX EQTR procedure.
-	 */
-	params->from_dt = false;
 }
 
 void ufshcd_retrieve_tx_eq_settings(struct ufs_hba *hba)

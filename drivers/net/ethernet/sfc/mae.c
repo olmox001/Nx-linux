@@ -1030,8 +1030,6 @@ int efx_mae_lookup_mport(struct efx_nic *efx, u32 vf_idx, u32 *id)
 	rhashtable_walk_enter(&mae->mports_ht, &walk);
 	rhashtable_walk_start(&walk);
 	while ((m = rhashtable_walk_next(&walk)) != NULL) {
-		if (IS_ERR(m))
-			continue;
 		if (m->mport_type == MAE_MPORT_DESC_MPORT_TYPE_VNIC &&
 		    m->interface_idx == nic_data->local_mae_intf &&
 		    m->pf_idx == 0 &&
@@ -1982,10 +1980,10 @@ int efx_mae_insert_ct(struct efx_nic *efx, struct efx_tc_ct_entry *conn)
 	if (!inbuf)
 		return -ENOMEM;
 
-	key = kzalloc_objs(__le32, kw);
+	key = kcalloc(kw, sizeof(__le32), GFP_KERNEL);
 	if (!key)
 		goto out_free;
-	resp = kzalloc_objs(__le32, rw);
+	resp = kcalloc(rw, sizeof(__le32), GFP_KERNEL);
 	if (!resp)
 		goto out_free;
 
@@ -2053,7 +2051,7 @@ int efx_mae_remove_ct(struct efx_nic *efx, struct efx_tc_ct_entry *conn)
 	if (!inbuf)
 		return -ENOMEM;
 
-	key = kzalloc_objs(__le32, kw);
+	key = kcalloc(kw, sizeof(__le32), GFP_KERNEL);
 	if (!key)
 		goto out_free;
 

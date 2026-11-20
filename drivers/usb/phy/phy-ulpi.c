@@ -263,11 +263,11 @@ devm_otg_ulpi_create(struct device *dev,
 	struct usb_phy *phy;
 	struct usb_otg *otg;
 
-	phy = devm_kzalloc_obj(dev, *phy);
+	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return NULL;
 
-	otg = devm_kzalloc_obj(dev, *otg);
+	otg = devm_kzalloc(dev, sizeof(*otg), GFP_KERNEL);
 	if (!otg) {
 		devm_kfree(dev, phy);
 		return NULL;

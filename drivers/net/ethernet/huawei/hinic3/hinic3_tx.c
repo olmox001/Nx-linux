@@ -541,8 +541,12 @@ static netdev_tx_t hinic3_send_one_skb(struct sk_buff *skb,
 	u32 offload;
 	int err;
 
-	if (skb_put_padto(skb, MIN_SKB_LEN))
-		goto err_out;
+	if (unlikely(skb->len < MIN_SKB_LEN)) {
+		if (skb_pad(skb, MIN_SKB_LEN - skb->len))
+			goto err_out;
+
+		skb->len = MIN_SKB_LEN;
+	}
 
 	offload = hinic3_tx_offload(skb, &task, &queue_info, txq);
 	num_sge = skb_shinfo(skb)->nr_frags + 1;
@@ -577,6 +581,8 @@ static netdev_tx_t hinic3_send_one_skb(struct sk_buff *skb,
 		*wqe_combo.task = task;
 
 	tx_info = &txq->tx_info[pi];
+	tx_info->skb = skb;
+	tx_info->wqebb_cnt = wqebb_cnt;
 
 	err = hinic3_tx_map_skb(netdev, skb, txq, tx_info, &wqe_combo);
 	if (err) {
@@ -585,9 +591,6 @@ static netdev_tx_t hinic3_send_one_skb(struct sk_buff *skb,
 		txq->sq->owner = saved_sq_owner;
 		goto err_drop_pkt;
 	}
-
-	tx_info->skb = skb;
-	tx_info->wqebb_cnt = wqebb_cnt;
 
 	netif_subqueue_sent(netdev, txq->sq->q_id, skb->len);
 	netif_subqueue_maybe_stop(netdev, txq->sq->q_id,

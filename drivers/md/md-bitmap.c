@@ -516,8 +516,7 @@ static void end_bitmap_write(struct bio *bio)
 
 static void write_file_page(struct bitmap *bitmap, struct page *page, int wait)
 {
-	struct folio *folio = page_folio(page);
-	struct buffer_head *bh = folio_buffers(folio);
+	struct buffer_head *bh = page_buffers(page);
 
 	while (bh && bh->b_blocknr) {
 		atomic_inc(&bitmap->pending_writes);
@@ -534,15 +533,19 @@ static void write_file_page(struct bitmap *bitmap, struct page *page, int wait)
 
 static void free_buffers(struct page *page)
 {
-	struct folio *folio = page_folio(page);
-	struct buffer_head *bh = folio_detach_private(folio);
+	struct buffer_head *bh;
 
+	if (!PagePrivate(page))
+		return;
+
+	bh = page_buffers(page);
 	while (bh) {
 		struct buffer_head *next = bh->b_this_page;
 		free_buffer_head(bh);
 		bh = next;
 	}
-	folio_put(folio);
+	detach_page_private(page);
+	put_page(page);
 }
 
 /* read a page from a file.
@@ -557,7 +560,6 @@ static int read_file_page(struct file *file, unsigned long index,
 {
 	int ret = 0;
 	struct inode *inode = file_inode(file);
-	struct folio *folio = page_folio(page);
 	struct buffer_head *bh;
 	sector_t block, blk_cur;
 	unsigned long blocksize = i_blocksize(inode);
@@ -565,12 +567,12 @@ static int read_file_page(struct file *file, unsigned long index,
 	pr_debug("read bitmap file (%dB @ %llu)\n", (int)PAGE_SIZE,
 		 (unsigned long long)index << PAGE_SHIFT);
 
-	bh = folio_alloc_buffers(folio, blocksize, GFP_NOFS | __GFP_ACCOUNT);
+	bh = alloc_page_buffers(page, blocksize);
 	if (!bh) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	folio_attach_private(folio, bh);
+	attach_page_private(page, bh);
 	blk_cur = index << (PAGE_SHIFT - inode->i_blkbits);
 	while (bh) {
 		block = blk_cur;
@@ -1726,13 +1728,6 @@ static void bitmap_start_write(struct mddev *mddev, sector_t offset,
 		else
 			sectors = 0;
 	}
-}
-
-static void bitmap_prepare_range(struct mddev *mddev, sector_t *offset,
-				 unsigned long *sectors, bool discard)
-{
-	if (mddev->pers->bitmap_sector)
-		mddev->pers->bitmap_sector(mddev, offset, sectors);
 }
 
 static void bitmap_end_write(struct mddev *mddev, sector_t offset,
@@ -3086,7 +3081,6 @@ static struct bitmap_operations bitmap_ops = {
 	.flush			= bitmap_flush,
 	.write_all		= bitmap_write_all,
 	.dirty_bits		= bitmap_dirty_bits,
-	.prepare_range		= bitmap_prepare_range,
 	.unplug			= bitmap_unplug,
 	.daemon_work		= bitmap_daemon_work,
 

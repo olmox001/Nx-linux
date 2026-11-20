@@ -665,10 +665,6 @@ static int ssd1307fb_probe(struct i2c_client *client)
 	spin_lock_init(&par->damage_lock);
 
 	par->device_info = device_get_match_data(dev);
-	if (!par->device_info) {
-		ret = -ENODEV;
-		goto fb_alloc_error;
-	}
 
 	par->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(par->reset)) {
@@ -741,7 +737,8 @@ static int ssd1307fb_probe(struct i2c_client *client)
 		goto fb_alloc_error;
 	}
 
-	ssd1307fb_defio = devm_kzalloc_obj(dev, *ssd1307fb_defio);
+	ssd1307fb_defio = devm_kzalloc(dev, sizeof(*ssd1307fb_defio),
+				       GFP_KERNEL);
 	if (!ssd1307fb_defio) {
 		dev_err(dev, "Couldn't allocate deferred io.\n");
 		ret = -ENOMEM;
@@ -766,13 +763,7 @@ static int ssd1307fb_probe(struct i2c_client *client)
 	info->fix.smem_start = __pa(vmem);
 	info->fix.smem_len = vmem_size;
 
-	info->flags = FBINFO_VIRTFB;
-
-	ret = fb_deferred_io_init(info);
-	if (ret) {
-		dev_err(dev, "failed to init fb deferred io: %d\n", ret);
-		goto fb_defio_error;
-	}
+	fb_deferred_io_init(info);
 
 	i2c_set_clientdata(client, info);
 

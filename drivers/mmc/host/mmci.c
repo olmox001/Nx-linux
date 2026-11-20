@@ -846,7 +846,7 @@ int mmci_dmae_setup(struct mmci_host *host)
 	const char *rxname, *txname;
 	struct mmci_dmae_priv *dmae;
 
-	dmae = devm_kzalloc_obj(mmc_dev(host->mmc), *dmae);
+	dmae = devm_kzalloc(mmc_dev(host->mmc), sizeof(*dmae), GFP_KERNEL);
 	if (!dmae)
 		return -ENOMEM;
 
@@ -2217,7 +2217,7 @@ static int mmci_probe(struct amba_device *dev,
 	}
 
 	if (!plat) {
-		plat = devm_kzalloc_obj(&dev->dev, *plat);
+		plat = devm_kzalloc(&dev->dev, sizeof(*plat), GFP_KERNEL);
 		if (!plat)
 			return -ENOMEM;
 	}
@@ -2477,13 +2477,11 @@ static int mmci_probe(struct amba_device *dev,
 
 	ret = mmc_add_host(mmc);
 	if (ret)
-		goto dma_release;
+		goto clk_disable;
 
 	pm_runtime_put(&dev->dev);
 	return 0;
 
-dma_release:
-	mmci_dma_release(host);
  clk_disable:
 	clk_disable_unprepare(host->clk);
 	return ret;

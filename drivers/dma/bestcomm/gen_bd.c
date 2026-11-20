@@ -81,7 +81,7 @@ struct bcom_gen_bd_priv {
 /* Task support code                                                        */
 /* ======================================================================== */
 
-static struct bcom_task *
+struct bcom_task *
 bcom_gen_bd_rx_init(int queue_len, phys_addr_t fifo,
 			int initiator, int ipr, int maxbufsize)
 {
@@ -108,6 +108,7 @@ bcom_gen_bd_rx_init(int queue_len, phys_addr_t fifo,
 
 	return tsk;
 }
+EXPORT_SYMBOL_GPL(bcom_gen_bd_rx_init);
 
 int
 bcom_gen_bd_rx_reset(struct bcom_task *tsk)
@@ -165,7 +166,7 @@ bcom_gen_bd_rx_release(struct bcom_task *tsk)
 EXPORT_SYMBOL_GPL(bcom_gen_bd_rx_release);
 
 
-static struct bcom_task *
+extern struct bcom_task *
 bcom_gen_bd_tx_init(int queue_len, phys_addr_t fifo,
 			int initiator, int ipr)
 {
@@ -191,6 +192,7 @@ bcom_gen_bd_tx_init(int queue_len, phys_addr_t fifo,
 
 	return tsk;
 }
+EXPORT_SYMBOL_GPL(bcom_gen_bd_tx_init);
 
 int
 bcom_gen_bd_tx_reset(struct bcom_task *tsk)
@@ -252,23 +254,17 @@ EXPORT_SYMBOL_GPL(bcom_gen_bd_tx_release);
  */
 
 /**
- * struct bcom_psc_params - Bestcomm initialization value table for PSC devices
- * @rx_initiator: RX initiator ID
- * @rx_ipr: RX interrupt priority register value
- * @tx_initiator: TX initiator ID
- * @tx_ipr: TX interrupt priority register value
+ * bcom_psc_parameters - Bestcomm initialization value table for PSC devices
  *
  * This structure is only used internally.  It is a lookup table for PSC
  * specific parameters to bestcomm tasks.
  */
-struct bcom_psc_params {
+static struct bcom_psc_params {
 	int rx_initiator;
 	int rx_ipr;
 	int tx_initiator;
 	int tx_ipr;
-};
-
-static const struct bcom_psc_params bcom_psc_params[] = {
+} bcom_psc_params[] = {
 	[0] = {
 		.rx_initiator = BCOM_INITIATOR_PSC1_RX,
 		.rx_ipr = BCOM_IPR_PSC1_RX,
@@ -319,7 +315,7 @@ static const struct bcom_psc_params bcom_psc_params[] = {
 struct bcom_task * bcom_psc_gen_bd_rx_init(unsigned psc_num, int queue_len,
 					   phys_addr_t fifo, int maxbufsize)
 {
-	if (psc_num >= ARRAY_SIZE(bcom_psc_params))
+	if (psc_num >= MPC52xx_PSC_MAXNUM)
 		return NULL;
 
 	return bcom_gen_bd_rx_init(queue_len, fifo,
@@ -340,9 +336,6 @@ EXPORT_SYMBOL_GPL(bcom_psc_gen_bd_rx_init);
 struct bcom_task *
 bcom_psc_gen_bd_tx_init(unsigned psc_num, int queue_len, phys_addr_t fifo)
 {
-	if (psc_num >= ARRAY_SIZE(bcom_psc_params))
-		return NULL;
-
 	struct psc;
 	return bcom_gen_bd_tx_init(queue_len, fifo,
 				   bcom_psc_params[psc_num].tx_initiator,

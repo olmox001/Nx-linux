@@ -104,6 +104,12 @@ struct rdma_id_private {
 	u8			min_rnr_timer;
 	u8 used_resolve_ip;
 	enum ib_gid_type	gid_type;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	/* cache for mc record params */
+	struct ib_sa_mcmember_rec rec;
+	int is_valid_rec;
+	struct work_struct      work;  /* garbage coll */
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	/*
 	 * Internal to RDMA/core, don't use in the drivers
@@ -138,5 +144,11 @@ int cma_get_default_roce_tos(struct cma_device *dev, u32 port);
 int cma_set_default_roce_tos(struct cma_device *dev, u32 port,
 			     u8 default_roce_tos);
 struct ib_device *cma_get_ib_dev(struct cma_device *dev);
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+u8 cma_get_tos_map(struct cma_device *cma_dev, u8 index);
+void cma_set_tos_map(struct cma_device *cma_dev, u8 index, u8 value);
+u8 cma_read_tos_for_tos(struct cma_device *dev, u8 tos_or_index);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 #endif /* _CMA_PRIV_H */

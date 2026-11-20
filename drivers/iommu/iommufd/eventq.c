@@ -396,11 +396,9 @@ static __poll_t iommufd_eventq_fops_poll(struct file *filep,
 static int iommufd_eventq_fops_release(struct inode *inode, struct file *filep)
 {
 	struct iommufd_eventq *eventq = filep->private_data;
-	/* eventq may be freed once the users reference is dropped. */
-	struct iommufd_ctx *ictx = eventq->ictx;
 
 	refcount_dec(&eventq->obj.users);
-	iommufd_ctx_put(ictx);
+	iommufd_ctx_put(eventq->ictx);
 	return 0;
 }
 

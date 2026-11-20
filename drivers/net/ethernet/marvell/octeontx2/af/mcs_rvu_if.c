@@ -899,13 +899,13 @@ int rvu_mcs_init(struct rvu *rvu)
 		mcs->rvu = rvu;
 
 		/* Allocated memory for PFVF data */
-		mcs->pf = devm_kzalloc_objs(mcs->dev, struct mcs_pfvf,
-					    hw->total_pfs);
+		mcs->pf = devm_kcalloc(mcs->dev, hw->total_pfs,
+				       sizeof(struct mcs_pfvf), GFP_KERNEL);
 		if (!mcs->pf)
 			return -ENOMEM;
 
-		mcs->vf = devm_kzalloc_objs(mcs->dev, struct mcs_pfvf,
-					    hw->total_vfs);
+		mcs->vf = devm_kcalloc(mcs->dev, hw->total_vfs,
+				       sizeof(struct mcs_pfvf), GFP_KERNEL);
 		if (!mcs->vf)
 			return -ENOMEM;
 	}

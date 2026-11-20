@@ -193,7 +193,7 @@ FIXTURE_VARIANT_ADD(fscontext_ns, binfmt_misc) {
 
 FIXTURE_VARIANT_ADD(fscontext_ns, overlay) {
 	.fsname = "overlay",
-	.expected_errno = EINVAL,
+	.expected_errno = EIO,
 };
 
 TEST_F(fscontext_ns, create_from_descendant_userns)

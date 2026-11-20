@@ -552,7 +552,8 @@ static int aw200xx_probe(struct i2c_client *client)
 		return dev_err_probe(&client->dev, -EINVAL,
 				     "Incorrect number of leds (%d)", count);
 
-	chip = devm_kzalloc_flex(&client->dev, *chip, leds, count);
+	chip = devm_kzalloc(&client->dev, struct_size(chip, leds, count),
+			    GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

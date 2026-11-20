@@ -1219,15 +1219,6 @@ mon_bin_poll(struct file *file, struct poll_table_struct *wait)
 	return mask;
 }
 
-static void __mon_bin_vma_open(struct mon_reader_bin *rp)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&rp->b_lock, flags);
-	rp->mmap_active++;
-	spin_unlock_irqrestore(&rp->b_lock, flags);
-}
-
 /*
  * open and close: just keep track of how many times the device is
  * mapped, to use the proper memory allocation function.
@@ -1235,79 +1226,64 @@ static void __mon_bin_vma_open(struct mon_reader_bin *rp)
 static void mon_bin_vma_open(struct vm_area_struct *vma)
 {
 	struct mon_reader_bin *rp = vma->vm_private_data;
-
-	__mon_bin_vma_open(rp);
-}
-
-static void __mon_bin_vma_close(struct mon_reader_bin *rp)
-{
 	unsigned long flags;
 
 	spin_lock_irqsave(&rp->b_lock, flags);
-	rp->mmap_active--;
+	rp->mmap_active++;
 	spin_unlock_irqrestore(&rp->b_lock, flags);
 }
 
 static void mon_bin_vma_close(struct vm_area_struct *vma)
 {
-	struct mon_reader_bin *rp = vma->vm_private_data;
+	unsigned long flags;
 
-	__mon_bin_vma_close(rp);
+	struct mon_reader_bin *rp = vma->vm_private_data;
+	spin_lock_irqsave(&rp->b_lock, flags);
+	rp->mmap_active--;
+	spin_unlock_irqrestore(&rp->b_lock, flags);
+}
+
+/*
+ * Map ring pages to user space.
+ */
+static vm_fault_t mon_bin_vma_fault(struct vm_fault *vmf)
+{
+	struct mon_reader_bin *rp = vmf->vma->vm_private_data;
+	unsigned long offset, chunk_idx;
+	struct page *pageptr;
+	unsigned long flags;
+
+	spin_lock_irqsave(&rp->b_lock, flags);
+	offset = vmf->pgoff << PAGE_SHIFT;
+	if (offset >= rp->b_size) {
+		spin_unlock_irqrestore(&rp->b_lock, flags);
+		return VM_FAULT_SIGBUS;
+	}
+	chunk_idx = offset / CHUNK_SIZE;
+	pageptr = rp->b_vec[chunk_idx].pg;
+	get_page(pageptr);
+	vmf->page = pageptr;
+	spin_unlock_irqrestore(&rp->b_lock, flags);
+	return 0;
 }
 
 static const struct vm_operations_struct mon_bin_vm_ops = {
 	.open =     mon_bin_vma_open,
 	.close =    mon_bin_vma_close,
+	.fault =    mon_bin_vma_fault,
 };
 
-static int mon_bin_discontig_init(void *vm_private_data, void **private)
+static int mon_bin_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct mon_reader_bin *rp = vm_private_data;
+	/* don't do anything here: "fault" will set up page table entries */
+	vma->vm_ops = &mon_bin_vm_ops;
 
-	/* Dropped by mon_bin_vma_close() on unmap, including on error. */
-	__mon_bin_vma_open(rp);
-	return 0;
-}
-
-static int mon_bin_discontig_get(struct discontig_kernel_page_state *state)
-{
-	struct mon_reader_bin *rp = state->vm_private_data;
-	unsigned long offset, chunk_idx;
-	unsigned long flags;
-
-	spin_lock_irqsave(&rp->b_lock, flags);
-
-	offset = state->pgoff << PAGE_SHIFT;
-	if (offset >= rp->b_size) {
-		spin_unlock_irqrestore(&rp->b_lock, flags);
-		discontig_kernel_map_abort(state);
-		return 0;
-	}
-	chunk_idx = offset / CHUNK_SIZE;
-	discontig_kernel_map_page(state, rp->b_vec[chunk_idx].pg);
-
-	spin_unlock_irqrestore(&rp->b_lock, flags);
-	return 0;
-}
-
-static const struct discontig_kernel_page_ops mon_discontig_ops = {
-	.init = mon_bin_discontig_init,
-	.get = mon_bin_discontig_get,
-};
-
-static int mon_bin_mmap_prepare(struct vm_area_desc *desc)
-{
-	const struct file *filp = desc->file;
-
-	if (vma_desc_test(desc, VMA_WRITE_BIT))
+	if (vma->vm_flags & VM_WRITE)
 		return -EPERM;
 
-	desc->vm_ops = &mon_bin_vm_ops;
-	vma_desc_clear_flags(desc, VMA_MAYWRITE_BIT);
-	vma_desc_set_flags(desc, VMA_DONTEXPAND_BIT, VMA_DONTDUMP_BIT);
-	desc->private_data = filp->private_data;
-
-	mmap_action_map_discontig_kernel_pages(desc, NULL, &mon_discontig_ops);
+	vm_flags_mod(vma, VM_DONTEXPAND | VM_DONTDUMP, VM_MAYWRITE);
+	vma->vm_private_data = filp->private_data;
+	mon_bin_vma_open(vma);
 	return 0;
 }
 
@@ -1322,7 +1298,7 @@ static const struct file_operations mon_fops_binary = {
 	.compat_ioctl =	mon_bin_compat_ioctl,
 #endif
 	.release =	mon_bin_release,
-	.mmap_prepare = mon_bin_mmap_prepare,
+	.mmap =		mon_bin_mmap,
 };
 
 static int mon_bin_wait_event(struct file *file, struct mon_reader_bin *rp)

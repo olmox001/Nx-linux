@@ -112,7 +112,7 @@ static int nfnl_acct_new(struct sk_buff *skb, const struct nfnl_info *info,
 		size += sizeof(u64);
 	}
 
-	nfacct = kzalloc(sizeof(struct nf_acct) + size, GFP_KERNEL_ACCOUNT);
+	nfacct = kzalloc(sizeof(struct nf_acct) + size, GFP_KERNEL);
 	if (nfacct == NULL)
 		return -ENOMEM;
 

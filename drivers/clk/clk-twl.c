@@ -153,12 +153,14 @@ static int twl_clks_probe(struct platform_device *pdev)
 	for (count = 0; hw_data[count].init.name; count++)
 		;
 
-	clk_data = devm_kzalloc_flex(&pdev->dev, *clk_data, hws, count);
+	clk_data = devm_kzalloc(&pdev->dev,
+				struct_size(clk_data, hws, count),
+				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
 	clk_data->num = count;
-	cinfo = devm_kzalloc_objs(&pdev->dev, *cinfo, count);
+	cinfo = devm_kcalloc(&pdev->dev, count, sizeof(*cinfo), GFP_KERNEL);
 	if (!cinfo)
 		return -ENOMEM;
 

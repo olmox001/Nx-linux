@@ -34,6 +34,7 @@
 #include <linux/pgtable.h>
 #include <linux/sched.h>
 #include <linux/debugfs.h>
+#include <drm/drm_sysfs.h>
 #include <drm/ttm/ttm_caching.h>
 
 #include "ttm_module.h"

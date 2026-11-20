@@ -631,8 +631,6 @@ typedef struct {
 
 extern unsigned long __ro_after_init efi_rng_seed;		/* RNG Seed table */
 
-enum efi_rts_ids;
-
 /*
  * All runtime access to EFI goes through this structure:
  */
@@ -652,7 +650,6 @@ extern struct efi {
 	unsigned long			mokvar_table;		/* MOK variable config table */
 	unsigned long			coco_secret;		/* Confidential computing secret table */
 	unsigned long			unaccepted;		/* Unaccepted memory table */
-	unsigned long			mem_reserve;		/* Persistent memory reservations */
 
 	efi_get_time_t			*get_time;
 	efi_set_time_t			*set_time;
@@ -668,10 +665,6 @@ extern struct efi {
 	efi_query_capsule_caps_t	*query_capsule_caps;
 	efi_get_next_high_mono_count_t	*get_next_high_mono_count;
 	efi_reset_system_t		*reset_system;
-
-#if IS_ENABLED(CONFIG_LKDTM)
-	efi_status_t			(*lkdtm_rt_test)(enum efi_rts_ids id);
-#endif
 
 	struct efi_memory_map		memmap;
 	unsigned long			flags;
@@ -712,7 +705,7 @@ efi_guidcmp (efi_guid_t left, efi_guid_t right)
 }
 
 static inline char *
-efi_guid_to_str(const efi_guid_t *guid, char *out)
+efi_guid_to_str(efi_guid_t *guid, char *out)
 {
 	sprintf(out, "%pUl", guid->b);
         return out;
@@ -765,7 +758,7 @@ extern int efi_mem_desc_lookup(u64 phys_addr, efi_memory_desc_t *out_md);
 extern int __efi_mem_desc_lookup(u64 phys_addr, efi_memory_desc_t *out_md);
 extern void efi_mem_reserve(phys_addr_t addr, u64 size);
 extern int efi_mem_reserve_persistent(phys_addr_t addr, u64 size);
-extern u64 efi_get_fdt_params(struct efi_memory_map_data *data);
+extern u64 efi_get_fdt_params(struct efi_memory_map_data *data, u32 *secure_boot);
 extern struct kobject *efi_kobj;
 
 extern int efi_reboot_quirk_mode;
@@ -854,6 +847,14 @@ extern int __init parse_efi_signature_list(
 #define EFI_MEM_ATTR		9	/* Did firmware publish an EFI_MEMORY_ATTRIBUTES table? */
 #define EFI_MEM_NO_SOFT_RESERVE	10	/* Is the kernel configured to ignore soft reservations? */
 #define EFI_PRESERVE_BS_REGIONS	11	/* Are EFI boot-services memory segments available? */
+#define EFI_SECURE_BOOT		13	/* Are we in Secure Boot mode? */
+
+enum efi_secureboot_mode {
+	efi_secureboot_mode_unset,
+	efi_secureboot_mode_unknown,
+	efi_secureboot_mode_disabled,
+	efi_secureboot_mode_enabled,
+};
 
 #ifdef CONFIG_EFI
 /*
@@ -864,6 +865,8 @@ static inline bool efi_enabled(int feature)
 	return test_bit(feature, &efi.flags) != 0;
 }
 extern void efi_reboot(enum reboot_mode reboot_mode, const char *__unused);
+
+extern void __init efi_set_secure_boot(enum efi_secureboot_mode mode);
 
 bool __pure __efi_soft_reserve_enabled(void);
 
@@ -885,6 +888,8 @@ static inline bool efi_enabled(int feature)
 }
 static inline void
 efi_reboot(enum reboot_mode reboot_mode, const char *__unused) {}
+
+static inline void efi_set_secure_boot(enum efi_secureboot_mode mode) {}
 
 static inline bool efi_soft_reserve_enabled(void)
 {
@@ -964,17 +969,6 @@ extern int efi_status_to_err(efi_status_t status);
 #define   EFI_DEV_END_INSTANCE			0x01
 #define   EFI_DEV_END_ENTIRE			0xFF
 
-enum efi_hd_partition_format {
-	EFI_HD_PARTITION_FORMAT_MBR = 1,
-	EFI_HD_PARTITION_FORMAT_GPT,
-};
-
-enum efi_hd_signature_type {
-	EFI_HD_SIGNATURE_TYPE_NONE,
-	EFI_HD_SIGNATURE_TYPE_MBR,
-	EFI_HD_SIGNATURE_TYPE_GUID,
-};
-
 struct efi_generic_dev_path {
 	u8				type;
 	u8				sub_type;
@@ -1006,16 +1000,6 @@ struct efi_rel_offset_dev_path {
 	u64				ending_offset;
 } __packed;
 
-struct efi_hd_dev_path {
-	struct efi_generic_dev_path	header;
-	u32				partition_number;
-	u64				partition_start;
-	u64				partition_size;
-	efi_guid_t			signature;
-	u8				partition_format;
-	u8				signature_type;
-} __packed;
-
 struct efi_mem_mapped_dev_path {
 	struct efi_generic_dev_path	header;
 	u32				memory_type;
@@ -1035,7 +1019,6 @@ struct efi_dev_path {
 		struct efi_pci_dev_path		pci;
 		struct efi_vendor_dev_path	vendor;
 		struct efi_rel_offset_dev_path	rel_offset;
-		struct efi_hd_dev_path		hd;
 	};
 } __packed;
 
@@ -1138,14 +1121,6 @@ extern void efi_call_virt_check_flags(unsigned long flags, const void *caller);
 extern unsigned long efi_call_virt_save_flags(void);
 
 void efi_runtime_assert_lock_held(void);
-efi_status_t efi_runtime_set_enable_flag(bool enable);
-
-enum efi_secureboot_mode {
-	efi_secureboot_mode_unset,
-	efi_secureboot_mode_unknown,
-	efi_secureboot_mode_disabled,
-	efi_secureboot_mode_enabled,
-};
 
 static inline
 enum efi_secureboot_mode efi_get_secureboot_mode(efi_get_variable_t *get_var)
@@ -1260,10 +1235,6 @@ enum efi_rts_ids {
 	EFI_UPDATE_CAPSULE,
 	EFI_QUERY_CAPSULE_CAPS,
 	EFI_ACPI_PRM_HANDLER,
-#if IS_ENABLED(CONFIG_LKDTM)
-	EFI_LKDTM_RUNTIME_RO_TEST,
-	EFI_LKDTM_RUNTIME_NX_TEST,
-#endif
 };
 
 union efi_rts_args;
@@ -1289,8 +1260,6 @@ extern struct efi_runtime_work efi_rts_work;
 
 /* Workqueue to queue EFI Runtime Services */
 extern struct workqueue_struct *efi_rts_wq;
-
-void __noreturn efi_rts_park_worker(void);
 
 struct linux_efi_memreserve {
 	int		size;			// allocated size of the array
@@ -1364,8 +1333,7 @@ bool efi_config_table_is_usable(const efi_guid_t *guid, unsigned long table)
 	return xen_efi_config_table_is_usable(guid, table);
 }
 
-umode_t efi_attr_is_visible(struct kobject *kobj, const struct attribute *attr,
-			    int n);
+umode_t efi_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n);
 
 int ovmf_log_probe(unsigned long ovmf_debug_log_table);
 

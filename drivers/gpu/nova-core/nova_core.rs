@@ -10,7 +10,9 @@ use kernel::{
     InPlaceModule, //
 };
 
-pub mod api;
+#[macro_use]
+mod bitfield;
+
 mod driver;
 mod falcon;
 mod fb;
@@ -18,17 +20,12 @@ mod firmware;
 mod fsp;
 mod gpu;
 mod gsp;
-mod irq;
 mod mctp;
-mod mm;
 #[macro_use]
 mod num;
 mod regs;
 mod sbuffer;
-#[cfg(CONFIG_NOVA_CORE_SELFTESTS)]
-mod selftest;
 mod vbios;
-mod vgpu;
 
 pub(crate) const MODULE_NAME: &core::ffi::CStr = <LocalModule as kernel::ModuleMetadata>::NAME;
 
@@ -57,7 +54,7 @@ struct NovaCoreModule {
 
 impl InPlaceModule for NovaCoreModule {
     fn init(module: &'static kernel::ThisModule) -> impl PinInit<Self, Error> {
-        let dir = debugfs::Dir::new(c"nova-core");
+        let dir = debugfs::Dir::new(kernel::c_str!("nova-core"));
 
         // SAFETY: We are the only driver code running during init, so there
         // cannot be any concurrent access to `DEBUGFS_ROOT`.

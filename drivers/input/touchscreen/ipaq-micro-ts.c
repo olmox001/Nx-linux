@@ -80,7 +80,7 @@ static int micro_ts_probe(struct platform_device *pdev)
 	struct touchscreen_data *ts;
 	int error;
 
-	ts = devm_kzalloc_obj(&pdev->dev, *ts);
+	ts = devm_kzalloc(&pdev->dev, sizeof(*ts), GFP_KERNEL);
 	if (!ts)
 		return -ENOMEM;
 

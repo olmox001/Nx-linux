@@ -4,7 +4,6 @@
  */
 
 #include "xe_assert.h"
-#include "xe_cpu_bind.h"
 #include "xe_dep_job_types.h"
 #include "xe_dep_scheduler.h"
 #include "xe_exec_queue.h"
@@ -13,6 +12,7 @@
 #include "xe_page_reclaim.h"
 #include "xe_tlb_inval.h"
 #include "xe_tlb_inval_job.h"
+#include "xe_migrate.h"
 #include "xe_pm.h"
 #include "xe_vm.h"
 
@@ -39,8 +39,8 @@ struct xe_tlb_inval_job {
 	u64 start;
 	/** @end: End address to invalidate */
 	u64 end;
-	/** @idx: Index of tlb invalidation */
-	int idx;
+	/** @type: GT type */
+	int type;
 	/** @fence_armed: Fence has been armed */
 	bool fence_armed;
 };
@@ -87,7 +87,7 @@ static const struct xe_dep_job_ops dep_job_ops = {
  * @vm: VM which TLB invalidation is being issued for
  * @start: Start address to invalidate
  * @end: End address to invalidate
- * @idx: Index of tlb invalidation
+ * @type: GT type
  *
  * Create a TLB invalidation job and initialize internal fields. The caller is
  * responsible for releasing the creation reference.
@@ -97,7 +97,7 @@ static const struct xe_dep_job_ops dep_job_ops = {
 struct xe_tlb_inval_job *
 xe_tlb_inval_job_create(struct xe_exec_queue *q, struct xe_tlb_inval *tlb_inval,
 			struct xe_dep_scheduler *dep_scheduler,
-			struct xe_vm *vm, u64 start, u64 end, int idx)
+			struct xe_vm *vm, u64 start, u64 end, int type)
 {
 	struct xe_tlb_inval_job *job;
 	struct drm_sched_entity *entity =
@@ -105,7 +105,8 @@ xe_tlb_inval_job_create(struct xe_exec_queue *q, struct xe_tlb_inval *tlb_inval,
 	struct xe_tlb_inval_fence *ifence;
 	int err;
 
-	xe_assert(vm->xe, idx < XE_EXEC_QUEUE_TLB_INVAL_COUNT);
+	xe_assert(vm->xe, type == XE_EXEC_QUEUE_TLB_INVAL_MEDIA_GT ||
+		  type == XE_EXEC_QUEUE_TLB_INVAL_PRIMARY_GT);
 
 	job = kmalloc_obj(*job);
 	if (!job)
@@ -119,7 +120,7 @@ xe_tlb_inval_job_create(struct xe_exec_queue *q, struct xe_tlb_inval *tlb_inval,
 	job->fence_armed = false;
 	xe_page_reclaim_list_init(&job->prl);
 	job->dep.ops = &dep_job_ops;
-	job->idx = idx;
+	job->type = type;
 	kref_init(&job->refcount);
 	xe_exec_queue_get(q);	/* Pairs with put in xe_tlb_inval_job_destroy */
 	xe_vm_get(vm);		/* Pairs with put in xe_tlb_inval_job_destroy */
@@ -218,6 +219,7 @@ int xe_tlb_inval_job_alloc_dep(struct xe_tlb_inval_job *job)
 /**
  * xe_tlb_inval_job_push() - TLB invalidation job push
  * @job: TLB invalidation job to push
+ * @m: The migration object being used
  * @fence: Dependency for TLB invalidation job
  *
  * Pushes a TLB invalidation job for execution, using @fence as a dependency.
@@ -229,11 +231,11 @@ int xe_tlb_inval_job_alloc_dep(struct xe_tlb_inval_job *job)
  * Return: Job's finished fence on success, cannot fail
  */
 struct dma_fence *xe_tlb_inval_job_push(struct xe_tlb_inval_job *job,
+					struct xe_migrate *m,
 					struct dma_fence *fence)
 {
 	struct xe_tlb_inval_fence *ifence =
 		container_of(job->fence, typeof(*ifence), base);
-	struct xe_cpu_bind *cpu_bind = gt_to_xe(job->q->gt)->cpu_bind;
 
 	if (!dma_fence_is_signaled(fence)) {
 		void *ptr;
@@ -257,11 +259,11 @@ struct dma_fence *xe_tlb_inval_job_push(struct xe_tlb_inval_job *job,
 	job->fence_armed = true;
 
 	/*
-	 * We need the cpu_bind lock to protect the job's seqno and the spsc
-	 * queue, only taken on cpu_bind queue, user queues protected dma-resv
+	 * We need the migration lock to protect the job's seqno and the spsc
+	 * queue, only taken on migration queue, user queues protected dma-resv
 	 * VM lock.
 	 */
-	xe_cpu_bind_job_lock(cpu_bind, job->q);
+	xe_migrate_job_lock(m, job->q);
 
 	/* Creation ref pairs with put in xe_tlb_inval_job_destroy */
 	xe_tlb_inval_fence_init(job->tlb_inval, ifence, false);
@@ -278,9 +280,9 @@ struct dma_fence *xe_tlb_inval_job_push(struct xe_tlb_inval_job *job,
 	/* Let the upper layers fish this out */
 	xe_exec_queue_tlb_inval_last_fence_set(job->q, job->vm,
 					       &job->dep.drm.s_fence->finished,
-					       job->idx);
+					       job->type);
 
-	xe_cpu_bind_job_unlock(cpu_bind, job->q);
+	xe_migrate_job_unlock(m, job->q);
 
 	/*
 	 * Not using job->fence, as it has its own dma-fence context, which does

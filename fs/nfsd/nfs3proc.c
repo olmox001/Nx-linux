@@ -9,12 +9,10 @@
 #include <linux/ext2_fs.h>
 #include <linux/magic.h>
 #include <linux/namei.h>
-#include <linux/nfs3.h>
 
 #include "cache.h"
 #include "xdr3.h"
 #include "vfs.h"
-#include "nfserr.h"
 #include "filecache.h"
 #include "trace.h"
 
@@ -48,58 +46,6 @@ static bool nfsd3_time_in_range(const struct iattr *iap)
 	    (unsigned long)iap->ia_mtime.tv_nsec >= NSEC_PER_SEC)
 		return false;
 	return true;
-}
-
-static const struct nfsd_access_map nfsd3_regaccess[] = {
-	{ NFS3_ACCESS_READ,	NFSD_MAY_READ				},
-	{ NFS3_ACCESS_EXECUTE,	NFSD_MAY_EXEC				},
-	{ NFS3_ACCESS_MODIFY,	NFSD_MAY_WRITE|NFSD_MAY_TRUNC		},
-	{ NFS3_ACCESS_EXTEND,	NFSD_MAY_WRITE				},
-	{ 0,			0					}
-};
-
-static const struct nfsd_access_map nfsd3_diraccess[] = {
-	{ NFS3_ACCESS_READ,	NFSD_MAY_READ				},
-	{ NFS3_ACCESS_LOOKUP,	NFSD_MAY_EXEC				},
-	{ NFS3_ACCESS_MODIFY,	NFSD_MAY_EXEC|NFSD_MAY_WRITE|NFSD_MAY_TRUNC },
-	{ NFS3_ACCESS_EXTEND,	NFSD_MAY_EXEC|NFSD_MAY_WRITE		},
-	{ NFS3_ACCESS_DELETE,	NFSD_MAY_REMOVE				},
-	{ 0,			0					}
-};
-
-/*
- * Some clients - Solaris 2.6 at least, make an access call to the NFS
- * server to check for access for things like /dev/null (which really,
- * NFSD doesn't care about).  So NFSD provides simple access checking
- * for those objects, looking mainly at mode bits, ignoring read-only
- * filesystem checks.
- */
-static const struct nfsd_access_map nfsd3_otheraccess[] = {
-	{ NFS3_ACCESS_READ,	NFSD_MAY_READ				},
-	{ NFS3_ACCESS_EXECUTE,	NFSD_MAY_EXEC				},
-	{ NFS3_ACCESS_MODIFY,	NFSD_MAY_WRITE|NFSD_MAY_LOCAL_ACCESS	},
-	{ NFS3_ACCESS_EXTEND,	NFSD_MAY_WRITE|NFSD_MAY_LOCAL_ACCESS	},
-	{ 0,			0					}
-};
-
-static const struct nfsd_access_maps nfsd3_access_maps = {
-	.regular	= nfsd3_regaccess,
-	.directory	= nfsd3_diraccess,
-	.other		= nfsd3_otheraccess,
-};
-
-static int nfsd3_iocb_flags(enum nfs3_stable_how how)
-{
-	switch (how) {
-	case NFS_FILE_SYNC:
-		/* persist data and timestamps */
-		return IOCB_DSYNC | IOCB_SYNC;
-	case NFS_DATA_SYNC:
-		/* persist data only */
-		return IOCB_DSYNC;
-	default:
-		return 0;
-	}
 }
 
 static __be32 nfsd3_map_status(__be32 status)
@@ -225,8 +171,7 @@ nfsd3_proc_access(struct svc_rqst *rqstp)
 
 	fh_copy(&resp->fh, &argp->fh);
 	resp->access = argp->access;
-	resp->status = nfsd_access(rqstp, &resp->fh, &nfsd3_access_maps,
-				   &resp->access, NULL);
+	resp->status = nfsd_access(rqstp, &resp->fh, &resp->access, NULL);
 	resp->status = nfsd3_map_status(resp->status);
 	return rpc_success;
 }
@@ -315,8 +260,7 @@ nfsd3_proc_write(struct svc_rqst *rqstp)
 	resp->committed = argp->stable;
 	resp->status = nfsd_write(rqstp, &resp->fh, argp->offset,
 				  &argp->payload, &cnt,
-				  nfsd3_iocb_flags(resp->committed),
-				  resp->verf);
+				  resp->committed, resp->verf);
 	resp->count = cnt;
 	resp->status = nfsd3_map_status(resp->status);
 	return rpc_success;
@@ -334,11 +278,10 @@ nfsd3_create_file(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		  struct svc_fh *resfhp, struct nfsd3_createargs *argp)
 {
 	struct iattr *iap = &argp->attrs;
-	struct dentry *parent, *child, *mnt_child;
+	struct dentry *parent, *child;
 	struct nfsd_attrs attrs = {
 		.na_iattr	= iap,
 	};
-	struct svc_export *exp;
 	__u32 v_mtime, v_atime;
 	struct inode *inode;
 	__be32 status;
@@ -348,7 +291,7 @@ nfsd3_create_file(struct svc_rqst *rqstp, struct svc_fh *fhp,
 
 	if (!nfsd3_time_in_range(iap))
 		return nfserr_inval;
-	if (name_is_dot_dotdot(argp->name, argp->len))
+	if (isdotent(argp->name, argp->len))
 		return nfserr_exist;
 	if (!(iap->ia_valid & ATTR_MODE))
 		iap->ia_mode = 0;
@@ -377,31 +320,7 @@ nfsd3_create_file(struct svc_rqst *rqstp, struct svc_fh *fhp,
 			goto out;
 	}
 
-	exp = exp_get(fhp->fh_export);
-	/*
-	 * Cross on a separate reference: child must remain the dentry
-	 * start_creating() returned so that end_creating() unlocks the
-	 * right directory.
-	 */
-	mnt_child = dget(child);
-	if (argp->createmode == NFS3_CREATE_UNCHECKED) {
-		/*
-		 * If name is already in dcache we need to check for mountpoints
-		 */
-		if (d_is_reg(child) &&
-		    unlikely(nfsd_mountpoint(child, exp))) {
-			status = nfsd_cross_mnt(rqstp, &mnt_child, &exp);
-			if (status != nfs_ok) {
-				dput(mnt_child);
-				exp_put(exp);
-				goto out;
-			}
-		}
-	}
-
-	status = fh_compose(resfhp, exp, mnt_child, fhp);
-	dput(mnt_child);
-	exp_put(exp);
+	status = fh_compose(resfhp, fhp->fh_export, child, fhp);
 	if (status != nfs_ok)
 		goto out;
 
@@ -1189,10 +1108,13 @@ static const struct svc_procedure nfsd_procedures3[22] = {
 	},
 };
 
+static DEFINE_PER_CPU_ALIGNED(unsigned long,
+			      nfsd_count3[ARRAY_SIZE(nfsd_procedures3)]);
 const struct svc_version nfsd_version3 = {
 	.vs_vers	= 3,
 	.vs_nproc	= ARRAY_SIZE(nfsd_procedures3),
 	.vs_proc	= nfsd_procedures3,
 	.vs_dispatch	= nfsd_dispatch,
+	.vs_count	= nfsd_count3,
 	.vs_xdrsize	= NFS3_SVC_XDRSIZE,
 };

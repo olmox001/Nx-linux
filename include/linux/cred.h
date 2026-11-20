@@ -180,18 +180,12 @@ static inline bool cap_ambient_invariant_ok(const struct cred *cred)
 
 static inline const struct cred *override_creds(const struct cred *override_cred)
 {
-	const struct cred *old = current->cred;
-
-	current->cred = override_cred;
-	return old;
+	return rcu_replace_pointer(current->cred, override_cred, 1);
 }
 
 static inline const struct cred *revert_creds(const struct cred *revert_cred)
 {
-	const struct cred *override_cred = current->cred;
-
-	current->cred = revert_cred;
-	return override_cred;
+	return rcu_replace_pointer(current->cred, revert_cred, 1);
 }
 
 DEFINE_CLASS(override_creds,
@@ -299,10 +293,11 @@ DEFINE_FREE(put_cred, struct cred *, if (!IS_ERR_OR_NULL(_T)) put_cred(_T))
 /**
  * current_cred - Access the current task's subjective credentials
  *
- * Access the subjective credentials of the current task.
- * Nobody else can modify it.
+ * Access the subjective credentials of the current task.  RCU-safe,
+ * since nobody else can modify it.
  */
-#define current_cred() (current->cred)
+#define current_cred() \
+	rcu_dereference_protected(current->cred, 1)
 
 /**
  * current_real_cred - Access the current task's objective credentials
@@ -376,6 +371,7 @@ DEFINE_FREE(put_cred, struct cred *, if (!IS_ERR_OR_NULL(_T)) put_cred(_T))
 })
 
 #define task_uid(task)		(task_cred_xxx((task), uid))
+#define task_euid(task)		(task_cred_xxx((task), euid))
 #define task_ucounts(task)	(task_cred_xxx((task), ucounts))
 
 #define current_cred_xxx(xxx)			\

@@ -460,7 +460,7 @@ static int pata_ftide010_probe(struct platform_device *pdev)
 	int ret;
 	int i;
 
-	ftide = devm_kzalloc_obj(dev, *ftide);
+	ftide = devm_kzalloc(dev, sizeof(*ftide), GFP_KERNEL);
 	if (!ftide)
 		return -ENOMEM;
 	ftide->dev = dev;

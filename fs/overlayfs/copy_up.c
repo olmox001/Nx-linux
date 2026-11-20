@@ -72,18 +72,6 @@ static int ovl_copy_acl(struct ovl_fs *ofs, const struct path *path,
 	return err;
 }
 
-static ssize_t ovl_getxattr_value(const struct path *path, char *name,
-				  char **value, ssize_t *value_size);
-
-/*
- * Any user can store an empty security.capability, which fails to read with
- * -EINVAL.  It grants no capability, so treat it as none, like no xattr.
- */
-static bool ovl_no_fscap(ssize_t err)
-{
-	return err == -ENODATA || err == -EOPNOTSUPP || err == -EINVAL;
-}
-
 int ovl_copy_xattr(struct super_block *sb, const struct path *oldpath, struct dentry *new)
 {
 	struct dentry *old = oldpath->dentry;
@@ -141,14 +129,28 @@ int ovl_copy_xattr(struct super_block *sb, const struct path *oldpath, struct de
 			break;
 		}
 
-		size = ovl_getxattr_value(oldpath, name, &value, &value_size);
+retry:
+		size = ovl_do_getxattr(oldpath, name, value, value_size);
+		if (size == -ERANGE)
+			size = ovl_do_getxattr(oldpath, name, NULL, 0);
+
 		if (size < 0) {
-			if (!strcmp(name, XATTR_NAME_CAPS) && ovl_no_fscap(size)) {
-				error = 0;
-				continue;
-			}
 			error = size;
 			break;
+		}
+
+		if (size > value_size) {
+			void *new;
+
+			new = kvmalloc(size, GFP_KERNEL);
+			if (!new) {
+				error = -ENOMEM;
+				break;
+			}
+			kvfree(value);
+			value = new;
+			value_size = size;
+			goto retry;
 		}
 
 		error = ovl_do_setxattr(OVL_FS(sb), new, name, value, size, 0);
@@ -474,12 +476,8 @@ struct ovl_fh *ovl_get_origin_fh(struct ovl_fs *ofs, struct dentry *origin)
 	 * When lower layer doesn't support export operations store a 'null' fh,
 	 * so we can use the overlay.origin xattr to distignuish between a copy
 	 * up and a pure upper inode.
-	 *
-	 * With index enabled, mount already found that all layers can decode
-	 * file handles.  Do not ask again, because an LSM may change its answer
-	 * about CAP_DAC_READ_SEARCH and index users cannot cope with a 'null' fh.
 	 */
-	if (!ofs->config.index && !ovl_can_decode_fh(origin->d_sb))
+	if (!ovl_can_decode_fh(origin->d_sb))
 		return NULL;
 
 	return ovl_encode_real_fh(ofs, d_inode(origin), false);
@@ -810,10 +808,9 @@ static int ovl_copy_up_workdir(struct ovl_copy_up_ctx *c)
 	rd.old_parent = c->workdir;
 	rd.new_parent = c->destdir;
 	rd.flags = 0;
-	/* The name may have been taken since lookup, never replace it */
-	err = start_renaming_dentry(&rd, LOOKUP_EXCL, temp,
+	err = start_renaming_dentry(&rd, 0, temp,
 				    &QSTR_LEN(c->destname.name, c->destname.len));
-	if (err && err != -EEXIST) {
+	if (err) {
 		/* temp or workdir moved underneath us? map to -EIO */
 		err = -EIO;
 	}
@@ -837,9 +834,9 @@ static int ovl_copy_up_workdir(struct ovl_copy_up_ctx *c)
 
 	if (!c->metacopy)
 		ovl_set_upperdata(inode);
+	ovl_inode_update(inode, temp);
 	if (S_ISDIR(inode->i_mode))
 		ovl_set_flag(OVL_WHITEOUTS, inode);
-	ovl_inode_update(inode, temp);
 out:
 	ovl_end_write(c->dentry);
 
@@ -938,7 +935,6 @@ static int ovl_do_copy_up(struct ovl_copy_up_ctx *c)
 	struct ovl_fs *ofs = OVL_FS(c->dentry->d_sb);
 	struct dentry *origin = c->lowerpath.dentry;
 	struct ovl_fh *fh = NULL;
-	struct name_snapshot name;
 	bool to_index = false;
 
 	/*
@@ -976,15 +972,12 @@ static int ovl_do_copy_up(struct ovl_copy_up_ctx *c)
 		goto out_free_fh;
 	} else {
 		/*
-		 * ovl_copy_up_start() keeps ovl_rename() away from c->dentry,
-		 * because ovl_rename() calls ovl_copy_up() on source and target
-		 * dentry.  It does not stop d_splice_alias() from moving a
-		 * directory that a lookup found under another name after a
-		 * change to the lower layer.  That move frees an external name,
-		 * so take a snapshot.
+		 * c->dentry->d_name is stabilzed by ovl_copy_up_start(),
+		 * because if we got here, it means that c->dentry has no upper
+		 * alias and changing ->d_name means going through ovl_rename()
+		 * that will call ovl_copy_up() on source and target dentry.
 		 */
-		take_dentry_name_snapshot(&name, c->dentry);
-		c->destname = name.name;
+		c->destname = c->dentry->d_name;
 		/*
 		 * Mark parent "impure" because it may now contain non-pure
 		 * upper
@@ -993,7 +986,7 @@ static int ovl_do_copy_up(struct ovl_copy_up_ctx *c)
 		err = ovl_set_impure(c->parent, c->destdir);
 		ovl_end_write(c->dentry);
 		if (err)
-			goto out;
+			goto out_free_fh;
 	}
 
 	/* Should we copyup with O_TMPFILE or with workdir? */
@@ -1027,8 +1020,6 @@ static int ovl_do_copy_up(struct ovl_copy_up_ctx *c)
 out:
 	if (to_index)
 		kfree(c->destname.name);
-	else
-		release_dentry_name_snapshot(&name);
 out_free_fh:
 	kfree(fh);
 	return err;
@@ -1064,39 +1055,26 @@ static bool ovl_need_meta_copy_up(struct dentry *dentry, umode_t mode,
 	return true;
 }
 
-static ssize_t ovl_getxattr_value(const struct path *path, char *name,
-				  char **value, ssize_t *value_size)
+static ssize_t ovl_getxattr_value(const struct path *path, char *name, char **value)
 {
 	ssize_t res;
 	char *buf;
 
-	res = ovl_do_getxattr(path, name, *value, *value_size);
-	if (res == -ERANGE) {
-		res = ovl_do_getxattr(path, name, NULL, 0);
-		/* Xattr changed underneath us? */
-		if (res >= 0 && res <= *value_size)
-			return -EIO;
-	}
+	res = ovl_do_getxattr(path, name, NULL, 0);
+	if (res == -ENODATA || res == -EOPNOTSUPP)
+		res = 0;
 
-	if (res > *value_size) {
-		buf = kvmalloc(res, GFP_KERNEL);
+	if (res > 0) {
+		buf = kzalloc(res, GFP_KERNEL);
 		if (!buf)
 			return -ENOMEM;
 
 		res = ovl_do_getxattr(path, name, buf, res);
-		if (res < 0) {
-			kvfree(buf);
-			/* Xattr changed underneath us? */
-			if (res == -ERANGE)
-				return -EIO;
-			return res;
-		}
-
-		kvfree(*value);
-		*value = buf;
-		*value_size = res;
+		if (res < 0)
+			kfree(buf);
+		else
+			*value = buf;
 	}
-
 	return res;
 }
 
@@ -1107,7 +1085,7 @@ static int ovl_copy_up_meta_inode_data(struct ovl_copy_up_ctx *c)
 	struct path upperpath;
 	int err;
 	char *capability = NULL;
-	ssize_t cap_size = 0;
+	ssize_t cap_size;
 
 	ovl_path_upper(c->dentry, &upperpath);
 	if (WARN_ON(upperpath.dentry == NULL))
@@ -1115,10 +1093,8 @@ static int ovl_copy_up_meta_inode_data(struct ovl_copy_up_ctx *c)
 
 	if (c->stat.size) {
 		err = cap_size = ovl_getxattr_value(&upperpath, XATTR_NAME_CAPS,
-						    &capability, &cap_size);
-		if (ovl_no_fscap(cap_size))
-			cap_size = 0;
-		else if (cap_size < 0)
+						    &capability);
+		if (cap_size < 0)
 			goto out;
 	}
 
@@ -1147,7 +1123,7 @@ static int ovl_copy_up_meta_inode_data(struct ovl_copy_up_ctx *c)
 	ovl_clear_flag(OVL_VERIFIED_DIGEST, d_inode(c->dentry));
 	ovl_set_upperdata(d_inode(c->dentry));
 out_free:
-	kvfree(capability);
+	kfree(capability);
 out:
 	return err;
 }

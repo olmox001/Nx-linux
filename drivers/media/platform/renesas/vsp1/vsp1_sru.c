@@ -210,7 +210,6 @@ static void sru_try_format(struct vsp1_sru *sru,
 }
 
 static int sru_set_format(struct v4l2_subdev *subdev,
-			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
@@ -349,7 +348,7 @@ struct vsp1_sru *vsp1_sru_create(struct vsp1_device *vsp1)
 	struct vsp1_sru *sru;
 	int ret;
 
-	sru = devm_kzalloc_obj(vsp1->dev, *sru);
+	sru = devm_kzalloc(vsp1->dev, sizeof(*sru), GFP_KERNEL);
 	if (sru == NULL)
 		return ERR_PTR(-ENOMEM);
 

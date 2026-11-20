@@ -26,7 +26,8 @@ static int tegra_aconnect_probe(struct platform_device *pdev)
 	if (!pdev->dev.of_node)
 		return -EINVAL;
 
-	aconnect = devm_kzalloc_obj(&pdev->dev, struct tegra_aconnect);
+	aconnect = devm_kzalloc(&pdev->dev, sizeof(struct tegra_aconnect),
+				GFP_KERNEL);
 	if (!aconnect)
 		return -ENOMEM;
 

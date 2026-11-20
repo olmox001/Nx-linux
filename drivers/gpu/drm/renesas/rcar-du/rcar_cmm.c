@@ -168,7 +168,7 @@ static int rcar_cmm_probe(struct platform_device *pdev)
 {
 	struct rcar_cmm *rcmm;
 
-	rcmm = devm_kzalloc_obj(&pdev->dev, *rcmm);
+	rcmm = devm_kzalloc(&pdev->dev, sizeof(*rcmm), GFP_KERNEL);
 	if (!rcmm)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, rcmm);

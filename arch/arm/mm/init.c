@@ -403,7 +403,7 @@ static int __mark_rodata_ro(void *unused)
 void mark_rodata_ro(void)
 {
 	stop_machine(__mark_rodata_ro, NULL, NULL);
-	arm_pgtable_checkwx();
+	arm_debug_checkwx();
 }
 
 #else

@@ -43,12 +43,23 @@ static DEFINE_IDA(mlx4_adev_ida);
 
 static bool is_eth_supported(struct mlx4_dev *dev)
 {
-	return true;
+	for (int port = 1; port <= dev->caps.num_ports; port++)
+		if (dev->caps.port_type[port] == MLX4_PORT_TYPE_ETH)
+			return true;
+
+	return false;
 }
 
 static bool is_ib_supported(struct mlx4_dev *dev)
 {
-	return true;
+	for (int port = 1; port <= dev->caps.num_ports; port++)
+		if (dev->caps.port_type[port] == MLX4_PORT_TYPE_IB)
+			return true;
+
+	if (dev->caps.flags & MLX4_DEV_CAP_FLAG_IBOE)
+		return true;
+
+	return false;
 }
 
 static const struct mlx4_adev_device {

@@ -1203,21 +1203,28 @@ static void sctp_report_fwdtsn(struct sctp_ulpq *ulpq, __u32 ftsn)
 	sctp_ulpq_abort_pd(ulpq, GFP_ATOMIC);
 }
 
-static void sctp_intl_reasm_flush_mid(struct sk_buff_head *reasm, __u16 sid,
-				      __u32 mid)
+static void sctp_intl_reasm_flushtsn(struct sctp_ulpq *ulpq, __u32 ftsn)
 {
 	struct sk_buff *pos, *tmp;
 
-	skb_queue_walk_safe(reasm, pos, tmp) {
+	skb_queue_walk_safe(&ulpq->reasm, pos, tmp) {
 		struct sctp_ulpevent *event = sctp_skb2event(pos);
+		__u32 tsn = event->tsn;
 
-		if (event->stream < sid)
-			continue;
-		if (event->stream > sid || MID_lt(mid, event->mid))
-			break;
+		if (TSN_lte(tsn, ftsn)) {
+			__skb_unlink(pos, &ulpq->reasm);
+			sctp_ulpevent_free(event);
+		}
+	}
 
-		__skb_unlink(pos, reasm);
-		sctp_ulpevent_free(event);
+	skb_queue_walk_safe(&ulpq->reasm_uo, pos, tmp) {
+		struct sctp_ulpevent *event = sctp_skb2event(pos);
+		__u32 tsn = event->tsn;
+
+		if (TSN_lte(tsn, ftsn)) {
+			__skb_unlink(pos, &ulpq->reasm_uo);
+			sctp_ulpevent_free(event);
+		}
 	}
 }
 
@@ -1225,6 +1232,11 @@ static void sctp_report_iftsn(struct sctp_ulpq *ulpq, __u32 ftsn)
 {
 	/* Move the Cumulattive TSN Ack ahead. */
 	sctp_tsnmap_skip(&ulpq->asoc->peer.tsn_map, ftsn);
+	/* purge the fragmentation queue */
+	sctp_intl_reasm_flushtsn(ulpq, ftsn);
+	/* abort only when it's for all data */
+	if (ftsn == sctp_tsnmap_get_max_tsn_seen(&ulpq->asoc->peer.tsn_map))
+		sctp_intl_abort_pd(ulpq, GFP_ATOMIC);
 }
 
 static void sctp_handle_fwdtsn(struct sctp_ulpq *ulpq, struct sctp_chunk *chunk)
@@ -1243,12 +1255,11 @@ static void sctp_intl_skip(struct sctp_ulpq *ulpq, __u16 sid, __u32 mid,
 	struct sctp_stream *stream  = &ulpq->asoc->stream;
 
 	if (flags & SCTP_FTSN_U_BIT) {
-		if (sin->pd_mode_uo && !MID_lt(mid, sin->mid_uo)) {
+		if (sin->pd_mode_uo && MID_lt(sin->mid_uo, mid)) {
 			sin->pd_mode_uo = 0;
-			sctp_intl_stream_abort_pd(ulpq, sid, sin->mid_uo, 0x1,
+			sctp_intl_stream_abort_pd(ulpq, sid, mid, 0x1,
 						  GFP_ATOMIC);
 		}
-		sctp_intl_reasm_flush_mid(&ulpq->reasm_uo, sid, mid);
 		return;
 	}
 
@@ -1257,10 +1268,9 @@ static void sctp_intl_skip(struct sctp_ulpq *ulpq, __u16 sid, __u32 mid,
 
 	if (sin->pd_mode) {
 		sin->pd_mode = 0;
-		sctp_intl_stream_abort_pd(ulpq, sid, sin->mid, 0x0, GFP_ATOMIC);
+		sctp_intl_stream_abort_pd(ulpq, sid, mid, 0x0, GFP_ATOMIC);
 	}
 
-	sctp_intl_reasm_flush_mid(&ulpq->reasm, sid, mid);
 	sctp_mid_skip(stream, in, sid, mid);
 
 	sctp_intl_reap_ordered(ulpq, sid);

@@ -1015,15 +1015,13 @@ static void free_verif_stats(struct verif_stats *stats, size_t stat_cnt)
 
 static char verif_log_buf[64 * 1024];
 
-/* Keep room for all 256 subprogram records and trailing statistics. */
-#define MAX_PARSED_LOG_LINES 300
+#define MAX_PARSED_LOG_LINES 100
 
 static int parse_verif_log(char * const buf, size_t buf_sz, struct verif_stats *s)
 {
 	const char *cur;
-	long sub_stack;
-	int pos, lines, cnt = 0;
-	char *state = NULL, *token, stack[512] = {};
+	int pos, lines, sub_stack, cnt = 0;
+	char *state = NULL, *token, stack[512];
 
 	buf[buf_sz - 1] = '\0';
 
@@ -1049,24 +1047,11 @@ static int parse_verif_log(char * const buf, size_t buf_sz, struct verif_stats *
 				&s->stats[MARK_READ_MAX_LEN]))
 			continue;
 
-		/*
-		 * New kernels emit one "subprog <id> (<name>) <kind>" record
-		 * per subprogram with the stack depth at the end, while old
-		 * kernels emit a single "stack depth <a+...+n> max <max>"
-		 * line. Match both formats so veristat works against either
-		 * kernel.
-		 */
-		if (sscanf(cur, "stack depth max %ld", &s->stats[MAX_STACK]) == 1)
-			continue;
-		if (sscanf(cur, "subprog %*d %*s %*s insns_self %*d insns_total %*d stack %ld", &sub_stack) == 1) {
-			s->stats[STACK] += sub_stack;
-			continue;
-		}
 		if (2 == sscanf(cur, "stack depth %511s max %ld", stack, &s->stats[MAX_STACK]))
 			continue;
 	}
 	while ((token = strtok_r(cnt++ ? NULL : stack, "+", &state))) {
-		if (sscanf(token, "%ld", &sub_stack) == 0)
+		if (sscanf(token, "%d", &sub_stack) == 0)
 			break;
 		s->stats[STACK] += sub_stack;
 	}
@@ -1285,29 +1270,6 @@ static void fixup_obj_maps(struct bpf_object *obj)
 
 		/* fix up map size, if necessary */
 		switch (bpf_map__type(map)) {
-		/*
-		 * if the verifier doesn't use max_entries
-		 * then set to 1 to avoid -ENOMEM
-		 */
-		case BPF_MAP_TYPE_HASH:
-		case BPF_MAP_TYPE_PERCPU_HASH:
-		case BPF_MAP_TYPE_LRU_HASH:
-		case BPF_MAP_TYPE_LRU_PERCPU_HASH:
-		case BPF_MAP_TYPE_SOCKHASH:
-		case BPF_MAP_TYPE_DEVMAP_HASH:
-		case BPF_MAP_TYPE_QUEUE:
-		case BPF_MAP_TYPE_STACK:
-		case BPF_MAP_TYPE_BLOOM_FILTER:
-		case BPF_MAP_TYPE_STACK_TRACE:
-			bpf_map__set_max_entries(map, 1);
-			break;
-
-		/* ringbufs must be page-aligned */
-		case BPF_MAP_TYPE_RINGBUF:
-		case BPF_MAP_TYPE_USER_RINGBUF:
-			bpf_map__set_max_entries(map, sysconf(_SC_PAGESIZE));
-			break;
-
 		case BPF_MAP_TYPE_SK_STORAGE:
 		case BPF_MAP_TYPE_TASK_STORAGE:
 		case BPF_MAP_TYPE_INODE_STORAGE:
@@ -1722,9 +1684,9 @@ static int process_prog(const char *filename, struct bpf_object *obj, struct bpf
 	fixup_obj(obj, prog, base_filename);
 
 	if (env.force_checkpoints)
-		bpf_program__add_flags(prog, BPF_F_TEST_STATE_FREQ);
+		bpf_program__set_flags(prog, bpf_program__flags(prog) | BPF_F_TEST_STATE_FREQ);
 	if (env.force_reg_invariants)
-		bpf_program__add_flags(prog, BPF_F_TEST_REG_INVARIANTS);
+		bpf_program__set_flags(prog, bpf_program__flags(prog) | BPF_F_TEST_REG_INVARIANTS);
 
 	opts.log_buf = buf;
 	opts.log_size = buf_sz;

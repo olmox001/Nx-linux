@@ -237,7 +237,7 @@ static int exynos_nocp_probe(struct platform_device *pdev)
 	struct exynos_nocp *nocp;
 	int ret;
 
-	nocp = devm_kzalloc_obj(&pdev->dev, *nocp);
+	nocp = devm_kzalloc(&pdev->dev, sizeof(*nocp), GFP_KERNEL);
 	if (!nocp)
 		return -ENOMEM;
 

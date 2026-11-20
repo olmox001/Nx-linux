@@ -604,7 +604,7 @@ static struct clk *tegra_clk_sor_pad_register(struct tegra_sor *sor,
 	struct clk_init_data init;
 	struct clk *clk;
 
-	pad = devm_kzalloc_obj(sor->dev, *pad);
+	pad = devm_kzalloc(sor->dev, sizeof(*pad), GFP_KERNEL);
 	if (!pad)
 		return ERR_PTR(-ENOMEM);
 
@@ -3747,7 +3747,7 @@ static int tegra_sor_probe(struct platform_device *pdev)
 	struct tegra_sor *sor;
 	int err;
 
-	sor = devm_kzalloc_obj(&pdev->dev, *sor);
+	sor = devm_kzalloc(&pdev->dev, sizeof(*sor), GFP_KERNEL);
 	if (!sor)
 		return -ENOMEM;
 

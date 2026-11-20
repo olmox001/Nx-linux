@@ -304,7 +304,8 @@ struct tee_protmem_pool *optee_protmem_alloc_dyn_pool(struct optee *optee,
 	if (rc) {
 		if (rc != -ENOSPC)
 			goto err;
-		rp->mem_attrs = kzalloc_objs(*rp->mem_attrs, rp->mem_attr_count);
+		rp->mem_attrs = kcalloc(rp->mem_attr_count,
+					sizeof(*rp->mem_attrs), GFP_KERNEL);
 		if (!rp->mem_attrs) {
 			rc = -ENOMEM;
 			goto err;

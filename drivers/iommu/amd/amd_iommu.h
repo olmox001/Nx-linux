@@ -48,14 +48,15 @@ extern u8 amd_iommu_hpt_vasize;
 extern unsigned long amd_iommu_pgsize_bitmap;
 extern bool amd_iommu_hatdis;
 
-int amd_iommu_perfopt_set(struct amd_iommu *iommu, bool enable);
-
 /* Protection domain ops */
 void amd_iommu_init_identity_domain(void);
 struct protection_domain *protection_domain_alloc(void);
 struct iommu_domain *amd_iommu_domain_alloc_sva(struct device *dev,
 						struct mm_struct *mm);
 void amd_iommu_domain_free(struct iommu_domain *dom);
+int iommu_sva_set_dev_pasid(struct iommu_domain *domain,
+			    struct device *dev, ioasid_t pasid,
+			    struct iommu_domain *old);
 void amd_iommu_remove_dev_pasid(struct device *dev, ioasid_t pasid,
 				struct iommu_domain *domain);
 
@@ -173,6 +174,7 @@ static inline struct protection_domain *to_pdomain(struct iommu_domain *dom)
 
 bool translation_pre_enabled(struct amd_iommu *iommu);
 int __init add_special_device(u8 type, u8 id, u32 *devid, bool cmd_line);
+void __init disable_vapic(void);
 
 int amd_iommu_pdom_id_alloc(void);
 int amd_iommu_pdom_id_reserve(u16 id, gfp_t gfp);

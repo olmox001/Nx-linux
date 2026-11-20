@@ -21,7 +21,6 @@
 #include <net/xfrm.h>
 #include <net/tcp.h>
 #include <net/tcp_ecn.h>
-#include <net/mptcp.h>
 #include <net/sock_reuseport.h>
 #include <net/addrconf.h>
 
@@ -420,18 +419,13 @@ static inline int sk_reuseport_match(struct inet_bind_bucket *tb,
 		return 0;
 	if (!uid_eq(tb->fastuid, sk_uid(sk)))
 		return 0;
-	/* We only need to check the fast_* fields if this tb was once marked
+	/* We only need to check the rcv_saddr if this tb was once marked
 	 * without fastreuseport and then was reset, as we can only know that
-	 * the socket they describe doesn't have any conflicts with the socks
-	 * on the owners list.
+	 * the fast_*rcv_saddr doesn't have any conflicts with the socks on the
+	 * owners list.
 	 */
 	if (tb->fastreuseport == FASTREUSEPORT_ANY)
 		return 1;
-	if (tb->fast_sk_family != sk->sk_family ||
-	    tb->fast_ipv6_only != ipv6_only_sock(sk) ||
-	    tb->fast_bound_dev_if != sk->sk_bound_dev_if ||
-	    tb->fast_sk_reuse != sk->sk_reuse)
-		return 0;
 #if IS_ENABLED(CONFIG_IPV6)
 	if (tb->fast_sk_family == AF_INET6)
 		return ipv6_rcv_saddr_equal(&tb->fast_v6_rcv_saddr,
@@ -451,8 +445,7 @@ void inet_csk_update_fastreuse(const struct sock *sk,
 {
 	bool reuse = sk->sk_reuse && sk->sk_state != TCP_LISTEN;
 
-	if (hlist_is_singular_node(&tb2->bhash_node, &tb->bhash2) &&
-	    hlist_empty(&tb2->owners)) {
+	if (hlist_empty(&tb->bhash2)) {
 		tb->fastreuse = reuse;
 		if (sk->sk_reuseport) {
 			tb->fastreuseport = FASTREUSEPORT_ANY;
@@ -460,8 +453,6 @@ void inet_csk_update_fastreuse(const struct sock *sk,
 			tb->fast_rcv_saddr = sk->sk_rcv_saddr;
 			tb->fast_ipv6_only = ipv6_only_sock(sk);
 			tb->fast_sk_family = sk->sk_family;
-			tb->fast_sk_reuse = sk->sk_reuse;
-			tb->fast_bound_dev_if = sk->sk_bound_dev_if;
 #if IS_ENABLED(CONFIG_IPV6)
 			tb->fast_v6_rcv_saddr = sk->sk_v6_rcv_saddr;
 #endif
@@ -489,8 +480,6 @@ void inet_csk_update_fastreuse(const struct sock *sk,
 				tb->fast_rcv_saddr = sk->sk_rcv_saddr;
 				tb->fast_ipv6_only = ipv6_only_sock(sk);
 				tb->fast_sk_family = sk->sk_family;
-				tb->fast_sk_reuse = sk->sk_reuse;
-				tb->fast_bound_dev_if = sk->sk_bound_dev_if;
 #if IS_ENABLED(CONFIG_IPV6)
 				tb->fast_v6_rcv_saddr = sk->sk_v6_rcv_saddr;
 #endif
@@ -692,7 +681,7 @@ struct sock *inet_csk_accept(struct sock *sk, struct proto_accept_arg *arg)
 	newsk = req->sk;
 
 	if (sk->sk_protocol == IPPROTO_TCP &&
-	    tcp_sk(newsk)->syn_fastopen_child) {
+	    tcp_rsk(req)->tfo_listener) {
 		spin_lock_bh(&queue->fastopenq.lock);
 		if (tcp_rsk(req)->tfo_listener) {
 			/* We are still waiting for the final ACK from 3WHS
@@ -878,7 +867,7 @@ reqsk_alloc_noprof(const struct request_sock_ops *ops, struct sock *sk_listener,
 	req_to_sk(req)->sk_prot = sk_listener->sk_prot;
 	sk_node_init(&req_to_sk(req)->sk_node);
 	sk_tx_queue_clear(req_to_sk(req));
-	RCU_INIT_POINTER(req->saved_syn, NULL);
+	req->saved_syn = NULL;
 	req->syncookie = 0;
 	req->num_timeout = 0;
 	req->num_retrans = 0;
@@ -917,7 +906,7 @@ void __reqsk_free(struct request_sock *req)
 	req->rsk_ops->destructor(req);
 	if (req->rsk_listener)
 		sock_put(req->rsk_listener);
-	kfree_rcu(unrcu_pointer(req->saved_syn), rcu);
+	kfree(req->saved_syn);
 	kmem_cache_free(req->rsk_ops->slab, req);
 }
 
@@ -972,9 +961,6 @@ static struct request_sock *inet_reqsk_clone(struct request_sock *req,
 		rcu_assign_pointer(tcp_sk(nreq->sk)->fastopen_rsk, nreq);
 	}
 
-	if (rsk_is_mptcp(req))
-		mptcp_subflow_reqsk_clone(req, nreq);
-
 	return nreq;
 }
 
@@ -988,7 +974,7 @@ static void reqsk_queue_migrated(struct request_sock_queue *queue,
 
 static void reqsk_migrate_reset(struct request_sock *req)
 {
-	RCU_INIT_POINTER(req->saved_syn, NULL);
+	req->saved_syn = NULL;
 #if IS_ENABLED(CONFIG_IPV6)
 	inet_rsk(req)->ipv6_opt = NULL;
 	inet_rsk(req)->pktopts = NULL;
@@ -1070,8 +1056,8 @@ static void reqsk_timer_handler(struct timer_list *t)
 		 * hold another count to prevent use-after-free and
 		 * call reqsk_put() just before return.
 		 */
+		refcount_set(&nreq->rsk_refcnt, 2 + 1);
 		timer_setup(&nreq->rsk_timer, reqsk_timer_handler, TIMER_PINNED);
-		refcount_set_release(&nreq->rsk_refcnt, 2 + 1);
 		reqsk_queue_migrated(&inet_csk(nsk)->icsk_accept_queue, req);
 
 		req = nreq;
@@ -1150,14 +1136,10 @@ static void reqsk_timer_handler(struct timer_list *t)
 	 */
 	if (nreq) {
 		__NET_INC_STATS(net, LINUX_MIB_TCPMIGRATEREQFAILURE);
-		/* The timer was not armed, drop its reference here. */
-		reqsk_put(nreq);
 no_ownership:
 		reqsk_migrate_reset(nreq);
 		reqsk_queue_removed(queue, nreq);
-		/* Drop the temporary reference and the one reserved for ehash. */
-		reqsk_put(nreq);
-		reqsk_put(nreq);
+		__reqsk_free(nreq);
 	}
 
 drop:
@@ -1271,7 +1253,6 @@ struct sock *inet_csk_clone_lock(const struct sock *sk,
 	memset(&newicsk->icsk_accept_queue, 0,
 	       sizeof(newicsk->icsk_accept_queue));
 
-	newicsk->unhashed_state = 0;
 	inet_sk_set_state(newsk, TCP_SYN_RECV);
 
 	inet_clone_ulp(req, newsk, priority);
@@ -1340,22 +1321,6 @@ static int inet_ulp_can_listen(const struct sock *sk)
 	return 0;
 }
 
-/* Free all the reqs queued in rskq_rst_head. */
-static void reqsk_fastopen_purge_rst(struct request_sock_queue *queue)
-{
-	struct request_sock *next, *req;
-
-	spin_lock_bh(&queue->fastopenq.lock);
-	req = queue->fastopenq.rskq_rst_head;
-	queue->fastopenq.rskq_rst_head = NULL;
-	spin_unlock_bh(&queue->fastopenq.lock);
-	while (req != NULL) {
-		next = req->dl_next;
-		reqsk_put(req);
-		req = next;
-	}
-}
-
 static void reqsk_queue_alloc(struct request_sock_queue *queue)
 {
 	queue->fastopenq.rskq_rst_head = NULL;
@@ -1398,12 +1363,6 @@ int inet_csk_listen_start(struct sock *sk)
 	}
 
 	inet_sk_set_state(sk, TCP_CLOSE);
-
-	/* A Fast Open child accepted before a previous shutdown() of this
-	 * listener might have queued its request in rskq_rst_head while
-	 * we were transiently in TCP_LISTEN state.
-	 */
-	reqsk_fastopen_purge_rst(&icsk->icsk_accept_queue);
 	return err;
 }
 
@@ -1478,7 +1437,7 @@ struct sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
 				goto child_put;
 			}
 
-			refcount_set_release(&nreq->rsk_refcnt, 1);
+			refcount_set(&nreq->rsk_refcnt, 1);
 			if (inet_csk_reqsk_queue_add(sk, nreq, child)) {
 				__NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPMIGRATEREQSUCCESS);
 				reqsk_migrate_reset(req);
@@ -1488,7 +1447,7 @@ struct sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
 
 			__NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPMIGRATEREQFAILURE);
 			reqsk_migrate_reset(nreq);
-			reqsk_put(nreq);
+			__reqsk_free(nreq);
 		} else if (inet_csk_reqsk_queue_add(sk, req, child)) {
 			return child;
 		}
@@ -1508,7 +1467,7 @@ void inet_csk_listen_stop(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct request_sock_queue *queue = &icsk->icsk_accept_queue;
-	struct request_sock *req;
+	struct request_sock *next, *req;
 
 	/* Following specs, it would be better either to send FIN
 	 * (and enter FIN-WAIT-1, it is normal close)
@@ -1531,7 +1490,7 @@ void inet_csk_listen_stop(struct sock *sk)
 		if (nsk) {
 			nreq = inet_reqsk_clone(req, nsk);
 			if (nreq) {
-				refcount_set_release(&nreq->rsk_refcnt, 1);
+				refcount_set(&nreq->rsk_refcnt, 1);
 
 				rcu_read_lock();
 				if (inet_csk_reqsk_queue_add(nsk, nreq, child)) {
@@ -1543,7 +1502,7 @@ void inet_csk_listen_stop(struct sock *sk)
 					__NET_INC_STATS(sock_net(nsk),
 							LINUX_MIB_TCPMIGRATEREQFAILURE);
 					reqsk_migrate_reset(nreq);
-					reqsk_put(nreq);
+					__reqsk_free(nreq);
 				}
 				rcu_read_unlock();
 
@@ -1564,7 +1523,18 @@ skip_child_forget:
 		if (!has_current_bpf_ctx())
 			cond_resched();
 	}
-	reqsk_fastopen_purge_rst(queue);
+	if (queue->fastopenq.rskq_rst_head) {
+		/* Free all the reqs queued in rskq_rst_head. */
+		spin_lock_bh(&queue->fastopenq.lock);
+		req = queue->fastopenq.rskq_rst_head;
+		queue->fastopenq.rskq_rst_head = NULL;
+		spin_unlock_bh(&queue->fastopenq.lock);
+		while (req != NULL) {
+			next = req->dl_next;
+			reqsk_put(req);
+			req = next;
+		}
+	}
 	WARN_ON_ONCE(sk->sk_ack_backlog);
 }
 

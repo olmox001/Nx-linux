@@ -766,7 +766,7 @@ static void dm_insert_exception(struct dm_exception_table *eh,
 				struct dm_exception *new_e)
 {
 	struct hlist_head *l;
-	struct dm_exception *e = NULL, *prev = NULL;
+	struct dm_exception *e = NULL;
 
 	l = &eh->table[exception_hash(eh, new_e->old_chunk)].head;
 
@@ -798,23 +798,21 @@ static void dm_insert_exception(struct dm_exception_table *eh,
 
 		if (new_e->old_chunk < e->old_chunk)
 			break;
-
-		prev = e;
 	}
 
 out:
-	if (e && new_e->old_chunk < e->old_chunk) {
-		/* Add before an existing exception */
-		hlist_add_before(&new_e->hash_list, &e->hash_list);
-	} else if (prev) {
-		/* Add to l's tail: prev is the last exception in this slot */
-		hlist_add_behind(&new_e->hash_list, &prev->hash_list);
-	} else {
+	if (!e) {
 		/*
 		 * Either the table doesn't support consecutive chunks or slot
 		 * l is empty.
 		 */
 		hlist_add_head(&new_e->hash_list, l);
+	} else if (new_e->old_chunk < e->old_chunk) {
+		/* Add before an existing exception */
+		hlist_add_before(&new_e->hash_list, &e->hash_list);
+	} else {
+		/* Add to l's tail: e is the last exception in this slot */
+		hlist_add_behind(&new_e->hash_list, &e->hash_list);
 	}
 }
 
@@ -913,7 +911,9 @@ static int init_hash_tables(struct dm_snapshot *s)
 
 static void merge_shutdown(struct dm_snapshot *s)
 {
-	clear_and_wake_up_bit(RUNNING_MERGE, &s->state_bits);
+	clear_bit_unlock(RUNNING_MERGE, &s->state_bits);
+	smp_mb__after_atomic();
+	wake_up_bit(&s->state_bits, RUNNING_MERGE);
 }
 
 static struct bio *__release_queued_bios_after_merge(struct dm_snapshot *s)
@@ -1358,10 +1358,8 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	ti->private = s;
 	ti->num_flush_bios = num_flush_bios;
-	if (s->discard_zeroes_cow) {
+	if (s->discard_zeroes_cow)
 		ti->num_discard_bios = (s->discard_passdown_origin ? 2 : 1);
-		ti->max_discard_granularity = true;
-	}
 	ti->per_io_data_size = sizeof(struct dm_snap_tracked_chunk);
 
 	/* Add snapshot to the list of snapshots for this origin */
@@ -1948,8 +1946,8 @@ static void zero_exception(struct dm_snapshot *s, struct dm_exception *e,
 
 static bool io_overlaps_chunk(struct dm_snapshot *s, struct bio *bio)
 {
-	return bio->bi_iter.bi_size == (s->store->chunk_size << SECTOR_SHIFT) &&
-	       !(bio->bi_iter.bi_sector & s->store->chunk_mask);
+	return bio->bi_iter.bi_size ==
+		(s->store->chunk_size << SECTOR_SHIFT);
 }
 
 static int snapshot_map(struct dm_target *ti, struct bio *bio)
@@ -2009,13 +2007,11 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio)
 	e = dm_lookup_exception(&s->complete, chunk);
 	if (e) {
 		remap_exception(s, e, bio, chunk);
-		if (unlikely(bio_op(bio) == REQ_OP_DISCARD)) {
+		if (unlikely(bio_op(bio) == REQ_OP_DISCARD) &&
+		    io_overlaps_chunk(s, bio)) {
 			dm_exception_table_unlock(&lock);
 			up_read(&s->lock);
-			if (io_overlaps_chunk(s, bio))
-				zero_exception(s, e, bio, chunk);
-			else
-				bio_endio(bio);
+			zero_exception(s, e, bio, chunk);
 			r = DM_MAPIO_SUBMITTED; /* discard is not issued */
 			goto out;
 		}
@@ -2418,7 +2414,7 @@ static void snapshot_io_hints(struct dm_target *ti, struct queue_limits *limits)
 			snap = snap_src;
 
 		/* All discards are split on chunk_size boundary */
-		limits->discard_granularity = snap->store->chunk_size << SECTOR_SHIFT;
+		limits->discard_granularity = snap->store->chunk_size;
 		limits->max_hw_discard_sectors = snap->store->chunk_size;
 
 		up_read(&_origins_lock);

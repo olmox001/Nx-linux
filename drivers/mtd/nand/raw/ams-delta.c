@@ -250,7 +250,8 @@ static int gpio_nand_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate memory for MTD device structure and private data */
-	priv = devm_kzalloc_obj(&pdev->dev, struct gpio_nand);
+	priv = devm_kzalloc(&pdev->dev, sizeof(struct gpio_nand),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

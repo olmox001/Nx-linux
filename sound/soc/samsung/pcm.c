@@ -499,9 +499,10 @@ static int s3c_pcm_dev_probe(struct platform_device *pdev)
 		return PTR_ERR(pcm->regs);
 
 	pcm->cclk = devm_clk_get(&pdev->dev, "audio-bus");
-	if (IS_ERR(pcm->cclk))
-		return dev_err_probe(&pdev->dev, PTR_ERR(pcm->cclk),
-				     "failed to get audio-bus clock\n");
+	if (IS_ERR(pcm->cclk)) {
+		dev_err(&pdev->dev, "failed to get audio-bus clock\n");
+		return PTR_ERR(pcm->cclk);
+	}
 	ret = clk_prepare_enable(pcm->cclk);
 	if (ret)
 		return ret;
@@ -511,8 +512,8 @@ static int s3c_pcm_dev_probe(struct platform_device *pdev)
 
 	pcm->pclk = devm_clk_get(&pdev->dev, "pcm");
 	if (IS_ERR(pcm->pclk)) {
-		ret = dev_err_probe(&pdev->dev, PTR_ERR(pcm->pclk),
-				    "failed to get pcm clock\n");
+		dev_err(&pdev->dev, "failed to get pcm clock\n");
+		ret = PTR_ERR(pcm->pclk);
 		goto err_dis_cclk;
 	}
 	ret = clk_prepare_enable(pcm->pclk);
@@ -534,15 +535,19 @@ static int s3c_pcm_dev_probe(struct platform_device *pdev)
 
 	ret = samsung_asoc_dma_platform_register(&pdev->dev, filter,
 						 NULL, NULL, NULL);
-	if (ret)
+	if (ret) {
+		dev_err(&pdev->dev, "failed to get register DMA: %d\n", ret);
 		goto err_dis_pclk;
+	}
 
 	pm_runtime_enable(&pdev->dev);
 
 	ret = devm_snd_soc_register_component(&pdev->dev, &s3c_pcm_component,
 					 &s3c_pcm_dai[pdev->id], 1);
-	if (ret != 0)
+	if (ret != 0) {
+		dev_err(&pdev->dev, "failed to get register DAI: %d\n", ret);
 		goto err_dis_pm;
+	}
 
 	return 0;
 

@@ -305,7 +305,8 @@ static int virtio_gpu_init_submit_buflist(struct virtio_gpu_submit *submit)
 	if (!exbuf->num_bo_handles)
 		return 0;
 
-	bo_handles = kvmalloc_objs(*bo_handles, exbuf->num_bo_handles);
+	bo_handles = kvmalloc_array(exbuf->num_bo_handles, sizeof(*bo_handles),
+				    GFP_KERNEL);
 	if (!bo_handles)
 		return -ENOMEM;
 

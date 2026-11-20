@@ -672,7 +672,8 @@ static int pl010_probe(struct amba_device *dev, const struct amba_id *id)
 	if (i == ARRAY_SIZE(amba_ports))
 		return -EBUSY;
 
-	uap = devm_kzalloc_obj(&dev->dev, struct uart_amba_port);
+	uap = devm_kzalloc(&dev->dev, sizeof(struct uart_amba_port),
+			   GFP_KERNEL);
 	if (!uap)
 		return -ENOMEM;
 

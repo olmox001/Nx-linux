@@ -160,6 +160,12 @@ static bool ipv6_raw_deliver(struct sk_buff *skb, int nexthdr)
 				  inet6_iif(skb), inet6_sdif(skb)))
 			continue;
 
+		if (atomic_read(&sk->sk_rmem_alloc) >=
+		    READ_ONCE(sk->sk_rcvbuf)) {
+			sk_drops_inc(sk);
+			continue;
+		}
+
 		delivered = true;
 		switch (nexthdr) {
 		case IPPROTO_ICMPV6:
@@ -191,15 +197,8 @@ static bool ipv6_raw_deliver(struct sk_buff *skb, int nexthdr)
 		if (filtered < 0)
 			break;
 		if (filtered == 0) {
-			struct sk_buff *clone;
+			struct sk_buff *clone = skb_clone(skb, GFP_ATOMIC);
 
-			if (atomic_read(&sk->sk_rmem_alloc) >=
-			    READ_ONCE(sk->sk_rcvbuf)) {
-				sk_drops_inc(sk);
-				continue;
-			}
-
-			clone = skb_clone(skb, GFP_ATOMIC);
 			/* Not releasing hash table! */
 			if (clone)
 				rawv6_rcv(sk, clone);
@@ -655,9 +654,6 @@ static int rawv6_send_hdrinc(struct sock *sk, struct msghdr *msg, int length,
 	if (unlikely(!skb))
 		return 0;
 
-	/* l3mdev_ip6_out() may have replaced the skb dst. */
-	rt = dst_rt6_info(skb_dst(skb));
-
 	/* Acquire rcu_read_lock() in case we need to use rt->rt6i_idev
 	 * in the error path. Since skb has been freed, the dst could
 	 * have been queued for deletion.
@@ -1055,12 +1051,14 @@ static int rawv6_setsockopt(struct sock *sk, int level, int optname,
 	return do_rawv6_setsockopt(sk, level, optname, optval, optlen);
 }
 
-static int do_rawv6_getsockopt(struct sock *sk, int optname, sockopt_t *opt)
+static int do_rawv6_getsockopt(struct sock *sk, int level, int optname,
+			    char __user *optval, int __user *optlen)
 {
 	struct raw6_sock *rp = raw6_sk(sk);
 	int val, len;
 
-	len = opt->optlen;
+	if (get_user(len, optlen))
+		return -EFAULT;
 
 	switch (optname) {
 	case IPV6_HDRINCL:
@@ -1082,10 +1080,11 @@ static int do_rawv6_getsockopt(struct sock *sk, int optname, sockopt_t *opt)
 		return -ENOPROTOOPT;
 	}
 
-	len = umin(sizeof(int), len);
+	len = min_t(unsigned int, sizeof(int), len);
 
-	opt->optlen = len;
-	if (copy_to_iter(&val, len, &opt->iter_out) != len)
+	if (put_user(len, optlen))
+		return -EFAULT;
+	if (copy_to_user(optval, &val, len))
 		return -EFAULT;
 	return 0;
 }
@@ -1093,9 +1092,6 @@ static int do_rawv6_getsockopt(struct sock *sk, int optname, sockopt_t *opt)
 static int rawv6_getsockopt(struct sock *sk, int level, int optname,
 			  char __user *optval, int __user *optlen)
 {
-	sockopt_t opt;
-	int err;
-
 	switch (level) {
 	case SOL_RAW:
 		break;
@@ -1113,18 +1109,7 @@ static int rawv6_getsockopt(struct sock *sk, int level, int optname,
 		return ipv6_getsockopt(sk, level, optname, optval, optlen);
 	}
 
-	err = sockopt_init_user(&opt, optval, optlen);
-	if (err)
-		return err;
-
-	err = do_rawv6_getsockopt(sk, optname, &opt);
-	if (err)
-		return err;
-
-	if (put_user(opt.optlen, optlen))
-		return -EFAULT;
-
-	return 0;
+	return do_rawv6_getsockopt(sk, level, optname, optval, optlen);
 }
 
 static int rawv6_ioctl(struct sock *sk, int cmd, int *karg)

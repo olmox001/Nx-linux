@@ -1092,7 +1092,6 @@ static void free_skb_rx_queue(struct gfar_priv_rx_q *rx_queue)
 	struct rxbd8 *rxbdp = rx_queue->rx_bd_base;
 
 	dev_kfree_skb(rx_queue->skb);
-	rx_queue->skb = NULL;
 
 	for (i = 0; i < rx_queue->rx_ring_size; i++) {
 		struct	gfar_rx_buff *rxb = &rx_queue->rx_buff[i];
@@ -2878,7 +2877,11 @@ static int gfar_enet_open(struct net_device *dev)
 	if (err)
 		return err;
 
-	return startup_gfar(dev);
+	err = startup_gfar(dev);
+	if (err)
+		return err;
+
+	return err;
 }
 
 /* Stops the kernel queue, and halts the controller */

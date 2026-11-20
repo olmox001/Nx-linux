@@ -484,8 +484,9 @@ static int lp55xx_init_led(struct lp55xx_led *led,
 	}
 
 	if (pdata->led_config[chan].num_colors > 1) {
-		mc_led_info = devm_kzalloc_objs(dev, *mc_led_info,
-						pdata->led_config[chan].num_colors);
+		mc_led_info = devm_kcalloc(dev,
+					   pdata->led_config[chan].num_colors,
+					   sizeof(*mc_led_info), GFP_KERNEL);
 		if (!mc_led_info)
 			return -ENOMEM;
 
@@ -1209,7 +1210,7 @@ static struct lp55xx_platform_data *lp55xx_of_populate_pdata(struct device *dev,
 	int i = 0;
 	int ret;
 
-	pdata = devm_kzalloc_obj(dev, *pdata);
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
@@ -1219,7 +1220,7 @@ static struct lp55xx_platform_data *lp55xx_of_populate_pdata(struct device *dev,
 		return ERR_PTR(-EINVAL);
 	}
 
-	cfg = devm_kzalloc_objs(dev, *cfg, num_channels);
+	cfg = devm_kcalloc(dev, num_channels, sizeof(*cfg), GFP_KERNEL);
 	if (!cfg)
 		return ERR_PTR(-ENOMEM);
 
@@ -1265,7 +1266,7 @@ int lp55xx_probe(struct i2c_client *client)
 	struct lp55xx_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct device_node *np = dev_of_node(&client->dev);
 
-	chip = devm_kzalloc_obj(&client->dev, *chip);
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -1294,7 +1295,8 @@ int lp55xx_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	led = devm_kzalloc_objs(&client->dev, *led, pdata->num_channels);
+	led = devm_kcalloc(&client->dev,
+			   pdata->num_channels, sizeof(*led), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 

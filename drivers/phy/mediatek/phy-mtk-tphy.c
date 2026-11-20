@@ -1573,7 +1573,7 @@ static int mtk_tphy_probe(struct platform_device *pdev)
 	struct resource res;
 	int port, ret;
 
-	tphy = devm_kzalloc_obj(dev, *tphy);
+	tphy = devm_kzalloc(dev, sizeof(*tphy), GFP_KERNEL);
 	if (!tphy)
 		return -ENOMEM;
 
@@ -1582,7 +1582,8 @@ static int mtk_tphy_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	tphy->nphys = of_get_child_count(np);
-	tphy->phys = devm_kzalloc_objs(dev, *tphy->phys, tphy->nphys);
+	tphy->phys = devm_kcalloc(dev, tphy->nphys,
+				       sizeof(*tphy->phys), GFP_KERNEL);
 	if (!tphy->phys)
 		return -ENOMEM;
 
@@ -1617,7 +1618,7 @@ static int mtk_tphy_probe(struct platform_device *pdev)
 		struct phy *phy;
 		int retval;
 
-		instance = devm_kzalloc_obj(dev, *instance);
+		instance = devm_kzalloc(dev, sizeof(*instance), GFP_KERNEL);
 		if (!instance)
 			return -ENOMEM;
 

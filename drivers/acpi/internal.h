@@ -157,7 +157,6 @@ void acpi_turn_off_unused_power_resources(void);
                               Device Power Management
    -------------------------------------------------------------------------- */
 int acpi_device_get_power(struct acpi_device *device, int *state);
-int acpi_bus_init_power(struct acpi_device *device);
 int acpi_wakeup_device_init(void);
 
 /* --------------------------------------------------------------------------
@@ -237,7 +236,7 @@ void acpi_ec_register_opregions(struct acpi_device *adev);
 
 #ifdef CONFIG_PM_SLEEP
 void acpi_ec_flush_work(void);
-int acpi_ec_dispatch_gpe(void);
+bool acpi_ec_dispatch_gpe(void);
 #endif
 
 #else
@@ -257,9 +256,9 @@ static inline void acpi_ec_remove_query_handler(struct acpi_ec *ec, u8 query_bit
 static inline void acpi_ec_register_opregions(struct acpi_device *adev) {}
 
 static inline void acpi_ec_flush_work(void) {}
-static inline int acpi_ec_dispatch_gpe(void)
+static inline bool acpi_ec_dispatch_gpe(void)
 {
-	return -EOPNOTSUPP;
+	return false;
 }
 
 #endif

@@ -31,11 +31,6 @@ struct workqueue_struct *fnic_event_queue;
 
 static uint8_t FCOE_ALL_FCF_MAC[6] = FC_FCOE_FLOGI_MAC;
 
-static inline bool fnic_is_nvme_frame(struct fc_frame_header *fchdr)
-{
-	return (fchdr->fh_type == FC_TYPE_NVME);
-}
-
 /*
  * Internal Functions
  * This function will initialize the src_mac address to be
@@ -160,6 +155,7 @@ void fnic_fdls_init(struct fnic *fnic, int usefip)
 				 iport->hwmac[3], iport->hwmac[4], iport->hwmac[5]);
 
 	INIT_LIST_HEAD(&iport->tport_list);
+	INIT_LIST_HEAD(&iport->tport_list_pending_del);
 
 	fnic_fdls_disc_init(iport);
 }
@@ -289,7 +285,6 @@ void fnic_handle_frame(struct work_struct *work)
 	struct fnic *fnic = container_of(work, struct fnic, frame_work);
 	struct fnic_frame_list *cur_frame, *next;
 	int fchdr_offset = 0;
-	struct fc_frame_header *fchdr;
 
 	spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
 	list_for_each_entry_safe(cur_frame, next, &fnic->frame_queue, links) {
@@ -319,14 +314,8 @@ void fnic_handle_frame(struct work_struct *work)
 		fchdr_offset = (cur_frame->rx_ethhdr_stripped) ?
 			0 : FNIC_ETH_FCOE_HDRS_OFFSET;
 
-		fchdr = (struct fc_frame_header *)((u8 *)cur_frame->fp + fchdr_offset);
-		if (IS_FNIC_NVME_INITIATOR(fnic) && fnic_is_nvme_frame(fchdr)) {
-			nvfnic_ls_rsp_recv(&fnic->iport, fchdr,
-					  cur_frame->frame_len - fchdr_offset);
-		} else {
-			fnic_fdls_recv_frame(&fnic->iport, cur_frame->fp,
-					     cur_frame->frame_len, fchdr_offset);
-		}
+		fnic_fdls_recv_frame(&fnic->iport, cur_frame->fp,
+							 cur_frame->frame_len, fchdr_offset);
 
 		mempool_free(cur_frame->fp, fnic->frame_recv_pool);
 		mempool_free(cur_frame, fnic->frame_elem_pool);
@@ -626,13 +615,9 @@ free_buf:
 
 void fnic_free_rq_buf(struct vnic_rq *rq, struct vnic_rq_buf *buf)
 {
-	void *rq_buf;
+	void *rq_buf = buf->os_buf;
 	struct fnic *fnic = vnic_dev_priv(rq->vdev);
 
-	if (WARN_ON(!buf))
-		return;
-
-	rq_buf = buf->os_buf;
 	dma_unmap_single(&fnic->pdev->dev, buf->dma_addr, buf->len,
 			 DMA_FROM_DEVICE);
 
@@ -667,7 +652,7 @@ static int fnic_send_frame(struct fnic *fnic, void *frame, int frame_len)
 		dma_unmap_single(&fnic->pdev->dev, pa, frame_len, DMA_TO_DEVICE);
 		FNIC_FCS_DBG(KERN_INFO, fnic,
 					 "vnic work queue descriptor is not available");
-		ret = -ENXIO;
+		ret = -1;
 		goto fnic_send_frame_end;
 	}
 
@@ -701,6 +686,7 @@ fdls_send_fcoe_frame(struct fnic *fnic, void *frame, int frame_size,
 	struct fcoe_hdr *pfcoe_hdr;
 	struct fnic_frame_list *frame_elem;
 	int len = frame_size;
+	int ret;
 	struct fc_frame_header *fchdr = (struct fc_frame_header *) (frame +
 			FNIC_ETH_FCOE_HDRS_OFFSET);
 
@@ -738,10 +724,11 @@ fdls_send_fcoe_frame(struct fnic *fnic, void *frame, int frame_size,
 
 	fnic_debug_dump_fc_frame(fnic, fchdr, frame_size, "Outgoing");
 
-	return fnic_send_frame(fnic, frame, len);
+	ret = fnic_send_frame(fnic, frame, len);
+	return ret;
 }
 
-int fnic_send_fcoe_frame(struct fnic_iport_s *iport, void *frame,
+void fnic_send_fcoe_frame(struct fnic_iport_s *iport, void *frame,
 						 int frame_size)
 {
 	struct fnic *fnic = iport->fnic;
@@ -749,7 +736,7 @@ int fnic_send_fcoe_frame(struct fnic_iport_s *iport, void *frame,
 
 	/* If module unload is in-progress, don't send */
 	if (fnic->in_remove)
-		return -ESHUTDOWN;
+		return;
 
 	if (iport->fabric.flags & FNIC_FDLS_FPMA_LEARNT) {
 		srcmac = iport->fpma;
@@ -759,7 +746,7 @@ int fnic_send_fcoe_frame(struct fnic_iport_s *iport, void *frame,
 		dstmac = FCOE_ALL_FCF_MAC;
 	}
 
-	return fdls_send_fcoe_frame(fnic, frame, frame_size, srcmac, dstmac);
+	fdls_send_fcoe_frame(fnic, frame, frame_size, srcmac, dstmac);
 }
 
 int
@@ -886,9 +873,6 @@ static void fnic_wq_complete_frame_send(struct vnic_wq *wq,
 {
 	struct fnic *fnic = vnic_dev_priv(wq->vdev);
 
-	if (WARN_ON(!buf))
-		return;
-
 	dma_unmap_single(&fnic->pdev->dev, buf->dma_addr, buf->len,
 			 DMA_TO_DEVICE);
 	mempool_free(buf->os_buf, fnic->frame_pool);
@@ -931,9 +915,6 @@ void fnic_free_wq_buf(struct vnic_wq *wq, struct vnic_wq_buf *buf)
 {
 	struct fnic *fnic = vnic_dev_priv(wq->vdev);
 
-	if (WARN_ON(!buf))
-		return;
-
 	dma_unmap_single(&fnic->pdev->dev, buf->dma_addr, buf->len,
 			 DMA_TO_DEVICE);
 
@@ -942,10 +923,10 @@ void fnic_free_wq_buf(struct vnic_wq *wq, struct vnic_wq_buf *buf)
 }
 
 void
-fnic_fdls_add_tport(struct fnic *fnic, struct fnic_tport_s *tport,
-		    unsigned long flags)
-	__must_hold(&fnic->fnic_lock)
+fnic_fdls_add_tport(struct fnic_iport_s *iport, struct fnic_tport_s *tport,
+					unsigned long flags)
 {
+	struct fnic *fnic = iport->fnic;
 	struct fc_rport *rport;
 	struct fc_rport_identifiers ids;
 	struct rport_dd_data_s *rdd_data;
@@ -975,17 +956,18 @@ fnic_fdls_add_tport(struct fnic *fnic, struct fnic_tport_s *tport,
 	rport->supported_classes = FC_COS_CLASS3 | FC_RPORT_ROLE_FCP_TARGET;
 	rdd_data = rport->dd_data;
 	rdd_data->tport = tport;
-	rdd_data->iport = &fnic->iport;
+	rdd_data->iport = iport;
 	tport->rport = rport;
 	tport->flags |= FNIC_FDLS_SCSI_REGISTERED;
 }
 
 void
-fnic_fdls_remove_tport(struct fnic *fnic, struct fnic_tport_s *tport,
-		       unsigned long flags)
-	__must_hold(&fnic->fnic_lock)
+fnic_fdls_remove_tport(struct fnic_iport_s *iport,
+					   struct fnic_tport_s *tport, unsigned long flags)
 {
+	struct fnic *fnic = iport->fnic;
 	struct rport_dd_data_s *rdd_data;
+
 	struct fc_rport *rport;
 
 	if (!tport)
@@ -1036,10 +1018,7 @@ void fnic_delete_fcp_tports(struct fnic *fnic)
 					 "removing fcp rport fcid: 0x%x", tport->fcid);
 		fdls_set_tport_state(tport, FDLS_TGT_STATE_OFFLINING);
 		fnic_del_tport_timer_sync(fnic, tport);
-		if (IS_FNIC_FCP_INITIATOR(fnic))
-			fnic_fdls_remove_tport(fnic, tport, flags);
-		else if (IS_FNIC_NVME_INITIATOR(fnic))
-			nvfnic_delete_tport(&fnic->iport, tport, flags);
+		fnic_fdls_remove_tport(&fnic->iport, tport, flags);
 	}
 	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
 }
@@ -1065,10 +1044,8 @@ void fnic_tport_event_handler(struct work_struct *work)
 			FNIC_FCS_DBG(KERN_INFO, fnic,
 						 "Add rport event");
 			if (tport->state == FDLS_TGT_STATE_READY) {
-				if (IS_FNIC_FCP_INITIATOR(fnic))
-					fnic_fdls_add_tport(fnic, tport, flags);
-				else if (IS_FNIC_NVME_INITIATOR(fnic))
-					nvfnic_add_tport(fnic, tport, flags);
+				fnic_fdls_add_tport(&fnic->iport,
+					(struct fnic_tport_s *) cur_evt->arg1, flags);
 			} else {
 				FNIC_FCS_DBG(KERN_INFO, fnic,
 					 "Target not ready. Add rport event dropped: 0x%x",
@@ -1079,10 +1056,8 @@ void fnic_tport_event_handler(struct work_struct *work)
 			FNIC_FCS_DBG(KERN_INFO, fnic,
 						 "Remove rport event");
 			if (tport->state == FDLS_TGT_STATE_OFFLINING) {
-				if (IS_FNIC_FCP_INITIATOR(fnic))
-					fnic_fdls_remove_tport(fnic, tport, flags);
-				else if (IS_FNIC_NVME_INITIATOR(fnic))
-					nvfnic_delete_tport(&fnic->iport, tport, flags);
+				fnic_fdls_remove_tport(&fnic->iport,
+					   (struct fnic_tport_s *) cur_evt->arg1, flags);
 			} else {
 				FNIC_FCS_DBG(KERN_INFO, fnic,
 							 "remove rport event dropped tport fcid: 0x%x",
@@ -1135,15 +1110,12 @@ void fnic_reset_work_handler(struct work_struct *work)
 		spin_unlock_irqrestore(&reset_fnic_list_lock,
 							   reset_fnic_list_lock_flags);
 
-		if (IS_FNIC_FCP_INITIATOR(cur_fnic)) {
-			dev_err(&cur_fnic->pdev->dev,
-				"fnic: <%d>: issuing a host reset\n",
-				cur_fnic->fnic_num);
-			host_reset_ret_code = fnic_host_reset(cur_fnic->host);
-			dev_err(&cur_fnic->pdev->dev,
-				"fnic: <%d>: returned from host reset with status: %d\n",
-				cur_fnic->fnic_num, host_reset_ret_code);
-		}
+		dev_err(&cur_fnic->pdev->dev, "fnic: <%d>: issuing a host reset\n",
+			   cur_fnic->fnic_num);
+		host_reset_ret_code = fnic_host_reset(cur_fnic->host);
+		dev_err(&cur_fnic->pdev->dev,
+		   "fnic: <%d>: returned from host reset with status: %d\n",
+		   cur_fnic->fnic_num, host_reset_ret_code);
 
 		spin_lock_irqsave(&cur_fnic->fnic_lock, cur_fnic->lock_flags);
 		cur_fnic->pc_rscn_handling_status =

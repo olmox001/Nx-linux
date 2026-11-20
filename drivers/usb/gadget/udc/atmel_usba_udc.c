@@ -2172,7 +2172,8 @@ static struct usba_ep * atmel_udc_of_init(struct platform_device *pdev,
 		udc->num_ep = usba_config_fifo_table(udc);
 	}
 
-	eps = devm_kzalloc_objs(&pdev->dev, struct usba_ep, udc->num_ep);
+	eps = devm_kcalloc(&pdev->dev, udc->num_ep, sizeof(struct usba_ep),
+			   GFP_KERNEL);
 	if (!eps)
 		return ERR_PTR(-ENOMEM);
 
@@ -2275,7 +2276,7 @@ static int usba_udc_probe(struct platform_device *pdev)
 	struct usba_udc *udc;
 	int irq, ret, i;
 
-	udc = devm_kzalloc_obj(&pdev->dev, *udc);
+	udc = devm_kzalloc(&pdev->dev, sizeof(*udc), GFP_KERNEL);
 	if (!udc)
 		return -ENOMEM;
 
@@ -2331,8 +2332,11 @@ static int usba_udc_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(&pdev->dev, irq, usba_udc_irq, 0,
 				"atmel_usba_udc", udc);
-	if (ret)
+	if (ret) {
+		dev_err(&pdev->dev, "Cannot request irq %d (error %d)\n",
+			irq, ret);
 		return ret;
+	}
 	udc->irq = irq;
 
 	if (udc->vbus_pin) {

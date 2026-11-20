@@ -114,7 +114,8 @@ static int timeriomem_rng_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate memory for the device structure (and zero it) */
-	priv = devm_kzalloc_obj(&pdev->dev, struct timeriomem_rng_private);
+	priv = devm_kzalloc(&pdev->dev,
+			sizeof(struct timeriomem_rng_private), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

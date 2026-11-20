@@ -2381,7 +2381,9 @@ static int mt6358_platform_driver_probe(struct platform_device *pdev)
 	struct mt6358_priv *priv;
 	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
 
-	priv = devm_kzalloc_obj(&pdev->dev, struct mt6358_priv);
+	priv = devm_kzalloc(&pdev->dev,
+			    sizeof(struct mt6358_priv),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

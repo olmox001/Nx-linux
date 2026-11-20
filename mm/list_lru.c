@@ -410,6 +410,19 @@ list_lru_walk_one_irq(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
 				   cb_arg, nr_to_walk, true);
 }
 
+/**
+ * list_lru_elems_node() - returns the number of
+ * elements in an list_lru for a given node.
+ */
+long list_lru_elems_node(struct list_lru *lru, int nid)
+{
+	long nelems;
+	struct list_lru_node *nlru = &lru->node[nid];
+	nelems = atomic_long_read(&nlru->nr_items);
+	return nelems;
+}
+EXPORT_SYMBOL_GPL(list_lru_elems_node);
+
 unsigned long list_lru_walk_node(struct list_lru *lru, int nid,
 				 list_lru_walk_cb isolate, void *cb_arg,
 				 unsigned long *nr_to_walk)
@@ -428,7 +441,7 @@ unsigned long list_lru_walk_node(struct list_lru *lru, int nid,
 		xa_for_each(&lru->xa, index, mlru) {
 			rcu_read_lock();
 			memcg = mem_cgroup_from_private_id(index);
-			if (!memcg || !mem_cgroup_tryget(memcg)) {
+			if (!mem_cgroup_tryget(memcg)) {
 				rcu_read_unlock();
 				continue;
 			}
@@ -447,6 +460,53 @@ unsigned long list_lru_walk_node(struct list_lru *lru, int nid,
 	return isolated;
 }
 EXPORT_SYMBOL_GPL(list_lru_walk_node);
+
+/*
+ * list_lru_walk_one_node() - walks a specified list_lru_node
+ * from the given list_lru list. It determines the effective
+ * number of nodes to walk s a percentage of the 'nr_total'
+ * and walks that many list nodes.
+ * This is a modified version of list_lru_walk_node().
+ */
+unsigned long list_lru_walk_one_node(struct list_lru *lru, int nid,
+				list_lru_walk_cb isolate, void *cb_arg,
+				unsigned long nr_total,
+				unsigned long nr_to_walk)
+{
+	unsigned long isolated = 0;
+	unsigned long nr_to_walk_node, walk_a_node;
+	struct list_lru_node *nlru = &lru->node[nid];
+	long lru_elems = atomic_long_read(&nlru->nr_items);
+
+	nr_to_walk_node = (nr_to_walk * lru_elems) / nr_total;
+	if (!nr_to_walk_node)
+		return isolated;
+
+	walk_a_node = nr_to_walk_node;
+	isolated += list_lru_walk_one(lru, nid, NULL, isolate, cb_arg,
+					&walk_a_node);
+#ifdef CONFIG_MEMCG_KMEM
+	if (walk_a_node > 0 && list_lru_memcg_aware(lru)) {
+	struct list_lru_memcg *mlru;
+	unsigned long index;
+
+	xa_for_each(&lru->xa, index, mlru) {
+		nlru = &lru->node[nid];
+
+		spin_lock(&nlru->lock);
+		isolated += __list_lru_walk_one(lru, nid, index,
+						isolate, cb_arg,
+						&walk_a_node);
+		spin_unlock(&nlru->lock);
+		if (walk_a_node <= 0)
+			break;
+		}
+	}
+#endif
+
+	return isolated;
+}
+EXPORT_SYMBOL_GPL(list_lru_walk_one_node);
 
 static void init_one_lru(struct list_lru *lru, struct list_lru_one *l)
 {
@@ -587,7 +647,7 @@ static int __memcg_list_lru_alloc(struct mem_cgroup *memcg,
 	 */
 	do {
 		/*
-		 * Keep finding the farthest parent that wasn't populated
+		 * Keep finding the farest parent that wasn't populated
 		 * until found memcg itself.
 		 */
 		pos = memcg;
@@ -666,17 +726,12 @@ int __list_lru_init(struct list_lru *lru, bool memcg_aware, struct shrinker *shr
 	int i;
 
 #ifdef CONFIG_MEMCG
-	/*
-	 * If the shrinker fell back to being non-memcg-aware (e.g. with
-	 * cgroup.memory=nokmem), its id was never assigned and holds a
-	 * stale 0. Don't let set_shrinker_bit() act on it.
-	 */
-	if (shrinker && (shrinker->flags & SHRINKER_MEMCG_AWARE))
+	if (shrinker)
 		lru->shrinker_id = shrinker->id;
 	else
 		lru->shrinker_id = -1;
 
-	if (mem_cgroup_disabled() || mem_cgroup_kmem_disabled())
+	if (mem_cgroup_kmem_disabled())
 		memcg_aware = false;
 #endif
 

@@ -1426,8 +1426,9 @@ static int iproc_pcie_rev_init(struct iproc_pcie *pcie)
 		return -EINVAL;
 	}
 
-	pcie->reg_offsets = devm_kzalloc_objs(dev, *pcie->reg_offsets,
-					      IPROC_PCIE_MAX_NUM_REG);
+	pcie->reg_offsets = devm_kcalloc(dev, IPROC_PCIE_MAX_NUM_REG,
+					 sizeof(*pcie->reg_offsets),
+					 GFP_KERNEL);
 	if (!pcie->reg_offsets)
 		return -ENOMEM;
 

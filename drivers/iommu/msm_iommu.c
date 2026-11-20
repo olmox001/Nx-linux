@@ -622,9 +622,6 @@ static int insert_iommu_master(struct device *dev,
 			return 0;
 		}
 
-	if (master->num_mids >= MAX_NUM_MIDS)
-		return -ENOSPC;
-
 	master->mids[master->num_mids++] = spec->args[0];
 	return 0;
 }
@@ -721,7 +718,7 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	struct msm_iommu_dev *iommu;
 	int ret, par, val;
 
-	iommu = devm_kzalloc_obj(&pdev->dev, *iommu);
+	iommu = devm_kzalloc(&pdev->dev, sizeof(*iommu), GFP_KERNEL);
 	if (!iommu)
 		return -ENOMEM;
 

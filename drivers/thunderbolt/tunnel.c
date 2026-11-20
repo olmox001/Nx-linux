@@ -11,7 +11,6 @@
 #include <linux/list.h>
 #include <linux/ktime.h>
 #include <linux/string_helpers.h>
-#include <linux/stringify.h>
 
 #include "tunnel.h"
 #include "tb.h"
@@ -48,9 +47,6 @@
 
 #define TB_DP_AUX_PRIORITY		2
 #define TB_DP_AUX_WEIGHT		1
-
-/* struct tb_regs_hop::initial_credits is 7 bits wide */
-#define TB_MAX_CREDITS			127
 
 /* Minimum number of credits needed for PCIe path */
 #define TB_MIN_PCIE_CREDITS		6U
@@ -90,12 +86,12 @@ static int dprx_timeout = TB_DPRX_TIMEOUT;
 module_param(dprx_timeout, int, 0444);
 MODULE_PARM_DESC(dprx_timeout,
 		 "DPRX capability read timeout in ms, -1 waits forever (default: "
-		 __stringify(TB_DPRX_TIMEOUT) ")");
+		 __MODULE_STRING(TB_DPRX_TIMEOUT) ")");
 
 static unsigned int dma_credits = TB_DMA_CREDITS;
 module_param(dma_credits, uint, 0444);
 MODULE_PARM_DESC(dma_credits, "specify custom credits for DMA tunnels (default: "
-		 __stringify(TB_DMA_CREDITS) ")");
+                __MODULE_STRING(TB_DMA_CREDITS) ")");
 
 static bool bw_alloc_mode = true;
 module_param(bw_alloc_mode, bool, 0444);
@@ -1802,7 +1798,8 @@ static int tb_dma_reserve_credits(struct tb_path_hop *hop, unsigned int credits)
 		if (available < TB_MIN_DMA_CREDITS)
 			return -ENOSPC;
 
-		credits = min(credits, available);
+		while (credits > available)
+			credits--;
 
 		tb_port_dbg(port, "reserving %u credits for DMA path\n",
 			    credits);
@@ -1931,7 +1928,7 @@ struct tb_tunnel *tb_tunnel_alloc_dma(struct tb *tb, struct tb_port *nhi,
 	struct tb_tunnel *tunnel;
 	size_t npaths = 0, i = 0;
 	struct tb_path *path;
-	unsigned int credits;
+	int credits;
 
 	/* Ring 0 is reserved for control channel */
 	if (WARN_ON(!receive_ring || !transmit_ring))
@@ -1954,11 +1951,6 @@ struct tb_tunnel *tb_tunnel_alloc_dma(struct tb *tb, struct tb_port *nhi,
 	tunnel->destroy = tb_dma_destroy;
 
 	credits = min_not_zero(dma_credits, nhi->sw->max_dma_credits);
-	if (credits > TB_MAX_CREDITS) {
-		tb_tunnel_dbg(tunnel, "%u credits do not fit a hop, using %u\n",
-			      credits, TB_MAX_CREDITS);
-		credits = TB_MAX_CREDITS;
-	}
 
 	if (receive_ring > 0) {
 		path = tb_path_alloc(tb, dst, receive_path, nhi, receive_ring, 0,

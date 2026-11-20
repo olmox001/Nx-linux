@@ -368,7 +368,7 @@ static int i2c_atr_map_msgs(struct i2c_atr_chan *chan, struct i2c_msg *msgs,
 		u16 *new_buf;
 
 		/* We don't care about old data, hence no realloc() */
-		new_buf = kmalloc_objs(*new_buf, num);
+		new_buf = kmalloc_array(num, sizeof(*new_buf), GFP_KERNEL);
 		if (!new_buf)
 			return -ENOMEM;
 
@@ -540,12 +540,6 @@ static int i2c_atr_attach_addr(struct i2c_adapter *adapter,
 	struct i2c_atr_alias_pair *c2a;
 	int ret = 0;
 
-	/*
-	 * attach_addr() may reconfigure the remote side of the bus, keep
-	 * transfers on other channels out until it is done.
-	 */
-	mutex_lock(&atr->lock);
-
 	mutex_lock(&chan->alias_pairs_lock);
 
 	c2a = i2c_atr_create_mapping_by_addr(chan, addr);
@@ -563,8 +557,6 @@ static int i2c_atr_attach_addr(struct i2c_adapter *adapter,
 
 out_unlock:
 	mutex_unlock(&chan->alias_pairs_lock);
-	mutex_unlock(&atr->lock);
-
 	return ret;
 }
 
@@ -575,8 +567,6 @@ static void i2c_atr_detach_addr(struct i2c_adapter *adapter,
 	struct i2c_atr *atr = chan->atr;
 	struct i2c_atr_alias_pair *c2a;
 
-	mutex_lock(&atr->lock);
-
 	atr->ops->detach_addr(atr, chan->chan_id, addr);
 
 	mutex_lock(&chan->alias_pairs_lock);
@@ -584,7 +574,6 @@ static void i2c_atr_detach_addr(struct i2c_adapter *adapter,
 	c2a = i2c_atr_find_mapping_by_addr(chan, addr);
 	if (!c2a) {
 		mutex_unlock(&chan->alias_pairs_lock);
-		mutex_unlock(&atr->lock);
 		return;
 	}
 
@@ -597,7 +586,6 @@ static void i2c_atr_detach_addr(struct i2c_adapter *adapter,
 	i2c_atr_destroy_c2a(&c2a);
 
 	mutex_unlock(&chan->alias_pairs_lock);
-	mutex_unlock(&atr->lock);
 }
 
 static int i2c_atr_bus_notifier_call(struct notifier_block *nb,
@@ -676,7 +664,7 @@ static int i2c_atr_parse_alias_pool(struct i2c_atr *atr)
 	if (!alias_pool->size)
 		return 0;
 
-	aliases32 = kzalloc_objs(*aliases32, num_aliases);
+	aliases32 = kcalloc(num_aliases, sizeof(*aliases32), GFP_KERNEL);
 	if (!aliases32) {
 		ret = -ENOMEM;
 		goto err_free_alias_pool;

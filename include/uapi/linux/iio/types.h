@@ -54,8 +54,6 @@ enum iio_chan_type {
 	IIO_ATTENTION,
 	IIO_ALTCURRENT,
 	IIO_COVERAGE,
-	IIO_VOLUMEFLOW,
-	IIO_FREQUENCY,
 };
 
 enum iio_modifier {

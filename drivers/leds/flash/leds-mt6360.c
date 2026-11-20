@@ -795,7 +795,8 @@ static int mt6360_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	priv = devm_kzalloc_flex(&pdev->dev, *priv, leds, count);
+	priv = devm_kzalloc(&pdev->dev,
+			    struct_size(priv, leds, count), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

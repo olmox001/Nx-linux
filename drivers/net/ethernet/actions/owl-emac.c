@@ -285,11 +285,13 @@ static int owl_emac_ring_alloc(struct device *dev, struct owl_emac_ring *ring,
 	if (!ring->descs)
 		return -ENOMEM;
 
-	ring->skbs = devm_kzalloc_objs(dev, struct sk_buff *, size);
+	ring->skbs = devm_kcalloc(dev, size, sizeof(struct sk_buff *),
+				  GFP_KERNEL);
 	if (!ring->skbs)
 		return -ENOMEM;
 
-	ring->skbs_dma = devm_kzalloc_objs(dev, dma_addr_t, size);
+	ring->skbs_dma = devm_kcalloc(dev, size, sizeof(dma_addr_t),
+				      GFP_KERNEL);
 	if (!ring->skbs_dma)
 		return -ENOMEM;
 

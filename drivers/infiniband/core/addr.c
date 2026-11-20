@@ -323,12 +323,18 @@ static int dst_fetch_ha(const struct dst_entry *dst,
 	read_lock_bh(&n->lock);
 	if (!(n->nud_state & NUD_VALID)) {
 		read_unlock_bh(&n->lock);
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		neigh_event_send(n, NULL);
+#endif
 		ret = -ENODATA;
 	} else {
 		neigh_ha_snapshot(dev_addr->dst_dev_addr, n, dst->dev);
 		read_unlock_bh(&n->lock);
 	}
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	neigh_event_send(n, NULL);
+#endif
 
 	neigh_release(n);
 
@@ -769,7 +775,7 @@ void rdma_addr_cancel(struct rdma_dev_addr *addr)
 
 	/*
 	 * sync canceling the work after removing it from the req_list
-	 * guarantees no work is running and none will be started.
+	 * guarentees no work is running and none will be started.
 	 */
 	cancel_delayed_work_sync(&found->work);
 	kfree(found);

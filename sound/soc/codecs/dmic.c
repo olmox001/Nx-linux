@@ -6,6 +6,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
@@ -108,7 +109,7 @@ static int dmic_component_probe(struct snd_soc_component *component)
 {
 	struct dmic *dmic;
 
-	dmic = devm_kzalloc_obj(component->dev, *dmic);
+	dmic = devm_kzalloc(component->dev, sizeof(*dmic), GFP_KERNEL);
 	if (!dmic)
 		return -ENOMEM;
 
@@ -179,7 +180,7 @@ static int dmic_dev_probe(struct platform_device *pdev)
 			if (chans < 1 || chans > 8)
 				return -EINVAL;
 
-			dai_drv = devm_kzalloc_obj(&pdev->dev, *dai_drv);
+			dai_drv = devm_kzalloc(&pdev->dev, sizeof(*dai_drv), GFP_KERNEL);
 			if (!dai_drv)
 				return -ENOMEM;
 

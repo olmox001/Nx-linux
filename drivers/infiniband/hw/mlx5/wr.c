@@ -927,7 +927,6 @@ static noinline_for_stack int handle_reg_mr_integrity(struct mlx5_ib_dev *dev,
 	qp->next_fence = MLX5_FENCE_MODE_INITIATOR_SMALL;
 
 out:
-	mr->pi_mr = pi_mr;
 	return err;
 }
 

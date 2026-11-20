@@ -89,7 +89,8 @@ static int denali_dt_chip_init(struct denali_controller *denali,
 	if (nsels < 0)
 		return nsels;
 
-	dchip = devm_kzalloc_flex(denali->dev, *dchip, sels, nsels);
+	dchip = devm_kzalloc(denali->dev, struct_size(dchip, sels, nsels),
+			     GFP_KERNEL);
 	if (!dchip)
 		return -ENOMEM;
 
@@ -116,7 +117,7 @@ static int denali_dt_probe(struct platform_device *pdev)
 	struct denali_controller *denali;
 	int ret;
 
-	dt = devm_kzalloc_obj(dev, *dt);
+	dt = devm_kzalloc(dev, sizeof(*dt), GFP_KERNEL);
 	if (!dt)
 		return -ENOMEM;
 	denali = &dt->controller;

@@ -9,6 +9,7 @@
 #include "processor.h"
 #include "ucall_common.h"
 
+#define LOONGARCH_PAGE_TABLE_PHYS_MIN		0x200000
 #define LOONGARCH_GUEST_STACK_VADDR_MIN		0x200000
 
 static gpa_t invalid_pgtable[4];
@@ -56,7 +57,9 @@ void virt_arch_pgd_alloc(struct kvm_vm *vm)
 	child = table = 0;
 	for (i = 0; i < vm->mmu.pgtable_levels; i++) {
 		invalid_pgtable[i] = child;
-		table = vm_alloc_page_table(vm);
+		table = vm_phy_page_alloc(vm, LOONGARCH_PAGE_TABLE_PHYS_MIN,
+				vm->memslots[MEM_REGION_PT]);
+		TEST_ASSERT(table, "Fail to allocate page tale at level %d\n", i);
 		virt_set_pgtable(vm, table, child);
 		child = table;
 	}
@@ -275,8 +278,7 @@ static void loongarch_set_csr(struct kvm_vcpu *vcpu, u64 id, u64 val)
 
 void loongarch_vcpu_setup(struct kvm_vcpu *vcpu)
 {
-	bool has_ptw;
-	int ret, width;
+	int width;
 	unsigned int cfg;
 	unsigned long val;
 	struct kvm_vm *vm = vcpu->vm;
@@ -290,21 +292,6 @@ void loongarch_vcpu_setup(struct kvm_vcpu *vcpu)
 		TEST_FAIL("Unknown guest mode, mode: 0x%x", vm->mode);
 	}
 
-	/* Enable LSX/LASX feature by detecting host capability */
-	cfg = CPUCFG2_FP | CPUCFG2_FPSP | CPUCFG2_FPDP | CPUCFG2_LLFTP;
-	ret = __kvm_has_device_attr(vm->fd, KVM_LOONGARCH_VM_FEAT_CTRL, KVM_LOONGARCH_VM_FEAT_LSX);
-	if (!ret)
-		cfg |= CPUCFG2_LSX;
-	ret = __kvm_has_device_attr(vm->fd, KVM_LOONGARCH_VM_FEAT_CTRL, KVM_LOONGARCH_VM_FEAT_LASX);
-	if (!ret)
-		cfg |= CPUCFG2_LASX;
-	ret = __kvm_has_device_attr(vm->fd, KVM_LOONGARCH_VM_FEAT_CTRL, KVM_LOONGARCH_VM_FEAT_PTW);
-	if (!ret)
-		cfg |= CPUCFG2_PTW;
-
-	has_ptw = !ret;
-
-	loongarch_set_cpucfg(vcpu, LOONGARCH_CPUCFG2, cfg);
 	cfg = read_cpucfg(LOONGARCH_CPUCFG6);
 	loongarch_set_cpucfg(vcpu, LOONGARCH_CPUCFG6, cfg);
 
@@ -342,9 +329,6 @@ void loongarch_vcpu_setup(struct kvm_vcpu *vcpu)
 
 	/* PGD page shift and width */
 	val = (vm->page_shift + width * (vm->mmu.pgtable_levels - 1)) | width << 6;
-	if (has_ptw)
-		val |= CSR_PWCTL1_PTW;
-
 	loongarch_set_csr(vcpu, LOONGARCH_CSR_PWCTL1, val);
 	loongarch_set_csr(vcpu, LOONGARCH_CSR_PGDL, vm->mmu.pgd);
 
@@ -352,10 +336,8 @@ void loongarch_vcpu_setup(struct kvm_vcpu *vcpu)
 	 * Refill exception runs on real mode
 	 * Entry address should be physical address
 	 */
-	if (!has_ptw) {
-		val = addr_gva2gpa(vm, (unsigned long)handle_tlb_refill);
-		loongarch_set_csr(vcpu, LOONGARCH_CSR_TLBRENTRY, val);
-	}
+	val = addr_gva2gpa(vm, (unsigned long)handle_tlb_refill);
+	loongarch_set_csr(vcpu, LOONGARCH_CSR_TLBRENTRY, val);
 
 	/*
 	 * General exception runs on page-enabled mode

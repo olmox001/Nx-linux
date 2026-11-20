@@ -1582,13 +1582,7 @@ int dm_btree_cursor_begin(struct dm_btree_info *info, dm_block_t root,
 	if (r)
 		return r;
 
-	r = find_leaf(c);
-	if (unlikely(r)) {
-		dm_btree_cursor_end(c);
-		return r;
-	}
-
-	return 0;
+	return find_leaf(c);
 }
 EXPORT_SYMBOL_GPL(dm_btree_cursor_begin);
 

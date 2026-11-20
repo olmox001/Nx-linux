@@ -638,7 +638,8 @@ static int s5p_hash_rx(struct s5p_aes_dev *dev)
 
 static irqreturn_t s5p_aes_interrupt(int irq, void *dev_id)
 {
-	struct s5p_aes_dev *dev = dev_id;
+	struct platform_device *pdev = dev_id;
+	struct s5p_aes_dev *dev = platform_get_drvdata(pdev);
 	struct skcipher_request *req;
 	int err_dma_tx = 0;
 	int err_dma_rx = 0;
@@ -1445,7 +1446,7 @@ static void s5p_hash_tasklet_cb(unsigned long data)
 	return;
 
 finish:
-	/* finish current request */
+	/* finish curent request */
 	s5p_hash_finish_req(dd->hash_req, 0);
 
 	/* If we are not busy, process next req */
@@ -2139,7 +2140,7 @@ static int s5p_aes_probe(struct platform_device *pdev)
 	if (s5p_dev)
 		return -EEXIST;
 
-	pdata = devm_kzalloc_obj(dev, *pdata);
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 
@@ -2220,7 +2221,7 @@ static int s5p_aes_probe(struct platform_device *pdev)
 	}
 	err = devm_request_threaded_irq(dev, pdata->irq_fc, NULL,
 					s5p_aes_interrupt, IRQF_ONESHOT,
-					pdev->name, pdata);
+					pdev->name, pdev);
 	if (err < 0) {
 		dev_warn(dev, "feed control interrupt is not available.\n");
 		goto err_irq;

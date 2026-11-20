@@ -13,12 +13,12 @@ TEST_PROGS := \
 # end of TEST_PROGS
 
 TEST_INCLUDES := \
-	$(wildcard ../../../net/lib/sh/*.sh) \
+	team_lib.sh \
 	../bonding/lag_lib.sh \
 	../../../net/forwarding/lib.sh \
 	../../../net/in_netns.sh \
 	../../../net/lib.sh \
-	team_lib.sh \
+	../../../net/lib/sh/defer.sh \
 # end of TEST_INCLUDES
 
 include ../../../lib.mk

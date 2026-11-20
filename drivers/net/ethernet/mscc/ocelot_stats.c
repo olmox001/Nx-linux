@@ -936,7 +936,8 @@ static int ocelot_prepare_stats_regions(struct ocelot *ocelot)
 		    ocelot->map[SYS][last & REG_MASK] + 4) {
 			region->count++;
 		} else {
-			region = devm_kzalloc_obj(ocelot->dev, *region);
+			region = devm_kzalloc(ocelot->dev, sizeof(*region),
+					      GFP_KERNEL);
 			if (!region)
 				return -ENOMEM;
 
@@ -959,8 +960,8 @@ static int ocelot_prepare_stats_regions(struct ocelot *ocelot)
 		dev_dbg(ocelot->dev,
 			"region of %d contiguous counters starting with SYS:STAT:CNT[0x%03x]\n",
 			region->count, addr / 4);
-		region->buf = devm_kzalloc_objs(ocelot->dev, *region->buf,
-						region->count);
+		region->buf = devm_kcalloc(ocelot->dev, region->count,
+					   sizeof(*region->buf), GFP_KERNEL);
 		if (!region->buf)
 			return -ENOMEM;
 	}
@@ -986,8 +987,9 @@ int ocelot_stats_init(struct ocelot *ocelot)
 			if (!ocelot_port)
 				continue;
 
-			ocelot_port->ts_stats = devm_kzalloc_obj(ocelot->dev,
-								 *ocelot_port->ts_stats);
+			ocelot_port->ts_stats = devm_kzalloc(ocelot->dev,
+							     sizeof(*ocelot_port->ts_stats),
+							     GFP_KERNEL);
 			if (!ocelot_port->ts_stats)
 				return -ENOMEM;
 

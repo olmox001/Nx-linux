@@ -515,8 +515,6 @@ sbsa_gwdt:
     nowayout:
 	Watchdog cannot be stopped once started
 	(default=kernel config parameter)
-    early_enable:
-	Watchdog is started on module insertion (default=0)
 
 -------------------------------------------------
 

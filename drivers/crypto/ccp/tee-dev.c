@@ -193,7 +193,7 @@ int tee_dev_init(struct psp_device *psp)
 	int ret;
 
 	ret = -ENOMEM;
-	tee = devm_kzalloc_obj(dev, *tee);
+	tee = devm_kzalloc(dev, sizeof(*tee), GFP_KERNEL);
 	if (!tee)
 		goto e_err;
 

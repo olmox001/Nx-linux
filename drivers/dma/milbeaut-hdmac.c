@@ -467,7 +467,8 @@ static int milbeaut_hdmac_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	mdev = devm_kzalloc_flex(dev, *mdev, channels, nr_chans);
+	mdev = devm_kzalloc(dev, struct_size(mdev, channels, nr_chans),
+			    GFP_KERNEL);
 	if (!mdev)
 		return -ENOMEM;
 

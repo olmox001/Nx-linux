@@ -104,7 +104,7 @@ static int udc_plat_probe(struct platform_device *pdev)
 	struct udc *udc;
 	int ret;
 
-	udc = devm_kzalloc_obj(dev, *udc);
+	udc = devm_kzalloc(dev, sizeof(*udc), GFP_KERNEL);
 	if (!udc)
 		return -ENOMEM;
 
@@ -192,8 +192,10 @@ static int udc_plat_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(dev, udc->irq, udc_irq, IRQF_SHARED,
 			       "snps-udc", udc);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(dev, "Request irq %d failed for UDC\n", udc->irq);
 		goto exit_dma;
+	}
 
 	platform_set_drvdata(pdev, udc);
 	udc->chiprev = UDC_BCM_REV;

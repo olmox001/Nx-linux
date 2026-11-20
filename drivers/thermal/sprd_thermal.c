@@ -344,7 +344,7 @@ static int sprd_thm_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	thm = devm_kzalloc_obj(&pdev->dev, *thm);
+	thm = devm_kzalloc(&pdev->dev, sizeof(*thm), GFP_KERNEL);
 	if (!thm)
 		return -ENOMEM;
 
@@ -381,7 +381,7 @@ static int sprd_thm_probe(struct platform_device *pdev)
 		return ret;
 
 	for_each_child_of_node(np, sen_child) {
-		sen = devm_kzalloc_obj(&pdev->dev, *sen);
+		sen = devm_kzalloc(&pdev->dev, sizeof(*sen), GFP_KERNEL);
 		if (!sen) {
 			ret = -ENOMEM;
 			goto of_put;
@@ -393,12 +393,6 @@ static int sprd_thm_probe(struct platform_device *pdev)
 		ret = of_property_read_u32(sen_child, "reg", &sen->id);
 		if (ret) {
 			dev_err(&pdev->dev, "get sensor reg failed");
-			goto of_put;
-		}
-
-		if (sen->id < 0 || sen->id >= SPRD_THM_MAX_SENSOR) {
-			dev_err(&pdev->dev, "invalid sensor id %d\n", sen->id);
-			ret = -EINVAL;
 			goto of_put;
 		}
 

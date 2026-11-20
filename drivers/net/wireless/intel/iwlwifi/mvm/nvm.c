@@ -86,7 +86,6 @@ static int iwl_nvm_read_chunk(struct iwl_mvm *mvm, u16 section,
 		.data = { &nvm_access_cmd, },
 	};
 	int ret, bytes_read, offset_read;
-	unsigned int pkt_len;
 	u8 *resp_data;
 
 	cmd.len[0] = sizeof(struct iwl_nvm_access_cmd);
@@ -96,12 +95,6 @@ static int iwl_nvm_read_chunk(struct iwl_mvm *mvm, u16 section,
 		return ret;
 
 	pkt = cmd.resp_pkt;
-	pkt_len = iwl_rx_packet_payload_len(pkt);
-	if (pkt_len < sizeof(*nvm_resp)) {
-		IWL_ERR(mvm, "NVM ACCESS response too short: %u\n", pkt_len);
-		ret = -EINVAL;
-		goto exit;
-	}
 
 	/* Extract NVM response */
 	nvm_resp = (void *)pkt->data;
@@ -136,14 +129,6 @@ static int iwl_nvm_read_chunk(struct iwl_mvm *mvm, u16 section,
 	if (offset_read != offset) {
 		IWL_ERR(mvm, "NVM ACCESS response with invalid offset %d\n",
 			offset_read);
-		ret = -EINVAL;
-		goto exit;
-	}
-
-	if (bytes_read > length ||
-	    pkt_len < struct_size(nvm_resp, data, bytes_read)) {
-		IWL_ERR(mvm, "NVM ACCESS response with invalid length %d\n",
-			bytes_read);
 		ret = -EINVAL;
 		goto exit;
 	}

@@ -11,7 +11,8 @@
 #include <linux/fs_parser.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/bits.h>
-#include <linux/list_lru.h>
+
+struct swap_iocb;
 
 /* inode in-kernel data */
 
@@ -55,11 +56,6 @@ struct shmem_inode_info {
 	struct dquot __rcu	*i_dquot[MAXQUOTAS];
 #endif
 	struct inode		vfs_inode;
-
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	struct obj_cgroup	*shrinklist_objcg;
-	int			shrinklist_nid;
-#endif
 };
 
 #define SHMEM_FL_USER_VISIBLE		(FS_FL_USER_VISIBLE | FS_CASEFOLD_FL)
@@ -89,9 +85,9 @@ struct shmem_sb_info {
 	ino_t next_ino;		    /* The next per-sb inode number to use */
 	ino_t __percpu *ino_batch;  /* The next per-cpu inode number to use */
 	struct mempolicy *mpol;     /* default memory policy for mappings */
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	struct list_lru shrinklist; /* List of shrinkable inodes */
-#endif
+	spinlock_t shrinklist_lock;   /* Protects shrinklist */
+	struct list_head shrinklist;  /* List of shinkable inodes */
+	unsigned long shrinklist_len; /* Length of shrinklist */
 	struct shmem_quota_limits qlimits; /* Default quota limits */
 	struct simple_xattr_cache xa_cache;
 };
@@ -117,14 +113,8 @@ extern unsigned long shmem_get_unmapped_area(struct file *, unsigned long addr,
 		unsigned long len, unsigned long pgoff, unsigned long flags);
 extern int shmem_lock(struct file *file, int lock, struct ucounts *ucounts);
 #ifdef CONFIG_SHMEM
-bool shmem_file(struct file *file);
 bool shmem_mapping(const struct address_space *mapping);
 #else
-static inline bool shmem_file(struct file *file)
-{
-	return false;
-}
-
 static inline bool shmem_mapping(const struct address_space *mapping)
 {
 	return false;
@@ -133,7 +123,8 @@ static inline bool shmem_mapping(const struct address_space *mapping)
 void shmem_unlock_mapping(struct address_space *mapping);
 struct page *shmem_read_mapping_page_gfp(struct address_space *mapping,
 					pgoff_t index, gfp_t gfp_mask);
-int shmem_write_folio(struct folio *folio);
+int shmem_writeout(struct folio *folio, struct swap_iocb **plug,
+		struct list_head *folio_list);
 void shmem_truncate_range(struct inode *inode, loff_t start, uoff_t end);
 int shmem_unuse(unsigned int type);
 
@@ -197,6 +188,15 @@ static inline struct page *shmem_read_mapping_page(
 {
 	return shmem_read_mapping_page_gfp(mapping, index,
 					mapping_gfp_mask(mapping));
+}
+
+static inline bool shmem_file(struct file *file)
+{
+	if (!IS_ENABLED(CONFIG_SHMEM))
+		return false;
+	if (!file || !file->f_mapping)
+		return false;
+	return shmem_mapping(file->f_mapping);
 }
 
 /* Must be called with inode lock taken exclusive. */

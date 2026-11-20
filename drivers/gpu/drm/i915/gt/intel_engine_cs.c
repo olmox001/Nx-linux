@@ -3,7 +3,6 @@
  * Copyright © 2016 Intel Corporation
  */
 
-#include <linux/error-injection.h>
 #include <linux/string_helpers.h>
 
 #include <drm/drm_print.h>
@@ -1608,7 +1607,7 @@ u64 intel_engine_get_last_batch_head(const struct intel_engine_cs *engine)
 
 static unsigned long stop_timeout(const struct intel_engine_cs *engine)
 {
-	if (in_atomic() || irqs_disabled() || rcu_preempt_depth()) /* inside atomic preempt-reset? */
+	if (in_atomic() || irqs_disabled()) /* inside atomic preempt-reset? */
 		return 0;
 
 	/*

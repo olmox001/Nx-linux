@@ -326,9 +326,6 @@ static int sprd_dt_node_to_map(struct pinctrl_dev *pctldev,
 
 out:
 	kfree(configs);
-	if (ret < 0)
-		pinctrl_utils_free_map(pctldev, *map, *num_maps);
-
 	return ret;
 }
 
@@ -893,7 +890,9 @@ static int sprd_pinctrl_parse_groups(struct device_node *np,
 
 	grp->name = np->name;
 	grp->npins = ret;
-	grp->pins = devm_kzalloc_objs(sprd_pctl->dev, unsigned int, grp->npins);
+	grp->pins = devm_kcalloc(sprd_pctl->dev,
+				 grp->npins, sizeof(unsigned int),
+				 GFP_KERNEL);
 	if (!grp->pins)
 		return -ENOMEM;
 
@@ -943,8 +942,10 @@ static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
 	if (!info->ngroups)
 		return 0;
 
-	info->groups = devm_kzalloc_objs(sprd_pctl->dev, struct sprd_pin_group,
-					 info->ngroups);
+	info->groups = devm_kcalloc(sprd_pctl->dev,
+				    info->ngroups,
+				    sizeof(struct sprd_pin_group),
+				    GFP_KERNEL);
 	if (!info->groups)
 		return -ENOMEM;
 
@@ -991,8 +992,9 @@ static int sprd_pinctrl_add_pins(struct sprd_pinctrl *sprd_pctl,
 	int i;
 
 	info->npins = pins_cnt;
-	info->pins = devm_kzalloc_objs(sprd_pctl->dev, struct sprd_pin,
-				       info->npins);
+	info->pins = devm_kcalloc(sprd_pctl->dev,
+				  info->npins, sizeof(struct sprd_pin),
+				  GFP_KERNEL);
 	if (!info->pins)
 		return -ENOMEM;
 
@@ -1040,7 +1042,8 @@ int sprd_pinctrl_core_probe(struct platform_device *pdev,
 	struct pinctrl_pin_desc *pin_desc;
 	int ret, i;
 
-	sprd_pctl = devm_kzalloc_obj(&pdev->dev, struct sprd_pinctrl);
+	sprd_pctl = devm_kzalloc(&pdev->dev, sizeof(struct sprd_pinctrl),
+				 GFP_KERNEL);
 	if (!sprd_pctl)
 		return -ENOMEM;
 
@@ -1048,8 +1051,9 @@ int sprd_pinctrl_core_probe(struct platform_device *pdev,
 	if (IS_ERR(sprd_pctl->base))
 		return PTR_ERR(sprd_pctl->base);
 
-	pinctrl_info = devm_kzalloc_obj(&pdev->dev,
-					struct sprd_pinctrl_soc_info);
+	pinctrl_info = devm_kzalloc(&pdev->dev,
+				    sizeof(struct sprd_pinctrl_soc_info),
+				    GFP_KERNEL);
 	if (!pinctrl_info)
 		return -ENOMEM;
 
@@ -1069,8 +1073,10 @@ int sprd_pinctrl_core_probe(struct platform_device *pdev,
 		return ret;
 	}
 
-	pin_desc = devm_kzalloc_objs(&pdev->dev, struct pinctrl_pin_desc,
-				     pinctrl_info->npins);
+	pin_desc = devm_kcalloc(&pdev->dev,
+				pinctrl_info->npins,
+				sizeof(struct pinctrl_pin_desc),
+				GFP_KERNEL);
 	if (!pin_desc)
 		return -ENOMEM;
 

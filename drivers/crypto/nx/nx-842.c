@@ -421,8 +421,6 @@ usesw:
 
 	slen -= spadding;
 
-	if (ignore > dlen)
-		return -EINVAL;
 	dlen -= ignore;
 	if (ignore)
 		pr_debug("ignoring last %x bytes\n", ignore);

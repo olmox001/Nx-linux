@@ -403,7 +403,7 @@ static int rcar_thermal_probe(struct platform_device *pdev)
 	int idle = IDLE_INTERVAL;
 	u32 enr_bits = 0;
 
-	common = devm_kzalloc_obj(dev, *common);
+	common = devm_kzalloc(dev, sizeof(*common), GFP_KERNEL);
 	if (!common)
 		return -ENOMEM;
 
@@ -446,8 +446,10 @@ static int rcar_thermal_probe(struct platform_device *pdev)
 
 		ret = devm_request_irq(dev, irq, rcar_thermal_irq,
 				       IRQF_SHARED, dev_name(dev), common);
-		if (ret)
+		if (ret) {
+			dev_err(dev, "irq request failed\n");
 			goto error_unregister;
+		}
 
 		/* update ENR bits */
 		if (chip->irq_per_ch)
@@ -459,7 +461,7 @@ static int rcar_thermal_probe(struct platform_device *pdev)
 		if (!res)
 			break;
 
-		priv = devm_kzalloc_obj(dev, *priv);
+		priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 		if (!priv) {
 			ret = -ENOMEM;
 			goto error_unregister;

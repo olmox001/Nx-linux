@@ -1646,7 +1646,6 @@ done:
  * CTCM_PROTO_MPC only
  */
 static void mpc_action_side_xid(fsm_instance *fsm, void *arg, int side)
-__context_unsafe(/* Conditional locking */)
 {
 	struct channel *ch = arg;
 	int rc = 0;
@@ -1774,6 +1773,9 @@ __context_unsafe(/* Conditional locking */)
 	CTCM_D3_DUMP((char *)ch->xid_id, 4);
 
 	if (!in_hardirq()) {
+			 /* Such conditional locking is a known problem for
+			  * sparse because its static undeterministic.
+			  * Warnings should be ignored here. */
 		spin_lock_irqsave(get_ccwdev_lock(ch->cdev), saveflags);
 		gotlock = 1;
 	}
@@ -1781,7 +1783,7 @@ __context_unsafe(/* Conditional locking */)
 	fsm_addtimer(&ch->timer, 5000 , CTC_EVENT_TIMER, ch);
 	rc = ccw_device_start(ch->cdev, &ch->ccw[8], 0, 0xff, 0);
 
-	if (gotlock)
+	if (gotlock)	/* see remark above about conditional locking */
 		spin_unlock_irqrestore(get_ccwdev_lock(ch->cdev), saveflags);
 
 	if (rc != 0) {

@@ -93,7 +93,8 @@ static int ina233_probe(struct i2c_client *client)
 	u16 calibration;
 	struct pmbus_driver_info *info;
 
-	info = devm_kzalloc_obj(dev, struct pmbus_driver_info);
+	info = devm_kzalloc(dev, sizeof(struct pmbus_driver_info),
+			    GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

@@ -17,7 +17,6 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-#include <linux/units.h>
 
 #define TRNG_CR		0x00
 #define TRNG_MR		0x04
@@ -86,14 +85,20 @@ out:
 
 static int atmel_trng_init(struct atmel_trng *trng)
 {
+	unsigned long rate;
 	int ret;
 
 	ret = clk_prepare_enable(trng->clk);
 	if (ret)
 		return ret;
 
-	if (trng->has_half_rate && clk_get_rate(trng->clk) > 100 * HZ_PER_MHZ)
-		writel(TRNG_HALFR, trng->base + TRNG_MR);
+	if (trng->has_half_rate) {
+		rate = clk_get_rate(trng->clk);
+
+		/* if peripheral clk is above 100MHz, set HALFR */
+		if (rate > 100000000)
+			writel(TRNG_HALFR, trng->base + TRNG_MR);
+	}
 
 	writel(TRNG_KEY | 1, trng->base + TRNG_CR);
 
@@ -112,7 +117,7 @@ static int atmel_trng_probe(struct platform_device *pdev)
 	const struct atmel_trng_data *data;
 	int ret;
 
-	trng = devm_kzalloc_obj(&pdev->dev, *trng);
+	trng = devm_kzalloc(&pdev->dev, sizeof(*trng), GFP_KERNEL);
 	if (!trng)
 		return -ENOMEM;
 
@@ -180,7 +185,7 @@ static int __maybe_unused atmel_trng_runtime_resume(struct device *dev)
 	return atmel_trng_init(trng);
 }
 
-static const struct dev_pm_ops atmel_trng_pm_ops = {
+static const struct dev_pm_ops __maybe_unused atmel_trng_pm_ops = {
 	SET_RUNTIME_PM_OPS(atmel_trng_runtime_suspend,
 			   atmel_trng_runtime_resume, NULL)
 	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,

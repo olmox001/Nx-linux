@@ -150,7 +150,8 @@ static int samsung_ufs_phy_clks_init(struct samsung_ufs_phy *phy)
 	const struct samsung_ufs_phy_drvdata *drvdata = phy->drvdata;
 	int num_clks = drvdata->num_clks;
 
-	phy->clks = devm_kzalloc_objs(phy->dev, *phy->clks, num_clks);
+	phy->clks = devm_kcalloc(phy->dev, num_clks, sizeof(*phy->clks),
+				 GFP_KERNEL);
 	if (!phy->clks)
 		return -ENOMEM;
 
@@ -294,7 +295,7 @@ static int samsung_ufs_phy_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	phy = devm_kzalloc_obj(dev, *phy);
+	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy) {
 		err = -ENOMEM;
 		goto out;

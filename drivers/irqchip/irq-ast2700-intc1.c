@@ -245,7 +245,7 @@ static int aspeed_intc1_probe(struct platform_device *pdev,
 	if (!host)
 		return -ENODEV;
 
-	intc1 = devm_kzalloc_obj(&pdev->dev, *intc1);
+	intc1 = devm_kzalloc(&pdev->dev, sizeof(*intc1), GFP_KERNEL);
 	if (!intc1)
 		return -ENOMEM;
 

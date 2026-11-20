@@ -115,7 +115,8 @@ static int exynos_srom_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	srom = devm_kzalloc_obj(&pdev->dev, struct exynos_srom);
+	srom = devm_kzalloc(&pdev->dev,
+			    sizeof(struct exynos_srom), GFP_KERNEL);
 	if (!srom)
 		return -ENOMEM;
 

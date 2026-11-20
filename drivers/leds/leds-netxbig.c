@@ -360,7 +360,7 @@ static int netxbig_gpio_ext_get(struct device *dev,
 		return ret;
 	}
 	num_addr = ret;
-	addr = devm_kzalloc_objs(dev, *addr, num_addr);
+	addr = devm_kcalloc(dev, num_addr, sizeof(*addr), GFP_KERNEL);
 	if (!addr)
 		return -ENOMEM;
 
@@ -391,7 +391,7 @@ static int netxbig_gpio_ext_get(struct device *dev,
 		goto err_free_addr;
 	}
 	num_data = ret;
-	data = devm_kzalloc_objs(dev, *data, num_data);
+	data = devm_kcalloc(dev, num_data, sizeof(*data), GFP_KERNEL);
 	if (!data) {
 		ret = -ENOMEM;
 		goto err_free_addr;
@@ -461,7 +461,7 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 	}
 	gpio_ext_dev = &gpio_ext_pdev->dev;
 
-	gpio_ext = devm_kzalloc_obj(dev, *gpio_ext);
+	gpio_ext = devm_kzalloc(dev, sizeof(*gpio_ext), GFP_KERNEL);
 	if (!gpio_ext) {
 		of_node_put(gpio_ext_np);
 		ret = -ENOMEM;
@@ -482,7 +482,8 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 		}
 
 		num_timers = ret / 3;
-		timers = devm_kzalloc_objs(dev, *timers, num_timers);
+		timers = devm_kcalloc(dev, num_timers, sizeof(*timers),
+				      GFP_KERNEL);
 		if (!timers) {
 			ret = -ENOMEM;
 			goto put_device;
@@ -515,7 +516,7 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 		goto put_device;
 	}
 
-	leds = devm_kzalloc_objs(dev, *leds, num_leds);
+	leds = devm_kcalloc(dev, num_leds, sizeof(*leds), GFP_KERNEL);
 	if (!leds) {
 		ret = -ENOMEM;
 		goto put_device;
@@ -543,7 +544,9 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 			goto put_device;
 
 		mode_val =
-			devm_kzalloc_objs(dev, *mode_val, NETXBIG_LED_MODE_NUM);
+			devm_kcalloc(dev,
+				     NETXBIG_LED_MODE_NUM, sizeof(*mode_val),
+				     GFP_KERNEL);
 		if (!mode_val) {
 			ret = -ENOMEM;
 			goto put_device;
@@ -614,14 +617,16 @@ static int netxbig_led_probe(struct platform_device *pdev)
 	int i;
 	int ret;
 
-	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 	ret = netxbig_leds_get_of_pdata(&pdev->dev, pdata);
 	if (ret)
 		return ret;
 
-	leds_data = devm_kzalloc_objs(&pdev->dev, *leds_data, pdata->num_leds);
+	leds_data = devm_kcalloc(&pdev->dev,
+				 pdata->num_leds, sizeof(*leds_data),
+				 GFP_KERNEL);
 	if (!leds_data)
 		return -ENOMEM;
 

@@ -152,8 +152,7 @@ void opp2_set_disp_pattern_generator(
 	const struct tg_color *solid_color,
 	int width,
 	int height,
-	int offset,
-	bool disable_dyn_exp_for_test_pattern);
+	int offset);
 
 void opp2_program_dpg_dimensions(
 		struct output_pixel_processor *opp,

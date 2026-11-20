@@ -50,9 +50,8 @@ int smbdirect_accept_connect_request(struct smbdirect_socket *sc,
 	/*
 	 * First set what the we as server are able to support
 	 */
-	sp->initiator_depth = min3(sp->initiator_depth,
-				   sc->ib.dev->attrs.max_qp_rd_atom,
-				   U8_MAX);
+	sp->initiator_depth = min_t(u8, sp->initiator_depth,
+				    sc->ib.dev->attrs.max_qp_rd_atom);
 
 	peer_initiator_depth = param->initiator_depth;
 	peer_responder_resources = param->responder_resources;
@@ -234,7 +233,7 @@ static void smbdirect_accept_negotiate_recv_done(struct ib_cq *cq, struct ib_wc 
 	struct smbdirect_socket *sc = recv_io->socket;
 	unsigned long flags;
 
-	if (unlikely(wc->status != IB_WC_SUCCESS || wc->opcode != IB_WC_RECV)) {
+	if (unlikely(wc->status != IB_WC_SUCCESS || WARN_ON_ONCE(wc->opcode != IB_WC_RECV))) {
 		if (wc->status != IB_WC_WR_FLUSH_ERR)
 			smbdirect_log_rdma_recv(sc, SMBDIRECT_LOG_ERR,
 				"wc->status=%s (%d) wc->opcode=%d\n",

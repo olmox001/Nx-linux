@@ -448,7 +448,7 @@ static int drv260x_probe(struct i2c_client *client)
 	u32 voltage;
 	int error;
 
-	haptics = devm_kzalloc_obj(dev, *haptics);
+	haptics = devm_kzalloc(dev, sizeof(*haptics), GFP_KERNEL);
 	if (!haptics)
 		return -ENOMEM;
 
@@ -640,7 +640,7 @@ MODULE_DEVICE_TABLE(i2c, drv260x_id);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id drv260x_acpi_match[] = {
-	{ .id = "DRV2604" },
+	{ "DRV2604" },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, drv260x_acpi_match);

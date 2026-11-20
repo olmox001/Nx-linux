@@ -31,7 +31,7 @@ static int field##_attribute_alloc(struct device *dev,			\
 {									\
 	struct dpn_attribute *dpn_attr;					\
 									\
-	dpn_attr = devm_kzalloc_obj(dev, *dpn_attr);	\
+	dpn_attr = devm_kzalloc(dev, sizeof(*dpn_attr), GFP_KERNEL);	\
 	if (!dpn_attr)							\
 		return -ENOMEM;						\
 	dpn_attr->N = N;						\
@@ -171,8 +171,9 @@ static int add_all_attributes(struct device *dev, int N, int dir)
 	int ret;
 
 	/* allocate attributes, last one is NULL */
-	dpn_attrs = devm_kzalloc_objs(dev, struct attribute *,
-				      SDW_DPN_ATTRIBUTES + 1);
+	dpn_attrs = devm_kcalloc(dev, SDW_DPN_ATTRIBUTES + 1,
+				 sizeof(struct attribute *),
+				 GFP_KERNEL);
 	if (!dpn_attrs)
 		return -ENOMEM;
 
@@ -258,7 +259,7 @@ static int add_all_attributes(struct device *dev, int N, int dir)
 		return -EINVAL;
 	}
 
-	dpn_group = devm_kzalloc_obj(dev, *dpn_group);
+	dpn_group = devm_kzalloc(dev, sizeof(*dpn_group), GFP_KERNEL);
 	if (!dpn_group)
 		return -ENOMEM;
 

@@ -12,14 +12,8 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - enum:
-              - qcom,wcn6755-bt
-          - const: qcom,wcn6750-bt
-
-      - enum:
-          - qcom,wcn6750-bt
+    enum:
+      - qcom,wcn6750-bt
 
   enable-gpios:
     maxItems: 1

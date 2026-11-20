@@ -22,8 +22,6 @@
  *
  */
 
-#include <linux/error-injection.h>
-
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_drv.h>
 #include <drm/intel/pci_config.h>

@@ -1660,7 +1660,7 @@ static int omap_dma_probe(struct platform_device *pdev)
 	int rc, i, irq;
 	u32 val;
 
-	od = devm_kzalloc_obj(&pdev->dev, *od);
+	od = devm_kzalloc(&pdev->dev, sizeof(*od), GFP_KERNEL);
 	if (!od)
 		return -ENOMEM;
 
@@ -1754,7 +1754,9 @@ static int omap_dma_probe(struct platform_device *pdev)
 	if (od->plat->dma_attr->dev_caps & HS_CHANNELS_RESERVED)
 		bitmap_set(od->lch_bitmap, 0, 2);
 
-	od->lch_map = devm_kzalloc_objs(&pdev->dev, *od->lch_map, od->lch_count);
+	od->lch_map = devm_kcalloc(&pdev->dev, od->lch_count,
+				   sizeof(*od->lch_map),
+				   GFP_KERNEL);
 	if (!od->lch_map)
 		return -ENOMEM;
 

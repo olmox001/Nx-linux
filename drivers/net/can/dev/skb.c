@@ -4,7 +4,6 @@
  * Copyright (C) 2008-2009 Wolfgang Grandegger <wg@grandegger.com>
  */
 
-#include <linux/can/can-ml.h>
 #include <linux/can/dev.h>
 #include <linux/module.h>
 #include <net/can.h>
@@ -55,7 +54,6 @@ int can_put_echo_skb(struct sk_buff *skb, struct net_device *dev,
 	if (idx >= priv->echo_skb_max) {
 		netdev_err(dev, "%s: BUG! Trying to access can_priv::echo_skb out of bounds (%u/max %u)\n",
 			   __func__, idx, priv->echo_skb_max);
-		dev_kfree_skb_any(skb);
 		return -EINVAL;
 	}
 
@@ -64,7 +62,7 @@ int can_put_echo_skb(struct sk_buff *skb, struct net_device *dev,
 	    (skb->protocol != htons(ETH_P_CAN) &&
 	     skb->protocol != htons(ETH_P_CANFD) &&
 	     skb->protocol != htons(ETH_P_CANXL))) {
-		dev_kfree_skb_any(skb);
+		kfree_skb(skb);
 		return 0;
 	}
 
@@ -92,7 +90,7 @@ int can_put_echo_skb(struct sk_buff *skb, struct net_device *dev,
 	} else {
 		/* locking problem with netif_stop_queue() ?? */
 		netdev_err(dev, "%s: BUG! echo_skb %d is occupied!\n", __func__, idx);
-		dev_kfree_skb_any(skb);
+		kfree_skb(skb);
 		return -EBUSY;
 	}
 
@@ -229,7 +227,7 @@ struct sk_buff *alloc_can_skb(struct net_device *dev, struct can_frame **cf)
 
 	csx = can_skb_ext_add(skb);
 	if (!csx) {
-		dev_kfree_skb_any(skb);
+		kfree_skb(skb);
 		goto out_error_cc;
 	}
 
@@ -260,7 +258,7 @@ struct sk_buff *alloc_canfd_skb(struct net_device *dev,
 
 	csx = can_skb_ext_add(skb);
 	if (!csx) {
-		dev_kfree_skb_any(skb);
+		kfree_skb(skb);
 		goto out_error_fd;
 	}
 
@@ -298,7 +296,7 @@ struct sk_buff *alloc_canxl_skb(struct net_device *dev,
 
 	csx = can_skb_ext_add(skb);
 	if (!csx) {
-		dev_kfree_skb_any(skb);
+		kfree_skb(skb);
 		goto out_error_xl;
 	}
 
@@ -390,7 +388,7 @@ bool can_dropped_invalid_skb(struct net_device *dev, struct sk_buff *skb)
 		break;
 
 	case ETH_P_CANXL:
-		if (!can_cap_enabled(dev, CAN_CAP_XL) || !can_is_canxl_skb(skb))
+		if (!can_is_canxl_skb(skb))
 			goto inval_skb;
 		break;
 
@@ -404,7 +402,7 @@ bool can_dropped_invalid_skb(struct net_device *dev, struct sk_buff *skb)
 	return false;
 
 inval_skb:
-	dev_kfree_skb_any(skb);
+	kfree_skb(skb);
 	dev->stats.tx_dropped++;
 	return true;
 }

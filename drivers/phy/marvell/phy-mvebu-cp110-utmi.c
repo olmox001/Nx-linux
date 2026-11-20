@@ -299,7 +299,7 @@ static int mvebu_cp110_utmi_phy_probe(struct platform_device *pdev)
 	u32 usb_devices = 0;
 	u32 swap_dx = 0;
 
-	utmi = devm_kzalloc_obj(dev, *utmi);
+	utmi = devm_kzalloc(dev, sizeof(*utmi), GFP_KERNEL);
 	if (!utmi)
 		return -ENOMEM;
 
@@ -332,7 +332,7 @@ static int mvebu_cp110_utmi_phy_probe(struct platform_device *pdev)
 			continue;
 		}
 
-		port = devm_kzalloc_obj(dev, *port);
+		port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
 		if (!port) {
 			of_node_put(child);
 			return -ENOMEM;

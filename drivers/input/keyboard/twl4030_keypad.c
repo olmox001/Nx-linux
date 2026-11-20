@@ -322,7 +322,7 @@ static int twl4030_kp_probe(struct platform_device *pdev)
 	u8 reg;
 	int error;
 
-	kp = devm_kzalloc_obj(&pdev->dev, *kp);
+	kp = devm_kzalloc(&pdev->dev, sizeof(*kp), GFP_KERNEL);
 	if (!kp)
 		return -ENOMEM;
 

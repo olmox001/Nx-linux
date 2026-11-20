@@ -169,7 +169,8 @@ static int mcf_edma_probe(struct platform_device *pdev)
 		chans = pdata->dma_channels;
 	}
 
-	mcf_edma = devm_kzalloc_flex(&pdev->dev, *mcf_edma, chans, chans);
+	mcf_edma = devm_kzalloc(&pdev->dev, struct_size(mcf_edma, chans, chans),
+				GFP_KERNEL);
 	if (!mcf_edma)
 		return -ENOMEM;
 

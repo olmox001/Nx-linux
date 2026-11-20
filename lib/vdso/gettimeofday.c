@@ -12,8 +12,6 @@
 #include <vdso/time32.h>
 #include <vdso/time64.h>
 
-#include <uapi/linux/unistd.h>
-
 /*
  * The generic vDSO implementation requires that gettimeofday.h
  * provides:
@@ -25,7 +23,8 @@
  */
 #include <asm/vdso/gettimeofday.h>
 
-#include <linux/build_bug.h>
+/* Bring in default accessors */
+#include <vdso/vsyscall.h>
 
 #ifndef vdso_calc_ns
 
@@ -90,13 +89,6 @@ static inline bool vdso_cycles_ok(u64 cycles)
 }
 #endif
 
-#ifndef __arch_get_vdso_u_time_data
-static __always_inline const struct vdso_time_data *__arch_get_vdso_u_time_data(void)
-{
-	return &vdso_u_time_data;
-}
-#endif
-
 static __always_inline bool vdso_clockid_valid(clockid_t clock)
 {
 	/* Check for negative values or invalid clocks */
@@ -140,21 +132,20 @@ const struct vdso_time_data *vdso_timens_data(const struct vdso_time_data *vd)
 }
 
 static __always_inline
-const struct vdso_clock *vdso_timens_clock(const struct vdso_clock *vc)
-{
-	return (void *)vc + PAGE_SIZE;
-}
-
-static __always_inline
 bool do_hres_timens(const struct vdso_time_data *vdns, const struct vdso_clock *vcns,
 		    clockid_t clk, struct __kernel_timespec *ts)
 {
 	const struct vdso_time_data *vd = vdso_timens_data(vdns);
-	const struct vdso_clock *vc = vdso_timens_clock(vcns);
 	const struct timens_offset *offs = &vcns->offset[clk];
+	const struct vdso_clock *vc = vd->clock_data;
 	u32 seq;
 	s64 sec;
 	u64 ns;
+
+	if (clk != CLOCK_MONOTONIC_RAW)
+		vc = &vc[CS_HRES_COARSE];
+	else
+		vc = &vc[CS_RAW];
 
 	do {
 		seq = vdso_read_begin(vc);
@@ -332,8 +323,6 @@ __cvdso_clock_gettime32_data(const struct vdso_time_data *vd, clockid_t clock,
 	struct __kernel_timespec ts;
 	bool ok;
 
-	BUILD_BUG_ON(!IS_ENABLED(CONFIG_COMPAT_32BIT_TIME));
-
 	ok = __cvdso_clock_gettime_common(vd, clock, &ts);
 
 	if (unlikely(!ok))
@@ -359,12 +348,6 @@ __cvdso_gettimeofday_data(const struct vdso_time_data *vd,
 {
 	const struct vdso_clock *vc = vd->clock_data;
 
-#ifndef __NR_gettimeofday
-	BUILD_BUG();
-#endif
-
-	BUILD_BUG_ON(sizeof(tv->tv_sec) != 8 && !IS_ENABLED(CONFIG_COMPAT_32BIT_TIME));
-
 	if (likely(tv != NULL)) {
 		struct __kernel_timespec ts;
 
@@ -379,8 +362,8 @@ __cvdso_gettimeofday_data(const struct vdso_time_data *vd,
 		if (vdso_is_timens_clock(vc))
 			vd = vdso_timens_data(vd);
 
-		tz->tz_minuteswest = vd->tz_minuteswest;
-		tz->tz_dsttime = vd->tz_dsttime;
+		tz->tz_minuteswest = vd[CS_HRES_COARSE].tz_minuteswest;
+		tz->tz_dsttime = vd[CS_HRES_COARSE].tz_dsttime;
 	}
 
 	return 0;
@@ -398,12 +381,6 @@ __cvdso_time_data(const struct vdso_time_data *vd, __kernel_old_time_t *time)
 {
 	const struct vdso_clock *vc = vd->clock_data;
 	__kernel_old_time_t t;
-
-#ifndef __NR_time
-	BUILD_BUG();
-#endif
-
-	BUILD_BUG_ON(sizeof(*time) != 8 && !IS_ENABLED(CONFIG_COMPAT_32BIT_TIME));
 
 	if (vdso_is_timens_clock(vc)) {
 		vd = vdso_timens_data(vd);
@@ -493,8 +470,6 @@ __cvdso_clock_getres_time32_data(const struct vdso_time_data *vd, clockid_t cloc
 {
 	struct __kernel_timespec ts;
 	bool ok;
-
-	BUILD_BUG_ON(!IS_ENABLED(CONFIG_COMPAT_32BIT_TIME));
 
 	ok = __cvdso_clock_getres_common(vd, clock, &ts);
 

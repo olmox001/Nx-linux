@@ -322,11 +322,12 @@ static int tahvo_usb_probe(struct platform_device *pdev)
 	struct tahvo_usb *tu;
 	int ret;
 
-	tu = devm_kzalloc_obj(&pdev->dev, *tu);
+	tu = devm_kzalloc(&pdev->dev, sizeof(*tu), GFP_KERNEL);
 	if (!tu)
 		return -ENOMEM;
 
-	tu->phy.otg = devm_kzalloc_obj(&pdev->dev, *tu->phy.otg);
+	tu->phy.otg = devm_kzalloc(&pdev->dev, sizeof(*tu->phy.otg),
+				   GFP_KERNEL);
 	if (!tu->phy.otg)
 		return -ENOMEM;
 

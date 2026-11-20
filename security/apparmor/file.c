@@ -93,13 +93,11 @@ static void file_audit_cb(struct audit_buffer *ab, void *va)
  * Returns: %0 or error on failure
  */
 int aa_audit_file(const struct cred *subj_cred,
-		  struct aa_profile *profile, const struct aa_perms *perms,
+		  struct aa_profile *profile, struct aa_perms *perms,
 		  const char *op, u32 request, const char *name,
 		  const char *target, struct aa_label *tlabel,
 		  kuid_t ouid, const char *info, int error)
 {
-	u32 quiet = perms->quiet;
-	u32 complain = perms->complain;
 	int type = AUDIT_APPARMOR_AUTO;
 	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_TASK, AA_CLASS_FILE, op);
 
@@ -114,8 +112,6 @@ int aa_audit_file(const struct cred *subj_cred,
 	ad.error = error;
 	ad.common.u.tsk = NULL;
 
-	if (COMPLAIN_MODE(profile))
-		complain |= ~(perms->allow | perms->deny);
 	if (likely(!ad.error)) {
 		u32 mask = perms->audit;
 
@@ -136,14 +132,11 @@ int aa_audit_file(const struct cred *subj_cred,
 		if (ad.request & perms->kill)
 			type = AUDIT_APPARMOR_KILL;
 
-		if (AUDIT_MODE(profile) == AUDIT_QUIET_ALLOWED)
-			quiet |= complain | perms->allow;
-
 		/* quiet known rejects, assumes quiet and kill do not overlap */
-		if ((ad.request & quiet) &&
+		if ((ad.request & perms->quiet) &&
 		    AUDIT_MODE(profile) != AUDIT_NOQUIET &&
 		    AUDIT_MODE(profile) != AUDIT_ALL)
-			ad.request &= ~quiet;
+			ad.request &= ~perms->quiet;
 
 		if (!ad.request)
 			return ad.error;
@@ -239,7 +232,7 @@ int __aa_path_perm(const char *op, const struct cred *subj_cred,
 	int e = 0;
 
 	if (profile_unconfined(profile) ||
-	    ((flags & PATH_SOCK_COND) && !RULE_MEDIATES_UNIX(rules)))
+	    ((flags & PATH_SOCK_COND) && !RULE_MEDIATES_v9NET(rules)))
 		return 0;
 	aa_str_perms(rules->file, rules->file->start[AA_CLASS_FILE],
 		     name, cond, perms);
@@ -706,50 +699,49 @@ static void revalidate_tty(const struct cred *subj_cred, struct aa_label *label)
 		no_tty();
 }
 
-/*
- * iterate_fd() callback, called with files->file_lock held: grab a ref
- * on the next file so it can be revalidated without the lock held.
- */
-static int get_next_file(const void *p, struct file *file, unsigned int fd)
-{
-	*(struct file **)p = get_file(file);
+struct cred_label {
+	const struct cred *cred;
+	struct aa_label *label;
+};
 
-	return fd + 1;
+static int match_file(const void *p, struct file *file, unsigned int fd)
+{
+	struct cred_label *cl = (struct cred_label *)p;
+
+	if (aa_file_perm(OP_INHERIT, cl->cred, cl->label, file,
+			 aa_map_file_to_perms(file), IN_ATOMIC))
+		return fd + 1;
+	return 0;
 }
+
 
 /* based on selinux's flush_unauthorized_files */
 void aa_inherit_files(const struct cred *cred, struct files_struct *files)
 {
 	struct aa_label *label = aa_get_newest_cred_label(cred);
-	struct file *devnull = NULL, *file = NULL;
-	bool devnull_tried = false;
-	unsigned int n = 0;
+	struct cred_label cl = {
+		.cred = cred,
+		.label = label,
+	};
+	struct file *devnull = NULL;
+	unsigned int n;
 
 	revalidate_tty(cred, label);
 
-	/*
-	 * Revalidate access to inherited open files. Each file is
-	 * revalidated holding only a reference to it, with no locks
-	 * held, as revalidation may sleep (e.g. unix socket mediation
-	 * dropping path refs, or allocating path buffers).
-	 */
-	while ((n = iterate_fd(files, n, get_next_file, &file)) != 0) {
-		int error = aa_file_perm(OP_INHERIT, cred, label, file,
-					 aa_map_file_to_perms(file), false);
+	/* Revalidate access to inherited open files. */
+	n = iterate_fd(files, 0, match_file, &cl);
+	if (!n) /* none found? */
+		goto out;
 
-		fput(file);
-		if (!error)
-			continue;
-		if (!devnull_tried) {
-			devnull_tried = true;
-			devnull = dentry_open(&aa_null, O_RDWR, cred);
-			if (IS_ERR(devnull))
-				devnull = NULL;
-		}
-		/* replace the denied fd (n - 1) with devnull, or close it */
+	devnull = dentry_open(&aa_null, O_RDWR, cred);
+	if (IS_ERR(devnull))
+		devnull = NULL;
+	/* replace all the matching ones with this */
+	do {
 		replace_fd(n - 1, devnull, 0);
-	}
+	} while ((n = iterate_fd(files, n, match_file, &cl)) != 0);
 	if (devnull)
 		fput(devnull);
+out:
 	aa_put_label(label);
 }

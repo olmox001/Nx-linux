@@ -183,7 +183,8 @@ void rvu_switch_enable(struct rvu *rvu)
 		goto free_entries;
 	}
 
-	rswitch->entry2pcifunc = kzalloc_objs(u16, alloc_req.count);
+	rswitch->entry2pcifunc = kcalloc(alloc_req.count, sizeof(u16),
+					 GFP_KERNEL);
 	if (!rswitch->entry2pcifunc)
 		goto free_entries;
 

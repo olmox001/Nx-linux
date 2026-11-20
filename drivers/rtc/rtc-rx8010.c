@@ -73,10 +73,11 @@ static irqreturn_t rx8010_irq_1_handler(int irq, void *dev_id)
 	struct rx8010_data *rx8010 = i2c_get_clientdata(client);
 	int flagreg, err;
 
-	guard(rtc_ops)(rx8010->rtc);
+	rtc_lock(rx8010->rtc);
 
 	err = regmap_read(rx8010->regs, RX8010_FLAG, &flagreg);
 	if (err) {
+		rtc_unlock(rx8010->rtc);
 		return IRQ_NONE;
 	}
 
@@ -99,6 +100,7 @@ static irqreturn_t rx8010_irq_1_handler(int irq, void *dev_id)
 	}
 
 	err = regmap_write(rx8010->regs, RX8010_FLAG, flagreg);
+	rtc_unlock(rx8010->rtc);
 	return err ? IRQ_NONE : IRQ_HANDLED;
 }
 
@@ -373,7 +375,7 @@ static int rx8010_probe(struct i2c_client *client)
 	struct rx8010_data *rx8010;
 	int err = 0;
 
-	rx8010 = devm_kzalloc_obj(dev, *rx8010);
+	rx8010 = devm_kzalloc(dev, sizeof(*rx8010), GFP_KERNEL);
 	if (!rx8010)
 		return -ENOMEM;
 

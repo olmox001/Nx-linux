@@ -25,6 +25,7 @@ struct vs_bridge {
 	struct drm_connector *conn;
 
 	struct vs_crtc *crtc;
+	struct drm_bridge *next_bridge;
 	enum vs_bridge_output_interface intf;
 };
 

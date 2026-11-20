@@ -115,7 +115,7 @@ static int spi_slave_system_control_probe(struct spi_device *spi)
 	struct spi_slave_system_control_priv *priv;
 	int ret;
 
-	priv = devm_kzalloc_obj(&spi->dev, *priv);
+	priv = devm_kzalloc(&spi->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

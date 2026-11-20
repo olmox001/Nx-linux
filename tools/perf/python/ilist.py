@@ -2,13 +2,11 @@
 # SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 """Interactive perf list."""
 
-from __future__ import annotations
-
-import argparse
 from abc import ABC, abstractmethod
+import argparse
 from dataclasses import dataclass
 import math
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Tuple
 import perf
 from textual import on
 from textual.app import App, ComposeResult
@@ -21,7 +19,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Sparkline, Sta
 from textual.widgets.tree import TreeNode
 
 
-def get_info(info: dict[str, Any], key: str):
+def get_info(info: Dict[str, str], key: str):
     return (info[key] + "\n") if key in info else ""
 
 
@@ -82,7 +80,7 @@ class Metric(TreeValue):
         try:
             val = evlist.compute_metric(self.metric_name, cpu, thread)
             return 0 if math.isnan(val) else val
-        except (OSError, ValueError, RuntimeError, TypeError):
+        except:
             # Be tolerant of failures to compute metrics on particular CPUs/threads.
             return 0
 
@@ -142,7 +140,7 @@ class ErrorScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         yield Button(f"Error: {self.error}", variant="primary", id="error")
 
-    def on_button_pressed(self) -> None:
+    def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(True)
 
 
@@ -236,7 +234,7 @@ class IListApp(App):
 
     def __init__(self, interval: float) -> None:
         self.interval = interval
-        self.evlist: Optional[perf.evlist] = None
+        self.evlist = None
         self.selected: Optional[TreeValue] = None
         self.search_results: list[TreeNode[TreeValue]] = []
         self.cur_search_result: TreeNode[TreeValue] | None = None
@@ -286,18 +284,18 @@ class IListApp(App):
             """Sets the focus after the SearchScreen is dismissed."""
 
             search_label = self.query_one("#active_search", Label)
-            search_label.display = bool(event)
+            search_label.display = True if event else False
             if not event:
                 return
             event = event.lower()
             search_label.update(f'Searching for events matching "{event}"')
 
-            tree: Tree[TreeValue] = self.query_one("#root", Tree)
+            tree: Tree[str] = self.query_one("#root", Tree)
 
-            def find_search_results(event: str, node: TreeNode[TreeValue],
+            def find_search_results(event: str, node: TreeNode[str],
                                     cursor_seen: bool = False,
-                                    match_after_cursor: Optional[TreeNode[TreeValue]] = None
-                                    ) -> tuple[bool, Optional[TreeNode[TreeValue]]]:
+                                    match_after_cursor: Optional[TreeNode[str]] = None
+                                    ) -> Tuple[bool, Optional[TreeNode[str]]]:
                 """Find nodes that match the search remembering the one after the cursor."""
                 if not cursor_seen and node == tree.cursor_node:
                     cursor_seen = True
@@ -334,7 +332,7 @@ class IListApp(App):
 
     def action_collapse(self) -> None:
         """Collapse the part of the tree currently on."""
-        tree: Tree[TreeValue] = self.query_one("#root", Tree)
+        tree: Tree[str] = self.query_one("#root", Tree)
         node = tree.cursor_node
         if node and node.parent:
             node.parent.collapse_all()
@@ -345,34 +343,31 @@ class IListApp(App):
         if not self.selected or not self.evlist:
             return
 
-        def update_count(cpu: int, count: int | float):
+        def update_count(cpu: int, count: int):
             # Update the raw count display.
-            counter_query = self.query(f"#counter_cpu{cpu}" if cpu >= 0 else "#counter_total")
-            if not counter_query:
+            counter: Label = self.query(f"#counter_cpu{cpu}" if cpu >= 0 else "#counter_total")
+            if not counter:
                 return
-            counter: Label = counter_query.first(Label)
+            counter = counter.first(Label)
             counter.update(str(count))
 
             # Update the sparkline.
-            line_query = self.query(f"#sparkline_cpu{cpu}" if cpu >= 0 else "#sparkline_total")
-            if not line_query:
+            line: Sparkline = self.query(f"#sparkline_cpu{cpu}" if cpu >= 0 else "#sparkline_total")
+            if not line:
                 return
-            line: Sparkline = line_query.first(Sparkline)
+            line = line.first(Sparkline)
             # If there are more events than the width, remove the front event.
-            if line.data is not None:
-                if len(line.data) > line.size.width:
-                    line.data = line.data[1:]
-                line.data = list(line.data) + [float(count)]
-            else:
-                line.data = [float(count)]
-            line.refresh()
+            if len(line.data) > line.size.width:
+                line.data.pop(0)
+            line.data.append(count)
+            line.mutate_reactive(Sparkline.data)
 
         # Update the total and each CPU counts, assume there's just 1 evsel.
-        total: float = 0.0
+        total = 0
         self.evlist.disable()
         for evsel in self.evlist:
             for cpu in evsel.cpus():
-                aggr: float = 0.0
+                aggr = 0
                 for thread in evsel.threads():
                     aggr += self.selected.value(self.evlist, evsel, cpu, thread)
                 update_count(cpu, aggr)
@@ -419,7 +414,7 @@ class IListApp(App):
             if self.evlist:
                 self.evlist.open()
                 self.evlist.enable()
-        except (OSError, ValueError, RuntimeError):
+        except:
             self.evlist = None
 
         if not self.evlist:
@@ -429,16 +424,16 @@ class IListApp(App):
         # Add spark lines for all the CPUs. Note, must be done after
         # open so that the evlist CPUs have been computed by propagate
         # maps.
-        line_sp = CounterSparkline(cpu=-1)
-        lines.mount(line_sp)
+        line = CounterSparkline(cpu=-1)
+        lines.mount(line)
         for cpu in self.evlist.all_cpus():
-            c_sp = CounterSparkline(cpu)
-            lines.mount(c_sp)
-        c_val = Counter(cpu=-1)
-        lines.mount(c_val)
+            line = CounterSparkline(cpu)
+            lines.mount(line)
+        line = Counter(cpu=-1)
+        lines.mount(line)
         for cpu in self.evlist.all_cpus():
-            c_val2 = Counter(cpu)
-            lines.mount(c_val2)
+            line = Counter(cpu)
+            lines.mount(line)
 
     def compose(self) -> ComposeResult:
         """Draws the app."""
@@ -450,7 +445,7 @@ class IListApp(App):
                 pmu_name = pmu.name().lower()
                 pmu_node = pmus.add(pmu_name)
                 try:
-                    for event in sorted(pmu.events(), key=lambda x: x.get("name", "")):
+                    for event in sorted(pmu.events(), key=lambda x: x["name"]):
                         if "deprecated" in event:
                             continue
                         if "name" in event:
@@ -460,22 +455,21 @@ class IListApp(App):
                                                   data=PmuEvent(pmu_name, e))
                             else:
                                 pmu_node.add_leaf(e, data=PmuEvent(pmu_name, e))
-                except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+                except:
                     # Reading events may fail with EPERM, ignore.
                     pass
             metrics = tree.root.add("Metrics")
-            groups: set[str] = set()
+            groups = set()
             for metric in perf.metrics():
                 groups.update(metric["MetricGroup"])
 
-            def add_metrics_to_tree(node: TreeNode[TreeValue], parent: str, pmu: Optional[str] = None):
+            def add_metrics_to_tree(node: TreeNode[TreeValue], parent: str, pmu: str = None):
                 for metric in sorted(perf.metrics(), key=lambda x: x["MetricName"]):
-                    metric_pmu_raw = metric.get('PMU')
-                    metric_pmu = str(metric_pmu_raw) if metric_pmu_raw else ''
+                    metric_pmu = metric.get('PMU')
                     if pmu and metric_pmu and metric_pmu != pmu:
                         continue
                     if parent in metric["MetricGroup"]:
-                        name = str(metric["MetricName"])
+                        name = metric["MetricName"]
                         display_name = name
                         if metric_pmu:
                             display_name += f" ({metric_pmu})"

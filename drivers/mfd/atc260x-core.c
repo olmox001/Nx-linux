@@ -228,7 +228,8 @@ int atc260x_match_device(struct atc260x *atc260x, struct regmap_config *regmap_c
 		return -EINVAL;
 	}
 
-	atc260x->regmap_mutex = devm_kzalloc_obj(dev, *atc260x->regmap_mutex);
+	atc260x->regmap_mutex = devm_kzalloc(dev, sizeof(*atc260x->regmap_mutex),
+					     GFP_KERNEL);
 	if (!atc260x->regmap_mutex)
 		return -ENOMEM;
 

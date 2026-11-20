@@ -23,6 +23,7 @@
 #include <asm/page.h>
 
 #include <vdso/datapage.h>
+#include <asm/vdso/vsyscall.h>
 
 unsigned int __read_mostly vdso_enabled = 1;
 

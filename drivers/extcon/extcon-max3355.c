@@ -56,7 +56,8 @@ static int max3355_probe(struct platform_device *pdev)
 	struct gpio_desc *gpiod;
 	int irq, err;
 
-	data = devm_kzalloc_obj(&pdev->dev, struct max3355_data);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct max3355_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

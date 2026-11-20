@@ -94,7 +94,7 @@ static int dwc3_generic_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	dwc3g = devm_kzalloc_obj(dev, *dwc3g);
+	dwc3g = devm_kzalloc(dev, sizeof(*dwc3g), GFP_KERNEL);
 	if (!dwc3g)
 		return -ENOMEM;
 

@@ -815,7 +815,7 @@ static int max77843_muic_probe(struct platform_device *pdev)
 	bool attached;
 	int i, ret;
 
-	info = devm_kzalloc_obj(&pdev->dev, *info);
+	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

@@ -91,7 +91,7 @@ static int ariel_led_probe(struct platform_device *pdev)
 	if (!ec_ram)
 		return -ENODEV;
 
-	leds = devm_kzalloc_objs(dev, *leds, NLEDS);
+	leds = devm_kcalloc(dev, NLEDS, sizeof(*leds), GFP_KERNEL);
 	if (!leds)
 		return -ENOMEM;
 

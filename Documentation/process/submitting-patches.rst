@@ -239,12 +239,9 @@ patches as arguments to scripts/get_maintainer.pl).  If you cannot find a
 maintainer for the subsystem you are working on, Andrew Morton
 (akpm@linux-foundation.org) serves as a maintainer of last resort.
 
-You should also normally choose at least one mailing list to receive a copy of
-your patch set.  Look in the MAINTAINERS file for a subsystem-specific list;
-your patch will probably get more attention there.
-linux-kernel@vger.kernel.org functions as a list of last resort for patches
-that do not have a subsystem-specific list.  Please do not spam unrelated lists
-and unrelated people, though.
+linux-kernel@vger.kernel.org should be used by default for all patches, but the
+volume on that list has caused a number of developers to tune it out.  Please
+do not spam unrelated lists and unrelated people, though.
 
 Many kernel-related lists are hosted at kernel.org; you can find a list
 of them at https://subspace.kernel.org.  There are kernel-related lists
@@ -407,11 +404,12 @@ patches that are being emailed around.
 The sign-off is a simple line at the end of the explanation for the
 patch, which certifies that you wrote it or otherwise have the right to
 pass it on as an open-source patch.  The rules are pretty simple: if you
-can certify the below::
+can certify the below:
 
-        Developer's Certificate of Origin 1.1
+Developer's Certificate of Origin 1.1
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-        By making a contribution to this project, I certify that:
+By making a contribution to this project, I certify that:
 
         (a) The contribution was created in whole or in part by me and I
             have the right to submit it under the open source license
@@ -459,7 +457,7 @@ When to use Acked-by:, Cc:, and Co-developed-by:
 ------------------------------------------------
 
 The Signed-off-by: tag indicates that the signer was involved in the
-development of the patch, or that they were in the patch's delivery path.
+development of the patch, or that he/she was in the patch's delivery path.
 
 If a person was not directly involved in the preparation or handling of a
 patch but wishes to signify and record their approval of it then they can
@@ -556,11 +554,12 @@ some testing has been performed, provides a means to locate testers for
 future patches, and ensures credit for the testers.
 
 Reviewed-by:, instead, indicates that the patch has been reviewed and found
-acceptable according to the Reviewer's Statement::
+acceptable according to the Reviewer's Statement:
 
-	Reviewer's statement of oversight
+Reviewer's statement of oversight
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-	By offering my Reviewed-by: tag, I state that:
+By offering my Reviewed-by: tag, I state that:
 
 	 (a) I have carried out a technical review of this patch to
 	     evaluate its appropriateness and readiness for inclusion into
@@ -634,6 +633,16 @@ and Suggested-by: did the reporting or suggestion in public. Note,
 bugzilla.kernel.org is a public place in this sense, but email addresses
 used there are private; so do not expose them in tags, unless the person
 used them in earlier contributions.
+
+Using Assisted-by:
+------------------
+
+If you used any sort of advanced coding tool in the creation of your patch,
+you need to acknowledge that use by adding an Assisted-by tag.  Failure to
+do so may impede the acceptance of your work.  Please see
+Documentation/process/coding-assistants.rst for details regarding the
+acknowledgment of coding assistants.
+
 
 .. _the_canonical_patch_format:
 

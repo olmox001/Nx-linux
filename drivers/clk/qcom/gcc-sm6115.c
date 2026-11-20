@@ -3218,7 +3218,6 @@ static struct gdsc gcc_vcodec0_gdsc = {
 	.pd = {
 		.name = "gcc_vcodec0",
 	},
-	.flags = HW_CTRL_TRIGGER,
 	.pwrsts = PWRSTS_OFF_ON,
 };
 
@@ -3525,7 +3524,17 @@ static struct platform_driver gcc_sm6115_driver = {
 	},
 };
 
-subsys_platform_driver(gcc_sm6115_driver);
+static int __init gcc_sm6115_init(void)
+{
+	return platform_driver_register(&gcc_sm6115_driver);
+}
+subsys_initcall(gcc_sm6115_init);
+
+static void __exit gcc_sm6115_exit(void)
+{
+	platform_driver_unregister(&gcc_sm6115_driver);
+}
+module_exit(gcc_sm6115_exit);
 
 MODULE_DESCRIPTION("QTI GCC SM6115 and SM4250 Driver");
 MODULE_LICENSE("GPL v2");

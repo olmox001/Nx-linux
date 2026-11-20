@@ -29,7 +29,7 @@ static int ip30led_create(struct platform_device *pdev, int num)
 {
 	struct ip30_led *data;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

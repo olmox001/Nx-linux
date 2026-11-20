@@ -492,7 +492,7 @@ static int tusb1210_probe(struct ulpi *ulpi)
 	u8 val, reg;
 	int ret;
 
-	tusb = devm_kzalloc_obj(dev, *tusb);
+	tusb = devm_kzalloc(dev, sizeof(*tusb), GFP_KERNEL);
 	if (!tusb)
 		return -ENOMEM;
 

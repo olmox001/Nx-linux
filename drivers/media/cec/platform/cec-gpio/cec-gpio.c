@@ -187,7 +187,7 @@ static int cec_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(hdmi_dev))
 		caps |= CEC_CAP_PHYS_ADDR;
 
-	cec = devm_kzalloc_obj(dev, *cec);
+	cec = devm_kzalloc(dev, sizeof(*cec), GFP_KERNEL);
 	if (!cec)
 		return -ENOMEM;
 

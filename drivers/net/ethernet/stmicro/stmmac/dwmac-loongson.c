@@ -313,7 +313,7 @@ static int loongson_dwmac_setup(void *apriv, struct mac_device_info *mac)
 	ld = priv->plat->bsp_priv;
 	pdev = to_pci_dev(priv->device);
 
-	dma = devm_kzalloc_obj(priv->device, *dma);
+	dma = devm_kzalloc(priv->device, sizeof(*dma), GFP_KERNEL);
 	if (!dma)
 		return -ENOMEM;
 
@@ -507,11 +507,13 @@ static int loongson_dwmac_probe(struct pci_dev *pdev, const struct pci_device_id
 	if (!plat)
 		return -ENOMEM;
 
-	plat->mdio_bus_data = devm_kzalloc_obj(&pdev->dev, *plat->mdio_bus_data);
+	plat->mdio_bus_data = devm_kzalloc(&pdev->dev,
+					   sizeof(*plat->mdio_bus_data),
+					   GFP_KERNEL);
 	if (!plat->mdio_bus_data)
 		return -ENOMEM;
 
-	ld = devm_kzalloc_obj(&pdev->dev, *ld);
+	ld = devm_kzalloc(&pdev->dev, sizeof(*ld), GFP_KERNEL);
 	if (!ld)
 		return -ENOMEM;
 

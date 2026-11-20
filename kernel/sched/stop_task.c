@@ -27,11 +27,8 @@ wakeup_preempt_stop(struct rq *rq, struct task_struct *p, int flags)
 	/* we're never preempted */
 }
 
-static void set_next_task_stop(struct rq *rq, struct task_struct *stop, enum snt_e type)
+static void set_next_task_stop(struct rq *rq, struct task_struct *stop, bool first)
 {
-	if (type == SNT_REPICK)
-		return;
-
 	stop->se.exec_start = rq_clock_task(rq);
 }
 

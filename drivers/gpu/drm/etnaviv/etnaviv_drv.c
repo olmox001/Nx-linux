@@ -601,10 +601,8 @@ static void etnaviv_unbind(struct device *dev)
 
 	component_unbind_all(dev, drm);
 
-	if (priv->flop_reset_data_ppu) {
-		etnaviv_cmdbuf_free(priv->flop_reset_data_ppu);
-		kfree(priv->flop_reset_data_ppu);
-	}
+	etnaviv_cmdbuf_free(priv->flop_reset_data_ppu);
+	kfree(priv->flop_reset_data_ppu);
 
 	etnaviv_cmdbuf_suballoc_destroy(priv->cmdbuf_suballoc);
 

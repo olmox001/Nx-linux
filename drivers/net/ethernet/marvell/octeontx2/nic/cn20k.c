@@ -176,7 +176,8 @@ int cn20k_register_pfvf_mbox_intr(struct otx2_nic *pf, int numvfs)
 	char *irq_name;
 
 	/* irq data for 4 PF intr vectors */
-	irq_data = devm_kzalloc_objs(pf->dev, struct pf_irq_data, 4);
+	irq_data = devm_kcalloc(pf->dev, 4,
+				sizeof(struct pf_irq_data), GFP_KERNEL);
 	if (!irq_data)
 		return -ENOMEM;
 
@@ -646,7 +647,6 @@ static int cn20k_pool_aq_init(struct otx2_nic *pfvf, u16 pool_id,
 	pp_params.nid = NUMA_NO_NODE;
 	pp_params.dev = pfvf->dev;
 	pp_params.dma_dir = DMA_FROM_DEVICE;
-	pp_params.netdev = pfvf->netdev;
 	pool->page_pool = page_pool_create(&pp_params);
 	if (IS_ERR(pool->page_pool)) {
 		netdev_err(pfvf->netdev, "Creation of page pool failed\n");

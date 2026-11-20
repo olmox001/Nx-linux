@@ -27,10 +27,9 @@ TEST_FILES := \
 # end of TEST_FILES
 
 TEST_INCLUDES := \
-	$(wildcard ../../../net/lib/sh/*.sh) \
+	../../../net/lib.sh \
 	../lib/sh/lib_netcons.sh \
 	../../../net/forwarding/lib.sh \
-	../../../net/lib.sh \
 # end of TEST_INCLUDES
 
 include ../../../lib.mk

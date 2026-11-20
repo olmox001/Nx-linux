@@ -2,18 +2,16 @@
 /* Copyright 2018 Marty E. Plummer <hanetzer@startmail.com> */
 /* Copyright 2019 Linaro, Ltd, Rob Herring <robh@kernel.org> */
 
-#include <linux/debugfs.h>
 #include <linux/clk.h>
 #include <linux/reset.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
-#include <drm/drm_drv.h>
-#include <drm/drm_print.h>
 
 #include "panfrost_device.h"
 #include "panfrost_devfreq.h"
+#include "panfrost_features.h"
 #include "panfrost_gem.h"
 #include "panfrost_issues.h"
 #include "panfrost_gpu.h"
@@ -37,23 +35,51 @@ static void panfrost_reset_fini(struct panfrost_device *pfdev)
 	reset_control_assert(pfdev->rstc);
 }
 
-static int panfrost_clks_enable(struct panfrost_device *pfdev, bool on_resume)
+static int panfrost_clk_init(struct panfrost_device *pfdev)
 {
 	int err;
+	unsigned long rate;
+
+	pfdev->clock = devm_clk_get(pfdev->base.dev, NULL);
+	if (IS_ERR(pfdev->clock)) {
+		dev_err(pfdev->base.dev, "get clock failed %ld\n", PTR_ERR(pfdev->clock));
+		return PTR_ERR(pfdev->clock);
+	}
+
+	rate = clk_get_rate(pfdev->clock);
+	dev_info(pfdev->base.dev, "clock rate = %lu\n", rate);
 
 	err = clk_prepare_enable(pfdev->clock);
 	if (err)
 		return err;
 
-	err = clk_prepare_enable(pfdev->bus_clock);
-	if (err)
+	pfdev->bus_clock = devm_clk_get_optional(pfdev->base.dev, "bus");
+	if (IS_ERR(pfdev->bus_clock)) {
+		dev_err(pfdev->base.dev, "get bus_clock failed %ld\n",
+			PTR_ERR(pfdev->bus_clock));
+		err = PTR_ERR(pfdev->bus_clock);
 		goto disable_clock;
-
-	if (on_resume) {
-		err = clk_prepare_enable(pfdev->bus_ace_clock);
-		if (err)
-			goto disable_bus_clock;
 	}
+
+	if (pfdev->bus_clock) {
+		rate = clk_get_rate(pfdev->bus_clock);
+		dev_info(pfdev->base.dev, "bus_clock rate = %lu\n", rate);
+
+		err = clk_prepare_enable(pfdev->bus_clock);
+		if (err)
+			goto disable_clock;
+	}
+
+	pfdev->bus_ace_clock = devm_clk_get_optional(pfdev->base.dev, "bus_ace");
+	if (IS_ERR(pfdev->bus_ace_clock)) {
+		err = PTR_ERR(pfdev->bus_ace_clock);
+		dev_err(pfdev->base.dev, "get bus_ace_clock failed %d\n", err);
+		goto disable_bus_clock;
+	}
+
+	err = clk_prepare_enable(pfdev->bus_ace_clock);
+	if (err)
+		goto disable_bus_clock;
 
 	return 0;
 
@@ -65,90 +91,20 @@ disable_clock:
 	return err;
 }
 
-static void panfrost_clks_disable(struct panfrost_device *pfdev, bool on_suspend)
-{
-	if (on_suspend)
-		clk_disable_unprepare(pfdev->bus_ace_clock);
-	clk_disable_unprepare(pfdev->bus_clock);
-	clk_disable_unprepare(pfdev->clock);
-}
-
-static int panfrost_clk_init(struct panfrost_device *pfdev)
-{
-	unsigned long rate;
-	int err;
-
-	pfdev->clock = devm_clk_get(pfdev->base.dev, NULL);
-	if (IS_ERR(pfdev->clock)) {
-		dev_err(pfdev->base.dev, "get clock failed %ld\n", PTR_ERR(pfdev->clock));
-		return PTR_ERR(pfdev->clock);
-	}
-
-	rate = clk_get_rate(pfdev->clock);
-	dev_info(pfdev->base.dev, "clock rate = %lu\n", rate);
-
-	err = clk_prepare(pfdev->clock);
-	if (err)
-		return err;
-
-	pfdev->bus_clock = devm_clk_get_optional(pfdev->base.dev, "bus");
-	if (IS_ERR(pfdev->bus_clock)) {
-		err = PTR_ERR(pfdev->bus_clock);
-		dev_err(pfdev->base.dev, "get bus_clock failed %d\n", err);
-		goto unprepare_clock;
-	}
-
-	if (pfdev->bus_clock) {
-		rate = clk_get_rate(pfdev->bus_clock);
-		dev_info(pfdev->base.dev, "bus_clock rate = %lu\n", rate);
-
-		err = clk_prepare(pfdev->bus_clock);
-		if (err)
-			goto unprepare_clock;
-	}
-
-	pfdev->bus_ace_clock = devm_clk_get_optional(pfdev->base.dev, "bus_ace");
-	if (IS_ERR(pfdev->bus_ace_clock)) {
-		err = PTR_ERR(pfdev->bus_ace_clock);
-		dev_err(pfdev->base.dev, "get bus_ace_clock failed %d\n", err);
-		goto unprepare_bus_clock;
-	}
-
-	err = clk_prepare(pfdev->bus_ace_clock);
-	if (err)
-		goto unprepare_bus_clock;
-
-	err = panfrost_clks_enable(pfdev, true);
-	if (err)
-		goto unprepare_bus_ace_clock;
-
-	return 0;
-
-unprepare_bus_ace_clock:
-	clk_unprepare(pfdev->bus_ace_clock);
-unprepare_bus_clock:
-	clk_unprepare(pfdev->bus_clock);
-unprepare_clock:
-	clk_unprepare(pfdev->clock);
-
-	return err;
-}
-
 static void panfrost_clk_fini(struct panfrost_device *pfdev)
 {
-	panfrost_clks_disable(pfdev, true);
-	clk_unprepare(pfdev->bus_ace_clock);
-	clk_unprepare(pfdev->bus_clock);
-	clk_unprepare(pfdev->clock);
+	clk_disable_unprepare(pfdev->bus_ace_clock);
+	clk_disable_unprepare(pfdev->bus_clock);
+	clk_disable_unprepare(pfdev->clock);
 }
 
 static int panfrost_regulator_init(struct panfrost_device *pfdev)
 {
 	int ret, i;
 
-	pfdev->regulators = devm_kzalloc_objs(pfdev->base.dev,
-					      *pfdev->regulators,
-					      pfdev->comp->num_supplies);
+	pfdev->regulators = devm_kcalloc(pfdev->base.dev, pfdev->comp->num_supplies,
+					 sizeof(*pfdev->regulators),
+					 GFP_KERNEL);
 	if (!pfdev->regulators)
 		return -ENOMEM;
 
@@ -259,14 +215,15 @@ err:
 
 int panfrost_device_init(struct panfrost_device *pfdev)
 {
-	bool device_initialised = false;
 	int err;
 
-	pfdev->comp = of_device_get_match_data(pfdev->base.dev);
-	if (!pfdev->comp)
-		return -ENODEV;
+	mutex_init(&pfdev->sched_lock);
+	INIT_LIST_HEAD(&pfdev->scheduled_jobs);
+	INIT_LIST_HEAD(&pfdev->as_lru_list);
 
-	pfdev->coherent = device_get_dma_attr(pfdev->base.dev) == DEV_DMA_COHERENT;
+	spin_lock_init(&pfdev->as_lock);
+
+	spin_lock_init(&pfdev->cycle_counter.lock);
 
 #ifdef CONFIG_DEBUG_FS
 	mutex_init(&pfdev->debugfs.gems_lock);
@@ -325,41 +282,9 @@ int panfrost_device_init(struct panfrost_device *pfdev)
 	if (err)
 		goto out_job;
 
-	err = panfrost_gem_init(pfdev);
-	if (err)
-		goto out_perfcnt;
-
-	device_initialised = true;
-
-	/* The reason we must manually set the PM status and usage counter is
-	 * we have just powered the device up but did not go through the PM
-	 * runtime resume callback, so we need to update these ourselves.
-	 */
-	pm_runtime_get_noresume(pfdev->base.dev);
-	pm_runtime_set_active(pfdev->base.dev);
-	pm_runtime_mark_last_busy(pfdev->base.dev);
-	pm_runtime_enable(pfdev->base.dev);
-	pm_runtime_set_autosuspend_delay(pfdev->base.dev, 50); /* ~3 frames */
-	pm_runtime_use_autosuspend(pfdev->base.dev);
-
-	/*
-	 * Register the DRM device with the core and the connectors with
-	 * sysfs
-	 */
-	err = drm_dev_register(&pfdev->base, 0);
-	if (err < 0)
-		goto err_disable_rpm;
-
-	pm_runtime_put_autosuspend(pfdev->base.dev);
+	panfrost_gem_init(pfdev);
 
 	return 0;
-
-err_disable_rpm:
-	pm_runtime_dont_use_autosuspend(pfdev->base.dev);
-	pm_runtime_disable(pfdev->base.dev);
-	panfrost_gem_fini(pfdev);
-out_perfcnt:
-	panfrost_perfcnt_fini(pfdev);
 out_job:
 	panfrost_jm_fini(pfdev);
 out_mmu:
@@ -376,23 +301,11 @@ out_reset:
 	panfrost_reset_fini(pfdev);
 out_pm_domain:
 	panfrost_pm_domain_fini(pfdev);
-
-	if (device_initialised) {
-		pm_runtime_set_suspended(pfdev->base.dev);
-		pm_runtime_put_noidle(pfdev->base.dev);
-	}
-
 	return err;
 }
 
 void panfrost_device_fini(struct panfrost_device *pfdev)
 {
-	drm_WARN_ON(&pfdev->base, pm_runtime_get_sync(pfdev->base.dev) < 0);
-
-	pm_runtime_dont_use_autosuspend(pfdev->base.dev);
-	pm_runtime_disable(pfdev->base.dev);
-
-	panfrost_gem_fini(pfdev);
 	panfrost_perfcnt_fini(pfdev);
 	panfrost_jm_fini(pfdev);
 	panfrost_mmu_fini(pfdev);
@@ -402,9 +315,6 @@ void panfrost_device_fini(struct panfrost_device *pfdev)
 	panfrost_clk_fini(pfdev);
 	panfrost_reset_fini(pfdev);
 	panfrost_pm_domain_fini(pfdev);
-
-	pm_runtime_set_suspended(pfdev->base.dev);
-	pm_runtime_put_noidle(pfdev->base.dev);
 }
 
 #define PANFROST_EXCEPTION(id) \
@@ -509,8 +419,6 @@ bool panfrost_exception_needs_reset(const struct panfrost_device *pfdev,
 
 void panfrost_device_reset(struct panfrost_device *pfdev, bool enable_job_int)
 {
-	guard(rwsem_write)(&pfdev->reset.lock);
-
 	panfrost_gpu_soft_reset(pfdev);
 
 	panfrost_gpu_power_on(pfdev);
@@ -519,8 +427,6 @@ void panfrost_device_reset(struct panfrost_device *pfdev, bool enable_job_int)
 	panfrost_jm_reset_interrupts(pfdev);
 	if (enable_job_int)
 		panfrost_jm_enable_interrupts(pfdev);
-
-	panfrost_perfcnt_reset(pfdev);
 }
 
 static int panfrost_device_runtime_resume(struct device *dev)
@@ -533,17 +439,34 @@ static int panfrost_device_runtime_resume(struct device *dev)
 		if (ret)
 			return ret;
 
-		ret = panfrost_clks_enable(pfdev, true);
-		if (ret) {
-			reset_control_assert(pfdev->rstc);
-			return ret;
-		}
+		ret = clk_enable(pfdev->clock);
+		if (ret)
+			goto err_clk;
+
+		ret = clk_enable(pfdev->bus_clock);
+		if (ret)
+			goto err_bus_clk;
+
+		ret = clk_enable(pfdev->bus_ace_clock);
+		if (ret)
+			goto err_bus_ace_clk;
 	}
 
 	panfrost_device_reset(pfdev, true);
 	panfrost_devfreq_resume(pfdev);
 
 	return 0;
+
+err_bus_ace_clk:
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
+		clk_disable(pfdev->bus_clock);
+err_bus_clk:
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
+		clk_disable(pfdev->clock);
+err_clk:
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
+		reset_control_assert(pfdev->rstc);
+	return ret;
 }
 
 static int panfrost_device_runtime_suspend(struct device *dev)
@@ -560,7 +483,9 @@ static int panfrost_device_runtime_suspend(struct device *dev)
 	panfrost_gpu_power_off(pfdev);
 
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
-		panfrost_clks_disable(pfdev, true);
+		clk_disable(pfdev->bus_ace_clock);
+		clk_disable(pfdev->bus_clock);
+		clk_disable(pfdev->clock);
 		reset_control_assert(pfdev->rstc);
 	}
 
@@ -584,9 +509,15 @@ static int panfrost_device_resume(struct device *dev)
 	}
 
 	if (pfdev->comp->pm_features & BIT(GPU_PM_CLK_DIS)) {
-		ret = panfrost_clks_enable(pfdev, false);
+		ret = clk_enable(pfdev->clock);
 		if (ret)
 			goto err_clk;
+
+		if (pfdev->bus_clock) {
+			ret = clk_enable(pfdev->bus_clock);
+			if (ret)
+				goto err_bus_clk;
+		}
 	}
 
 	ret = pm_runtime_force_resume(dev);
@@ -596,8 +527,11 @@ static int panfrost_device_resume(struct device *dev)
 	return 0;
 
 err_resume:
+	if (pfdev->comp->pm_features & BIT(GPU_PM_CLK_DIS) && pfdev->bus_clock)
+		clk_disable(pfdev->bus_clock);
+err_bus_clk:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_CLK_DIS))
-		panfrost_clks_disable(pfdev, false);
+		clk_disable(pfdev->clock);
 err_clk:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF))
 		dev_pm_opp_set_opp(dev, NULL);
@@ -613,8 +547,12 @@ static int panfrost_device_suspend(struct device *dev)
 	if (ret)
 		return ret;
 
-	if (pfdev->comp->pm_features & BIT(GPU_PM_CLK_DIS))
-		panfrost_clks_disable(pfdev, false);
+	if (pfdev->comp->pm_features & BIT(GPU_PM_CLK_DIS)) {
+		if (pfdev->bus_clock)
+			clk_disable(pfdev->bus_clock);
+
+		clk_disable(pfdev->clock);
+	}
 
 	if (pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF))
 		dev_pm_opp_set_opp(dev, NULL);
@@ -626,56 +564,3 @@ EXPORT_GPL_DEV_PM_OPS(panfrost_pm_ops) = {
 	RUNTIME_PM_OPS(panfrost_device_runtime_suspend, panfrost_device_runtime_resume, NULL)
 	SYSTEM_SLEEP_PM_OPS(panfrost_device_suspend, panfrost_device_resume)
 };
-
-#ifdef CONFIG_DEBUG_FS
-static int reset_get(void *data, u64 *val)
-{
-	struct panfrost_device *pfdev =
-		container_of(data, struct panfrost_device, base);
-
-	*val = atomic_read(&pfdev->reset.pending);
-	return 0;
-}
-
-static int reset_set(void *data, u64 val)
-{
-	struct panfrost_device *pfdev =
-		container_of(data, struct panfrost_device, base);
-	int ret;
-
-	if (val != 1)
-		return -EINVAL;
-
-	ret = pm_runtime_get_if_active(pfdev->base.dev);
-	if (!ret)
-		return 0;
-
-	panfrost_device_schedule_reset(pfdev);
-	flush_work(&pfdev->reset.work);
-
-	/* ret < 0 means runtime PM for the device is disabled, so we
-	 * only need to return the PM reference in the opposite case
-	 */
-	if (ret > 0)
-		pm_runtime_put(pfdev->base.dev);
-
-	return 0;
-}
-
-DEFINE_DEBUGFS_ATTRIBUTE(panfrost_reset_debugfs_fops,
-			 reset_get, reset_set,
-			 "0x%08llx\n");
-
-static void panfrost_reset_debugfs_init(struct drm_minor *minor)
-{
-	debugfs_create_file("reset", 0600, minor->debugfs_root,
-			    minor->dev, &panfrost_reset_debugfs_fops);
-}
-
-void panfrost_device_debugfs_init(struct drm_minor *minor)
-{
-	panfrost_gem_debugfs_init(minor);
-	panfrost_sched_debugfs_init(minor);
-	panfrost_reset_debugfs_init(minor);
-}
-#endif // CONFIG_DEBUG_FS

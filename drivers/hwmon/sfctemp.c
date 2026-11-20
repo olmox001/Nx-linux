@@ -239,7 +239,7 @@ static int sfctemp_probe(struct platform_device *pdev)
 	struct sfctemp *sfctemp;
 	int ret;
 
-	sfctemp = devm_kzalloc_obj(dev, *sfctemp);
+	sfctemp = devm_kzalloc(dev, sizeof(*sfctemp), GFP_KERNEL);
 	if (!sfctemp)
 		return -ENOMEM;
 

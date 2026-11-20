@@ -1106,7 +1106,8 @@ int hns_mac_init(struct dsaf_device *dsaf_dev)
 				"reg(%u) out of range!\n", port_id);
 			return -EINVAL;
 		}
-		mac_cb = devm_kzalloc_obj(dsaf_dev->dev, *mac_cb);
+		mac_cb = devm_kzalloc(dsaf_dev->dev, sizeof(*mac_cb),
+				      GFP_KERNEL);
 		if (!mac_cb)
 			return -ENOMEM;
 
@@ -1121,7 +1122,8 @@ int hns_mac_init(struct dsaf_device *dsaf_dev)
 	 */
 	if (!found) {
 		for (port_id = 0; port_id < max_port_num; port_id++) {
-			mac_cb = devm_kzalloc_obj(dsaf_dev->dev, *mac_cb);
+			mac_cb = devm_kzalloc(dsaf_dev->dev, sizeof(*mac_cb),
+					      GFP_KERNEL);
 			if (!mac_cb)
 				return -ENOMEM;
 

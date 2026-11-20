@@ -97,7 +97,7 @@ static int isp1301_probe(struct i2c_client *client)
 	struct isp1301 *isp;
 	struct usb_phy *phy;
 
-	isp = devm_kzalloc_obj(&client->dev, *isp);
+	isp = devm_kzalloc(&client->dev, sizeof(*isp), GFP_KERNEL);
 	if (!isp)
 		return -ENOMEM;
 

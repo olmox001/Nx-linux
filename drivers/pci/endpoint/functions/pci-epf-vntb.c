@@ -41,7 +41,6 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/slab.h>
 
 #include <linux/pci-ep-msi.h>
@@ -133,7 +132,7 @@ struct epf_ntb_ctrl {
 } __packed;
 
 struct epf_ntb {
-	struct ntb_dev *ntb;
+	struct ntb_dev ntb;
 	struct pci_epf *epf;
 	struct config_group group;
 
@@ -148,11 +147,7 @@ struct epf_ntb {
 	u16 vntb_pid;
 	u16 vntb_vid;
 
-	/* Serialize HOST and VHOST link state changes. */
-	struct mutex link_lock;
-	bool host_link_enabled;
-	bool vhost_link_enabled;
-	bool peer_msix;
+	bool linkup;
 
 	/*
 	 * True when doorbells are interrupt-driven (MSI or embedded), false
@@ -160,7 +155,6 @@ struct epf_ntb {
 	 */
 	bool msi_doorbell;
 	u32 spad_size;
-	u32 msix_table_offset;
 
 	enum pci_barno epf_ntb_bar[VNTB_BAR_NUM];
 
@@ -172,15 +166,10 @@ struct epf_ntb {
 	void __iomem *vpci_mw_addr[MAX_MW];
 
 	struct delayed_work cmd_handler;
-	struct pci_bus *vpci_bus;
 };
 
 #define to_epf_ntb(epf_group) container_of((epf_group), struct epf_ntb, group)
-
-static struct epf_ntb *ntb_ndev(struct ntb_dev *ntb)
-{
-	return ntb->pdev->sysdata;
-}
+#define ntb_ndev(__ntb) container_of(__ntb, struct epf_ntb, ntb)
 
 static struct pci_epf_header epf_ntb_header = {
 	.vendorid	= PCI_ANY_ID,
@@ -189,58 +178,24 @@ static struct pci_epf_header epf_ntb_header = {
 	.interrupt_pin	= PCI_INTERRUPT_INTA,
 };
 
-static void epf_ntb_update_link(struct epf_ntb *ntb)
-{
-	u16 link_status = READ_ONCE(ntb->reg->link_status);
-
-	/* The link is usable only after both sides have enabled it. */
-	if (ntb->host_link_enabled && ntb->vhost_link_enabled)
-		link_status |= LINK_STATUS_UP;
-	else
-		link_status &= ~LINK_STATUS_UP;
-
-	WRITE_ONCE(ntb->reg->link_status, link_status);
-}
-
-static int epf_ntb_notify_link(struct ntb_dev *ndev)
-{
-	struct epf_ntb *ntb = ntb_ndev(ndev);
-	struct pci_epf *epf = ntb->epf;
-	unsigned int irq_type;
-	int ret;
-
-	ntb_link_event(ndev);
-
-	irq_type = ntb->peer_msix ? PCI_IRQ_MSIX : PCI_IRQ_MSI;
-	ret = pci_epc_raise_irq(epf->epc, epf->func_no, epf->vfunc_no,
-				irq_type, EPF_IRQ_LINK + 1);
-	if (ret)
-		dev_err(&epf->dev, "Failed to raise link event IRQ: %d\n", ret);
-
-	return ret;
-}
-
 /**
- * epf_ntb_set_link_enabled() - Set HOST link enablement
+ * epf_ntb_link_up() - Raise link_up interrupt to Virtual Host (VHOST)
  * @ntb: NTB device that facilitates communication between HOST and VHOST
- * @enabled: true when the HOST has enabled the link
+ * @link_up: true or false indicating Link is UP or Down
+ *
+ * Once NTB function in HOST invoke ntb_link_enable(),
+ * this NTB function driver will trigger a link event to VHOST.
  *
  * Returns: Zero for success, or an error code in case of failure
  */
-static int epf_ntb_set_link_enabled(struct epf_ntb *ntb, bool enabled)
+static int epf_ntb_link_up(struct epf_ntb *ntb, bool link_up)
 {
-	bool notify;
+	if (link_up)
+		ntb->reg->link_status |= LINK_STATUS_UP;
+	else
+		ntb->reg->link_status &= ~LINK_STATUS_UP;
 
-	scoped_guard(mutex, &ntb->link_lock) {
-		notify = ntb->host_link_enabled != enabled &&
-			 ntb->vhost_link_enabled;
-		ntb->host_link_enabled = enabled;
-		epf_ntb_update_link(ntb);
-	}
-
-	if (notify)
-		return epf_ntb_notify_link(ntb->ntb);
-
+	ntb_link_event(&ntb->ntb);
 	return 0;
 }
 
@@ -316,7 +271,6 @@ static void epf_ntb_teardown_mw(struct epf_ntb *ntb, u32 mw)
  */
 static void epf_ntb_cmd_handler(struct work_struct *work)
 {
-	const struct pci_epc_features *epc_features;
 	struct epf_ntb_ctrl *ctrl;
 	u32 command, argument;
 	struct epf_ntb *ntb;
@@ -330,7 +284,7 @@ static void epf_ntb_cmd_handler(struct work_struct *work)
 	     i++) {
 		if (ntb->epf_db[i]) {
 			atomic64_or(1 << (i - EPF_IRQ_DB_START), &ntb->db);
-			ntb_db_event(ntb->ntb, i - EPF_IRQ_DB_START);
+			ntb_db_event(&ntb->ntb, i - EPF_IRQ_DB_START);
 			ntb->epf_db[i] = 0;
 		}
 	}
@@ -349,15 +303,6 @@ static void epf_ntb_cmd_handler(struct work_struct *work)
 
 	switch (command) {
 	case COMMAND_CONFIGURE_DOORBELL:
-		epc_features = pci_epc_get_features(ntb->epf->epc,
-						    ntb->epf->func_no,
-						    ntb->epf->vfunc_no);
-		if (((argument & MSIX_ENABLE) && !epc_features->msix_capable) ||
-		    (!(argument & MSIX_ENABLE) && !epc_features->msi_capable)) {
-			ctrl->command_status = COMMAND_STATUS_ERROR;
-			break;
-		}
-		ntb->peer_msix = argument & MSIX_ENABLE;
 		ctrl->command_status = COMMAND_STATUS_OK;
 		break;
 	case COMMAND_TEARDOWN_DOORBELL:
@@ -375,14 +320,16 @@ static void epf_ntb_cmd_handler(struct work_struct *work)
 		ctrl->command_status = COMMAND_STATUS_OK;
 		break;
 	case COMMAND_LINK_UP:
-		ret = epf_ntb_set_link_enabled(ntb, true);
+		ntb->linkup = true;
+		ret = epf_ntb_link_up(ntb, true);
 		if (ret < 0)
 			ctrl->command_status = COMMAND_STATUS_ERROR;
 		else
 			ctrl->command_status = COMMAND_STATUS_OK;
 		goto reset_handler;
 	case COMMAND_LINK_DOWN:
-		ret = epf_ntb_set_link_enabled(ntb, false);
+		ntb->linkup = false;
+		ret = epf_ntb_link_up(ntb, false);
 		if (ret < 0)
 			ctrl->command_status = COMMAND_STATUS_ERROR;
 		else
@@ -401,18 +348,12 @@ reset_handler:
 static irqreturn_t epf_ntb_doorbell_handler(int irq, void *data)
 {
 	struct epf_ntb *ntb = data;
-	struct ntb_dev *ndev;
 	int i;
-
-	/* Pair with smp_store_release() in pci_vntb_probe() */
-	ndev = smp_load_acquire(&ntb->ntb);
-	if (!ndev)
-		return IRQ_HANDLED;
 
 	for (i = EPF_IRQ_DB_START; i < ntb->db_count; i++)
 		if (irq == ntb->epf->db_msg[i].virq) {
 			atomic64_or(1 << (i - EPF_IRQ_DB_START), &ntb->db);
-			ntb_db_event(ndev, i - EPF_IRQ_DB_START);
+			ntb_db_event(&ntb->ntb, i - EPF_IRQ_DB_START);
 		}
 
 	return IRQ_HANDLED;
@@ -499,9 +440,8 @@ static void epf_ntb_config_spad_bar_free(struct epf_ntb *ntb)
  * @ntb: NTB device that facilitates communication between HOST and VHOST
  *
  * Allocate the Local Memory mentioned in the above diagram. The size of
- * CONFIG REGION is sizeof(struct epf_ntb_ctrl), plus space for the MSI-X
- * Table and PBA if supported. The size of SCRATCHPAD REGION is obtained
- * from "spad-count" configfs entry.
+ * CONFIG REGION is sizeof(struct epf_ntb_ctrl) and size of SCRATCHPAD REGION
+ * is obtained from "spad-count" configfs entry.
  *
  * Returns: Zero for success, or an error code in case of failure
  */
@@ -522,12 +462,6 @@ static int epf_ntb_config_spad_bar_alloc(struct epf_ntb *ntb)
 	spad_count = ntb->spad_count;
 
 	ctrl_size = ALIGN(sizeof(struct epf_ntb_ctrl), sizeof(u32));
-	if (epc_features->msix_capable) {
-		ntb->msix_table_offset = ALIGN(ctrl_size, 8);
-		ctrl_size = ntb->msix_table_offset +
-			    ntb->db_count * PCI_MSIX_ENTRY_SIZE +
-			    BITS_TO_U64(ntb->db_count) * sizeof(u64);
-	}
 	spad_size = 2 * spad_count * sizeof(u32);
 
 	base = pci_epf_alloc_space(epf, ctrl_size + spad_size,
@@ -568,14 +502,12 @@ static int epf_ntb_config_spad_bar_alloc(struct epf_ntb *ntb)
 static int epf_ntb_configure_interrupt(struct epf_ntb *ntb)
 {
 	const struct pci_epc_features *epc_features;
-	struct pci_epf *epf = ntb->epf;
 	struct device *dev;
 	int ret;
 
-	dev = &epf->dev;
+	dev = &ntb->epf->dev;
 
-	epc_features = pci_epc_get_features(epf->epc, epf->func_no,
-					    epf->vfunc_no);
+	epc_features = pci_epc_get_features(ntb->epf->epc, ntb->epf->func_no, ntb->epf->vfunc_no);
 
 	if (!(epc_features->msix_capable || epc_features->msi_capable)) {
 		dev_err(dev, "MSI or MSI-X is required for doorbell\n");
@@ -589,20 +521,12 @@ static int epf_ntb_configure_interrupt(struct epf_ntb *ntb)
 	}
 
 	if (epc_features->msi_capable) {
-		ret = pci_epc_set_msi(epf->epc, epf->func_no, epf->vfunc_no, 16);
+		ret = pci_epc_set_msi(ntb->epf->epc,
+				      ntb->epf->func_no,
+				      ntb->epf->vfunc_no,
+				      16);
 		if (ret) {
 			dev_err(dev, "MSI configuration failed\n");
-			return ret;
-		}
-	}
-
-	if (epc_features->msix_capable) {
-		ret = pci_epc_set_msix(epf->epc, epf->func_no, epf->vfunc_no,
-				       ntb->db_count,
-				       ntb->epf_ntb_bar[BAR_CONFIG],
-				       ntb->msix_table_offset);
-		if (ret) {
-			dev_err(dev, "MSI-X configuration failed\n");
 			return ret;
 		}
 	}
@@ -1061,6 +985,7 @@ static int epf_ntb_epc_init(struct epf_ntb *ntb)
 	}
 
 	INIT_DELAYED_WORK(&ntb->cmd_handler, epf_ntb_cmd_handler);
+	queue_work(kpcintb_workqueue, &ntb->cmd_handler.work);
 
 	atomic64_set(&ntb->peer_db_pending, 0);
 	enable_work(&ntb->peer_db_work);
@@ -1407,19 +1332,13 @@ static int vpci_scan_bus(void *sysdata)
 	struct pci_bus *vpci_bus;
 	struct epf_ntb *ndev = sysdata;
 
-	pci_lock_rescan_remove();
-
 	vpci_bus = pci_scan_bus(ndev->vbus_number, &vpci_ops, sysdata);
 	if (!vpci_bus) {
 		pr_err("create pci bus failed\n");
-		pci_unlock_rescan_remove();
 		return -EINVAL;
 	}
-	ndev->vpci_bus = vpci_bus;
 
 	pci_bus_add_devices(vpci_bus);
-
-	pci_unlock_rescan_remove();
 
 	return 0;
 }
@@ -1501,15 +1420,14 @@ static int vntb_epf_mw_set_trans(struct ntb_dev *ndev, int pidx, int idx,
 	int ret;
 	struct device *dev;
 
-	dev = &ndev->dev;
+	dev = &ntb->ntb.dev;
 	barno = ntb->epf_ntb_bar[BAR_MW1 + idx];
 	epf_bar = &ntb->epf->bar[barno];
 	epf_bar->phys_addr = addr;
 	epf_bar->barno = barno;
 	epf_bar->size = size;
 
-	ret = pci_epc_set_bar(ntb->epf->epc, ntb->epf->func_no,
-			      ntb->epf->vfunc_no, epf_bar);
+	ret = pci_epc_set_bar(ntb->epf->epc, 0, 0, epf_bar);
 	if (ret) {
 		dev_err(dev, "failure set mw trans\n");
 		return ret;
@@ -1537,29 +1455,11 @@ static int vntb_epf_peer_mw_get_addr(struct ntb_dev *ndev, int idx,
 	return 0;
 }
 
-static int vntb_epf_set_link_enabled(struct ntb_dev *ndev, bool enabled)
-{
-	struct epf_ntb *ntb = ntb_ndev(ndev);
-	bool notify;
-
-	scoped_guard(mutex, &ntb->link_lock) {
-		notify = ntb->vhost_link_enabled != enabled &&
-			 ntb->host_link_enabled;
-		ntb->vhost_link_enabled = enabled;
-		epf_ntb_update_link(ntb);
-	}
-
-	if (notify)
-		return epf_ntb_notify_link(ndev);
-
-	return 0;
-}
-
 static int vntb_epf_link_enable(struct ntb_dev *ntb,
 			enum ntb_speed max_speed,
 			enum ntb_width max_width)
 {
-	return vntb_epf_set_link_enabled(ntb, true);
+	return 0;
 }
 
 static u32 vntb_epf_spad_read(struct ntb_dev *ndev, int idx)
@@ -1612,7 +1512,6 @@ static void vntb_epf_peer_db_work(struct work_struct *work)
 	struct epf_ntb *ntb = container_of(work, struct epf_ntb, peer_db_work);
 	struct pci_epf *epf = ntb->epf;
 	unsigned int budget = VNTB_PEER_DB_WORK_BUDGET;
-	unsigned int irq_type;
 	u8 func_no, vfunc_no;
 	unsigned int db_bit;
 	u32 interrupt_num;
@@ -1624,7 +1523,6 @@ static void vntb_epf_peer_db_work(struct work_struct *work)
 
 	func_no = epf->func_no;
 	vfunc_no = epf->vfunc_no;
-	irq_type = ntb->peer_msix ? PCI_IRQ_MSIX : PCI_IRQ_MSI;
 
 	/*
 	 * Drain doorbells from peer_db_pending in snapshots (atomic64_xchg()).
@@ -1638,7 +1536,7 @@ static void vntb_epf_peer_db_work(struct work_struct *work)
 
 		while (db_bits) {
 			/*
-			 * pci_epc_raise_irq() for MSI/MSI-X expects a 1-based
+			 * pci_epc_raise_irq() for MSI expects a 1-based
 			 * interrupt number. The first usable doorbell starts
 			 * at EPF_IRQ_DB_START in the legacy slot layout.
 			 *
@@ -1658,9 +1556,9 @@ static void vntb_epf_peer_db_work(struct work_struct *work)
 			db_bits &= ~BIT_ULL(db_bit);
 
 			ret = pci_epc_raise_irq(epf->epc, func_no, vfunc_no,
-						irq_type, interrupt_num);
+						PCI_IRQ_MSI, interrupt_num);
 			if (ret)
-				dev_err(&epf->dev,
+				dev_err(&ntb->ntb.dev,
 					"Failed to raise IRQ for interrupt_num %u: %d\n",
 					interrupt_num, ret);
 		}
@@ -1721,7 +1619,7 @@ static u64 vntb_epf_link_is_up(struct ntb_dev *ndev,
 {
 	struct epf_ntb *ntb = ntb_ndev(ndev);
 
-	return READ_ONCE(ntb->reg->link_status);
+	return ntb->reg->link_status;
 }
 
 static int vntb_epf_db_clear_mask(struct ntb_dev *ndev, u64 db_bits)
@@ -1739,7 +1637,7 @@ static int vntb_epf_db_clear(struct ntb_dev *ndev, u64 db_bits)
 
 static int vntb_epf_link_disable(struct ntb_dev *ntb)
 {
-	return vntb_epf_set_link_enabled(ntb, false);
+	return 0;
 }
 
 static struct device *vntb_epf_get_dma_dev(struct ntb_dev *ndev)
@@ -1778,18 +1676,13 @@ static const struct ntb_dev_ops vntb_epf_ops = {
 
 static int pci_vntb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
+	int ret;
 	struct epf_ntb *ndev = (struct epf_ntb *)pdev->sysdata;
 	struct device *dev = &pdev->dev;
-	struct ntb_dev *ntb;
-	int ret;
 
-	ntb = devm_kzalloc_obj(dev, *ntb);
-	if (!ntb)
-		return -ENOMEM;
-
-	ntb->pdev = pdev;
-	ntb->topo = NTB_TOPO_NONE;
-	ntb->ops = &vntb_epf_ops;
+	ndev->ntb.pdev = pdev;
+	ndev->ntb.topo = NTB_TOPO_NONE;
+	ndev->ntb.ops =  &vntb_epf_ops;
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret) {
@@ -1797,39 +1690,14 @@ static int pci_vntb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 	}
 
-	ret = ntb_register_device(ntb);
+	ret = ntb_register_device(&ndev->ntb);
 	if (ret) {
 		dev_err(dev, "Failed to register NTB device\n");
 		return ret;
 	}
 
-	/* Publish after ntb_register_device() succeeds */
-	smp_store_release(&ndev->ntb, ntb);
-	queue_delayed_work(kpcintb_workqueue, &ndev->cmd_handler, 0);
-
 	dev_dbg(dev, "PCI Virtual NTB driver loaded\n");
 	return 0;
-}
-
-static void pci_vntb_remove(struct pci_dev *pdev)
-{
-	struct epf_ntb *ndev = pdev->sysdata;
-	struct ntb_dev *ntb;
-	unsigned int i;
-
-	/* Stop the work reader, then close and drain the IRQ gate */
-	cancel_delayed_work_sync(&ndev->cmd_handler);
-
-	ntb = xchg(&ndev->ntb, NULL);
-
-	if (ndev->msi_doorbell)
-		for (i = 0; i < ndev->db_count; i++) {
-			if (epf_ntb_db_irq_is_duplicated(ndev->epf, i))
-				continue;
-			synchronize_irq(ndev->epf->db_msg[i].virq);
-		}
-
-	ntb_unregister_device(ntb);
 }
 
 static struct pci_device_id pci_vntb_table[] = {
@@ -1843,7 +1711,6 @@ static struct pci_driver vntb_pci_driver = {
 	.name           = "pci-vntb",
 	.id_table       = pci_vntb_table,
 	.probe          = pci_vntb_probe,
-	.remove         = pci_vntb_remove,
 };
 
 /* ============ PCIe EPF Driver Bind ====================*/
@@ -1881,10 +1748,6 @@ static int epf_ntb_bind(struct pci_epf *epf)
 		dev_err(dev, "Failed to allocate BAR memory\n");
 		goto err_bar_alloc;
 	}
-
-	ntb->host_link_enabled = false;
-	ntb->vhost_link_enabled = false;
-	ntb->reg->link_status = 0;
 
 	ret = epf_ntb_epc_init(ntb);
 	if (ret) {
@@ -1928,25 +1791,12 @@ err_bar_alloc:
  */
 static void epf_ntb_unbind(struct pci_epf *epf)
 {
-	struct pci_host_bridge *bridge;
 	struct epf_ntb *ntb = epf_get_drvdata(epf);
-
-	pci_unregister_driver(&vntb_pci_driver);
-
-	if (ntb->vpci_bus) {
-		bridge = to_pci_host_bridge(ntb->vpci_bus->bridge);
-
-		pci_lock_rescan_remove();
-		pci_stop_root_bus(ntb->vpci_bus);
-		pci_remove_root_bus(ntb->vpci_bus);
-		ntb->vpci_bus = NULL;
-		pci_unlock_rescan_remove();
-
-		pci_free_host_bridge(bridge);
-	}
 
 	epf_ntb_epc_cleanup(ntb);
 	epf_ntb_config_spad_bar_free(ntb);
+
+	pci_unregister_driver(&vntb_pci_driver);
 }
 
 // EPF driver probe
@@ -1971,20 +1821,17 @@ static int epf_ntb_probe(struct pci_epf *epf,
 {
 	struct epf_ntb *ntb;
 	struct device *dev;
-	int ret, i;
+	int i;
 
 	dev = &epf->dev;
 
-	ntb = devm_kzalloc_obj(dev, *ntb);
+	ntb = devm_kzalloc(dev, sizeof(*ntb), GFP_KERNEL);
 	if (!ntb)
 		return -ENOMEM;
 
 	epf->header = &epf_ntb_header;
 	ntb->epf = epf;
 	ntb->vbus_number = 0xff;
-	ret = devm_mutex_init(dev, &ntb->link_lock);
-	if (ret)
-		return ret;
 
 	INIT_WORK(&ntb->peer_db_work, vntb_epf_peer_db_work);
 	disable_work(&ntb->peer_db_work);

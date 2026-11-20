@@ -25,7 +25,6 @@
 #include <linux/mlx5/vport.h>
 #include <linux/mlx5/fs.h>
 #include <linux/mlx5/eswitch.h>
-#include <linux/mlx5/data_direct.h>
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/lag.h>
 #include <linux/list.h>
@@ -34,6 +33,9 @@
 #include <rdma/lag.h>
 #include <linux/in.h>
 #include <linux/etherdevice.h>
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#include <linux/panic_notifier.h>
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 #include "mlx5_ib.h"
 #include "ib_rep.h"
 #include "cmd.h"
@@ -52,6 +54,7 @@
 #include <rdma/mlx5_user_ioctl_cmds.h>
 #include <rdma/ib_ucaps.h>
 #include "macsec.h"
+#include "data_direct.h"
 #include "dmah.h"
 
 #define UVERBS_MODULE_NAME mlx5_ib
@@ -969,6 +972,7 @@ static int mlx5_ib_query_device(struct ib_device *ibdev,
 	if (err)
 		return err;
 
+	memset(props, 0, sizeof(*props));
 	err = mlx5_query_system_image_guid(ibdev,
 					   &props->sys_image_guid);
 	if (err)
@@ -2828,7 +2832,17 @@ static int mlx5_ib_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 	struct mlx5_ib_dev *mdev = to_mdev(pd->device);
 	struct mlx5_ib_pd *mpd = to_mpd(pd);
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	return mlx5_cmd_dealloc_pd(mdev->mdev, mpd->pdn, mpd->uid);
+#else /* !WITHOUT_ORACLE_EXTENSIONS */
+	/*
+	 * if pd is shared, pd number will be freed by remove_shpd call
+	 */
+	if (!pd->shpd) {
+		return mlx5_cmd_dealloc_pd(mdev->mdev, mpd->pdn, mpd->uid);
+	}
+	return 0;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 }
 
 static int mlx5_ib_mcg_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
@@ -3370,7 +3384,7 @@ int mlx5_ib_dev_res_srq_init(struct mlx5_ib_dev *dev)
 {
 	struct mlx5_ib_resources *devr = &dev->devr;
 	struct ib_srq_init_attr attr;
-	struct ib_srq *s0 = NULL, *s1;
+	struct ib_srq *s0, *s1;
 	int ret = 0;
 
 	/*
@@ -3388,27 +3402,19 @@ int mlx5_ib_dev_res_srq_init(struct mlx5_ib_dev *dev)
 	if (ret)
 		goto unlock;
 
-	/*
-	 * s0 is an XRC-type placeholder SRQ used as the default XRQN for
-	 * XRC QPs.  Skip it when XRC is absent; all devr->s0 accesses in
-	 * qp.c are inside XRC QP paths that the verbs layer blocks before
-	 * reaching this driver when xrc=0, so NULL is safe.
-	 */
-	if (MLX5_CAP_GEN(dev->mdev, xrc)) {
-		memset(&attr, 0, sizeof(attr));
-		attr.attr.max_sge = 1;
-		attr.attr.max_wr = 1;
-		attr.srq_type = IB_SRQT_XRC;
-		attr.ext.cq = devr->c0;
+	memset(&attr, 0, sizeof(attr));
+	attr.attr.max_sge = 1;
+	attr.attr.max_wr = 1;
+	attr.srq_type = IB_SRQT_XRC;
+	attr.ext.cq = devr->c0;
 
-		s0 = ib_create_srq(devr->p0, &attr);
-		if (IS_ERR(s0)) {
-			ret = PTR_ERR(s0);
-			mlx5_ib_err(dev,
-				    "Couldn't create SRQ 0 for res init, err=%pe\n",
-				    s0);
-			goto unlock;
-		}
+	s0 = ib_create_srq(devr->p0, &attr);
+	if (IS_ERR(s0)) {
+		ret = PTR_ERR(s0);
+		mlx5_ib_err(dev,
+			    "Couldn't create SRQ 0 for res init, err=%pe\n",
+			    s0);
+		goto unlock;
 	}
 
 	memset(&attr, 0, sizeof(attr));
@@ -3422,8 +3428,7 @@ int mlx5_ib_dev_res_srq_init(struct mlx5_ib_dev *dev)
 		mlx5_ib_err(dev,
 			    "Couldn't create SRQ 1 for res init, err=%pe\n",
 			    s1);
-		if (s0)
-			ib_destroy_srq(s0);
+		ib_destroy_srq(s0);
 		goto unlock;
 	}
 
@@ -3440,11 +3445,8 @@ static int mlx5_ib_dev_res_init(struct mlx5_ib_dev *dev)
 	struct mlx5_ib_resources *devr = &dev->devr;
 	int ret;
 
-	mutex_init(&devr->cq_lock);
-	mutex_init(&devr->srq_lock);
-
 	if (!MLX5_CAP_GEN(dev->mdev, xrc))
-		return 0;
+		return -EOPNOTSUPP;
 
 	ret = mlx5_cmd_xrcd_alloc(dev->mdev, &devr->xrcdn0, 0);
 	if (ret)
@@ -3456,6 +3458,9 @@ static int mlx5_ib_dev_res_init(struct mlx5_ib_dev *dev)
 		return ret;
 	}
 
+	mutex_init(&devr->cq_lock);
+	mutex_init(&devr->srq_lock);
+
 	return 0;
 }
 
@@ -3466,13 +3471,10 @@ static void mlx5_ib_dev_res_cleanup(struct mlx5_ib_dev *dev)
 	/* After s0/s1 init, they are not unset during the device lifetime. */
 	if (devr->s1) {
 		ib_destroy_srq(devr->s1);
-		if (devr->s0)
-			ib_destroy_srq(devr->s0);
+		ib_destroy_srq(devr->s0);
 	}
-	if (MLX5_CAP_GEN(dev->mdev, xrc)) {
-		mlx5_cmd_xrcd_dealloc(dev->mdev, devr->xrcdn1, 0);
-		mlx5_cmd_xrcd_dealloc(dev->mdev, devr->xrcdn0, 0);
-	}
+	mlx5_cmd_xrcd_dealloc(dev->mdev, devr->xrcdn1, 0);
+	mlx5_cmd_xrcd_dealloc(dev->mdev, devr->xrcdn0, 0);
 	/* After p0/c0 init, they are not unset during the device lifetime. */
 	if (devr->c0) {
 		ib_destroy_cq(devr->c0);
@@ -3480,6 +3482,87 @@ static void mlx5_ib_dev_res_cleanup(struct mlx5_ib_dev *dev)
 	}
 	mutex_destroy(&devr->cq_lock);
 	mutex_destroy(&devr->srq_lock);
+}
+
+static int
+mlx5_ib_create_data_direct_resources(struct mlx5_ib_dev *dev)
+{
+	int inlen = MLX5_ST_SZ_BYTES(create_mkey_in);
+	struct mlx5_core_dev *mdev = dev->mdev;
+	bool ro_supp = false;
+	void *mkc;
+	u32 mkey;
+	u32 pdn;
+	u32 *in;
+	int err;
+
+	err = mlx5_core_alloc_pd(mdev, &pdn);
+	if (err)
+		return err;
+
+	in = kvzalloc(inlen, GFP_KERNEL);
+	if (!in) {
+		err = -ENOMEM;
+		goto err;
+	}
+
+	MLX5_SET(create_mkey_in, in, data_direct, 1);
+	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	MLX5_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_PA);
+	MLX5_SET(mkc, mkc, lw, 1);
+	MLX5_SET(mkc, mkc, lr, 1);
+	MLX5_SET(mkc, mkc, rw, 1);
+	MLX5_SET(mkc, mkc, rr, 1);
+	MLX5_SET(mkc, mkc, a, 1);
+	MLX5_SET(mkc, mkc, pd, pdn);
+	MLX5_SET(mkc, mkc, length64, 1);
+	MLX5_SET(mkc, mkc, qpn, 0xffffff);
+	err = mlx5_core_create_mkey(mdev, &mkey, in, inlen);
+	if (err)
+		goto err_mkey;
+
+	dev->ddr.mkey = mkey;
+	dev->ddr.pdn = pdn;
+
+	/* create another mkey with RO support */
+	if (MLX5_CAP_GEN(dev->mdev, relaxed_ordering_write)) {
+		MLX5_SET(mkc, mkc, relaxed_ordering_write, 1);
+		ro_supp = true;
+	}
+
+	if (MLX5_CAP_GEN(dev->mdev, relaxed_ordering_read)) {
+		MLX5_SET(mkc, mkc, relaxed_ordering_read, 1);
+		ro_supp = true;
+	}
+
+	if (ro_supp) {
+		err = mlx5_core_create_mkey(mdev, &mkey, in, inlen);
+		/* RO is defined as best effort */
+		if (!err) {
+			dev->ddr.mkey_ro = mkey;
+			dev->ddr.mkey_ro_valid = true;
+		}
+	}
+
+	kvfree(in);
+	return 0;
+
+err_mkey:
+	kvfree(in);
+err:
+	mlx5_core_dealloc_pd(mdev, pdn);
+	return err;
+}
+
+static void
+mlx5_ib_free_data_direct_resources(struct mlx5_ib_dev *dev)
+{
+
+	if (dev->ddr.mkey_ro_valid)
+		mlx5_core_destroy_mkey(dev->mdev, dev->ddr.mkey_ro);
+
+	mlx5_core_destroy_mkey(dev->mdev, dev->ddr.mkey);
+	mlx5_core_dealloc_pd(dev->mdev, dev->ddr.pdn);
 }
 
 static u32 get_core_cap_flags(struct ib_device *ibdev,
@@ -3690,6 +3773,84 @@ static void mlx5_eth_lag_cleanup(struct mlx5_ib_dev *dev)
 	}
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static int mlx5_ib_panic_handler(struct notifier_block *nb,
+				 unsigned long action, void *unused)
+{
+	struct mlx5_ib_dev *dev;
+	struct mlx5_ib_multiport_info *mpi;
+
+	list_for_each_entry(dev, &mlx5_ib_dev_list, ib_dev_list) {
+		struct pci_dev *pdev = dev->mdev->pdev;
+
+		pci_crit(pdev, "Revoke Bus_Mastership_Enable (BME)\n");
+		pci_clear_master(pdev);
+	}
+
+	/* Unbound devices are moved to the unaffiliated list */
+	list_for_each_entry(mpi, &mlx5_ib_unaffiliated_port_list, list) {
+		struct pci_dev *pdev = mpi->mdev->pdev;
+
+		pci_crit(pdev, "Revoke Bus_Mastership_Enable (BME) for unbound device\n");
+		pci_clear_master(pdev);
+	}
+
+	return NOTIFY_DONE;
+}
+
+static bool panic_handler_added;
+static int mlx5_ib_add_panic_notifier(struct mlx5_ib_dev *dev, u8 port_num)
+{
+	int err;
+
+	/* We only need to add the handler once, as it iterates
+	 * through all the devices
+	 */
+	if (panic_handler_added)
+		return 0;
+
+	dev->port[port_num].roce.panic_nb.notifier_call = mlx5_ib_panic_handler;
+	err = atomic_notifier_chain_register(&panic_notifier_list,
+					     &dev->port[port_num].roce.panic_nb);
+	if (err) {
+		pci_crit(dev->mdev->pdev,
+			 "Failed registering panic handler for port %d, err %d\n",
+			 port_num + 1, err);
+		dev->port[port_num].roce.panic_nb.notifier_call = NULL;
+		return err;
+	}
+
+	pci_crit(dev->mdev->pdev,
+		 "Successfully registered panic handler for port %d\n", port_num + 1);
+
+	panic_handler_added = true;
+
+	return 0;
+}
+
+static void mlx5_ib_remove_panic_notifier(struct mlx5_ib_dev *dev, u8 port_num)
+{
+	int err = 0;
+
+	if (dev->port[port_num].roce.panic_nb.notifier_call) {
+		err = atomic_notifier_chain_unregister(&panic_notifier_list,
+						       &dev->port[port_num].roce.panic_nb);
+		if (err) {
+			pci_crit(dev->mdev->pdev,
+				 "Unregistering the panic handler for port %d failed, err %d\n",
+				 port_num + 1, err);
+		} else {
+			pci_crit(dev->mdev->pdev,
+				 "Successfully unregistered panic handler for port %d",
+				 port_num + 1);
+			panic_handler_added = false;
+		}
+
+		dev->port[port_num].roce.panic_nb.notifier_call = NULL;
+	}
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static void mlx5_netdev_notifier_register(struct mlx5_roce *roce,
 					  struct net_device *netdev)
 {
@@ -3828,6 +3989,26 @@ static const struct file_operations fops_delay_drop_timeout = {
 	.read	= delay_drop_timeout_read,
 };
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static int
+mlx5_ib_get_vector_irqn(struct ib_device *ibdev, int comp_vector)
+{
+	struct mlx5_ib_dev *dev = to_mdev(ibdev);
+	struct mlx5_core_dev *mdev = dev->mdev;
+	int err;
+	unsigned int irqn;
+
+	if (comp_vector < 0 || comp_vector >= dev->ib_dev.num_comp_vectors)
+		return -EINVAL;
+
+	err = mlx5_comp_irqn_get(mdev, comp_vector, &irqn);
+	if (err < 0)
+		return err;
+
+	return irqn;
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static void mlx5_ib_unbind_slave_port(struct mlx5_ib_dev *ibdev,
 				      struct mlx5_ib_multiport_info *mpi)
 {
@@ -3947,42 +4128,39 @@ unbind:
 	return false;
 }
 
-static int mlx5_ib_data_direct_event(struct notifier_block *nb,
-				     unsigned long action, void *data)
-{
-	struct mlx5_ib_dev *dev =
-		container_of(nb, struct mlx5_ib_dev, data_direct_nb);
-
-	if (action != MLX5_DATA_DIRECT_UNBIND)
-		return NOTIFY_DONE;
-
-	mutex_lock(&dev->data_direct_lock);
-	mlx5_ib_revoke_data_direct_mrs(dev);
-	mutex_unlock(&dev->data_direct_lock);
-
-	return NOTIFY_OK;
-}
-
 static int mlx5_ib_data_direct_init(struct mlx5_ib_dev *dev)
 {
+	char vuid[MLX5_ST_SZ_BYTES(array1024_auto) + 1] = {};
 	int ret;
 
-	if (!mlx5_data_direct_supported(dev->mdev))
+	if (!MLX5_CAP_GEN(dev->mdev, data_direct) ||
+	    !MLX5_CAP_GEN_2(dev->mdev, query_vuid))
 		return 0;
 
+	ret = mlx5_cmd_query_vuid(dev->mdev, true, vuid);
+	if (ret)
+		return ret;
+
+	ret = mlx5_ib_create_data_direct_resources(dev);
+	if (ret)
+		return ret;
+
 	INIT_LIST_HEAD(&dev->data_direct_mr_list);
-	dev->data_direct_nb.notifier_call = mlx5_ib_data_direct_event;
-	ret = mlx5_data_direct_register(dev->mdev, &dev->data_direct_nb);
+	ret = mlx5_data_direct_ib_reg(dev, vuid);
+	if (ret)
+		mlx5_ib_free_data_direct_resources(dev);
 
 	return ret;
 }
 
 static void mlx5_ib_data_direct_cleanup(struct mlx5_ib_dev *dev)
 {
-	if (!mlx5_data_direct_supported(dev->mdev))
+	if (!MLX5_CAP_GEN(dev->mdev, data_direct) ||
+	    !MLX5_CAP_GEN_2(dev->mdev, query_vuid))
 		return;
 
-	mlx5_data_direct_unregister(dev->mdev, &dev->data_direct_nb);
+	mlx5_data_direct_ib_unreg(dev);
+	mlx5_ib_free_data_direct_resources(dev);
 }
 
 static int mlx5_ib_init_multiport_master(struct mlx5_ib_dev *dev)
@@ -4408,7 +4586,6 @@ static const struct uapi_definition mlx5_ib_defs[] = {
 	UAPI_DEF_CHAIN(mlx5_ib_dm_defs),
 	UAPI_DEF_CHAIN(mlx5_ib_create_cq_defs),
 	UAPI_DEF_CHAIN(mlx5_ib_create_qp_defs),
-	UAPI_DEF_CHAIN(mlx5_ib_create_srq_defs),
 
 	UAPI_DEF_CHAIN_OBJ_TREE(UVERBS_OBJECT_DEVICE, &mlx5_ib_query_context),
 	UAPI_DEF_CHAIN_OBJ_TREE(UVERBS_OBJECT_MR, &mlx5_ib_reg_dmabuf_mr),
@@ -4473,6 +4650,9 @@ static int mlx5_ib_stage_init_init(struct mlx5_ib_dev *dev)
 		get_ext_port_caps(dev);
 
 	dev->ib_dev.num_comp_vectors    = mlx5_comp_vectors_max(mdev);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	dev->ib_dev.can_balance_comp_vectors = true;
+#endif
 
 	mutex_init(&dev->cap_mask_mutex);
 	mutex_init(&dev->data_direct_lock);
@@ -4519,6 +4699,9 @@ static const struct ib_device_ops mlx5_ib_dev_ops = {
 	.alloc_mr = mlx5_ib_alloc_mr,
 	.alloc_mr_integrity = mlx5_ib_alloc_mr_integrity,
 	.alloc_pd = mlx5_ib_alloc_pd,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.alloc_shpd   = mlx5_ib_alloc_shpd,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	.alloc_ucontext = mlx5_ib_alloc_ucontext,
 	.attach_mcast = mlx5_ib_mcg_attach,
 	.check_mr_status = mlx5_ib_check_mr_status,
@@ -4543,6 +4726,9 @@ static const struct ib_device_ops mlx5_ib_dev_ops = {
 	.drain_sq = mlx5_ib_drain_sq,
 	.device_group = &mlx5_attr_group,
 	.get_dev_fw_str = get_dev_fw_str,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.get_vector_irqn = mlx5_ib_get_vector_irqn,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	.get_dma_mr = mlx5_ib_get_dma_mr,
 	.get_link_layer = mlx5_ib_port_link_layer,
 	.map_mr_sg = mlx5_ib_map_mr_sg,
@@ -4573,10 +4759,16 @@ static const struct ib_device_ops mlx5_ib_dev_ops = {
 	.query_ucontext = mlx5_ib_query_ucontext,
 	.reg_user_mr = mlx5_ib_reg_user_mr,
 	.reg_user_mr_dmabuf = mlx5_ib_reg_user_mr_dmabuf,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.remove_shpd  = mlx5_ib_remove_shpd,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	.req_notify_cq = mlx5_ib_arm_cq,
 	.rereg_user_mr = mlx5_ib_rereg_user_mr,
 	.resize_user_cq = mlx5_ib_resize_cq,
 	.ufile_hw_cleanup = mlx5_ib_ufile_hw_cleanup,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.share_pd     = mlx5_ib_share_pd,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	INIT_RDMA_OBJ_SIZE(ib_ah, mlx5_ib_ah, ibah),
 	INIT_RDMA_OBJ_SIZE(ib_counters, mlx5_ib_mcounters, ibcntrs),
@@ -4833,12 +5025,25 @@ static int mlx5_ib_roce_init(struct mlx5_ib_dev *dev)
 		/* Register only for native ports */
 		mlx5_mdev_netdev_track(dev, port_num);
 
-		err = mlx5_enable_eth(dev);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		err = mlx5_ib_add_panic_notifier(dev, port_num);
 		if (err)
 			goto cleanup;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+		err = mlx5_enable_eth(dev);
+		if (err)
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+			goto err_unregister_panic_handler;
+#else /* !WITHOUT_ORACLE_EXTENSIONS */
+			goto cleanup;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	}
 
 	return 0;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+err_unregister_panic_handler:
+	mlx5_ib_remove_panic_notifier(dev, port_num);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 cleanup:
 	mlx5_mdev_netdev_untrack(dev, port_num);
 	return err;
@@ -4858,6 +5063,9 @@ static void mlx5_ib_roce_cleanup(struct mlx5_ib_dev *dev)
 		mlx5_disable_eth(dev);
 
 		port_num = mlx5_core_native_port_num(dev->mdev) - 1;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		mlx5_ib_remove_panic_notifier(dev, port_num);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		mlx5_mdev_netdev_untrack(dev, port_num);
 	}
 }
@@ -4883,9 +5091,6 @@ static int mlx5_ib_stage_bfrag_init(struct mlx5_ib_dev *dev)
 	if (err)
 		return err;
 
-	if (MLX5_CAP_GEN(dev->mdev, qp_latency_sensitive_disable))
-		return 0;
-
 	err = mlx5_alloc_bfreg(dev->mdev, &dev->fp_bfreg, false, true);
 	if (err)
 		mlx5_free_bfreg(dev->mdev, &dev->bfreg);
@@ -4895,8 +5100,7 @@ static int mlx5_ib_stage_bfrag_init(struct mlx5_ib_dev *dev)
 
 static void mlx5_ib_stage_bfrag_cleanup(struct mlx5_ib_dev *dev)
 {
-	if (!MLX5_CAP_GEN(dev->mdev, qp_latency_sensitive_disable))
-		mlx5_free_bfreg(dev->mdev, &dev->fp_bfreg);
+	mlx5_free_bfreg(dev->mdev, &dev->fp_bfreg);
 	mlx5_free_bfreg(dev->mdev, &dev->bfreg);
 }
 
@@ -5011,6 +5215,22 @@ static void mlx5_ib_stage_dev_notifier_cleanup(struct mlx5_ib_dev *dev)
 
 	for (port = 0; port < ARRAY_SIZE(devr->ports); ++port)
 		cancel_work_sync(&devr->ports[port].pkey_change_work);
+}
+
+void mlx5_ib_data_direct_bind(struct mlx5_ib_dev *ibdev,
+			      struct mlx5_data_direct_dev *dev)
+{
+	mutex_lock(&ibdev->data_direct_lock);
+	ibdev->data_direct_dev = dev;
+	mutex_unlock(&ibdev->data_direct_lock);
+}
+
+void mlx5_ib_data_direct_unbind(struct mlx5_ib_dev *ibdev)
+{
+	mutex_lock(&ibdev->data_direct_lock);
+	mlx5_ib_revoke_data_direct_mrs(ibdev);
+	ibdev->data_direct_dev = NULL;
+	mutex_unlock(&ibdev->data_direct_lock);
 }
 
 void __mlx5_ib_remove(struct mlx5_ib_dev *dev,
@@ -5421,13 +5641,13 @@ static int __init mlx5_ib_init(void)
 {
 	int ret;
 
-	xlt_emergency_page = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	xlt_emergency_page = (void *)__get_free_page(GFP_KERNEL);
 	if (!xlt_emergency_page)
 		return -ENOMEM;
 
 	mlx5_ib_event_wq = alloc_ordered_workqueue("mlx5_ib_event_wq", 0);
 	if (!mlx5_ib_event_wq) {
-		kfree(xlt_emergency_page);
+		free_page((unsigned long)xlt_emergency_page);
 		return -ENOMEM;
 	}
 
@@ -5439,6 +5659,9 @@ static int __init mlx5_ib_init(void)
 	ret = mlx5r_rep_init();
 	if (ret)
 		goto rep_err;
+	ret = mlx5_data_direct_driver_register();
+	if (ret)
+		goto dd_err;
 	ret = auxiliary_driver_register(&mlx5r_mp_driver);
 	if (ret)
 		goto mp_err;
@@ -5451,18 +5674,21 @@ static int __init mlx5_ib_init(void)
 drv_err:
 	auxiliary_driver_unregister(&mlx5r_mp_driver);
 mp_err:
+	mlx5_data_direct_driver_unregister();
+dd_err:
 	mlx5r_rep_cleanup();
 rep_err:
 	rcu_barrier();
 	mlx5_ib_qp_event_cleanup();
 qp_event_err:
 	destroy_workqueue(mlx5_ib_event_wq);
-	kfree(xlt_emergency_page);
+	free_page((unsigned long)xlt_emergency_page);
 	return ret;
 }
 
 static void __exit mlx5_ib_cleanup(void)
 {
+	mlx5_data_direct_driver_unregister();
 	auxiliary_driver_unregister(&mlx5r_driver);
 	auxiliary_driver_unregister(&mlx5r_mp_driver);
 	mlx5r_rep_cleanup();
@@ -5470,7 +5696,7 @@ static void __exit mlx5_ib_cleanup(void)
 
 	mlx5_ib_qp_event_cleanup();
 	destroy_workqueue(mlx5_ib_event_wq);
-	kfree(xlt_emergency_page);
+	free_page((unsigned long)xlt_emergency_page);
 }
 
 module_init(mlx5_ib_init);

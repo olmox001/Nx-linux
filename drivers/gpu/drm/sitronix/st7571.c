@@ -20,6 +20,7 @@
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_fbdev_shmem.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
@@ -423,7 +424,7 @@ static const struct drm_crtc_helper_funcs st7571_crtc_helper_funcs = {
 };
 
 static const struct drm_crtc_funcs st7571_crtc_funcs = {
-	.atomic_create_state = drm_atomic_helper_crtc_create_state,
+	.reset = drm_atomic_helper_crtc_reset,
 	.destroy = drm_crtc_cleanup,
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,

@@ -12,12 +12,18 @@
 
 #define ENETC_SI_MAX_RING_NUM	8
 
+#define ENETC_MAC_FILTER_TYPE_UC	BIT(0)
+#define ENETC_MAC_FILTER_TYPE_MC	BIT(1)
+#define ENETC_MAC_FILTER_TYPE_ALL	(ENETC_MAC_FILTER_TYPE_UC | \
+					 ENETC_MAC_FILTER_TYPE_MC)
+
 static void enetc4_get_port_caps(struct enetc_pf *pf)
 {
 	struct enetc_hw *hw = &pf->si->hw;
 	u32 val;
 
 	val = enetc_port_rd(hw, ENETC4_ECAPR1);
+	pf->caps.num_vsi = (val & ECAPR1_NUM_VSI) >> 24;
 	pf->caps.num_msix = ((val & ECAPR1_NUM_MSIX) >> 12) + 1;
 
 	val = enetc_port_rd(hw, ENETC4_ECAPR2);
@@ -132,7 +138,7 @@ clear_maft_entries:
 static void enetc4_pf_set_uc_hash_filter(struct enetc_pf *pf,
 					 struct netdev_hw_addr_list *uc)
 {
-	struct enetc_mac_filter *mac_filter = &pf->si->mac_filter[UC];
+	struct enetc_mac_filter *mac_filter = &pf->mac_filter[UC];
 	struct netdev_hw_addr *ha;
 	u64 hash;
 
@@ -167,7 +173,7 @@ static int enetc4_pf_set_uc_exact_filter(struct enetc_pf *pf,
 
 	err = enetc4_pf_add_maft_entries(pf, uc);
 	if (!err) {
-		enetc_reset_mac_addr_filter(&si->mac_filter[UC]);
+		enetc_reset_mac_addr_filter(&pf->mac_filter[UC]);
 		enetc_set_si_uc_hash_filter(si, 0, 0);
 	}
 
@@ -177,7 +183,7 @@ static int enetc4_pf_set_uc_exact_filter(struct enetc_pf *pf,
 static void enetc4_pf_set_mc_hash_filter(struct enetc_pf *pf,
 					 struct netdev_hw_addr_list *mc)
 {
-	struct enetc_mac_filter *mac_filter = &pf->si->mac_filter[MC];
+	struct enetc_mac_filter *mac_filter = &pf->mac_filter[MC];
 	struct netdev_hw_addr *ha;
 	u64 hash;
 
@@ -212,42 +218,18 @@ static void enetc4_pf_set_mac_filter(struct enetc_pf *pf, int type,
 		enetc4_pf_set_mc_hash_filter(pf, mc);
 }
 
-static void enetc4_pf_vf_flr_handler(struct enetc_pf *pf, int vf_id)
-{
-	struct enetc_vf_state *vf_state;
-	bool uc_promisc, mc_promisc;
-
-	vf_state = &pf->vf_state[vf_id];
-	mutex_lock(&vf_state->lock);
-
-	uc_promisc = !!(vf_state->flags & ENETC_VF_FLAG_UC_PROMISC);
-	mc_promisc = !!(vf_state->flags & ENETC_VF_FLAG_MC_PROMISC);
-
-	spin_lock(&pf->si->gen_lock);
-	enetc_set_si_uc_promisc(pf->si, vf_id + 1, uc_promisc);
-	enetc_set_si_mc_promisc(pf->si, vf_id + 1, mc_promisc);
-	spin_unlock(&pf->si->gen_lock);
-
-	mutex_unlock(&vf_state->lock);
-}
-
 static const struct enetc_pf_ops enetc4_pf_ops = {
 	.set_si_primary_mac = enetc4_pf_set_si_primary_mac,
 	.get_si_primary_mac = enetc4_pf_get_si_primary_mac,
-	.vf_flr_handler = enetc4_pf_vf_flr_handler,
 };
 
 static int enetc4_pf_struct_init(struct enetc_si *si)
 {
 	struct enetc_pf *pf = enetc_si_priv(si);
-	int err;
 
 	pf->si = si;
+	pf->total_vfs = pci_sriov_get_totalvfs(si->pdev);
 	pf->ops = &enetc4_pf_ops;
-
-	err = enetc_init_sriov_resources(pf);
-	if (err)
-		return err;
 
 	enetc4_get_port_caps(pf);
 	enetc4_get_psi_hw_features(si);
@@ -273,35 +255,34 @@ static void enetc4_default_rings_allocation(struct enetc_pf *pf)
 {
 	struct enetc_hw *hw = &pf->si->hw;
 	u32 num_rx_bdr, num_tx_bdr, val;
-	int num_vfs = pf->total_vfs;
 	u32 vf_tx_bdr, vf_rx_bdr;
 	int i, rx_rem, tx_rem;
 
-	if (pf->caps.num_rx_bdr < ENETC_SI_MAX_RING_NUM + num_vfs)
-		num_rx_bdr = pf->caps.num_rx_bdr - num_vfs;
+	if (pf->caps.num_rx_bdr < ENETC_SI_MAX_RING_NUM + pf->caps.num_vsi)
+		num_rx_bdr = pf->caps.num_rx_bdr - pf->caps.num_vsi;
 	else
 		num_rx_bdr = ENETC_SI_MAX_RING_NUM;
 
-	if (pf->caps.num_tx_bdr < ENETC_SI_MAX_RING_NUM + num_vfs)
-		num_tx_bdr = pf->caps.num_tx_bdr - num_vfs;
+	if (pf->caps.num_tx_bdr < ENETC_SI_MAX_RING_NUM + pf->caps.num_vsi)
+		num_tx_bdr = pf->caps.num_tx_bdr - pf->caps.num_vsi;
 	else
 		num_tx_bdr = ENETC_SI_MAX_RING_NUM;
 
 	val = enetc4_psicfgr0_val_construct(false, num_tx_bdr, num_rx_bdr);
 	enetc_port_wr(hw, ENETC4_PSICFGR0(0), val);
 
-	if (!num_vfs)
+	if (!pf->caps.num_vsi)
 		return;
 
 	num_rx_bdr = pf->caps.num_rx_bdr - num_rx_bdr;
-	rx_rem = num_rx_bdr % num_vfs;
-	num_rx_bdr = num_rx_bdr / num_vfs;
+	rx_rem = num_rx_bdr % pf->caps.num_vsi;
+	num_rx_bdr = num_rx_bdr / pf->caps.num_vsi;
 
 	num_tx_bdr = pf->caps.num_tx_bdr - num_tx_bdr;
-	tx_rem = num_tx_bdr % num_vfs;
-	num_tx_bdr = num_tx_bdr / num_vfs;
+	tx_rem = num_tx_bdr % pf->caps.num_vsi;
+	num_tx_bdr = num_tx_bdr / pf->caps.num_vsi;
 
-	for (i = 0; i < num_vfs; i++) {
+	for (i = 0; i < pf->caps.num_vsi; i++) {
 		vf_tx_bdr = (i < tx_rem) ? num_tx_bdr + 1 : num_tx_bdr;
 		vf_rx_bdr = (i < rx_rem) ? num_rx_bdr + 1 : num_rx_bdr;
 		val = enetc4_psicfgr0_val_construct(true, vf_tx_bdr, vf_rx_bdr);
@@ -314,70 +295,53 @@ static void enetc4_allocate_si_rings(struct enetc_pf *pf)
 	enetc4_default_rings_allocation(pf);
 }
 
+static void enetc4_pf_set_si_vlan_promisc(struct enetc_hw *hw, int si, bool en)
+{
+	u32 val = enetc_port_rd(hw, ENETC4_PSIPVMR);
+
+	if (en)
+		val |= BIT(si);
+	else
+		val &= ~BIT(si);
+
+	enetc_port_wr(hw, ENETC4_PSIPVMR, val);
+}
+
+static void enetc4_set_default_si_vlan_promisc(struct enetc_pf *pf)
+{
+	struct enetc_hw *hw = &pf->si->hw;
+	int num_si = pf->caps.num_vsi + 1;
+	int i;
+
+	/* enforce VLAN promiscuous mode for all SIs */
+	for (i = 0; i < num_si; i++)
+		enetc4_pf_set_si_vlan_promisc(hw, i, true);
+}
+
 /* Allocate the number of MSI-X vectors for per SI. */
 static void enetc4_set_si_msix_num(struct enetc_pf *pf)
 {
-	int valid_num_si = pf->total_vfs + 1;
 	struct enetc_hw *hw = &pf->si->hw;
-	int i, num_msix, num_vsi;
+	int i, num_msix, total_si;
 	u32 val;
 
-	val = enetc_port_rd(hw, ENETC4_ECAPR1);
-	num_vsi = FIELD_GET(ECAPR1_NUM_VSI, val);
+	total_si = pf->caps.num_vsi + 1;
 
-	/* The PSIaCFGR2[NUM_MSIX] indicates the number of MSI-X allocated to
-	 * the SI is NUM_MSIX + 1, so the minimum number of MSI-X allocated to
-	 * each SI is 1. The total number of MSI-X allocated to PSI and VSIs
-	 * cannot exceed the total number of MSI-X owned by this ENETC, which
-	 * is ECAPR1[NUM_MSIX]. Otherwise, when multiple ENETC instances exist,
-	 * it will affect other ENETCs whose MSI-X interrupts cannot be
-	 * generated. This is similar to out-of-bounds array access: the array
-	 * itself is not affected, but adjacent arrays will be corrupted.
-	 *
-	 * pf->total_vfs is 0 if CONFIG_PCI_IOV is disabled. If the hardware
-	 * itself supports SR-IOV, then when allocating the number of MSIXs to
-	 * the SI, it must be taken into account that the VSI has at least 1
-	 * MSIX, and the total number of MSIXs of all SIs cannot exceed
-	 * ECAPR1[NUM_MSIX].
-	 */
-	if (!pf->total_vfs && num_vsi) {
-		/* Because each SI has at least one MSIX, and from the hardware
-		 * perspective, pf->caps.num_msix will always be greater than
-		 * num_vsi. So num_msix is always greater than or equal to 0.
-		 */
-		num_msix = pf->caps.num_msix - num_vsi - 1;
-		if (num_msix > PSICFGR2_NUM_MSIX)
-			num_msix = PSICFGR2_NUM_MSIX;
-		enetc_port_wr(hw, ENETC4_PSICFGR2(0), num_msix);
+	num_msix = pf->caps.num_msix / total_si +
+		   pf->caps.num_msix % total_si - 1;
+	val = num_msix & PSICFGR2_NUM_MSIX;
+	enetc_port_wr(hw, ENETC4_PSICFGR2(0), val);
 
-		for (i = 0; i < num_vsi; i++)
-			enetc_port_wr(hw, ENETC4_PSICFGR2(i + 1), 0);
-
-		return;
-	}
-
-	/* Likewise, from the hardware perspective pf->caps.num_msix is always
-	 * greater than valid_num_si. So num_msix is always greater than or
-	 * equal to 0.
-	 */
-	num_msix = pf->caps.num_msix / valid_num_si +
-		   pf->caps.num_msix % valid_num_si - 1;
-	if (num_msix > PSICFGR2_NUM_MSIX)
-		num_msix = PSICFGR2_NUM_MSIX;
-	enetc_port_wr(hw, ENETC4_PSICFGR2(0), num_msix);
-
-	num_msix = pf->caps.num_msix / valid_num_si - 1;
-	if (num_msix > PSICFGR2_NUM_MSIX)
-		num_msix = PSICFGR2_NUM_MSIX;
-
-	for (i = 0; i < pf->total_vfs; i++)
-		enetc_port_wr(hw, ENETC4_PSICFGR2(i + 1), num_msix);
+	num_msix = pf->caps.num_msix / total_si - 1;
+	val = num_msix & PSICFGR2_NUM_MSIX;
+	for (i = 0; i < pf->caps.num_vsi; i++)
+		enetc_port_wr(hw, ENETC4_PSICFGR2(i + 1), val);
 }
 
 static void enetc4_enable_all_si(struct enetc_pf *pf)
 {
 	struct enetc_hw *hw = &pf->si->hw;
-	int num_si = pf->total_vfs + 1;
+	int num_si = pf->caps.num_vsi + 1;
 	u32 si_bitmap = 0;
 	int i;
 
@@ -397,9 +361,7 @@ static void enetc4_configure_port_si(struct enetc_pf *pf)
 	/* Outer VLAN tag will be used for VLAN filtering */
 	enetc_port_wr(hw, ENETC4_PSIVLANFMR, PSIVLANFMR_VS);
 
-	/* Enforce VLAN promiscuous mode for all SIs */
-	for (int i = 0; i < pf->total_vfs + 1; i++)
-		enetc_set_si_vlan_promisc(pf->si, i, true);
+	enetc4_set_default_si_vlan_promisc(pf);
 
 	/* Disable SI MAC multicast & unicast promiscuous */
 	enetc_port_wr(hw, ENETC4_PSIPMMR, 0);
@@ -543,10 +505,8 @@ static int enetc4_pf_set_rx_mode(struct net_device *ndev,
 		type = ENETC_MAC_FILTER_TYPE_ALL;
 	}
 
-	spin_lock(&si->gen_lock);
 	enetc_set_si_uc_promisc(si, 0, uc_promisc);
 	enetc_set_si_mc_promisc(si, 0, mc_promisc);
-	spin_unlock(&si->gen_lock);
 
 	if (uc_promisc) {
 		enetc_set_si_uc_hash_filter(si, 0, 0);
@@ -567,11 +527,12 @@ static int enetc4_pf_set_features(struct net_device *ndev,
 {
 	netdev_features_t changed = ndev->features ^ features;
 	struct enetc_ndev_priv *priv = netdev_priv(ndev);
+	struct enetc_hw *hw = &priv->si->hw;
 
 	if (changed & NETIF_F_HW_VLAN_CTAG_FILTER) {
 		bool promisc_en = !(features & NETIF_F_HW_VLAN_CTAG_FILTER);
 
-		enetc_set_si_vlan_promisc(priv->si, 0, promisc_en);
+		enetc4_pf_set_si_vlan_promisc(hw, 0, promisc_en);
 	}
 
 	if (changed & NETIF_F_LOOPBACK)
@@ -595,9 +556,6 @@ static const struct net_device_ops enetc4_ndev_ops = {
 	.ndo_eth_ioctl		= enetc_ioctl,
 	.ndo_hwtstamp_get	= enetc_hwtstamp_get,
 	.ndo_hwtstamp_set	= enetc_hwtstamp_set,
-	.ndo_set_vf_trust	= enetc_pf_set_vf_trust,
-	.ndo_set_vf_mac		= enetc_pf_set_vf_mac,
-	.ndo_get_vf_config	= enetc_pf_get_vf_config,
 };
 
 static struct phylink_pcs *
@@ -636,6 +594,7 @@ static void enetc4_mac_config(struct enetc_pf *pf, unsigned int mode,
 		val |= IFMODE_SGMII;
 		break;
 	case PHY_INTERFACE_MODE_10GBASER:
+	case PHY_INTERFACE_MODE_XGMII:
 	case PHY_INTERFACE_MODE_USXGMII:
 		val |= IFMODE_XGMII;
 		break;
@@ -661,19 +620,26 @@ static void enetc4_set_port_speed(struct enetc_ndev_priv *priv, int speed)
 	u32 old_speed = priv->speed;
 	u32 val;
 
-	/* If the speed is unknown, use the minimum value */
-	if (speed == SPEED_UNKNOWN) {
-		speed = SPEED_10;
-		dev_warn(priv->dev, "Speed unknown, default is 10Mbps\n");
-	}
-
 	if (speed == old_speed)
 		return;
 
-	val = enetc_port_rd(&priv->si->hw, ENETC4_PCR) & (~PCR_PSPEED);
-	val |= PCR_PSPEED_VAL(speed);
-	enetc_port_wr(&priv->si->hw, ENETC4_PCR, val);
+	val = enetc_port_rd(&priv->si->hw, ENETC4_PCR);
+	val &= ~PCR_PSPEED;
+
+	switch (speed) {
+	case SPEED_100:
+	case SPEED_1000:
+	case SPEED_2500:
+	case SPEED_10000:
+		val |= (PCR_PSPEED & PCR_PSPEED_VAL(speed));
+		break;
+	case SPEED_10:
+	default:
+		val |= (PCR_PSPEED & PCR_PSPEED_VAL(SPEED_10));
+	}
+
 	priv->speed = speed;
+	enetc_port_wr(&priv->si->hw, ENETC4_PCR, val);
 }
 
 static void enetc4_set_rgmii_mac(struct enetc_pf *pf, int speed, int duplex)
@@ -918,7 +884,6 @@ static void enetc4_pl_mac_link_up(struct phylink_config *config,
 	enetc4_set_rx_pause(pf, rx_pause);
 	enetc4_mac_tx_enable(pf);
 	enetc4_mac_rx_enable(pf);
-	enetc_pf_notify_vf_link_up(pf);
 }
 
 static void enetc4_pl_mac_link_down(struct phylink_config *config,
@@ -927,7 +892,6 @@ static void enetc4_pl_mac_link_down(struct phylink_config *config,
 {
 	struct enetc_pf *pf = phylink_to_enetc_pf(config);
 
-	enetc_pf_notify_vf_link_down(pf);
 	enetc4_mac_rx_graceful_stop(pf);
 	enetc4_mac_tx_graceful_stop(pf);
 }
@@ -987,36 +951,6 @@ static void enetc4_link_deinit(struct enetc_ndev_priv *priv)
 	enetc_mdiobus_destroy(pf);
 }
 
-static void enetc4_pf_link_status_task(struct work_struct *work)
-{
-	struct enetc_pf *pf = container_of(work, struct enetc_pf,
-					   link_status_task);
-
-	enetc_pf_send_link_status_msg(pf);
-}
-
-static int enetc4_pf_wq_task_init(struct enetc_si *si)
-{
-	struct enetc_pf *pf = enetc_si_priv(si);
-
-	si->workqueue = alloc_ordered_workqueue("enetc-%s-wq", 0,
-						pci_name(si->pdev));
-	if (!si->workqueue)
-		return -ENOMEM;
-
-	INIT_WORK(&pf->link_status_task, enetc4_pf_link_status_task);
-
-	return 0;
-}
-
-static void enetc4_pf_wq_task_destroy(struct enetc_si *si)
-{
-	struct enetc_pf *pf = enetc_si_priv(si);
-
-	disable_work_sync(&pf->link_status_task);
-	destroy_workqueue(si->workqueue);
-}
-
 static int enetc4_pf_netdev_create(struct enetc_si *si)
 {
 	struct device *dev = &si->pdev->dev;
@@ -1057,10 +991,6 @@ static int enetc4_pf_netdev_create(struct enetc_si *si)
 	if (err)
 		goto err_link_init;
 
-	err = enetc4_pf_wq_task_init(si);
-	if (err)
-		goto err_wq_init;
-
 	err = register_netdev(ndev);
 	if (err) {
 		dev_err(dev, "Failed to register netdev\n");
@@ -1070,8 +1000,6 @@ static int enetc4_pf_netdev_create(struct enetc_si *si)
 	return 0;
 
 err_reg_netdev:
-	enetc4_pf_wq_task_destroy(si);
-err_wq_init:
 	enetc4_link_deinit(priv);
 err_link_init:
 	enetc_free_msix(priv);
@@ -1089,7 +1017,6 @@ static void enetc4_pf_netdev_destroy(struct enetc_si *si)
 	struct net_device *ndev = si->ndev;
 
 	unregister_netdev(ndev);
-	enetc4_pf_wq_task_destroy(si);
 	enetc4_link_deinit(priv);
 	enetc_free_msix(priv);
 	free_netdev(ndev);
@@ -1159,9 +1086,6 @@ static void enetc4_pf_remove(struct pci_dev *pdev)
 	struct enetc_si *si = pci_get_drvdata(pdev);
 	struct enetc_pf *pf = enetc_si_priv(si);
 
-	if (pf->num_vfs)
-		enetc_sriov_configure(pdev, 0);
-
 	enetc_remove_debugfs(si);
 	enetc4_pf_netdev_destroy(si);
 	enetc4_pf_free(pf);
@@ -1179,7 +1103,6 @@ static struct pci_driver enetc4_pf_driver = {
 	.id_table = enetc4_pf_id_table,
 	.probe = enetc4_pf_probe,
 	.remove = enetc4_pf_remove,
-	.sriov_configure = enetc_sriov_configure,
 };
 module_pci_driver(enetc4_pf_driver);
 

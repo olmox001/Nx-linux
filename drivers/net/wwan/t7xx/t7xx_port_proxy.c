@@ -584,8 +584,11 @@ static int t7xx_proxy_alloc(struct t7xx_modem *md)
 	struct device *dev = &md->t7xx_dev->pdev->dev;
 	struct port_proxy *port_prox;
 
-	port_prox = devm_kzalloc_flex(dev, *port_prox, ports,
-				      T7XX_MAX_POSSIBLE_PORTS_NUM);
+	port_prox = devm_kzalloc(dev,
+				 struct_size(port_prox,
+					     ports,
+					     T7XX_MAX_POSSIBLE_PORTS_NUM),
+				 GFP_KERNEL);
 	if (!port_prox)
 		return -ENOMEM;
 

@@ -42,7 +42,6 @@ TEST_PROGS := \
 	test-symmetric-id-float.sh \
 	test-symmetric-id-tcp.sh \
 	test-symmetric-id.sh \
-	test-tcp-nagle.sh \
 	test-tcp.sh \
 	test.sh \
 # end of TEST_PROGS

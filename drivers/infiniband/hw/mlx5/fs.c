@@ -17,7 +17,6 @@
 #include <linux/mlx5/fs.h>
 #include <linux/mlx5/fs_helpers.h>
 #include <linux/mlx5/eswitch.h>
-#include <linux/overflow.h>
 #include <net/inet_ecn.h>
 #include "mlx5_ib.h"
 #include "counters.h"
@@ -226,6 +225,23 @@ static int parse_flow_attr(struct mlx5_core_dev *mdev,
 	}
 
 	switch (ib_spec->type & ~IB_FLOW_SPEC_INNER) {
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	case IB_FLOW_SPEC_SNIFFER: {
+		bool rx_cap = MLX5_CAP_FLOWTABLE_SNIFFER_RX(mdev,
+					ft_field_support.source_vhca_port);
+		bool tx_cap = MLX5_CAP_FLOWTABLE_SNIFFER_TX(mdev,
+					ft_field_support.source_vhca_port);
+
+		if ((tx_cap && !ib_spec->sniffer.is_rx) ||
+		    (rx_cap && ib_spec->sniffer.is_rx)) {
+			MLX5_SET(fte_match_set_misc, misc_params_v,
+				source_vhca_port, ib_spec->sniffer.port_num);
+			MLX5_SET_TO_ONES(fte_match_set_misc, misc_params_c,
+					source_vhca_port);
+		}
+		break;
+	}
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	case IB_FLOW_SPEC_ETH:
 		if (FIELDS_NOT_SUPPORTED(ib_spec->eth.mask, LAST_ETH_FIELD))
 			return -EOPNOTSUPP;
@@ -1648,32 +1664,36 @@ static struct mlx5_ib_flow_handler *create_leftovers_rule(struct mlx5_ib_dev *de
 							  struct ib_flow_attr *flow_attr,
 							  struct mlx5_flow_destination *dst)
 {
-	DEFINE_RAW_FLEX(struct ib_flow_attr, flow_attr_wc, flows, 1);
-	DEFINE_RAW_FLEX(struct ib_flow_attr, flow_attr_uc, flows, 1);
-
 	struct mlx5_ib_flow_handler *handler_ucast = NULL;
 	struct mlx5_ib_flow_handler *handler = NULL;
 
-	flow_attr_wc->num_of_specs = 1;
-	flow_attr_wc->size = sizeof(struct ib_flow_attr) +
-			      sizeof(struct ib_flow_spec_eth);
-	flow_attr_wc->flows[0].eth.type = IB_FLOW_SPEC_ETH;
-	flow_attr_wc->flows[0].eth.size = sizeof(struct ib_flow_spec_eth);
-	flow_attr_wc->flows[0].eth.mask.dst_mac[0] = 0x1;
-	flow_attr_wc->flows[0].eth.val.dst_mac[0] = 0x1;
+	static struct {
+		struct ib_flow_spec_eth eth_flow;
+		struct ib_flow_attr	flow_attr;
+	} leftovers_wc = { .flow_attr = { .num_of_specs = 1,
+					  .size = sizeof(leftovers_wc) },
+			   .eth_flow = {
+				   .type = IB_FLOW_SPEC_ETH,
+				   .size = sizeof(struct ib_flow_spec_eth),
+				   .mask = { .dst_mac = { 0x1 } },
+				   .val = { .dst_mac = { 0x1 } } } };
 
-	flow_attr_uc->num_of_specs = 1;
-	flow_attr_uc->size = sizeof(struct ib_flow_attr) +
-			      sizeof(struct ib_flow_spec_eth);
-	flow_attr_uc->flows[0].eth.type = IB_FLOW_SPEC_ETH;
-	flow_attr_uc->flows[0].eth.size = sizeof(struct ib_flow_spec_eth);
-	flow_attr_uc->flows[0].eth.mask.dst_mac[0] = 0x1;
+	static struct {
+		struct ib_flow_spec_eth eth_flow;
+		struct ib_flow_attr	flow_attr;
+	} leftovers_uc = { .flow_attr = { .num_of_specs = 1,
+					  .size = sizeof(leftovers_uc) },
+			   .eth_flow = {
+				   .type = IB_FLOW_SPEC_ETH,
+				   .size = sizeof(struct ib_flow_spec_eth),
+				   .mask = { .dst_mac = { 0x1 } },
+				   .val = { .dst_mac = {} } } };
 
-	handler = create_flow_rule(dev, ft_prio, flow_attr_wc, dst);
+	handler = create_flow_rule(dev, ft_prio, &leftovers_wc.flow_attr, dst);
 	if (!IS_ERR(handler) &&
 	    flow_attr->type == IB_FLOW_ATTR_ALL_DEFAULT) {
 		handler_ucast = create_flow_rule(dev, ft_prio,
-						 flow_attr_uc, dst);
+						 &leftovers_uc.flow_attr, dst);
 		if (IS_ERR(handler_ucast)) {
 			mlx5_del_flow_rules(handler->rule);
 			ft_prio->refcount--;
@@ -1690,24 +1710,56 @@ static struct mlx5_ib_flow_handler *create_leftovers_rule(struct mlx5_ib_dev *de
 static struct mlx5_ib_flow_handler *create_sniffer_rule(struct mlx5_ib_dev *dev,
 							struct mlx5_ib_flow_prio *ft_rx,
 							struct mlx5_ib_flow_prio *ft_tx,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+							struct mlx5_flow_destination *dst,
+							u8 port)
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 							struct mlx5_flow_destination *dst)
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 {
 	struct mlx5_ib_flow_handler *handler_rx;
 	struct mlx5_ib_flow_handler *handler_tx;
 	int err;
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct {
+		struct ib_flow_attr flow_attr;
+		struct ib_flow_spec_sniffer sniffer;
+	} sniffer_spec = {
+		.flow_attr = {
+			.num_of_specs = 1,
+			.size = sizeof(sniffer_spec)
+		},
+		.sniffer = {
+			.type = IB_FLOW_SPEC_SNIFFER,
+			.size = sizeof(struct ib_flow_spec_sniffer),
+			.port_num = port,
+			.is_rx = true
+		}
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 	static const struct ib_flow_attr flow_attr  = {
 		.num_of_specs = 0,
 		.type = IB_FLOW_ATTR_SNIFFER,
 		.size = sizeof(flow_attr)
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	};
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	handler_rx = create_flow_rule(dev, ft_rx, &sniffer_spec.flow_attr, dst);
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 	handler_rx = create_flow_rule(dev, ft_rx, &flow_attr, dst);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	if (IS_ERR(handler_rx)) {
 		err = PTR_ERR(handler_rx);
 		goto err;
 	}
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	sniffer_spec.sniffer.is_rx = false;
+	handler_tx = create_flow_rule(dev, ft_tx, &sniffer_spec.flow_attr, dst);
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 	handler_tx = create_flow_rule(dev, ft_tx, &flow_attr, dst);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	if (IS_ERR(handler_tx)) {
 		err = PTR_ERR(handler_tx);
 		goto err_tx;
@@ -1835,7 +1887,12 @@ static struct ib_flow *mlx5_ib_create_flow(struct ib_qp *qp,
 		handler = create_leftovers_rule(dev, ft_prio, flow_attr, dst);
 		break;
 	case IB_FLOW_ATTR_SNIFFER:
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		handler = create_sniffer_rule(dev, ft_prio, ft_prio_tx, dst,
+					      mqp->port);
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 		handler = create_sniffer_rule(dev, ft_prio, ft_prio_tx, dst);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		break;
 	default:
 		err = -EINVAL;
@@ -3014,9 +3071,6 @@ static int UVERBS_HANDLER(MLX5_IB_METHOD_STEERING_ANCHOR_CREATE)(
 	if (err)
 		return err;
 
-	if (priority > MLX5_IB_FLOW_LAST_PRIO)
-		return -EINVAL;
-
 	obj = kzalloc_obj(*obj);
 	if (!obj)
 		return -ENOMEM;
@@ -3056,8 +3110,8 @@ static int UVERBS_HANDLER(MLX5_IB_METHOD_STEERING_ANCHOR_CREATE)(
 	return 0;
 
 destroy_res:
-	if (!--ft_prio->anchor.rule_goto_table_ref)
-		mlx5_steering_anchor_destroy_res(ft_prio);
+	--ft_prio->anchor.rule_goto_table_ref;
+	mlx5_steering_anchor_destroy_res(ft_prio);
 put_flow_table:
 	put_flow_table(dev, ft_prio, true);
 free_obj:

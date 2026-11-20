@@ -93,7 +93,7 @@ static int logicvc_gpio_probe(struct platform_device *pdev)
 	struct logicvc_gpio *logicvc;
 	int ret;
 
-	logicvc = devm_kzalloc_obj(dev, *logicvc);
+	logicvc = devm_kzalloc(dev, sizeof(*logicvc), GFP_KERNEL);
 	if (!logicvc)
 		return -ENOMEM;
 

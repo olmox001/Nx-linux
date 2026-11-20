@@ -116,7 +116,7 @@ static int test_probe(struct platform_device *plat_dev)
 {
 	struct rtc_test_data *rtd;
 
-	rtd = devm_kzalloc_obj(&plat_dev->dev, *rtd);
+	rtd = devm_kzalloc(&plat_dev->dev, sizeof(*rtd), GFP_KERNEL);
 	if (!rtd)
 		return -ENOMEM;
 

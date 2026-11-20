@@ -280,8 +280,9 @@ bool __init topology_parse_cpu_capacity(struct device_node *cpu_node, int cpu)
 				   &cpu_capacity);
 	if (!ret) {
 		if (!raw_capacity) {
-			raw_capacity = kzalloc_objs(*raw_capacity,
-						    num_possible_cpus());
+			raw_capacity = kcalloc(num_possible_cpus(),
+					       sizeof(*raw_capacity),
+					       GFP_KERNEL);
 			if (!raw_capacity) {
 				cap_parsing_failed = true;
 				return false;
@@ -332,7 +333,8 @@ static inline void topology_init_cpu_capacity_cppc(void)
 	if (likely(!acpi_cpc_valid()))
 		return;
 
-	raw_capacity = kzalloc_objs(*raw_capacity, num_possible_cpus());
+	raw_capacity = kcalloc(num_possible_cpus(), sizeof(*raw_capacity),
+			       GFP_KERNEL);
 	if (!raw_capacity)
 		return;
 
@@ -721,8 +723,12 @@ const struct cpumask *cpu_coregroup_mask(int cpu)
 	 * then remove MC as redundant with CLS if SCHED_CLUSTER is enabled.
 	 */
 	if (IS_ENABLED(CONFIG_SCHED_CLUSTER) &&
-	    cpumask_subset(core_mask, &cpu_topology[cpu].cluster_sibling))
-		core_mask = &cpu_topology[cpu].cluster_sibling;
+	    cpumask_subset(core_mask, &cpu_topology[cpu].cluster_sibling)) {
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		if (static_branch_unlikely(&cls_enabled))
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+			core_mask = &cpu_topology[cpu].cluster_sibling;
+	}
 
 	return core_mask;
 }

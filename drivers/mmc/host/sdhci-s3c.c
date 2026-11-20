@@ -506,7 +506,7 @@ static int sdhci_s3c_probe(struct platform_device *pdev)
 	}
 	sc = sdhci_priv(host);
 
-	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 

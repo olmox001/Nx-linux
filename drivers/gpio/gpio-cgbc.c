@@ -154,7 +154,7 @@ static int cgbc_gpio_probe(struct platform_device *pdev)
 	struct gpio_chip *chip;
 	int ret;
 
-	gpio = devm_kzalloc_obj(dev, *gpio);
+	gpio = devm_kzalloc(dev, sizeof(*gpio), GFP_KERNEL);
 	if (!gpio)
 		return -ENOMEM;
 

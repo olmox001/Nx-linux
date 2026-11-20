@@ -68,11 +68,7 @@
 	motorcomm,tx-clk-adj-enabled;
 };
 
-&pwm0 {
-	status = "okay";
-};
-
-&pwm1 {
+&pwm {
 	status = "okay";
 };
 

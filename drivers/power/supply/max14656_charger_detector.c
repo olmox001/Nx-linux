@@ -252,7 +252,7 @@ static int max14656_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -287,8 +287,10 @@ static int max14656_probe(struct i2c_client *client)
 	ret = devm_request_irq(dev, chip->irq, max14656_irq,
 			       IRQF_TRIGGER_FALLING,
 			       MAX14656_NAME, chip);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "request_irq %d failed\n", chip->irq);
 		return -EINVAL;
+	}
 	enable_irq_wake(chip->irq);
 
 	schedule_delayed_work(&chip->irq_work, msecs_to_jiffies(2000));

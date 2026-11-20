@@ -16,7 +16,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc-dapm.h>
-#include <sound/sdw.h>
 #include <sound/initval.h>
 #include "rt1318-sdw.h"
 
@@ -361,8 +360,8 @@ static int rt1318_read_prop(struct sdw_slave *slave)
 	prop->sink_ports = BIT(1);
 
 	nval = hweight32(prop->source_ports);
-	prop->src_dpn_prop = devm_kzalloc_objs(&slave->dev, *prop->src_dpn_prop,
-					       nval);
+	prop->src_dpn_prop = devm_kcalloc(&slave->dev, nval,
+		sizeof(*prop->src_dpn_prop), GFP_KERNEL);
 	if (!prop->src_dpn_prop)
 		return -ENOMEM;
 
@@ -379,8 +378,8 @@ static int rt1318_read_prop(struct sdw_slave *slave)
 
 	/* do this again for sink now */
 	nval = hweight32(prop->sink_ports);
-	prop->sink_dpn_prop = devm_kzalloc_objs(&slave->dev,
-						*prop->sink_dpn_prop, nval);
+	prop->sink_dpn_prop = devm_kcalloc(&slave->dev, nval,
+		sizeof(*prop->sink_dpn_prop), GFP_KERNEL);
 	if (!prop->sink_dpn_prop)
 		return -ENOMEM;
 
@@ -565,10 +564,11 @@ static int rt1318_sdw_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct rt1318_sdw_priv *rt1318 =
 		snd_soc_component_get_drvdata(component);
-	struct sdw_stream_config stream_config = {0};
+	struct sdw_stream_config stream_config;
 	struct sdw_port_config port_config;
+	enum sdw_data_direction direction;
 	struct sdw_stream_runtime *sdw_stream;
-	int retval, port;
+	int retval, port, num_channels, ch_mask;
 	unsigned int sampling_rate;
 
 	dev_dbg(dai->dev, "%s %s", __func__, dai->name);
@@ -582,13 +582,23 @@ static int rt1318_sdw_hw_params(struct snd_pcm_substream *substream,
 
 	/* SoundWire specific configuration */
 	/* port 1 for playback */
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		direction = SDW_DATA_DIR_RX;
 		port = 1;
-	else
+	} else {
+		direction = SDW_DATA_DIR_TX;
 		port = 2;
+	}
 
-	/* SoundWire specific configuration */
-	snd_sdw_params_to_config(substream, params, &stream_config, &port_config);
+	num_channels = params_channels(params);
+	ch_mask = (1 << num_channels) - 1;
+
+	stream_config.frame_rate = params_rate(params);
+	stream_config.ch_count = num_channels;
+	stream_config.bps = snd_pcm_format_width(params_format(params));
+	stream_config.direction = direction;
+
+	port_config.ch_mask = ch_mask;
 	port_config.num = port;
 
 	retval = sdw_stream_add_slave(rt1318->sdw_slave, &stream_config,
@@ -725,7 +735,7 @@ static int rt1318_sdw_init(struct device *dev, struct regmap *regmap,
 	struct rt1318_sdw_priv *rt1318;
 	int ret;
 
-	rt1318 = devm_kzalloc_obj(dev, *rt1318);
+	rt1318 = devm_kzalloc(dev, sizeof(*rt1318), GFP_KERNEL);
 	if (!rt1318)
 		return -ENOMEM;
 
@@ -820,12 +830,7 @@ static int rt1318_dev_resume(struct device *dev)
 		return ret;
 
 	regcache_cache_only(rt1318->regmap, false);
-	ret = regcache_sync(rt1318->regmap);
-	if (ret) {
-		regcache_cache_only(rt1318->regmap, true);
-		regcache_mark_dirty(rt1318->regmap);
-		return ret;
-	}
+	regcache_sync(rt1318->regmap);
 
 	return 0;
 }

@@ -307,7 +307,7 @@ static int tegra210_ope_probe(struct platform_device *pdev)
 	void __iomem *regs;
 	int err;
 
-	ope = devm_kzalloc_obj(dev, *ope);
+	ope = devm_kzalloc(dev, sizeof(*ope), GFP_KERNEL);
 	if (!ope)
 		return -ENOMEM;
 

@@ -360,30 +360,19 @@ static int ipip_fill_forward_path(struct net_device_path_ctx *ctx,
 	const struct iphdr *tiph = &tunnel->parms.iph;
 	struct rtable *rt;
 
-	if (ctx->ether_type != cpu_to_be16(ETH_P_IP))
-		return -EOPNOTSUPP;
-
-	if (tunnel->collect_md)
-		return -EOPNOTSUPP;
-
-	if (tunnel->parms.iph.tos & 0x1)
-		return -EOPNOTSUPP;
-
-	rt = ip_route_output(dev_net(ctx->dev), tiph->daddr, tiph->saddr,
-			     inet_dsfield_to_dscp(tiph->tos),
-			     tunnel->parms.link, RT_SCOPE_UNIVERSE);
+	rt = ip_route_output(dev_net(ctx->dev), tiph->daddr, 0, 0, 0,
+			     RT_SCOPE_UNIVERSE);
 	if (IS_ERR(rt))
 		return PTR_ERR(rt);
 
 	path->type = DEV_PATH_TUN;
 	path->tun.src_v4.s_addr = tiph->saddr;
 	path->tun.dst_v4.s_addr = tiph->daddr;
-	path->tun.inner_proto = IPPROTO_IPIP;
-	path->tun.encap_proto = AF_INET;
-	path->tun.dst = &rt->dst;
+	path->tun.l3_proto = IPPROTO_IPIP;
 	path->dev = ctx->dev;
 
 	ctx->dev = rt->dst.dev;
+	ip_rt_put(rt);
 
 	return 0;
 }
@@ -646,7 +635,7 @@ static int __net_init ipip_init_net(struct net *net)
 static void __net_exit ipip_exit_rtnl(struct net *net,
 				      struct list_head *dev_to_kill)
 {
-	ip_tunnel_delete_net(net, ipip_net_id, dev_to_kill);
+	ip_tunnel_delete_net(net, ipip_net_id, &ipip_link_ops, dev_to_kill);
 }
 
 static struct pernet_operations ipip_net_ops = {

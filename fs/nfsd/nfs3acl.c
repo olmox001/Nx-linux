@@ -6,26 +6,12 @@
  */
 
 #include "nfsd.h"
-#include "nfserr.h"
 /* FIXME: nfsacl.h is a broken header */
 #include <linux/nfsacl.h>
 #include <linux/gfp.h>
 #include "cache.h"
 #include "xdr3.h"
 #include "vfs.h"
-
-static __be32 nfsd3_map_status(__be32 status)
-{
-	switch (status) {
-	case nfserr_nofilehandle:
-		status = nfserr_badhandle;
-		break;
-	case nfserr_wrongsec:
-		status = nfserr_acces;
-		break;
-	}
-	return status;
-}
 
 /*
  * NULL call.
@@ -85,7 +71,6 @@ static __be32 nfsd3_proc_getacl(struct svc_rqst *rqstp)
 
 	/* resp->acl_{access,default} are released in nfs3svc_release_getacl. */
 out:
-	resp->status = nfsd3_map_status(resp->status);
 	return rpc_success;
 
 fail:
@@ -139,7 +124,6 @@ out_errno:
 	resp->status = nfserrno(error);
 out:
 	/* argp->acl_{access,default} are released in nfs3svc_release_setacl. */
-	resp->status = nfsd3_map_status(resp->status);
 	return rpc_success;
 }
 
@@ -294,10 +278,13 @@ static const struct svc_procedure nfsd_acl_procedures3[3] = {
 	},
 };
 
+static DEFINE_PER_CPU_ALIGNED(unsigned long,
+			      nfsd_acl_count3[ARRAY_SIZE(nfsd_acl_procedures3)]);
 const struct svc_version nfsd_acl_version3 = {
 	.vs_vers	= 3,
 	.vs_nproc	= ARRAY_SIZE(nfsd_acl_procedures3),
 	.vs_proc	= nfsd_acl_procedures3,
+	.vs_count	= nfsd_acl_count3,
 	.vs_dispatch	= nfsd_dispatch,
 	.vs_xdrsize	= NFS3_SVC_XDRSIZE,
 };

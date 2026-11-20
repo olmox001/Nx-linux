@@ -141,8 +141,8 @@ typedef ssize_t (*sysfs_show_func)(struct device *dev,
 			struct device_attribute *attr, char *buf);
 
 static const struct acpi_device_id atk_ids[] = {
-	{ .id = ATK_HID },
-	{ }
+	{ATK_HID, 0},
+	{"", 0},
 };
 MODULE_DEVICE_TABLE(acpi, atk_ids);
 
@@ -886,7 +886,7 @@ static int atk_add_sensor(struct atk_data *data, union acpi_object *obj)
 	limit1 = atk_get_pack_member(data, obj, HWMON_PACK_LIMIT1);
 	limit2 = atk_get_pack_member(data, obj, HWMON_PACK_LIMIT2);
 
-	sensor = devm_kzalloc_obj(dev, *sensor);
+	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
 
@@ -1165,7 +1165,7 @@ static int atk_init_attribute_groups(struct atk_data *data)
 	int len = (data->voltage_count + data->temperature_count
 			+ data->fan_count) * 4 + 1;
 
-	attrs = devm_kzalloc_objs(dev, struct attribute *, len);
+	attrs = devm_kcalloc(dev, len, sizeof(struct attribute *), GFP_KERNEL);
 	if (!attrs)
 		return -ENOMEM;
 
@@ -1284,7 +1284,7 @@ static int atk_probe(struct platform_device *pdev)
 	if (!handle)
 		return -ENODEV;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

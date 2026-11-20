@@ -438,8 +438,7 @@ static noinline_for_stack int ipvlan_process_v4_outbound(struct sk_buff *skb)
 		.flowi4_mark = skb->mark,
 	};
 
-	if (!pskb_network_may_pull(skb, sizeof(struct iphdr)) ||
-	    skb_cow_head(skb, 0))
+	if (!pskb_network_may_pull(skb, sizeof(struct iphdr)))
 		goto err;
 
 	ip4h = ip_hdr(skb);
@@ -505,8 +504,7 @@ static int ipvlan_process_v6_outbound(struct sk_buff *skb)
 	struct net_device *dev = skb->dev;
 	int err, ret = NET_XMIT_DROP;
 
-	if (!pskb_network_may_pull(skb, sizeof(struct ipv6hdr)) ||
-	    skb_cow_head(skb, 0)) {
+	if (!pskb_network_may_pull(skb, sizeof(struct ipv6hdr))) {
 		DEV_STATS_INC(dev, tx_errors);
 		kfree_skb(skb);
 		return ret;

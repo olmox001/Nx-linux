@@ -7,7 +7,6 @@
 
 #include <linux/delay.h>
 #include <linux/suspend.h>
-#include <linux/umh.h>
 #include <linux/workqueue.h>
 #include <linux/greybus.h>
 

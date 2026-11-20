@@ -9,10 +9,9 @@
 //
 
 #include <linux/acpi.h>
-#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
@@ -1409,7 +1408,7 @@ static int cx2072x_jack_status_check(void *data)
 	unsigned int type = 0;
 	int state = 0;
 
-	guard(mutex)(&cx2072x->lock);
+	mutex_lock(&cx2072x->lock);
 
 	regmap_read(cx2072x->regmap, CX2072X_PORTA_PIN_SENSE, &jack);
 	jack = jack >> 24;
@@ -1434,6 +1433,8 @@ static int cx2072x_jack_status_check(void *data)
 
 	/* clear interrupt */
 	regmap_write(cx2072x->regmap, CX2072X_UM_INTERRUPT_CRTL_E, 0x12 << 24);
+
+	mutex_unlock(&cx2072x->lock);
 
 	dev_dbg(codec->dev, "CX2072X_HSDETECT type=0x%X,Jack state = %x\n",
 		type, state);
@@ -1521,16 +1522,6 @@ static const struct snd_soc_component_driver soc_codec_driver_cx2072x = {
 	.endianness = 1,
 };
 
-
-static const u64 cx2072x_selectable_formats =
-	SND_SOC_POSSIBLE_DAIFMT_I2S	|
-	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_IF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_IF;
-
 /*
  * DAI ops
  */
@@ -1539,8 +1530,6 @@ static const struct snd_soc_dai_ops cx2072x_dai_ops = {
 	.set_fmt = cx2072x_set_dai_fmt,
 	.hw_params = cx2072x_hw_params,
 	.set_bclk_ratio = cx2072x_set_dai_bclk_ratio,
-	.auto_selectable_formats        = &cx2072x_selectable_formats,
-	.num_auto_selectable_formats    = 1,
 };
 
 static int cx2072x_dsp_dai_probe(struct snd_soc_dai *dai)
@@ -1643,7 +1632,8 @@ static int cx2072x_i2c_probe(struct i2c_client *i2c)
 	unsigned int ven_id, rev_id;
 	int ret;
 
-	cx2072x = devm_kzalloc_obj(&i2c->dev, struct cx2072x_priv);
+	cx2072x = devm_kzalloc(&i2c->dev, sizeof(struct cx2072x_priv),
+			       GFP_KERNEL);
 	if (!cx2072x)
 		return -ENOMEM;
 

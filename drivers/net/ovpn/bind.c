@@ -18,7 +18,7 @@
  * ovpn_bind_from_sockaddr - retrieve binding matching sockaddr
  * @ss: the sockaddr to match
  *
- * Return: the new bind for the passed sockaddr, an ERR_PTR() on failure
+ * Return: the bind matching the passed sockaddr if found, NULL otherwise
  */
 struct ovpn_bind *ovpn_bind_from_sockaddr(const struct sockaddr_storage *ss)
 {

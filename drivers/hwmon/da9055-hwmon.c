@@ -238,7 +238,7 @@ static int da9055_hwmon_probe(struct platform_device *pdev)
 	struct device *hwmon_dev;
 	int hwmon_irq, ret;
 
-	hwmon = devm_kzalloc_obj(dev, struct da9055_hwmon);
+	hwmon = devm_kzalloc(dev, sizeof(struct da9055_hwmon), GFP_KERNEL);
 	if (!hwmon)
 		return -ENOMEM;
 
@@ -256,8 +256,11 @@ static int da9055_hwmon_probe(struct platform_device *pdev)
 					NULL, da9055_auxadc_irq,
 					IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
 					"adc-irq", hwmon);
-	if (ret != 0)
+	if (ret != 0) {
+		dev_err(hwmon->da9055->dev, "DA9055 ADC IRQ failed ret=%d\n",
+			ret);
 		return ret;
+	}
 
 	hwmon_dev = devm_hwmon_device_register_with_groups(dev, "da9055",
 							   hwmon,

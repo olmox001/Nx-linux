@@ -18,8 +18,6 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 
-#include <asm/byteorder.h>
-
 static const struct i2c_device_id pcf857x_id[] = {
 	{ .name = "pcf8574", .driver_data = 8 },
 	{ .name = "pcf8574a", .driver_data = 8 },
@@ -71,9 +69,8 @@ MODULE_DEVICE_TABLE(of, pcf857x_of_table);
 struct pcf857x {
 	struct gpio_chip	chip;
 	struct i2c_client	*client;
-	struct mutex		lock;		/* protect 'out' and 'dir' */
+	struct mutex		lock;		/* protect 'out' */
 	unsigned int		out;		/* software latch */
-	unsigned int		dir;		/* direction latch (1 = input) */
 	unsigned int		status;		/* current status */
 	unsigned int		irq_enabled;	/* enabled irqs */
 
@@ -99,23 +96,22 @@ static int i2c_read_le8(struct i2c_client *client)
 
 static int i2c_write_le16(struct i2c_client *client, unsigned int word)
 {
-	__le16 buf = cpu_to_le16(word);
+	u8 buf[2] = { word & 0xff, word >> 8, };
 	int status;
 
-	status = i2c_master_send(client, (char *)&buf, sizeof(buf));
+	status = i2c_master_send(client, buf, 2);
 	return (status < 0) ? status : 0;
 }
 
 static int i2c_read_le16(struct i2c_client *client)
 {
-	__le16 buf;
+	u8 buf[2];
 	int status;
 
-	status = i2c_master_recv(client, (char *)&buf, sizeof(buf));
+	status = i2c_master_recv(client, buf, 2);
 	if (status < 0)
 		return status;
-
-	return le16_to_cpu(buf);
+	return (buf[1] << 8) | buf[0];
 }
 
 /*-------------------------------------------------------------------------*/
@@ -127,19 +123,10 @@ static int pcf857x_input(struct gpio_chip *chip, unsigned int offset)
 
 	mutex_lock(&gpio->lock);
 	gpio->out |= (1 << offset);
-	gpio->dir |= (1 << offset);
 	status = gpio->write(gpio->client, gpio->out);
 	mutex_unlock(&gpio->lock);
 
 	return status;
-}
-
-static int pcf857x_get_direction(struct gpio_chip *chip, unsigned int offset)
-{
-	struct pcf857x *gpio = gpiochip_get_data(chip);
-
-	return (gpio->dir & (1 << offset)) ? GPIO_LINE_DIRECTION_IN
-					   : GPIO_LINE_DIRECTION_OUT;
 }
 
 static int pcf857x_get(struct gpio_chip *chip, unsigned int offset)
@@ -177,7 +164,6 @@ static int pcf857x_output(struct gpio_chip *chip, unsigned int offset, int value
 		gpio->out |= bit;
 	else
 		gpio->out &= ~bit;
-	gpio->dir &= ~bit;
 	status = gpio->write(gpio->client, gpio->out);
 	mutex_unlock(&gpio->lock);
 
@@ -198,7 +184,6 @@ static int pcf857x_set_multiple(struct gpio_chip *chip, unsigned long *mask,
 	mutex_lock(&gpio->lock);
 	gpio->out &= ~*mask;
 	gpio->out |= *bits & *mask;
-	gpio->dir &= ~*mask;
 	status = gpio->write(gpio->client, gpio->out);
 	mutex_unlock(&gpio->lock);
 
@@ -297,7 +282,7 @@ static int pcf857x_probe(struct i2c_client *client)
 	int status;
 
 	/* Allocate, initialize, and register this gpio_chip. */
-	gpio = devm_kzalloc_obj(&client->dev, *gpio);
+	gpio = devm_kzalloc(&client->dev, sizeof(*gpio), GFP_KERNEL);
 	if (!gpio)
 		return -ENOMEM;
 
@@ -313,7 +298,6 @@ static int pcf857x_probe(struct i2c_client *client)
 	gpio->chip.set_multiple		= pcf857x_set_multiple;
 	gpio->chip.direction_input	= pcf857x_input;
 	gpio->chip.direction_output	= pcf857x_output;
-	gpio->chip.get_direction	= pcf857x_get_direction;
 	gpio->chip.ngpio		= (uintptr_t)i2c_get_match_data(client);
 
 	reset_gpio = devm_gpiod_get_optional(&client->dev, "reset", GPIOD_OUT_HIGH);
@@ -409,7 +393,6 @@ static int pcf857x_probe(struct i2c_client *client)
 	 * reset state.  Otherwise it flags pins to be driven low.
 	 */
 	gpio->out = ~n_latch;
-	gpio->dir = ~n_latch;
 	gpio->status = gpio->read(gpio->client);
 
 	/* Enable irqchip if we have an interrupt */

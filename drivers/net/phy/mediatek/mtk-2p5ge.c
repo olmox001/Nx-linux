@@ -365,7 +365,8 @@ static int mt798x_2p5ge_phy_probe(struct phy_device *phydev)
 	if (IS_ERR(pinctrl))
 		dev_err(&phydev->mdio.dev, "Fail to set LED pins!\n");
 
-	priv = devm_kzalloc_obj(&phydev->mdio.dev, struct mtk_socphy_priv);
+	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(struct mtk_socphy_priv),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 	phydev->priv = priv;

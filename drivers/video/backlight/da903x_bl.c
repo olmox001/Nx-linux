@@ -100,7 +100,7 @@ static int da903x_backlight_probe(struct platform_device *pdev)
 	struct backlight_properties props;
 	int max_brightness;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (data == NULL)
 		return -ENOMEM;
 

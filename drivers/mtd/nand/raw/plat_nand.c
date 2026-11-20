@@ -65,7 +65,8 @@ static int plat_nand_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate memory for the device structure (and zero it) */
-	data = devm_kzalloc_obj(&pdev->dev, struct plat_nand_data);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct plat_nand_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

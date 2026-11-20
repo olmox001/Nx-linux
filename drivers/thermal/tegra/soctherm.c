@@ -1561,7 +1561,7 @@ static int soctherm_thermtrips_parse(struct platform_device *pdev)
 
 	n = min(max_num_prop, n);
 
-	tlb = devm_kzalloc_objs(&pdev->dev, u32, max_num_prop);
+	tlb = devm_kcalloc(&pdev->dev, max_num_prop, sizeof(u32), GFP_KERNEL);
 	if (!tlb)
 		return -ENOMEM;
 	ret = of_property_read_u32_array(dev->of_node, "nvidia,thermtrips",
@@ -2007,8 +2007,10 @@ static int soctherm_interrupts_init(struct platform_device *pdev,
 					IRQF_ONESHOT,
 					dev_name(&pdev->dev),
 					tegra);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&pdev->dev, "request_irq 'thermal_irq' failed.\n");
 		return ret;
+	}
 
 	ret = devm_request_threaded_irq(&pdev->dev,
 					tegra->edp_irq,
@@ -2017,8 +2019,10 @@ static int soctherm_interrupts_init(struct platform_device *pdev,
 					IRQF_ONESHOT,
 					"soctherm_edp",
 					tegra);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&pdev->dev, "request_irq 'edp_irq' failed.\n");
 		return ret;
+	}
 
 	return 0;
 }
@@ -2101,7 +2105,7 @@ static int tegra_soctherm_probe(struct platform_device *pdev)
 	if (soc->num_ttgs > TEGRA124_SOCTHERM_SENSOR_NUM)
 		return -EINVAL;
 
-	tegra = devm_kzalloc_obj(&pdev->dev, *tegra);
+	tegra = devm_kzalloc(&pdev->dev, sizeof(*tegra), GFP_KERNEL);
 	if (!tegra)
 		return -ENOMEM;
 
@@ -2148,7 +2152,9 @@ static int tegra_soctherm_probe(struct platform_device *pdev)
 		return PTR_ERR(tegra->clock_soctherm);
 	}
 
-	tegra->calib = devm_kzalloc_objs(&pdev->dev, u32, soc->num_tsensors);
+	tegra->calib = devm_kcalloc(&pdev->dev,
+				    soc->num_tsensors, sizeof(u32),
+				    GFP_KERNEL);
 	if (!tegra->calib)
 		return -ENOMEM;
 
@@ -2166,7 +2172,9 @@ static int tegra_soctherm_probe(struct platform_device *pdev)
 			return err;
 	}
 
-	tegra->thermctl_tzs = devm_kzalloc_objs(&pdev->dev, z, soc->num_ttgs);
+	tegra->thermctl_tzs = devm_kcalloc(&pdev->dev,
+					   soc->num_ttgs, sizeof(z),
+					   GFP_KERNEL);
 	if (!tegra->thermctl_tzs)
 		return -ENOMEM;
 
@@ -2185,8 +2193,8 @@ static int tegra_soctherm_probe(struct platform_device *pdev)
 	soctherm_init(pdev);
 
 	for (i = 0; i < soc->num_ttgs; ++i) {
-		struct tegra_thermctl_zone *zone = devm_kzalloc_obj(&pdev->dev,
-								    *zone);
+		struct tegra_thermctl_zone *zone =
+			devm_kzalloc(&pdev->dev, sizeof(*zone), GFP_KERNEL);
 		if (!zone)
 			return -ENOMEM;
 

@@ -10,7 +10,6 @@
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
-#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 /*
@@ -31,7 +30,7 @@
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-				__stringify(WATCHDOG_NOWAYOUT) ")");
+				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 static int timeout;
 module_param(timeout, int, 0);
@@ -128,7 +127,7 @@ static int sl28cpld_wdt_probe(struct platform_device *pdev)
 	if (!pdev->dev.parent)
 		return -ENODEV;
 
-	wdt = devm_kzalloc_obj(&pdev->dev, *wdt);
+	wdt = devm_kzalloc(&pdev->dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
 

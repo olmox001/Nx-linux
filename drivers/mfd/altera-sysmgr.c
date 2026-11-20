@@ -133,7 +133,7 @@ static int sysmgr_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	void __iomem *base;
 
-	sysmgr = devm_kzalloc_obj(dev, *sysmgr);
+	sysmgr = devm_kzalloc(dev, sizeof(*sysmgr), GFP_KERNEL);
 	if (!sysmgr)
 		return -ENOMEM;
 

@@ -222,6 +222,7 @@ int cdns_pcie_init_phy(struct device *dev, struct cdns_pcie *pcie)
 	struct device_node *np = dev->of_node;
 	int phy_count;
 	struct phy **phy;
+	struct device_link **link;
 	int i;
 	int ret;
 	const char *name;
@@ -233,8 +234,12 @@ int cdns_pcie_init_phy(struct device *dev, struct cdns_pcie *pcie)
 		return 0;
 	}
 
-	phy = devm_kzalloc_objs(dev, *phy, phy_count);
+	phy = devm_kcalloc(dev, phy_count, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
+		return -ENOMEM;
+
+	link = devm_kcalloc(dev, phy_count, sizeof(*link), GFP_KERNEL);
+	if (!link)
 		return -ENOMEM;
 
 	for (i = 0; i < phy_count; i++) {
@@ -244,10 +249,17 @@ int cdns_pcie_init_phy(struct device *dev, struct cdns_pcie *pcie)
 			ret = PTR_ERR(phy[i]);
 			goto err_phy;
 		}
+		link[i] = device_link_add(dev, &phy[i]->dev, DL_FLAG_STATELESS);
+		if (!link[i]) {
+			devm_phy_put(dev, phy[i]);
+			ret = -EINVAL;
+			goto err_phy;
+		}
 	}
 
 	pcie->phy_count = phy_count;
 	pcie->phy = phy;
+	pcie->link = link;
 
 	ret =  cdns_pcie_enable_phy(pcie);
 	if (ret)
@@ -256,8 +268,10 @@ int cdns_pcie_init_phy(struct device *dev, struct cdns_pcie *pcie)
 	return 0;
 
 err_phy:
-	while (--i >= 0)
+	while (--i >= 0) {
+		device_link_del(link[i]);
 		devm_phy_put(dev, phy[i]);
+	}
 
 	return ret;
 }

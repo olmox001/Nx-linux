@@ -425,9 +425,19 @@ static int ipoib_cm_send_rep(struct net_device *dev, struct ib_cm_id *cm_id,
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_data data = {};
 	struct ib_cm_rep_param rep = {};
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	u16 caps = IPOIB_CM_PROTO_VER;
+
+	if (cm_ibcrc_as_csum && test_bit(IPOIB_FLAG_CSUM, &priv->flags))
+		caps |= IPOIB_CM_CAPS_IBCRC_AS_CSUM;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	data.qpn = cpu_to_be32(priv->qp->qp_num);
 	data.mtu = cpu_to_be32(IPOIB_CM_BUF_SIZE);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	data.sig = cpu_to_be16(IPOIB_CM_PROTO_SIG);
+	data.caps = cpu_to_be16(caps);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	rep.private_data = &data;
 	rep.private_data_len = sizeof(data);
@@ -447,6 +457,9 @@ static int ipoib_cm_req_handler(struct ib_cm_id *cm_id,
 	struct ipoib_cm_rx *p;
 	unsigned int psn;
 	int ret;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct ipoib_cm_data *cm_data;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	ipoib_dbg(priv, "REQ arrived\n");
 	p = kzalloc_obj(*p);
@@ -464,6 +477,15 @@ static int ipoib_cm_req_handler(struct ib_cm_id *cm_id,
 		ret = PTR_ERR(p->qp);
 		goto err_qp;
 	}
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cm_data = (struct ipoib_cm_data *)event->private_data;
+	ipoib_dbg(priv, "Otherend sig=0x%x\n", be16_to_cpu(cm_data->sig));
+	if (ipoib_cm_check_proto_sig(be16_to_cpu(cm_data->sig)) &&
+	    ipoib_cm_check_proto_ver(be16_to_cpu(cm_data->caps)))
+		p->caps = be16_to_cpu(cm_data->caps);
+	ipoib_dbg(priv, "Otherend caps=0x%x\n", p->caps);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	psn = get_random_u32() & 0xffffff;
 	ret = ipoib_cm_modify_rx_qp(dev, cm_id, p->qp, psn);
@@ -674,6 +696,12 @@ copied:
 	skb->dev = dev;
 	/* XXX get correct PACKET_ type here */
 	skb->pkt_type = PACKET_HOST;
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	if (cm_ibcrc_as_csum && test_bit(IPOIB_FLAG_CSUM, &priv->flags))
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	netif_receive_skb(skb);
 
 repost:
@@ -762,6 +790,20 @@ void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_
 			  tx->qp->qp_num);
 		netif_stop_queue(dev);
 	}
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	/* Calculate checksum if we support ibcrc_as_csum but peer is not */
+	if ((skb->ip_summed == CHECKSUM_PARTIAL) && cm_ibcrc_as_csum &&
+	    test_bit(IPOIB_FLAG_CSUM, &priv->flags) &&
+	    !(tx->caps & IPOIB_CM_CAPS_IBCRC_AS_CSUM)) {
+		if (skb_checksum_help(skb)) {
+			ipoib_warn(priv, "Fail to csum skb\n");
+			++dev->stats.tx_errors;
+			dev_kfree_skb_any(skb);
+			return;
+		}
+	}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	skb_orphan(skb);
 	skb_dst_drop(skb);
@@ -992,6 +1034,9 @@ static int ipoib_cm_rep_handler(struct ib_cm_id *cm_id,
 	struct ib_qp_attr qp_attr;
 	int qp_attr_mask, ret;
 	struct sk_buff *skb;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct ipoib_cm_data *cm_data;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	p->mtu = be32_to_cpu(data->mtu);
 
@@ -1000,6 +1045,15 @@ static int ipoib_cm_rep_handler(struct ib_cm_id *cm_id,
 			   p->mtu, IPOIB_ENCAP_LEN);
 		return -EINVAL;
 	}
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cm_data = (struct ipoib_cm_data *)event->private_data;
+	ipoib_dbg(priv, "Otherend sig=0x%x\n", be16_to_cpu(cm_data->sig));
+	if (ipoib_cm_check_proto_sig(be16_to_cpu(cm_data->sig)) &&
+	    ipoib_cm_check_proto_ver(be16_to_cpu(cm_data->caps)))
+		p->caps = be16_to_cpu(cm_data->caps);
+	ipoib_dbg(priv, "Otherend caps=0x%x\n", p->caps);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	qp_attr.qp_state = IB_QPS_RTR;
 	ret = ib_cm_init_qp_attr(cm_id, &qp_attr, &qp_attr_mask);
@@ -1071,7 +1125,8 @@ static struct ib_qp *ipoib_cm_create_tx_qp(struct net_device *dev, struct ipoib_
 	struct ib_qp *tx_qp;
 
 	if (dev->features & NETIF_F_SG)
-		attr.cap.max_send_sge = min(priv->ca->attrs.max_send_sge, MAX_SKB_FRAGS + 1);
+		attr.cap.max_send_sge = min_t(u32, priv->ca->attrs.max_send_sge,
+					      MAX_SKB_FRAGS + 1);
 
 	tx_qp = ib_create_qp(priv->pd, &attr);
 	tx->max_send_sge = attr.cap.max_send_sge;
@@ -1086,9 +1141,19 @@ static int ipoib_cm_send_req(struct net_device *dev,
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_data data = {};
 	struct ib_cm_req_param req = {};
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	u16 caps = IPOIB_CM_PROTO_VER;
+
+	if (cm_ibcrc_as_csum && test_bit(IPOIB_FLAG_CSUM, &priv->flags))
+		caps |= IPOIB_CM_CAPS_IBCRC_AS_CSUM;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	data.qpn = cpu_to_be32(priv->qp->qp_num);
 	data.mtu = cpu_to_be32(IPOIB_CM_BUF_SIZE);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	data.sig = cpu_to_be16(IPOIB_CM_PROTO_SIG);
+	data.caps = cpu_to_be16(caps);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	req.primary_path		= pathrec;
 	req.alternate_path		= NULL;
@@ -1581,8 +1646,7 @@ static void ipoib_cm_create_srq(struct net_device *dev, int max_sge)
 int ipoib_cm_dev_init(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
-	u32 max_srq_sge;
-	int i;
+	int max_srq_sge, i;
 	u8 addr;
 
 	INIT_LIST_HEAD(&priv->cm.passive_ids);
@@ -1600,9 +1664,9 @@ int ipoib_cm_dev_init(struct net_device *dev)
 
 	skb_queue_head_init(&priv->cm.skb_queue);
 
-	ipoib_dbg(priv, "max_srq_sge=%u\n", priv->ca->attrs.max_srq_sge);
+	ipoib_dbg(priv, "max_srq_sge=%d\n", priv->ca->attrs.max_srq_sge);
 
-	max_srq_sge = min(priv->ca->attrs.max_srq_sge, IPOIB_CM_RX_SG);
+	max_srq_sge = min_t(int, IPOIB_CM_RX_SG, priv->ca->attrs.max_srq_sge);
 	ipoib_cm_create_srq(dev, max_srq_sge);
 	if (ipoib_cm_has_srq(dev)) {
 		priv->cm.max_cm_mtu = max_srq_sge * PAGE_SIZE - 0x10;

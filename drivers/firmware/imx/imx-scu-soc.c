@@ -106,7 +106,8 @@ int imx_scu_soc_init(struct device *dev)
 	if (ret)
 		return ret;
 
-	soc_dev_attr = devm_kzalloc_obj(dev, *soc_dev_attr);
+	soc_dev_attr = devm_kzalloc(dev, sizeof(*soc_dev_attr),
+				    GFP_KERNEL);
 	if (!soc_dev_attr)
 		return -ENOMEM;
 

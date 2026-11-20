@@ -62,7 +62,8 @@ static int ab8500_ponkey_probe(struct platform_device *pdev)
 	if (irq_dbr < 0)
 		return irq_dbr;
 
-	ponkey = devm_kzalloc_obj(&pdev->dev, struct ab8500_ponkey);
+	ponkey = devm_kzalloc(&pdev->dev, sizeof(struct ab8500_ponkey),
+			      GFP_KERNEL);
 	if (!ponkey)
 		return -ENOMEM;
 
@@ -76,6 +77,7 @@ static int ab8500_ponkey_probe(struct platform_device *pdev)
 	ponkey->irq_dbr = irq_dbr;
 
 	input->name = "AB8500 POn(PowerOn) Key";
+	input->dev.parent = &pdev->dev;
 
 	input_set_capability(input, EV_KEY, KEY_POWER);
 

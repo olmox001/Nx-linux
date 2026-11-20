@@ -623,7 +623,7 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 	u32 pllen, version;
 	int ret, port = 0;
 
-	usbphyc = devm_kzalloc_obj(dev, *usbphyc);
+	usbphyc = devm_kzalloc(dev, sizeof(*usbphyc), GFP_KERNEL);
 	if (!usbphyc)
 		return -ENOMEM;
 	usbphyc->dev = dev;
@@ -669,7 +669,8 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 
 	usbphyc->switch_setup = -EINVAL;
 	usbphyc->nphys = of_get_child_count(np);
-	usbphyc->phys = devm_kzalloc_objs(dev, *usbphyc->phys, usbphyc->nphys);
+	usbphyc->phys = devm_kcalloc(dev, usbphyc->nphys,
+				     sizeof(*usbphyc->phys), GFP_KERNEL);
 	if (!usbphyc->phys) {
 		ret = -ENOMEM;
 		goto clk_disable;
@@ -703,7 +704,8 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 			goto put_child;
 		}
 
-		usbphyc_phy = devm_kzalloc_obj(dev, *usbphyc_phy);
+		usbphyc_phy = devm_kzalloc(dev, sizeof(*usbphyc_phy),
+					   GFP_KERNEL);
 		if (!usbphyc_phy) {
 			ret = -ENOMEM;
 			goto put_child;

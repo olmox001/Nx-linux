@@ -21,6 +21,9 @@
 #include <linux/pm_runtime.h>
 #include <linux/poll.h>
 #include <linux/security.h>
+#ifndef __GENKSYMS__
+#include <linux/blktrace_api.h>
+#endif
 
 #include "internal.h"
 
@@ -263,6 +266,12 @@ EXPORT_SYMBOL_GPL(debugfs_leave_cancellation);
  * Only permit access to world-readable files when the kernel is locked down.
  * We also need to exclude any file that has ways to write or alter it as root
  * can bypass the permissions check.
+ * Exception:
+ * blktrace trace files are per-cpu relay files that are used by kernel to
+ * export IO metadata(IO events, type, target disk, offset and len etc.) to
+ * userspace, no data from IO itself will be exported. These trace files have
+ * permission 0400, but mmap is supported, so they are blocked by lockdown.
+ * Skip lockdown for these files to allow blktrace work in lockdown mode.
  */
 static int debugfs_locked_down(struct inode *inode,
 			       struct file *filp,
@@ -275,6 +284,9 @@ static int debugfs_locked_down(struct inode *inode,
 	      !real_fops->compat_ioctl &&
 	      !real_fops->mmap &&
 	      !real_fops->mmap_prepare)))
+		return 0;
+
+	if (blk_trace_is_tracefile(inode, real_fops))
 		return 0;
 
 	if (security_locked_down(LOCKDOWN_DEBUGFS))
@@ -1049,37 +1061,98 @@ ssize_t debugfs_read_file_str(struct file *file, char __user *user_buf,
 	return ret;
 }
 
+static ssize_t debugfs_write_file_str(struct file *file, const char __user *user_buf,
+				      size_t count, loff_t *ppos)
+{
+	struct dentry *dentry = F_DENTRY(file);
+	char *old, *new = NULL;
+	int pos = *ppos;
+	int r;
+
+	r = debugfs_file_get(dentry);
+	if (unlikely(r))
+		return r;
+
+	old = *(char **)file->private_data;
+
+	/* only allow strict concatenation */
+	r = -EINVAL;
+	if (pos && pos != strlen(old))
+		goto error;
+
+	r = -E2BIG;
+	if (pos + count + 1 > PAGE_SIZE)
+		goto error;
+
+	r = -ENOMEM;
+	new = kmalloc(pos + count + 1, GFP_KERNEL);
+	if (!new)
+		goto error;
+
+	if (pos)
+		memcpy(new, old, pos);
+
+	r = -EFAULT;
+	if (copy_from_user(new + pos, user_buf, count))
+		goto error;
+
+	new[pos + count] = '\0';
+	strim(new);
+
+	rcu_assign_pointer(*(char __rcu **)file->private_data, new);
+	synchronize_rcu();
+	kfree(old);
+
+	debugfs_file_put(dentry);
+	return count;
+
+error:
+	kfree(new);
+	debugfs_file_put(dentry);
+	return r;
+}
+
 static const struct file_operations fops_str = {
+	.read =		debugfs_read_file_str,
+	.write =	debugfs_write_file_str,
+	.open =		simple_open,
+	.llseek =	default_llseek,
+};
+
+static const struct file_operations fops_str_ro = {
 	.read =		debugfs_read_file_str,
 	.open =		simple_open,
 	.llseek =	default_llseek,
 };
 
+static const struct file_operations fops_str_wo = {
+	.write =	debugfs_write_file_str,
+	.open =		simple_open,
+	.llseek =	default_llseek,
+};
+
 /**
- * debugfs_create_str - create a debugfs file that is used to read a string value
+ * debugfs_create_str - create a debugfs file that is used to read and write a string value
  * @name: a pointer to a string containing the name of the file to create.
  * @mode: the permission that the file should have
  * @parent: a pointer to the parent dentry for this file.  This should be a
  *          directory dentry if set.  If this parameter is %NULL, then the
  *          file will be created in the root of the debugfs filesystem.
- * @value: a pointer to the variable that the file should read from. This
- *         pointer and the string it points to must not be %NULL.
+ * @value: a pointer to the variable that the file should read to and write
+ *         from. This pointer and the string it points to must not be %NULL.
  *
  * This function creates a file in debugfs with the given name that
- * contains the value of the variable @value.  The file can be read from.
- * Writable files are not supported; if @mode contains write permission bits,
- * no file is created.
+ * contains the value of the variable @value.  If the @mode variable is so
+ * set, it can be read from, and written to.
  */
 void debugfs_create_str(const char *name, umode_t mode,
 			struct dentry *parent, char **value)
 {
 	if (WARN_ON(!value || !*value))
 		return;
-	if (WARN(mode & 0222,
-		 "%s() does not support writable files\n", __func__))
-		return;
 
-	debugfs_create_file_unsafe(name, mode, parent, value, &fops_str);
+	debugfs_create_mode_unsafe(name, mode, parent, value, &fops_str,
+				   &fops_str_ro, &fops_str_wo);
 }
 EXPORT_SYMBOL_GPL(debugfs_create_str);
 
@@ -1362,7 +1435,7 @@ void debugfs_create_devm_seqfile(struct device *dev, const char *name,
 	if (IS_ERR(parent))
 		return;
 
-	entry = devm_kzalloc_obj(dev, *entry);
+	entry = devm_kzalloc(dev, sizeof(*entry), GFP_KERNEL);
 	if (!entry)
 		return;
 

@@ -491,7 +491,6 @@ static int c3_mipi_csi_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int c3_mipi_csi_set_fmt(struct v4l2_subdev *sd,
-			       const struct v4l2_subdev_client_info *ci,
 			       struct v4l2_subdev_state *state,
 			       struct v4l2_subdev_format *format)
 {
@@ -751,7 +750,7 @@ static int c3_mipi_csi_probe(struct platform_device *pdev)
 	struct c3_csi_device *csi;
 	int ret;
 
-	csi = devm_kzalloc_obj(dev, *csi);
+	csi = devm_kzalloc(dev, sizeof(*csi), GFP_KERNEL);
 	if (!csi)
 		return -ENOMEM;
 

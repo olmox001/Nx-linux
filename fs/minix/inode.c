@@ -24,8 +24,6 @@
 
 static int minix_write_inode(struct inode *inode,
 		struct writeback_control *wbc);
-static int minix_sync_inode_metadata(struct inode *inode,
-				     struct writeback_control *wbc);
 static int minix_statfs(struct dentry *dentry, struct kstatfs *buf);
 
 void __minix_error_inode(struct inode *inode, const char *function,
@@ -50,6 +48,8 @@ static void minix_evict_inode(struct inode *inode)
 	if (!inode->i_nlink) {
 		inode->i_size = 0;
 		minix_truncate(inode);
+	} else {
+		mmb_sync(&minix_i(inode)->i_metadata_bhs);
 	}
 	mmb_invalidate(&minix_i(inode)->i_metadata_bhs);
 	clear_inode(inode);
@@ -128,7 +128,6 @@ static const struct super_operations minix_sops = {
 	.alloc_inode	= minix_alloc_inode,
 	.free_inode	= minix_free_in_core_inode,
 	.write_inode	= minix_write_inode,
-	.sync_inode_metadata = minix_sync_inode_metadata,
 	.evict_inode	= minix_evict_inode,
 	.put_super	= minix_put_super,
 	.statfs		= minix_statfs,
@@ -631,7 +630,7 @@ struct inode *minix_iget(struct super_block *sb, unsigned long ino)
 /*
  * The minix V1 function to synchronize an inode.
  */
-static int V1_minix_update_inode(struct inode * inode)
+static struct buffer_head * V1_minix_update_inode(struct inode * inode)
 {
 	struct buffer_head * bh;
 	struct minix_inode * raw_inode;
@@ -640,7 +639,7 @@ static int V1_minix_update_inode(struct inode * inode)
 
 	raw_inode = minix_V1_raw_inode(inode->i_sb, inode->i_ino, &bh);
 	if (!raw_inode)
-		return -EIO;
+		return NULL;
 	raw_inode->i_mode = inode->i_mode;
 	raw_inode->i_uid = fs_high2lowuid(i_uid_read(inode));
 	raw_inode->i_gid = fs_high2lowgid(i_gid_read(inode));
@@ -652,15 +651,13 @@ static int V1_minix_update_inode(struct inode * inode)
 	else for (i = 0; i < 9; i++)
 		raw_inode->i_zone[i] = minix_inode->u.i1_data[i];
 	mark_buffer_dirty(bh);
-	brelse(bh);
-	set_inode_metadata_writeback(inode);
-	return 0;
+	return bh;
 }
 
 /*
  * The minix V2 function to synchronize an inode.
  */
-static int V2_minix_update_inode(struct inode * inode)
+static struct buffer_head * V2_minix_update_inode(struct inode * inode)
 {
 	struct buffer_head * bh;
 	struct minix2_inode * raw_inode;
@@ -669,7 +666,7 @@ static int V2_minix_update_inode(struct inode * inode)
 
 	raw_inode = minix_V2_raw_inode(inode->i_sb, inode->i_ino, &bh);
 	if (!raw_inode)
-		return -EIO;
+		return NULL;
 	raw_inode->i_mode = inode->i_mode;
 	raw_inode->i_uid = fs_high2lowuid(i_uid_read(inode));
 	raw_inode->i_gid = fs_high2lowgid(i_gid_read(inode));
@@ -683,46 +680,33 @@ static int V2_minix_update_inode(struct inode * inode)
 	else for (i = 0; i < 10; i++)
 		raw_inode->i_zone[i] = minix_inode->u.i2_data[i];
 	mark_buffer_dirty(bh);
-	brelse(bh);
-	set_inode_metadata_writeback(inode);
-	return 0;
+	return bh;
 }
 
 static int minix_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	if (INODE_VERSION(inode) == MINIX_V1)
-		return V1_minix_update_inode(inode);
-	return V2_minix_update_inode(inode);
-}
-
-static int minix_sync_inode_metadata(struct inode *inode,
-				     struct writeback_control *wbc)
-{
 	int err = 0;
 	struct buffer_head *bh;
-	int block;
 
-	block = minix_inode_block(inode->i_sb, inode->i_ino);
-	if (!block)
-		return -EIO;
-	err = mmb_sync(&minix_i(inode)->i_metadata_bhs);
-	if (err)
-		return err;
-	/* A block that isn't cached is neither dirty nor under writeback. */
-	bh = sb_find_get_block_nonatomic(inode->i_sb, block);
+	if (INODE_VERSION(inode) == MINIX_V1)
+		bh = V1_minix_update_inode(inode);
+	else
+		bh = V2_minix_update_inode(inode);
 	if (!bh)
-		return 0;
-	sync_dirty_buffer(bh);
-	if (buffer_write_io_error(bh)) {
-		printk("IO error syncing minix inode [%s:%08llx]\n",
-			inode->i_sb->s_id, inode->i_ino);
-		err = -EIO;
+		return -EIO;
+	if (wbc->sync_mode == WB_SYNC_ALL && buffer_dirty(bh)) {
+		sync_dirty_buffer(bh);
+		if (buffer_req(bh) && !buffer_uptodate(bh)) {
+			printk("IO error syncing minix inode [%s:%08llx]\n",
+				inode->i_sb->s_id, inode->i_ino);
+			err = -EIO;
+		}
 	}
-	brelse(bh);
+	brelse (bh);
 	return err;
 }
 
-int minix_getattr(const struct mnt_idmap *idmap, const struct path *path,
+int minix_getattr(struct mnt_idmap *idmap, const struct path *path,
 		  struct kstat *stat, u32 request_mask, unsigned int flags)
 {
 	struct super_block *sb = path->dentry->d_sb;

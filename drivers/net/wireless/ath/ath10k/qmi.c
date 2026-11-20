@@ -1128,7 +1128,6 @@ err_release_qmi_handle:
 
 err:
 	kfree(qmi);
-	ar_snoc->qmi = NULL;
 	return ret;
 }
 

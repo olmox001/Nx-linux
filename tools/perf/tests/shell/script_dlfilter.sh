@@ -5,6 +5,7 @@
 set -e
 
 shelldir=$(dirname "$0")
+# shellcheck source=lib/setup_python.sh
 . "${shelldir}"/lib/setup_python.sh
 
 # skip if there's no compiler

@@ -63,7 +63,7 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 	struct cvm_mmc_host *host;
 	int ret, i = 0;
 
-	host = devm_kzalloc_obj(dev, *host);
+	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
 	if (!host)
 		return -ENOMEM;
 
@@ -157,8 +157,11 @@ error:
 	for (i = 0; i < CAVIUM_MAX_MMC; i++) {
 		if (host->slot[i])
 			cvm_mmc_of_slot_remove(host->slot[i]);
-		if (host->slot_pdev[i])
+		if (host->slot_pdev[i]) {
+			get_device(&host->slot_pdev[i]->dev);
 			of_platform_device_destroy(&host->slot_pdev[i]->dev, NULL);
+			put_device(&host->slot_pdev[i]->dev);
+		}
 	}
 	clk_disable_unprepare(host->clk);
 	return ret;

@@ -485,7 +485,7 @@ static int max6621_probe(struct i2c_client *client)
 	int i;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

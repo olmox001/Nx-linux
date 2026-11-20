@@ -123,7 +123,8 @@ static int rt5682_i2c_probe(struct i2c_client *i2c)
 	int i, ret;
 	unsigned int val;
 
-	rt5682 = devm_kzalloc_obj(&i2c->dev, struct rt5682_priv);
+	rt5682 = devm_kzalloc(&i2c->dev, sizeof(struct rt5682_priv),
+		GFP_KERNEL);
 	if (!rt5682)
 		return -ENOMEM;
 

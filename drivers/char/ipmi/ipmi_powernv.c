@@ -221,7 +221,7 @@ static int ipmi_powernv_probe(struct platform_device *pdev)
 
 	dev = &pdev->dev;
 
-	ipmi = devm_kzalloc_obj(dev, *ipmi);
+	ipmi = devm_kzalloc(dev, sizeof(*ipmi), GFP_KERNEL);
 	if (!ipmi)
 		return -ENOMEM;
 

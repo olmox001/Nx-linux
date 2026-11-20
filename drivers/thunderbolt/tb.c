@@ -10,7 +10,7 @@
 #include <linux/errno.h>
 #include <linux/delay.h>
 #include <linux/pm_runtime.h>
-#include <linux/stringify.h>
+#include <linux/platform_data/x86/apple.h>
 
 #include "tb.h"
 #include "tb_regs.h"
@@ -47,7 +47,7 @@ static unsigned int asym_threshold = TB_ASYM_THRESHOLD;
 module_param_named(asym_threshold, asym_threshold, uint, 0444);
 MODULE_PARM_DESC(asym_threshold,
 		"threshold (Mb/s) when to Gen 4 switch link symmetry. 0 disables. (default: "
-		__stringify(TB_ASYM_THRESHOLD) ")");
+		__MODULE_STRING(TB_ASYM_THRESHOLD) ")");
 
 /**
  * struct tb_cm - Simple Thunderbolt connection manager
@@ -2951,9 +2951,7 @@ static void tb_handle_event(struct tb *tb, enum tb_cfg_pkg_type type,
 static void tb_stop(struct tb *tb)
 {
 	struct tb_cm *tcm = tb_priv(tb);
-	struct tb_nhi *nhi = tb->nhi;
 	struct tb_tunnel *tunnel;
-	struct tb_port *port;
 	struct tb_tunnel *n;
 
 	cancel_delayed_work(&tcm->remove_work);
@@ -2968,25 +2966,6 @@ static void tb_stop(struct tb *tb)
 		    (tb_tunnel_is_dp(tunnel) && !tb_tunnel_is_active(tunnel)))
 			tb_tunnel_deactivate(tunnel);
 		tb_tunnel_put(tunnel);
-	}
-	/*
-	 * Signal disconnect to connected devices before the router tree is
-	 * removed below. A Thunderbolt 3 device directly connected to a USB4
-	 * host otherwise never receives a disconnect indication, leaving
-	 * firmware to poll the dead link for up to ~60 s which on some
-	 * platforms turns the shutdown into a warm reset. Asserting
-	 * PORT_CS_19.DPR drives SBTX low (USB4 spec section 6.9) so the device
-	 * detects SBRX low and goes to Uninitialized Unplugged immediately.
-	 */
-	if (nhi->host_reset) {
-		tb_switch_for_each_port(tb->root_switch, port) {
-			if (!tb_port_is_null(port) || !tb_port_has_remote(port))
-				continue;
-			if (tb_switch_is_usb4(port->remote->sw))
-				continue;
-			if (tb_port_reset(port))
-				tb_port_dbg(port, "downstream port reset failed, continuing\n");
-		}
 	}
 	tb_switch_remove(tb->root_switch);
 	tb->root_switch = NULL;
@@ -3334,6 +3313,75 @@ static const struct tb_cm_ops tb_cm_ops = {
 	.disconnect_xdomain_paths = tb_disconnect_xdomain_paths,
 };
 
+/*
+ * During suspend the Thunderbolt controller is reset and all PCIe
+ * tunnels are lost. The NHI driver will try to reestablish all tunnels
+ * during resume. This adds device links between the tunneled PCIe
+ * downstream ports and the NHI so that the device core will make sure
+ * NHI is resumed first before the rest.
+ */
+static bool tb_apple_add_links(struct tb_nhi *nhi)
+{
+	struct pci_dev *nhi_pdev = to_pci_dev(nhi->dev);
+	struct pci_dev *upstream, *pdev;
+	bool ret;
+
+	if (!x86_apple_machine)
+		return false;
+
+	switch (nhi_pdev->device) {
+	case PCI_DEVICE_ID_INTEL_LIGHT_RIDGE:
+	case PCI_DEVICE_ID_INTEL_CACTUS_RIDGE_4C:
+	case PCI_DEVICE_ID_INTEL_FALCON_RIDGE_2C_NHI:
+	case PCI_DEVICE_ID_INTEL_FALCON_RIDGE_4C_NHI:
+		break;
+	default:
+		return false;
+	}
+
+	upstream = pci_upstream_bridge(nhi_pdev);
+	while (upstream) {
+		if (!pci_is_pcie(upstream))
+			return false;
+		if (pci_pcie_type(upstream) == PCI_EXP_TYPE_UPSTREAM)
+			break;
+		upstream = pci_upstream_bridge(upstream);
+	}
+
+	if (!upstream)
+		return false;
+
+	/*
+	 * For each hotplug downstream port, create add device link
+	 * back to NHI so that PCIe tunnels can be re-established after
+	 * sleep.
+	 */
+	ret = false;
+	for_each_pci_bridge(pdev, upstream->subordinate) {
+		const struct device_link *link;
+
+		if (!pci_is_pcie(pdev))
+			continue;
+		if (pci_pcie_type(pdev) != PCI_EXP_TYPE_DOWNSTREAM ||
+		    !pdev->is_pciehp)
+			continue;
+
+		link = device_link_add(&pdev->dev, nhi->dev,
+				       DL_FLAG_AUTOREMOVE_SUPPLIER |
+				       DL_FLAG_PM_RUNTIME);
+		if (link) {
+			dev_dbg(nhi->dev, "created link from %s\n",
+				dev_name(&pdev->dev));
+			ret = true;
+		} else {
+			dev_warn(nhi->dev, "device link creation from %s failed\n",
+				 dev_name(&pdev->dev));
+		}
+	}
+
+	return ret;
+}
+
 struct tb *tb_probe(struct tb_nhi *nhi)
 {
 	struct tb_cm *tcm;
@@ -3357,6 +3405,14 @@ struct tb *tb_probe(struct tb_nhi *nhi)
 	tb_init_bandwidth_groups(tcm);
 
 	tb_dbg(tb, "using software connection manager\n");
+
+	/*
+	 * Device links are needed to make sure we establish tunnels
+	 * before the PCIe/USB stack is resumed so complain here if we
+	 * found them missing.
+	 */
+	if (!tb_apple_add_links(nhi) && !tb_acpi_add_links(nhi))
+		tb_warn(tb, "device links to tunneled native ports are missing!\n");
 
 	return tb;
 }

@@ -271,7 +271,7 @@ static int max197_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	data = devm_kzalloc_obj(&pdev->dev, struct max197_data);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct max197_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

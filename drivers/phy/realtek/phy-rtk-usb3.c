@@ -571,12 +571,12 @@ static int rtk_usb3phy_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	rtk_phy = devm_kzalloc_obj(dev, *rtk_phy);
+	rtk_phy = devm_kzalloc(dev, sizeof(*rtk_phy), GFP_KERNEL);
 	if (!rtk_phy)
 		return -ENOMEM;
 
 	rtk_phy->dev			= &pdev->dev;
-	rtk_phy->phy_cfg = devm_kzalloc_obj(dev, *rtk_phy->phy_cfg);
+	rtk_phy->phy_cfg = devm_kzalloc(dev, sizeof(*phy_cfg), GFP_KERNEL);
 	if (!rtk_phy->phy_cfg)
 		return -ENOMEM;
 

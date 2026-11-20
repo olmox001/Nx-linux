@@ -33,7 +33,7 @@ static int pd_parse_state_nodes(
 		if (ret)
 			goto free_state;
 
-		state_buf = kmalloc_obj(u32);
+		state_buf = kmalloc(sizeof(u32), GFP_KERNEL);
 		if (!state_buf) {
 			ret = -ENOMEM;
 			goto free_state;

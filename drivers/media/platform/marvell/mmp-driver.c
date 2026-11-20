@@ -25,7 +25,6 @@
 #include <linux/list.h>
 #include <linux/pm.h>
 #include <linux/clk.h>
-#include <linux/clk-provider.h>
 
 #include "mcam-core.h"
 
@@ -185,7 +184,7 @@ static int mmpcam_probe(struct platform_device *pdev)
 	struct v4l2_async_connection *asd;
 	int ret;
 
-	cam = devm_kzalloc_obj(&pdev->dev, *cam);
+	cam = devm_kzalloc(&pdev->dev, sizeof(*cam), GFP_KERNEL);
 	if (cam == NULL)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, cam);
@@ -270,8 +269,8 @@ static int mmpcam_probe(struct platform_device *pdev)
 	/*
 	 * Add OF clock provider.
 	 */
-	ret = devm_of_clk_add_hw_provider(&pdev->dev, of_clk_hw_simple_get,
-					  &mcam->mclk_hw);
+	ret = of_clk_add_provider(pdev->dev.of_node, of_clk_src_simple_get,
+								mcam->mclk);
 	if (ret) {
 		dev_err(&pdev->dev, "can't add DT clock provider\n");
 		goto out;

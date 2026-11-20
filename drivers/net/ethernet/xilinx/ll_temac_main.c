@@ -329,7 +329,8 @@ static int temac_dma_bd_init(struct net_device *ndev)
 	dma_addr_t skb_dma_addr;
 	int i;
 
-	lp->rx_skb = devm_kzalloc_objs(&ndev->dev, *lp->rx_skb, lp->rx_bd_num);
+	lp->rx_skb = devm_kcalloc(&ndev->dev, lp->rx_bd_num,
+				  sizeof(*lp->rx_skb), GFP_KERNEL);
 	if (!lp->rx_skb)
 		goto out;
 
@@ -1433,8 +1434,9 @@ static int temac_probe(struct platform_device *pdev)
 		}
 		lp->indirect_lock = pdata->indirect_lock;
 	} else {
-		lp->indirect_lock = devm_kmalloc_obj(&pdev->dev,
-						     *lp->indirect_lock);
+		lp->indirect_lock = devm_kmalloc(&pdev->dev,
+						 sizeof(*lp->indirect_lock),
+						 GFP_KERNEL);
 		if (!lp->indirect_lock)
 			return -ENOMEM;
 		spin_lock_init(lp->indirect_lock);
@@ -1577,9 +1579,10 @@ static int temac_probe(struct platform_device *pdev)
 	if (temac_np) {
 		/* Retrieve the MAC address */
 		rc = of_get_mac_address(temac_np, addr);
-		if (rc)
-			return dev_err_probe(&pdev->dev, rc,
-					     "could not find MAC address\n");
+		if (rc) {
+			dev_err(&pdev->dev, "could not find MAC address\n");
+			return -ENODEV;
+		}
 		temac_init_mac_address(ndev, addr);
 	} else if (pdata) {
 		temac_init_mac_address(ndev, pdata->mac_addr);

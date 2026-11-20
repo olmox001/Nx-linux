@@ -86,7 +86,7 @@ static int stm32_lptimer_probe(struct platform_device *pdev)
 	void __iomem *mmio;
 	int ret;
 
-	ddata = devm_kzalloc_obj(dev, *ddata);
+	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
 		return -ENOMEM;
 

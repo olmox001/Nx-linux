@@ -50,13 +50,8 @@ static int cxl_debugfs_poison_inject(void *data, u64 dpa)
 	struct cxl_memdev *cxlmd = data;
 	int rc;
 
-	/*
-	 * Never wait for this lock: the debugfs proxy holds a file reference
-	 * across the callback and unbind removes the file under the same
-	 * device lock, so waiting here deadlocks against unbind.
-	 */
-	ACQUIRE(device_try, devlock)(&cxlmd->dev);
-	if ((rc = ACQUIRE_ERR(device_try, &devlock)))
+	ACQUIRE(device_intr, devlock)(&cxlmd->dev);
+	if ((rc = ACQUIRE_ERR(device_intr, &devlock)))
 		return rc;
 
 	return cxl_inject_poison(cxlmd, dpa);
@@ -70,9 +65,8 @@ static int cxl_debugfs_poison_clear(void *data, u64 dpa)
 	struct cxl_memdev *cxlmd = data;
 	int rc;
 
-	/* Never wait, per the inject path above. */
-	ACQUIRE(device_try, devlock)(&cxlmd->dev);
-	if ((rc = ACQUIRE_ERR(device_try, &devlock)))
+	ACQUIRE(device_intr, devlock)(&cxlmd->dev);
+	if ((rc = ACQUIRE_ERR(device_intr, &devlock)))
 		return rc;
 
 	return cxl_clear_poison(cxlmd, dpa);
@@ -139,13 +133,13 @@ static int cxl_mem_probe(struct device *dev)
 		return rc;
 
 	struct cxl_port *parent_port __free(put_cxl_port) =
-		cxl_mem_find_port(cxlmd);
+		cxl_mem_find_port(cxlmd, &dport);
 	if (!parent_port) {
 		dev_err(dev, "CXL port topology not found\n");
 		return -ENXIO;
 	}
 
-	if (cxl_part_size(cxlds, CXL_PARTMODE_PMEM) && IS_ENABLED(CONFIG_CXL_PMEM)) {
+	if (cxl_pmem_size(cxlds) && IS_ENABLED(CONFIG_CXL_PMEM)) {
 		rc = devm_cxl_add_nvdimm(dev, parent_port, cxlmd);
 		if (rc) {
 			if (rc == -ENODEV)
@@ -154,19 +148,15 @@ static int cxl_mem_probe(struct device *dev)
 		}
 	}
 
-	endpoint_parent = cxl_port_dport_host(parent_port);
+	if (dport->rch)
+		endpoint_parent = parent_port->uport_dev;
+	else
+		endpoint_parent = &parent_port->dev;
 
 	scoped_guard(device, endpoint_parent) {
 		if (!endpoint_parent->driver) {
 			dev_err(dev, "CXL port topology %s not enabled\n",
 				dev_name(endpoint_parent));
-			return -ENXIO;
-		}
-
-		/* @dport is only valid while @endpoint_parent stays bound */
-		dport = cxl_mem_find_dport(cxlmd, parent_port);
-		if (!dport) {
-			dev_err(dev, "CXL topology dport not found\n");
 			return -ENXIO;
 		}
 
@@ -237,7 +227,8 @@ EXPORT_SYMBOL_NS_GPL(devm_cxl_add_classdev, "CXL");
 struct cxl_memdev *devm_cxl_probe_mem(struct cxl_dev_state *cxlds,
 				      struct range *hpa_range)
 {
-	struct cxl_attach_region *attach = devm_kmalloc_obj(cxlds->dev, *attach);
+	struct cxl_attach_region *attach =
+		devm_kmalloc(cxlds->dev, sizeof(*attach), GFP_KERNEL);
 	struct cxl_memdev *cxlmd;
 
 	if (!attach)

@@ -72,18 +72,15 @@ static int mtk_socinfo_create_socinfo_node(struct mtk_socinfo *mtk_socinfop)
 	struct socinfo_data *data = mtk_socinfop->socinfo_data;
 	static const char *soc_manufacturer = "MediaTek";
 
-	attrs = devm_kzalloc_obj(mtk_socinfop->dev, *attrs);
+	attrs = devm_kzalloc(mtk_socinfop->dev, sizeof(*attrs), GFP_KERNEL);
 	if (!attrs)
 		return -ENOMEM;
 
-	if (data->marketing_name != NULL && data->marketing_name[0] != '\0') {
+	if (data->marketing_name != NULL && data->marketing_name[0] != '\0')
 		attrs->family = devm_kasprintf(mtk_socinfop->dev, GFP_KERNEL, "MediaTek %s",
 					       data->marketing_name);
-		if (!attrs->family)
-			return -ENOMEM;
-	} else {
+	else
 		attrs->family = soc_manufacturer;
-	}
 
 	attrs->soc_id = data->soc_name;
 	/*
@@ -177,7 +174,7 @@ static int mtk_socinfo_probe(struct platform_device *pdev)
 	struct mtk_socinfo *mtk_socinfop;
 	int ret;
 
-	mtk_socinfop = devm_kzalloc_obj(&pdev->dev, *mtk_socinfop);
+	mtk_socinfop = devm_kzalloc(&pdev->dev, sizeof(*mtk_socinfop), GFP_KERNEL);
 	if (!mtk_socinfop)
 		return -ENOMEM;
 

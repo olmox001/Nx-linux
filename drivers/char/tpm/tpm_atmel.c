@@ -205,12 +205,12 @@ static void atml_plat_remove(void)
 	platform_device_unregister(pdev);
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(tpm_atml_pm, tpm_pm_suspend, tpm_pm_resume);
+static SIMPLE_DEV_PM_OPS(tpm_atml_pm, tpm_pm_suspend, tpm_pm_resume);
 
 static struct platform_driver atml_drv = {
 	.driver = {
 		.name = "tpm_atmel",
-		.pm		= pm_sleep_ptr(&tpm_atml_pm),
+		.pm		= &tpm_atml_pm,
 	},
 };
 
@@ -242,7 +242,7 @@ static int __init init_atmel(void)
 		goto err_rel_reg;
 	}
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
 		rc = -ENOMEM;
 		goto err_unreg_dev;

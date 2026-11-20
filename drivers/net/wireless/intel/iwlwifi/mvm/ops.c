@@ -20,6 +20,7 @@
 #include "iwl-phy-db.h"
 #include "iwl-nvm-utils.h"
 #include "iwl-csr.h"
+#include "iwl-io.h"
 #include "iwl-prph.h"
 #include "rs.h"
 #include "fw/api/scan.h"
@@ -137,9 +138,9 @@ static void iwl_mvm_nic_config(struct iwl_op_mode *op_mode)
 	 * to lose ownership and not being able to obtain it back.
 	 */
 	if (!mvm->trans->mac_cfg->base->apmg_not_supported)
-		iwl_trans_set_bits_mask_prph(mvm->trans, APMG_PS_CTRL_REG,
-					     APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS,
-					     ~APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS);
+		iwl_set_bits_mask_prph(mvm->trans, APMG_PS_CTRL_REG,
+				       APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS,
+				       ~APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS);
 }
 
 static void iwl_mvm_rx_monitor_notif(struct iwl_mvm *mvm,
@@ -154,8 +155,8 @@ static void iwl_mvm_rx_monitor_notif(struct iwl_mvm *mvm,
 	if (notif->type != cpu_to_le32(IWL_DP_MON_NOTIF_TYPE_EXT_CCA))
 		return;
 
-	/* mac_id = link_id since we don't support MLO */
-	vif = iwl_mvm_rcu_dereference_vif_id(mvm, notif->link_id, false);
+	/* FIXME: should fetch the link and not the vif */
+	vif = iwl_mvm_get_vif_by_macid(mvm, notif->link_id);
 	if (!vif || vif->type != NL80211_IFTYPE_STATION)
 		return;
 
@@ -373,7 +374,7 @@ static const struct iwl_rx_handlers iwl_mvm_rx_handlers[] = {
 		   struct iwl_umac_scan_complete),
 	RX_HANDLER(SCAN_ITERATION_COMPLETE_UMAC,
 		   iwl_mvm_rx_umac_scan_iter_complete_notif, RX_HANDLER_SYNC,
-		   struct iwl_umac_scan_iter_complete_notif_v2),
+		   struct iwl_umac_scan_iter_complete_notif),
 
 	RX_HANDLER(MISSED_BEACONS_NOTIFICATION,
 		   iwl_mvm_rx_missed_beacons_notif_legacy,
@@ -706,7 +707,6 @@ static const struct iwl_hcmd_names iwl_mvm_regulatory_and_nvm_names[] = {
 	HCMD_NAME(NVM_ACCESS_COMPLETE),
 	HCMD_NAME(NVM_GET_INFO),
 	HCMD_NAME(TAS_CONFIG),
-	HCMD_NAME(LARI_CONFIG_EXTENSION),
 };
 
 /* Please keep this array *SORTED* by hex value.
@@ -1535,7 +1535,6 @@ void iwl_mvm_stop_device(struct iwl_mvm *mvm)
 	iwl_fw_cancel_timestamp(&mvm->fwrt);
 
 	clear_bit(IWL_MVM_STATUS_FIRMWARE_RUNNING, &mvm->status);
-	mvm->sf_state = SF_UNINIT;
 
 	iwl_mvm_pause_tcm(mvm, false);
 
@@ -2091,7 +2090,7 @@ static void iwl_op_mode_mvm_device_powered_off(struct iwl_op_mode *op_mode)
 
 	mutex_lock(&mvm->mutex);
 	clear_bit(IWL_MVM_STATUS_IN_D3, &mvm->status);
-	iwl_mvm_restart_cleanup(mvm);
+	iwl_mvm_stop_device(mvm);
 	mvm->fast_resume = false;
 	mutex_unlock(&mvm->mutex);
 }

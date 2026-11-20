@@ -722,7 +722,7 @@ static int saa7127_probe(struct i2c_client *client)
 	v4l_dbg(1, debug, client, "detecting saa7127 client on address 0x%x\n",
 			client->addr << 1);
 
-	state = devm_kzalloc_obj(&client->dev, *state);
+	state = devm_kzalloc(&client->dev, sizeof(*state), GFP_KERNEL);
 	if (state == NULL)
 		return -ENOMEM;
 

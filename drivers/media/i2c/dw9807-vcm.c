@@ -180,7 +180,8 @@ static int dw9807_probe(struct i2c_client *client)
 	struct dw9807_device *dw9807_dev;
 	int rval;
 
-	dw9807_dev = devm_kzalloc_obj(&client->dev, *dw9807_dev);
+	dw9807_dev = devm_kzalloc(&client->dev, sizeof(*dw9807_dev),
+				  GFP_KERNEL);
 	if (dw9807_dev == NULL)
 		return -ENOMEM;
 

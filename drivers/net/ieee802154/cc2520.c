@@ -1039,7 +1039,7 @@ static int cc2520_probe(struct spi_device *spi)
 	struct gpio_desc *vreg;
 	int ret;
 
-	priv = devm_kzalloc_obj(&spi->dev, *priv);
+	priv = devm_kzalloc(&spi->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

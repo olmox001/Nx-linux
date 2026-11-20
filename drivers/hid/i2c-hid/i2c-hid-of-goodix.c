@@ -82,7 +82,8 @@ static int i2c_hid_of_goodix_probe(struct i2c_client *client)
 {
 	struct i2c_hid_of_goodix *ihid_goodix;
 
-	ihid_goodix = devm_kzalloc_obj(&client->dev, *ihid_goodix);
+	ihid_goodix = devm_kzalloc(&client->dev, sizeof(*ihid_goodix),
+				   GFP_KERNEL);
 	if (!ihid_goodix)
 		return -ENOMEM;
 

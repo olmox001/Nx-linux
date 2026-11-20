@@ -32,6 +32,18 @@ static unsigned long scpi_clk_recalc_rate(struct clk_hw *hw,
 	return clk->scpi_ops->clk_get_val(clk->id);
 }
 
+static int scpi_clk_determine_rate(struct clk_hw *hw,
+				   struct clk_rate_request *req)
+{
+	/*
+	 * We can't figure out what rate it will be, so just return the
+	 * rate back to the caller. scpi_clk_recalc_rate() will be called
+	 * after the rate is set and we'll know what rate the clock is
+	 * running at then.
+	 */
+	return 0;
+}
+
 static int scpi_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 			     unsigned long parent_rate)
 {
@@ -42,7 +54,7 @@ static int scpi_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops scpi_clk_ops = {
 	.recalc_rate = scpi_clk_recalc_rate,
-	.determine_rate = clk_determine_rate_noop,
+	.determine_rate = scpi_clk_determine_rate,
 	.set_rate = scpi_clk_set_rate,
 };
 
@@ -128,7 +140,7 @@ static int
 scpi_clk_ops_init(struct device *dev, const struct of_device_id *match,
 		  struct scpi_clk *sclk, const char *name)
 {
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	unsigned long min = 0, max = 0;
 	int ret;
 
@@ -189,12 +201,13 @@ static int scpi_clk_add(struct device *dev, struct device_node *np,
 		return -EINVAL;
 	}
 
-	clk_data = devm_kmalloc_obj(dev, *clk_data);
+	clk_data = devm_kmalloc(dev, sizeof(*clk_data), GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 
 	clk_data->clk_num = count;
-	clk_data->clk = devm_kzalloc_objs(dev, *clk_data->clk, count);
+	clk_data->clk = devm_kcalloc(dev, count, sizeof(*clk_data->clk),
+				     GFP_KERNEL);
 	if (!clk_data->clk)
 		return -ENOMEM;
 
@@ -203,7 +216,7 @@ static int scpi_clk_add(struct device *dev, struct device_node *np,
 		const char *name;
 		u32 val;
 
-		sclk = devm_kzalloc_obj(dev, *sclk);
+		sclk = devm_kzalloc(dev, sizeof(*sclk), GFP_KERNEL);
 		if (!sclk)
 			return -ENOMEM;
 
@@ -274,8 +287,7 @@ static int scpi_clocks_probe(struct platform_device *pdev)
 		if (cpufreq_dev)
 			continue;
 		cpufreq_dev = platform_device_register_simple("scpi-cpufreq",
-							      PLATFORM_DEVID_NONE,
-							      NULL, 0);
+							      -1, NULL, 0);
 		if (IS_ERR(cpufreq_dev)) {
 			pr_warn("unable to register cpufreq device");
 			cpufreq_dev = NULL;

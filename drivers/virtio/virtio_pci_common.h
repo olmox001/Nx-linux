@@ -40,9 +40,6 @@ struct virtio_pci_vq_info {
 
 	/* MSI-X vector (or none) */
 	unsigned int msix_vector;
-
-	/* Linux IRQ number of msix_vector, or 0 if not mapped */
-	unsigned int virq;
 };
 
 struct virtio_pci_admin_vq {
@@ -130,7 +127,7 @@ static struct virtio_pci_device *to_vp_device(struct virtio_device *vdev)
 
 /* wait for pending irq handlers */
 void vp_synchronize_vectors(struct virtio_device *vdev);
-/* the notify function used when creating a virtqueue */
+/* the notify function used when creating a virt queue */
 bool vp_notify(struct virtqueue *vq);
 /* the config->del_vqs() implementation */
 void vp_del_vqs(struct virtio_device *vdev);

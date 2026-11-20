@@ -644,7 +644,10 @@ static void qlcnic_83xx_dcb_aen_handler(struct qlcnic_dcb *dcb, void *data)
 	if (test_and_set_bit(QLCNIC_DCB_AEN_MODE, &dcb->state))
 		return;
 
-	assign_bit(QLCNIC_DCB_STATE, &dcb->state, *val & BIT_8);
+	if (*val & BIT_8)
+		set_bit(QLCNIC_DCB_STATE, &dcb->state);
+	else
+		clear_bit(QLCNIC_DCB_STATE, &dcb->state);
 
 	queue_delayed_work(dcb->wq, &dcb->aen_work, 0);
 }

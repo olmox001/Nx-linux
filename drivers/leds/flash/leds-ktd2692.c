@@ -69,8 +69,6 @@ static const struct expresswire_timing ktd2692_timing = {
 };
 
 struct ktd2692_context {
-	struct device *dev;
-
 	/* Common ExpressWire properties (ctrl GPIO and timing) */
 	struct expresswire_common_props props;
 
@@ -198,12 +196,13 @@ static void ktd2692_setup(struct ktd2692_context *led)
 
 static void regulator_disable_action(void *_data)
 {
-	struct ktd2692_context *led = _data;
+	struct device *dev = _data;
+	struct ktd2692_context *led = dev_get_drvdata(dev);
 	int ret;
 
 	ret = regulator_disable(led->regulator);
 	if (ret)
-		dev_err(led->dev, "Failed to disable supply: %d\n", ret);
+		dev_err(dev, "Failed to disable supply: %d\n", ret);
 }
 
 static int ktd2692_parse_dt(struct ktd2692_context *led, struct device *dev,
@@ -234,7 +233,7 @@ static int ktd2692_parse_dt(struct ktd2692_context *led, struct device *dev,
 			dev_err(dev, "Failed to enable supply: %d\n", ret);
 		} else {
 			ret = devm_add_action_or_reset(dev,
-						regulator_disable_action, led);
+						regulator_disable_action, dev);
 			if (ret)
 				return ret;
 		}
@@ -287,11 +286,10 @@ static int ktd2692_probe(struct platform_device *pdev)
 	struct ktd2692_led_config_data led_cfg;
 	int ret;
 
-	led = devm_kzalloc_obj(&pdev->dev, *led);
+	led = devm_kzalloc(&pdev->dev, sizeof(*led), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 
-	led->dev = &pdev->dev;
 	fled_cdev = &led->fled_cdev;
 	led_cdev = &fled_cdev->led_cdev;
 	led->props.timing = ktd2692_timing;

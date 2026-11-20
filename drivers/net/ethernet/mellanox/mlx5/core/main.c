@@ -40,7 +40,6 @@
 #include <linux/interrupt.h>
 #include <linux/delay.h>
 #include <linux/mlx5/driver.h>
-#include <linux/mlx5/data_direct.h>
 #include <linux/mlx5/cq.h>
 #include <linux/mlx5/qp.h>
 #include <linux/debugfs.h>
@@ -84,6 +83,11 @@ MODULE_LICENSE("Dual BSD/GPL");
 unsigned int mlx5_core_debug_mask;
 module_param_named(debug_mask, mlx5_core_debug_mask, uint, 0644);
 MODULE_PARM_DESC(debug_mask, "debug mask: 1 = dump cmd data, 2 = dump cmd exec time, 3 = both. Default=0");
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+/*UEK Only - Enabling 2^20 QP's, instead 2^18 by default*/
+#define MLX5_UEK_QP_LIMITATION  20
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 static unsigned int prof_sel = MLX5_DEFAULT_PROF;
 module_param_named(prof_sel, prof_sel, uint, 0444);
@@ -185,8 +189,12 @@ static int set_dma_caps(struct pci_dev *pdev)
 
 	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (err) {
-		dev_err(&pdev->dev, "Can't set PCI DMA mask, aborting\n");
-		return err;
+		dev_warn(&pdev->dev, "Warning: couldn't set 64-bit PCI DMA mask\n");
+		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		if (err) {
+			dev_err(&pdev->dev, "Can't set PCI DMA mask, aborting\n");
+			return err;
+		}
 	}
 
 	dma_set_max_seg_size(&pdev->dev, 2u * 1024 * 1024 * 1024);
@@ -551,9 +559,16 @@ static int handle_hca_cap(struct mlx5_core_dev *dev, void *set_ctx)
 			       MLX5_CAP_GEN_MAX(dev, log_max_qp));
 		prof->log_max_qp = MLX5_CAP_GEN_MAX(dev, log_max_qp);
 	}
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	/* Remove driver limitation for QP's - UEK Only */
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	if (prof->mask & MLX5_PROF_MASK_QP_SIZE)
 		MLX5_SET(cmd_hca_cap, set_hca_cap, log_max_qp,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+			 MLX5_UEK_QP_LIMITATION);
+#else /* WITHOUT_ORACLE_EXTENSIONS */
 			 prof->log_max_qp);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	/* disable cmdif checksum */
 	MLX5_SET(cmd_hca_cap, set_hca_cap, cmdif_checksum, 0);
@@ -1336,14 +1351,8 @@ static int mlx5_load(struct mlx5_core_dev *dev)
 	if (err)
 		goto err_traps_reg;
 
-	err = mlx5_data_direct_init(dev);
-	if (err)
-		goto err_data_direct;
-
 	return 0;
 
-err_data_direct:
-	mlx5_devlink_traps_unregister(priv_to_devlink(dev));
 err_traps_reg:
 	mlx5_sf_dev_table_destroy(dev);
 	mlx5_sriov_detach(dev);
@@ -1374,7 +1383,6 @@ err_irq_table:
 
 static void mlx5_unload(struct mlx5_core_dev *dev)
 {
-	mlx5_data_direct_cleanup(dev);
 	mlx5_devlink_traps_unregister(priv_to_devlink(dev));
 	mlx5_vhca_event_stop(dev);
 	mlx5_sf_dev_table_destroy(dev);
@@ -1814,7 +1822,6 @@ int mlx5_mdev_init(struct mlx5_core_dev *dev, int profile_idx)
 	lockdep_register_key(&dev->lock_key);
 	mutex_init(&dev->intf_state_mutex);
 	lockdep_set_class(&dev->intf_state_mutex, &dev->lock_key);
-	spin_lock_init(&dev->offload_block.lock);
 	mutex_init(&dev->mlx5e_res.uplink_netdev_lock);
 	mutex_init(&dev->wc_state_lock);
 
@@ -1824,6 +1831,8 @@ int mlx5_mdev_init(struct mlx5_core_dev *dev, int profile_idx)
 	INIT_LIST_HEAD(&priv->bfregs.wc_head.list);
 
 	mutex_init(&priv->alloc_mutex);
+	mutex_init(&priv->pgdir_mutex);
+	INIT_LIST_HEAD(&priv->pgdir_list);
 
 	priv->numa_node = dev_to_node(mlx5_core_dma_dev(dev));
 	priv->dbg.dbg_root = debugfs_create_dir(dev_name(dev->device),
@@ -1832,10 +1841,6 @@ int mlx5_mdev_init(struct mlx5_core_dev *dev, int profile_idx)
 	err = mlx5_frag_buf_pools_init(dev);
 	if (err)
 		goto err_frag_buf_pools_init;
-
-	err = mlx5_db_pools_init(dev);
-	if (err)
-		goto err_db_pools_init;
 
 	INIT_LIST_HEAD(&priv->traps);
 
@@ -1898,11 +1903,10 @@ err_health_init:
 err_timeout_init:
 	mlx5_cmd_cleanup(dev);
 err_cmd_init:
-	mlx5_db_pools_cleanup(dev);
-err_db_pools_init:
 	mlx5_frag_buf_pools_cleanup(dev);
 err_frag_buf_pools_init:
 	debugfs_remove(dev->priv.dbg.dbg_root);
+	mutex_destroy(&priv->pgdir_mutex);
 	mutex_destroy(&priv->alloc_mutex);
 	mutex_destroy(&priv->bfregs.wc_head.lock);
 	mutex_destroy(&priv->bfregs.reg_head.lock);
@@ -1925,9 +1929,9 @@ void mlx5_mdev_uninit(struct mlx5_core_dev *dev)
 	mlx5_health_cleanup(dev);
 	mlx5_tout_cleanup(dev);
 	mlx5_cmd_cleanup(dev);
-	mlx5_db_pools_cleanup(dev);
 	mlx5_frag_buf_pools_cleanup(dev);
 	debugfs_remove_recursive(dev->priv.dbg.dbg_root);
+	mutex_destroy(&priv->pgdir_mutex);
 	mutex_destroy(&priv->alloc_mutex);
 	mutex_destroy(&priv->bfregs.wc_head.lock);
 	mutex_destroy(&priv->bfregs.reg_head.lock);
@@ -2368,10 +2372,6 @@ static int __init mlx5_init(void)
 	if (err)
 		goto err_sf;
 
-	err = mlx5_data_direct_driver_register();
-	if (err)
-		goto err_dd;
-
 	err = pci_register_driver(&mlx5_core_driver);
 	if (err)
 		goto err_pci;
@@ -2379,8 +2379,6 @@ static int __init mlx5_init(void)
 	return 0;
 
 err_pci:
-	mlx5_data_direct_driver_unregister();
-err_dd:
 	mlx5_sf_driver_unregister();
 err_sf:
 	mlx5e_cleanup();
@@ -2392,7 +2390,6 @@ err_debug:
 static void __exit mlx5_cleanup(void)
 {
 	pci_unregister_driver(&mlx5_core_driver);
-	mlx5_data_direct_driver_unregister();
 	mlx5_sf_driver_unregister();
 	mlx5e_cleanup();
 	mlx5_unregister_debugfs();

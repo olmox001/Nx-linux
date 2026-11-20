@@ -968,8 +968,9 @@ static int vsc9959_mdio_bus_alloc(struct ocelot *ocelot)
 	int port;
 	int rc;
 
-	felix->pcs = devm_kzalloc_objs(dev, struct phylink_pcs *,
-				       felix->info->num_ports);
+	felix->pcs = devm_kcalloc(dev, felix->info->num_ports,
+				  sizeof(struct phylink_pcs *),
+				  GFP_KERNEL);
 	if (!felix->pcs) {
 		dev_err(dev, "failed to allocate array for PCS PHYs\n");
 		return -ENOMEM;

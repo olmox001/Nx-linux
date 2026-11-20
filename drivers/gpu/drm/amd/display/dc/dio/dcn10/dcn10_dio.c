@@ -40,7 +40,6 @@ void dcn10_dio_construct(
 {
 	dio10->base.ctx = ctx;
 	dio10->base.funcs = &dcn10_dio_funcs;
-	dio10->base.inst = 0;
 
 	dio10->regs = regs;
 	dio10->shifts = shifts;

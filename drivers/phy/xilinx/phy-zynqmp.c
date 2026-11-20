@@ -1014,7 +1014,7 @@ static int xpsgtr_probe(struct platform_device *pdev)
 	unsigned int port;
 	int ret;
 
-	gtr_dev = devm_kzalloc_obj(&pdev->dev, *gtr_dev);
+	gtr_dev = devm_kzalloc(&pdev->dev, sizeof(*gtr_dev), GFP_KERNEL);
 	if (!gtr_dev)
 		return -ENOMEM;
 

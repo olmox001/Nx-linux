@@ -73,7 +73,7 @@ static int gw_pld_probe(struct i2c_client *client)
 	struct gw_pld *gw;
 	int ret;
 
-	gw = devm_kzalloc_obj(dev, *gw);
+	gw = devm_kzalloc(dev, sizeof(*gw), GFP_KERNEL);
 	if (!gw)
 		return -ENOMEM;
 

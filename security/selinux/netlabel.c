@@ -557,10 +557,9 @@ static int selinux_netlbl_socket_connect_helper(struct sock *sk,
 	 * is set to AF_UNSPEC, if that is what is happening we want to reset
 	 * the socket */
 	if (addr->sa_family == AF_UNSPEC) {
-		rc = netlbl_sock_delattr(sk);
-		if (rc)
-			return rc;
+		netlbl_sock_delattr(sk);
 		sksec->nlbl_state = NLBL_REQSKB;
+		rc = 0;
 		return rc;
 	}
 	secattr = selinux_netlbl_sock_genattr(sk);

@@ -87,7 +87,7 @@
 #define gpio_range_to_bank(chip) \
 		container_of(chip, struct stm32_gpio_bank, range)
 
-#define HWSPNLCK_TIMEOUT_MS	1
+#define HWSPNLCK_TIMEOUT	1000 /* usec */
 
 static const char * const stm32_gpio_functions[] = {
 	"gpio", "af0", "af1",
@@ -600,6 +600,30 @@ static int stm32_gpio_domain_translate(struct irq_domain *d,
 	return 0;
 }
 
+static int stm32_gpio_domain_activate(struct irq_domain *d,
+				      struct irq_data *irq_data, bool reserve)
+{
+	struct stm32_gpio_bank *bank = d->host_data;
+	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+	int ret = 0;
+
+	if (pctl->hwlock) {
+		ret = hwspin_lock_timeout_in_atomic(pctl->hwlock,
+						    HWSPNLCK_TIMEOUT);
+		if (ret) {
+			dev_err(pctl->dev, "Can't get hwspinlock\n");
+			return ret;
+		}
+	}
+
+	regmap_field_write(pctl->irqmux[irq_data->hwirq], bank->bank_ioport_nr);
+
+	if (pctl->hwlock)
+		hwspin_unlock_in_atomic(pctl->hwlock);
+
+	return ret;
+}
+
 static int stm32_gpio_domain_alloc(struct irq_domain *d,
 				   unsigned int virq,
 				   unsigned int nr_irqs, void *data)
@@ -621,27 +645,10 @@ static int stm32_gpio_domain_alloc(struct irq_domain *d,
 	if (pctl->irqmux_map & BIT(hwirq)) {
 		dev_err(pctl->dev, "irq line %ld already requested.\n", hwirq);
 		ret = -EBUSY;
-		goto unlock;
+	} else {
+		pctl->irqmux_map |= BIT(hwirq);
 	}
 
-	pctl->irqmux_map |= BIT(hwirq);
-
-	if (pctl->hwlock) {
-		ret = hwspin_lock_timeout_in_atomic(pctl->hwlock,
-						    HWSPNLCK_TIMEOUT_MS);
-		if (ret) {
-			dev_err(pctl->dev, "Can't get hwspinlock\n");
-			pctl->irqmux_map &= ~BIT(hwirq);
-			goto unlock;
-		}
-	}
-
-	regmap_field_write(pctl->irqmux[hwirq], bank->bank_ioport_nr);
-
-	if (pctl->hwlock)
-		hwspin_unlock_in_atomic(pctl->hwlock);
-
-unlock:
 	spin_unlock_irqrestore(&pctl->irqmux_lock, flags);
 	if (ret)
 		return ret;
@@ -676,6 +683,7 @@ static const struct irq_domain_ops stm32_gpio_domain_ops = {
 	.translate	= stm32_gpio_domain_translate,
 	.alloc		= stm32_gpio_domain_alloc,
 	.free		= stm32_gpio_domain_free,
+	.activate	= stm32_gpio_domain_activate,
 };
 
 /* Pinctrl functions */
@@ -938,7 +946,7 @@ static int stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
 
 	if (pctl->hwlock) {
 		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
-						    HWSPNLCK_TIMEOUT_MS);
+						    HWSPNLCK_TIMEOUT);
 		if (err) {
 			dev_err(pctl->dev, "Can't get hwspinlock\n");
 			goto unlock;
@@ -1081,7 +1089,7 @@ static int stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
 
 	if (pctl->hwlock) {
 		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
-						    HWSPNLCK_TIMEOUT_MS);
+						    HWSPNLCK_TIMEOUT);
 		if (err) {
 			dev_err(pctl->dev, "Can't get hwspinlock\n");
 			goto unlock;
@@ -1127,7 +1135,7 @@ static int stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
 
 	if (pctl->hwlock) {
 		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
-						    HWSPNLCK_TIMEOUT_MS);
+						    HWSPNLCK_TIMEOUT);
 		if (err) {
 			dev_err(pctl->dev, "Can't get hwspinlock\n");
 			goto unlock;
@@ -1173,7 +1181,7 @@ static int stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
 
 	if (pctl->hwlock) {
 		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
-						    HWSPNLCK_TIMEOUT_MS);
+						    HWSPNLCK_TIMEOUT);
 		if (err) {
 			dev_err(pctl->dev, "Can't get hwspinlock\n");
 			goto unlock;
@@ -1234,7 +1242,7 @@ static int stm32_pconf_set_advcfgr(struct stm32_gpio_bank *bank, int offset, u32
 	spin_lock_irqsave(&bank->lock, flags);
 
 	if (pctl->hwlock) {
-		err = hwspin_lock_timeout_in_atomic(pctl->hwlock, HWSPNLCK_TIMEOUT_MS);
+		err = hwspin_lock_timeout_in_atomic(pctl->hwlock, HWSPNLCK_TIMEOUT);
 		if (err) {
 			dev_err(pctl->dev, "Can't get hwspinlock\n");
 			goto unlock;
@@ -1312,7 +1320,7 @@ stm32_pconf_set_skew_delay(struct stm32_gpio_bank *bank, int offset, u32 delay, 
 	spin_lock_irqsave(&bank->lock, flags);
 
 	if (pctl->hwlock) {
-		err = hwspin_lock_timeout_in_atomic(pctl->hwlock, HWSPNLCK_TIMEOUT_MS);
+		err = hwspin_lock_timeout_in_atomic(pctl->hwlock, HWSPNLCK_TIMEOUT);
 		if (err) {
 			dev_err(pctl->dev, "Can't get hwspinlock\n");
 			goto unlock;
@@ -1658,12 +1666,8 @@ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl, struct fwnode
 
 		/* get the last defined gpio line (offset + nb of pins) */
 		npins = args.args[0] + args.args[2];
-		fwnode_handle_put(args.fwnode);
-
-		while (!fwnode_property_get_reference_args(fwnode, "gpio-ranges", NULL, 3, ++i, &args)) {
+		while (!fwnode_property_get_reference_args(fwnode, "gpio-ranges", NULL, 3, ++i, &args))
 			npins = max(npins, (int)(args.args[0] + args.args[2]));
-			fwnode_handle_put(args.fwnode);
-		}
 	} else {
 		bank_nr = pctl->nbanks;
 		bank->gpio_chip.base = bank_nr * STM32_GPIO_PINS_PER_BANK;
@@ -1804,14 +1808,14 @@ static int stm32_pctrl_build_state(struct platform_device *pdev)
 	pctl->ngroups = pctl->npins;
 
 	/* Allocate groups */
-	pctl->groups = devm_kzalloc_objs(&pdev->dev, *pctl->groups,
-					 pctl->ngroups);
+	pctl->groups = devm_kcalloc(&pdev->dev, pctl->ngroups,
+				    sizeof(*pctl->groups), GFP_KERNEL);
 	if (!pctl->groups)
 		return -ENOMEM;
 
 	/* We assume that one pin is one group, use pin name as group name. */
-	pctl->grp_names = devm_kzalloc_objs(&pdev->dev, *pctl->grp_names,
-					    pctl->ngroups);
+	pctl->grp_names = devm_kcalloc(&pdev->dev, pctl->ngroups,
+				       sizeof(*pctl->grp_names), GFP_KERNEL);
 	if (!pctl->grp_names)
 		return -ENOMEM;
 
@@ -1863,7 +1867,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
 	if (!match_data)
 		return -EINVAL;
 
-	pctl = devm_kzalloc_obj(dev, *pctl);
+	pctl = devm_kzalloc(dev, sizeof(*pctl), GFP_KERNEL);
 	if (!pctl)
 		return -ENOMEM;
 
@@ -1894,8 +1898,8 @@ int stm32_pctl_probe(struct platform_device *pdev)
 	if (!device_property_read_u32(dev, "st,package", &pctl->pkg))
 		dev_dbg(pctl->dev, "package detected: %x\n", pctl->pkg);
 
-	pctl->pins = devm_kzalloc_objs(pctl->dev, *pctl->pins,
-				       pctl->match_data->npins);
+	pctl->pins = devm_kcalloc(pctl->dev, pctl->match_data->npins,
+				  sizeof(*pctl->pins), GFP_KERNEL);
 	if (!pctl->pins)
 		return -ENOMEM;
 
@@ -1915,7 +1919,8 @@ int stm32_pctl_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	pins = devm_kzalloc_objs(&pdev->dev, *pins, pctl->npins);
+	pins = devm_kcalloc(&pdev->dev, pctl->npins, sizeof(*pins),
+			    GFP_KERNEL);
 	if (!pins)
 		return -ENOMEM;
 
@@ -1947,11 +1952,13 @@ int stm32_pctl_probe(struct platform_device *pdev)
 		dev_err(dev, "at least one GPIO bank is required\n");
 		return -EINVAL;
 	}
-	pctl->banks = devm_kzalloc_objs(dev, *pctl->banks, banks);
+	pctl->banks = devm_kcalloc(dev, banks, sizeof(*pctl->banks),
+			GFP_KERNEL);
 	if (!pctl->banks)
 		return -ENOMEM;
 
-	pctl->clks = devm_kzalloc_objs(dev, *pctl->clks, banks);
+	pctl->clks = devm_kcalloc(dev, banks, sizeof(*pctl->clks),
+				  GFP_KERNEL);
 	if (!pctl->clks)
 		return -ENOMEM;
 
@@ -1969,7 +1976,6 @@ int stm32_pctl_probe(struct platform_device *pdev)
 		pctl->clks[i].clk = of_clk_get_by_name(np, NULL);
 		if (IS_ERR(pctl->clks[i].clk)) {
 			fwnode_handle_put(child);
-			clk_bulk_put(i, pctl->clks);
 			return dev_err_probe(dev, PTR_ERR(pctl->clks[i].clk),
 					     "failed to get clk\n");
 		}
@@ -1980,7 +1986,6 @@ int stm32_pctl_probe(struct platform_device *pdev)
 	ret = clk_bulk_prepare_enable(banks, pctl->clks);
 	if (ret) {
 		dev_err(dev, "failed to prepare_enable clk (%d)\n", ret);
-		clk_bulk_put(banks, pctl->clks);
 		return ret;
 	}
 
@@ -2005,7 +2010,6 @@ err_register:
 	}
 
 	clk_bulk_disable_unprepare(banks, pctl->clks);
-	clk_bulk_put(banks, pctl->clks);
 	return ret;
 }
 EXPORT_SYMBOL(stm32_pctl_probe);

@@ -179,8 +179,9 @@ intended to be exhaustive.
 
 When returning from a signal handler:
 
-* If there is a gcs_context record in the signal frame then GCSPR_EL0
-  will be restored from that context prior to further validation.
+* If there is a gcs_context record in the signal frame then the GCS flags
+  and GCSPR_EL0 will be restored from that context prior to further
+  validation.
 
 * If there is no gcs_context record in the signal frame then the GCS
   configuration will be unchanged.
@@ -189,8 +190,12 @@ When returning from a signal handler:
   point to a valid GCS signal cap record, this will be popped from the
   GCS prior to signal return.
 
-* The features_enabled in the signal return context will be ignored; any
-  changes made using the prctl() in the signal handler will be preserved.
+* If the GCS configuration is locked when returning from a signal then any
+  attempt to change the GCS configuration will be treated as an error.  This
+  is true even if GCS was not enabled prior to signal entry.
+
+* GCS may be disabled via signal return but any attempt to enable GCS via
+  signal return will be rejected.
 
 
 6.  ptrace extensions

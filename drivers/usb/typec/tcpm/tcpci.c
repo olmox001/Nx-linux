@@ -847,7 +847,7 @@ struct tcpci *tcpci_register_port(struct device *dev, struct tcpci_data *data)
 	struct tcpci *tcpci;
 	int err;
 
-	tcpci = devm_kzalloc_obj(dev, *tcpci);
+	tcpci = devm_kzalloc(dev, sizeof(*tcpci), GFP_KERNEL);
 	if (!tcpci)
 		return ERR_PTR(-ENOMEM);
 
@@ -924,7 +924,7 @@ static int tcpci_probe(struct i2c_client *client)
 	if (err && err != -ENODEV)
 		return dev_err_probe(&client->dev, err, "Failed to get regulator\n");
 
-	chip = devm_kzalloc_obj(&client->dev, *chip);
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

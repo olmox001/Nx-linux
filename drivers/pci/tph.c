@@ -119,14 +119,12 @@ static acpi_status tph_invoke_dsm(acpi_handle handle, u32 cpu_uid,
 	if (!out_obj)
 		return AE_ERROR;
 
-	if (out_obj->type != ACPI_TYPE_BUFFER ||
-	    out_obj->buffer.length < sizeof(st_out->value) ||
-	    !out_obj->buffer.pointer) {
+	if (out_obj->type != ACPI_TYPE_BUFFER) {
 		ACPI_FREE(out_obj);
 		return AE_ERROR;
 	}
 
-	memcpy(&st_out->value, out_obj->buffer.pointer, sizeof(st_out->value));
+	st_out->value = *((u64 *)(out_obj->buffer.pointer));
 
 	ACPI_FREE(out_obj);
 

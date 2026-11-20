@@ -109,7 +109,7 @@ static int bcove_probe(struct platform_device *pdev)
 	unsigned int i;
 	int ret;
 
-	pmic = devm_kzalloc_obj(dev, *pmic);
+	pmic = devm_kzalloc(dev, sizeof(*pmic), GFP_KERNEL);
 	if (!pmic)
 		return -ENOMEM;
 

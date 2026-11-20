@@ -65,9 +65,9 @@ static struct irq_chip sunxi_pinctrl_level_irq_chip;
  */
 static u32 sunxi_bank_offset(const struct sunxi_pinctrl *pctl, u32 pin)
 {
-	u32 offset = pctl->bank_offset;
+	u32 offset = 0;
 
-	if (pin >= PK_BASE && (pctl->flags & SUNXI_PINCTRL_ELEVEN_BANKS)) {
+	if (pin >= PK_BASE) {
 		pin -= PK_BASE;
 		offset = PIO_BANK_K_OFFSET;
 	}
@@ -102,7 +102,7 @@ static void sunxi_dlevel_reg(const struct sunxi_pinctrl *pctl,
 {
 	u32 offset = pin % PINS_PER_BANK * pctl->dlevel_field_width;
 
-	*reg   = sunxi_bank_offset(pctl, pin) + pctl->drv_regs_offset +
+	*reg   = sunxi_bank_offset(pctl, pin) + DLEVEL_REGS_OFFSET +
 		 offset / BITS_PER_TYPE(u32) * sizeof(u32);
 	*shift = offset % BITS_PER_TYPE(u32);
 	*mask  = (BIT(pctl->dlevel_field_width) - 1) << *shift;
@@ -388,7 +388,7 @@ static unsigned long *sunxi_pctrl_build_pin_config(struct device_node *node,
 	if (!configlen)
 		return NULL;
 
-	pinconfig = kzalloc_objs(*pinconfig, configlen);
+	pinconfig = kcalloc(configlen, sizeof(*pinconfig), GFP_KERNEL);
 	if (!pinconfig)
 		return ERR_PTR(-ENOMEM);
 
@@ -763,10 +763,9 @@ static int sunxi_pinctrl_set_io_bias_cfg(struct sunxi_pinctrl *pctl,
 		else
 			val = 0xD; /* 3.3V */
 
-		reg = readl(pctl->membase + sunxi_grp_config_reg(pctl, pin));
+		reg = readl(pctl->membase + sunxi_grp_config_reg(pin));
 		reg &= ~IO_BIAS_MASK;
-		writel(reg | val, pctl->membase +
-		       sunxi_grp_config_reg(pctl, pin));
+		writel(reg | val, pctl->membase + sunxi_grp_config_reg(pin));
 		return 0;
 	case BIAS_VOLTAGE_PIO_POW_MODE_CTL_INV:
 		inverted = true;
@@ -1137,7 +1136,7 @@ static int sunxi_pinctrl_irq_request_resources(struct irq_data *d)
 	muxval = (readl(pctl->membase + reg) & mask) >> shift;
 
 	/* Change muxing to GPIO INPUT mode if at reset value */
-	if (pctl->flags & SUNXI_PINCTRL_NCAT2_REG_LAYOUT)
+	if (pctl->flags & SUNXI_PINCTRL_NEW_REG_LAYOUT)
 		disabled_mux = SUN4I_FUNC_DISABLED_NEW;
 	else
 		disabled_mux = SUN4I_FUNC_DISABLED_OLD;
@@ -1170,7 +1169,7 @@ static void sunxi_pinctrl_irq_release_resources(struct irq_data *d)
 static int sunxi_pinctrl_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 reg = sunxi_irq_cfg_reg(pctl, d->hwirq);
+	u32 reg = sunxi_irq_cfg_reg(pctl->desc, d->hwirq);
 	u8 index = sunxi_irq_cfg_offset(d->hwirq);
 	unsigned long flags;
 	u32 regval;
@@ -1217,7 +1216,7 @@ static int sunxi_pinctrl_irq_set_type(struct irq_data *d, unsigned int type)
 static void sunxi_pinctrl_irq_ack(struct irq_data *d)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 status_reg = sunxi_irq_status_reg(pctl, d->hwirq);
+	u32 status_reg = sunxi_irq_status_reg(pctl->desc, d->hwirq);
 	u8 status_idx = sunxi_irq_status_offset(d->hwirq);
 
 	/* Clear the IRQ */
@@ -1227,7 +1226,7 @@ static void sunxi_pinctrl_irq_ack(struct irq_data *d)
 static void sunxi_pinctrl_irq_mask(struct irq_data *d)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 reg = sunxi_irq_ctrl_reg(pctl, d->hwirq);
+	u32 reg = sunxi_irq_ctrl_reg(pctl->desc, d->hwirq);
 	u8 idx = sunxi_irq_ctrl_offset(d->hwirq);
 	unsigned long flags;
 	u32 val;
@@ -1244,7 +1243,7 @@ static void sunxi_pinctrl_irq_mask(struct irq_data *d)
 static void sunxi_pinctrl_irq_unmask(struct irq_data *d)
 {
 	struct sunxi_pinctrl *pctl = irq_data_get_irq_chip_data(d);
-	u32 reg = sunxi_irq_ctrl_reg(pctl, d->hwirq);
+	u32 reg = sunxi_irq_ctrl_reg(pctl->desc, d->hwirq);
 	u8 idx = sunxi_irq_ctrl_offset(d->hwirq);
 	unsigned long flags;
 	u32 val;
@@ -1348,7 +1347,7 @@ static void sunxi_pinctrl_irq_handler(struct irq_desc *desc)
 
 	chained_irq_enter(chip, desc);
 
-	reg = sunxi_irq_status_reg_from_bank(pctl, bank);
+	reg = sunxi_irq_status_reg_from_bank(pctl->desc, bank);
 	val = readl(pctl->membase + reg);
 
 	if (val) {
@@ -1402,8 +1401,9 @@ static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 	 * this means that the number of pins is the maximum group
 	 * number we will ever see.
 	 */
-	pctl->groups = devm_kzalloc_objs(&pdev->dev, *pctl->groups,
-					 pctl->desc->npins);
+	pctl->groups = devm_kcalloc(&pdev->dev,
+				    pctl->desc->npins, sizeof(*pctl->groups),
+				    GFP_KERNEL);
 	if (!pctl->groups)
 		return -ENOMEM;
 
@@ -1487,9 +1487,10 @@ static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 
 			if (!func_item->groups) {
 				func_item->groups =
-					devm_kzalloc_objs(&pdev->dev,
-							  *func_item->groups,
-							  func_item->ngroups);
+					devm_kcalloc(&pdev->dev,
+						     func_item->ngroups,
+						     sizeof(*func_item->groups),
+						     GFP_KERNEL);
 				if (!func_item->groups) {
 					kfree(pctl->functions);
 					return -ENOMEM;
@@ -1585,7 +1586,7 @@ static int sunxi_pinctrl_setup_debounce(struct sunxi_pinctrl *pctl,
 
 		writel(src | div << 4,
 		       pctl->membase +
-		       sunxi_irq_debounce_reg_from_bank(pctl, i));
+		       sunxi_irq_debounce_reg_from_bank(pctl->desc, i));
 	}
 
 	return 0;
@@ -1603,7 +1604,7 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 	int i, ret, last_pin, pin_idx, nbanks;
 	struct clk *clk;
 
-	pctl = devm_kzalloc_obj(&pdev->dev, *pctl);
+	pctl = devm_kzalloc(&pdev->dev, sizeof(*pctl), GFP_KERNEL);
 	if (!pctl)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, pctl);
@@ -1617,32 +1618,24 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 	pctl->dev = &pdev->dev;
 	pctl->desc = desc;
 	pctl->flags = flags;
-	if (flags & SUNXI_PINCTRL_NCAT2_REG_LAYOUT) {
+	if (flags & SUNXI_PINCTRL_NEW_REG_LAYOUT) {
 		pctl->bank_mem_size = D1_BANK_MEM_SIZE;
-		pctl->drv_regs_offset = DLEVEL_REGS_OFFSET;
 		pctl->pull_regs_offset = D1_PULL_REGS_OFFSET;
-		pctl->dlevel_field_width = D1_DLEVEL_FIELD_WIDTH;
-	} else if (flags & SUNXI_PINCTRL_NCAT3_REG_LAYOUT) {
-		pctl->bank_mem_size = A733_BANK_MEM_SIZE;
-		pctl->bank_offset = A733_BANK_OFFSET;
-		pctl->drv_regs_offset = A733_DLEVEL_REGS_OFFSET;
-		pctl->pull_regs_offset = A733_PULL_REGS_OFFSET;
 		pctl->dlevel_field_width = D1_DLEVEL_FIELD_WIDTH;
 	} else {
 		pctl->bank_mem_size = BANK_MEM_SIZE;
-		pctl->drv_regs_offset = DLEVEL_REGS_OFFSET;
 		pctl->pull_regs_offset = PULL_REGS_OFFSET;
 		pctl->dlevel_field_width = DLEVEL_FIELD_WIDTH;
 	}
 	if (flags & SUNXI_PINCTRL_ELEVEN_BANKS)
 		pctl->pow_mod_sel_offset = PIO_11B_POW_MOD_SEL_REG;
-	else if (flags & SUNXI_PINCTRL_NCAT3_REG_LAYOUT)
-		pctl->pow_mod_sel_offset = PIO_NCAT3_POW_MOD_SEL_REG;
 	else
 		pctl->pow_mod_sel_offset = PIO_POW_MOD_SEL_REG;
 
-	pctl->irq_array = devm_kzalloc_objs(&pdev->dev, *pctl->irq_array,
-					    IRQ_PER_BANK * pctl->desc->irq_banks);
+	pctl->irq_array = devm_kcalloc(&pdev->dev,
+				       IRQ_PER_BANK * pctl->desc->irq_banks,
+				       sizeof(*pctl->irq_array),
+				       GFP_KERNEL);
 	if (!pctl->irq_array)
 		return -ENOMEM;
 
@@ -1665,8 +1658,8 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 	last_pin = pctl->desc->pins[pctl->desc->npins - 1].pin.number;
 	nbanks = DIV_ROUND_UP(last_pin + 1 - pctl->desc->pin_base,
 			      PINS_PER_BANK);
-	pctl->dat_shadow = devm_kzalloc_objs(&pdev->dev, *pctl->dat_shadow,
-					     nbanks);
+	pctl->dat_shadow = devm_kcalloc(&pdev->dev, nbanks,
+					sizeof(*pctl->dat_shadow), GFP_KERNEL);
 	if (!pctl->dat_shadow)
 		return -ENOMEM;
 
@@ -1683,7 +1676,9 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 		return ret;
 	}
 
-	pins = devm_kzalloc_objs(&pdev->dev, *pins, pctl->desc->npins);
+	pins = devm_kcalloc(&pdev->dev,
+			    pctl->desc->npins, sizeof(*pins),
+			    GFP_KERNEL);
 	if (!pins)
 		return -ENOMEM;
 
@@ -1697,7 +1692,9 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 		pins[pin_idx++] = pin->pin;
 	}
 
-	pctrl_desc = devm_kzalloc_obj(&pdev->dev, *pctrl_desc);
+	pctrl_desc = devm_kzalloc(&pdev->dev,
+				  sizeof(*pctrl_desc),
+				  GFP_KERNEL);
 	if (!pctrl_desc)
 		return -ENOMEM;
 
@@ -1724,7 +1721,7 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 		return PTR_ERR(pctl->pctl_dev);
 	}
 
-	pctl->chip = devm_kzalloc_obj(&pdev->dev, *pctl->chip);
+	pctl->chip = devm_kzalloc(&pdev->dev, sizeof(*pctl->chip), GFP_KERNEL);
 	if (!pctl->chip)
 		return -ENOMEM;
 
@@ -1761,8 +1758,10 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 			goto gpiochip_error;
 	}
 
-	pctl->irq = devm_kzalloc_objs(&pdev->dev, *pctl->irq,
-				      pctl->desc->irq_banks);
+	pctl->irq = devm_kcalloc(&pdev->dev,
+				 pctl->desc->irq_banks,
+				 sizeof(*pctl->irq),
+				 GFP_KERNEL);
 	if (!pctl->irq) {
 		ret = -ENOMEM;
 		goto gpiochip_error;
@@ -1798,10 +1797,10 @@ int sunxi_pinctrl_init_with_flags(struct platform_device *pdev,
 	for (i = 0; i < pctl->desc->irq_banks; i++) {
 		/* Mask and clear all IRQs before registering a handler */
 		writel(0, pctl->membase +
-			  sunxi_irq_ctrl_reg_from_bank(pctl, i));
+			  sunxi_irq_ctrl_reg_from_bank(pctl->desc, i));
 		writel(0xffffffff,
 		       pctl->membase +
-		       sunxi_irq_status_reg_from_bank(pctl, i));
+		       sunxi_irq_status_reg_from_bank(pctl->desc, i));
 
 		irq_set_chained_handler_and_data(pctl->irq[i],
 						 sunxi_pinctrl_irq_handler,

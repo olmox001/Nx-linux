@@ -2243,7 +2243,6 @@ static void iscsi_ep_disconnect(struct iscsi_cls_conn *conn, bool is_active)
 static void iscsi_if_disconnect_bound_ep(struct iscsi_cls_conn *conn,
 					 struct iscsi_endpoint *ep,
 					 bool is_active)
-	__must_hold(&conn->ep_mutex)
 {
 	/* Check if this was a conn error and the kernel took ownership */
 	spin_lock_irq(&conn->lock);
@@ -2669,7 +2668,7 @@ void iscsi_conn_error_event(struct iscsi_cls_conn *conn, enum iscsi_err error)
 
 	iscsi_multicast_skb(skb, ISCSI_NL_GRP_ISCSID, GFP_ATOMIC);
 
-	iscsi_cls_conn_printk(KERN_INFO, conn, "detected conn error (%d)\n",
+	iscsi_cls_conn_printk(KERN_ERR, conn, "detected conn error (%d)\n",
 			      error);
 }
 EXPORT_SYMBOL_GPL(iscsi_conn_error_event);

@@ -103,7 +103,8 @@ static int aspeed_hace_probe(struct platform_device *pdev)
 	struct aspeed_hace_dev *hace_dev;
 	int rc;
 
-	hace_dev = devm_kzalloc_obj(&pdev->dev, struct aspeed_hace_dev);
+	hace_dev = devm_kzalloc(&pdev->dev, sizeof(struct aspeed_hace_dev),
+				GFP_KERNEL);
 	if (!hace_dev)
 		return -ENOMEM;
 
@@ -130,8 +131,10 @@ static int aspeed_hace_probe(struct platform_device *pdev)
 
 	rc = devm_request_irq(&pdev->dev, hace_dev->irq, aspeed_hace_irq, 0,
 			      dev_name(&pdev->dev), hace_dev);
-	if (rc)
+	if (rc) {
+		dev_err(&pdev->dev, "Failed to request interrupt\n");
 		return rc;
+	}
 
 	/* Get clk and enable it */
 	hace_dev->clk = devm_clk_get(&pdev->dev, NULL);

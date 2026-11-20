@@ -630,7 +630,7 @@ static int w1_ds2760_add_slave(struct w1_slave *sl)
 	char name[32];
 	char status;
 
-	di = devm_kzalloc_obj(dev, *di);
+	di = devm_kzalloc(dev, sizeof(*di), GFP_KERNEL);
 	if (!di) {
 		retval = -ENOMEM;
 		goto di_alloc_failed;

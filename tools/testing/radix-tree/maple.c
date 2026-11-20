@@ -35234,7 +35234,7 @@ static noinline void __init check_prealloc(struct maple_tree *mt)
 	mt_set_non_kernel(1);
 	/* Spanning store */
 	mas_set_range(&mas, 1, 100);
-	MT_BUG_ON(mt, mas_preallocate(&mas, ptr, GFP_NOWAIT) == 0);
+	MT_BUG_ON(mt, mas_preallocate(&mas, ptr, GFP_KERNEL & GFP_NOWAIT) == 0);
 	allocated = mas_allocated(&mas);
 	height = mas_mt_height(&mas);
 	MT_BUG_ON(mt, allocated != 0);
@@ -35257,7 +35257,7 @@ static noinline void __init check_prealloc(struct maple_tree *mt)
 	MT_BUG_ON(mt, mas_allocated(&mas) != 0);
 	mas_set_range(&mas, 0, 200);
 	mt_set_non_kernel(1);
-	MT_BUG_ON(mt, mas_preallocate(&mas, ptr, GFP_NOWAIT) == 0);
+	MT_BUG_ON(mt, mas_preallocate(&mas, ptr, GFP_KERNEL & GFP_NOWAIT) == 0);
 	allocated = mas_allocated(&mas);
 	height = mas_mt_height(&mas);
 	MT_BUG_ON(mt, allocated != 0);
@@ -36022,11 +36022,9 @@ static noinline void __init check_erase_rebalance(struct maple_tree *mt)
 
 static noinline void __init check_mtree_dup(struct maple_tree *mt)
 {
-	struct maple_tree new;
+	DEFINE_MTREE(new);
 	int i, j, ret, count = 0;
 	unsigned int rand_seed = 17, rand;
-
-	mt_init(&new);
 
 	/* store a value at [0, 0] */
 	mt_init_flags(mt, 0);
@@ -36321,9 +36319,7 @@ static inline int check_vma_modification(struct maple_tree *mt)
 void farmer_tests(void)
 {
 	struct maple_node *node;
-	struct maple_tree tree;
-
-	mt_init(&tree);
+	DEFINE_MTREE(tree);
 
 	mt_dump(&tree, mt_dump_dec);
 
@@ -36436,10 +36432,8 @@ static unsigned long get_last_index(struct ma_state *mas)
 static void test_spanning_store_regression(void)
 {
 	unsigned long from = 0, to = 0;
-	struct maple_tree tree;
+	DEFINE_MTREE(tree);
 	MA_STATE(mas, &tree, 0, 0);
-
-	mt_init(&tree);
 
 	/*
 	 * Build a 3-level tree. We require a parent node below the root node
@@ -36502,27 +36496,22 @@ static void regression_tests(void)
 	test_spanning_store_regression();
 }
 
-int maple_tree_tests(void)
+void maple_tree_tests(void)
 {
-	int ret;
-
 #if !defined(BENCH)
 	regression_tests();
 	farmer_tests();
 #endif
-	ret = maple_tree_seed();
+	maple_tree_seed();
 	maple_tree_harvest();
-	return ret;
 }
 
 int __weak main(void)
 {
-	int ret;
-
 	maple_tree_init();
-	ret = maple_tree_tests();
+	maple_tree_tests();
 	rcu_barrier();
 	if (nr_allocated)
 		printf("nr_allocated = %d\n", nr_allocated);
-	return ret ? EXIT_FAILURE : EXIT_SUCCESS;
+	return 0;
 }

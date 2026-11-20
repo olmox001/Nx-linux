@@ -666,7 +666,7 @@ int mt8186_dai_src_register(struct mtk_base_afe *afe)
 	struct mtk_base_afe_dai *dai;
 	int ret;
 
-	dai = devm_kzalloc_obj(afe->dev, *dai);
+	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
 	if (!dai)
 		return -ENOMEM;
 

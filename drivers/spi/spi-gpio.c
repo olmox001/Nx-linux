@@ -320,8 +320,9 @@ static int spi_gpio_probe_pdata(struct platform_device *pdev,
 		return 0;
 
 	host->num_chipselect = pdata->num_chipselect;
-	spi_gpio->cs_gpios = devm_kzalloc_objs(dev, *spi_gpio->cs_gpios,
-					       host->num_chipselect);
+	spi_gpio->cs_gpios = devm_kcalloc(dev, host->num_chipselect,
+					  sizeof(*spi_gpio->cs_gpios),
+					  GFP_KERNEL);
 	if (!spi_gpio->cs_gpios)
 		return -ENOMEM;
 

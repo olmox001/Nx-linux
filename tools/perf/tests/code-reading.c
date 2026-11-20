@@ -716,8 +716,10 @@ static int do_test_code_reading(bool try_kcore)
 
 	perf_env__init(&host_env);
 	machine = machine__new_host(&host_env);
-	if (!machine) {
-		pr_debug("machine__new_host failed\n");
+
+	ret = machine__create_kernel_maps(machine);
+	if (ret < 0) {
+		pr_debug("machine__create_kernel_maps failed\n");
 		goto out_err;
 	}
 
@@ -737,10 +739,8 @@ static int do_test_code_reading(bool try_kcore)
 	have_kcore = dso__is_kcore(dso);
 
 	/* 2nd time through we just try kcore */
-	if (try_kcore && !have_kcore) {
-		err = TEST_CODE_READING_NO_KCORE;
-		goto out_err;
-	}
+	if (try_kcore && !have_kcore)
+		return TEST_CODE_READING_NO_KCORE;
 
 	/* No point getting kernel events if there is no kernel object */
 	if (!have_vmlinux && !have_kcore)
@@ -885,4 +885,4 @@ static int test__code_reading(struct test_suite *test __maybe_unused, int subtes
 	};
 }
 
-DEFINE_SUITE_NEEDS_MLOCK("Object code reading", code_reading);
+DEFINE_SUITE("Object code reading", code_reading);

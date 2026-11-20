@@ -1320,7 +1320,7 @@ static int max2175_probe(struct i2c_client *client)
 	}
 
 	/* Alloc tuner context */
-	ctx = devm_kzalloc_obj(&client->dev, *ctx);
+	ctx = devm_kzalloc(&client->dev, sizeof(*ctx), GFP_KERNEL);
 	if (ctx == NULL)
 		return -ENOMEM;
 

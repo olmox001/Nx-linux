@@ -305,7 +305,8 @@ static int ipmb_probe(struct i2c_client *client)
 	struct ipmb_dev *ipmb_dev;
 	int ret;
 
-	ipmb_dev = devm_kzalloc_obj(&client->dev, *ipmb_dev);
+	ipmb_dev = devm_kzalloc(&client->dev, sizeof(*ipmb_dev),
+					GFP_KERNEL);
 	if (!ipmb_dev)
 		return -ENOMEM;
 
@@ -360,8 +361,8 @@ MODULE_DEVICE_TABLE(i2c, ipmb_id);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id acpi_ipmb_id[] = {
-	{ .id = "IPMB0001" },
-	{ }
+	{ "IPMB0001", 0 },
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, acpi_ipmb_id);
 #endif

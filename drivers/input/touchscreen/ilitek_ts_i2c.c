@@ -555,7 +555,7 @@ static int ilitek_ts_i2c_probe(struct i2c_client *client)
 		return -ENXIO;
 	}
 
-	ts = devm_kzalloc_obj(dev, *ts);
+	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
 	if (!ts)
 		return -ENOMEM;
 
@@ -646,8 +646,8 @@ MODULE_DEVICE_TABLE(i2c, ilitek_ts_i2c_id);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id ilitekts_acpi_id[] = {
-	{ .id = "ILTK0001" },
-	{ }
+	{ "ILTK0001", 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, ilitekts_acpi_id);
 #endif

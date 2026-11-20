@@ -204,7 +204,7 @@ static void bcm63138_leds_create_led(struct bcm63138_leds *leds,
 	u32 bit;
 	int err;
 
-	led = devm_kzalloc_obj(dev, *led);
+	led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 	if (!led) {
 		dev_err(dev, "Failed to alloc LED\n");
 		return;
@@ -236,8 +236,8 @@ static void bcm63138_leds_create_led(struct bcm63138_leds *leds,
 
 	pinctrl = devm_pinctrl_get_select_default(led->cdev.dev);
 	if (IS_ERR(pinctrl) && PTR_ERR(pinctrl) != -ENODEV) {
-		dev_warn(led->cdev.dev, "Failed to select %pOF pinctrl: %pe\n",
-			 np, pinctrl);
+		dev_warn(led->cdev.dev, "Failed to select %pOF pinctrl: %ld\n",
+			 np, PTR_ERR(pinctrl));
 	}
 
 	bit = BIT(led->pin);
@@ -260,7 +260,7 @@ static int bcm63138_leds_probe(struct platform_device *pdev)
 	struct bcm63138_leds *leds;
 	u32 shift_bits;
 
-	leds = devm_kzalloc_obj(dev, *leds);
+	leds = devm_kzalloc(dev, sizeof(*leds), GFP_KERNEL);
 	if (!leds)
 		return -ENOMEM;
 

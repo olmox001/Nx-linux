@@ -114,7 +114,8 @@ struct drm_property *drm_property_create(struct drm_device *dev,
 	property->dev = dev;
 
 	if (num_values) {
-		property->values = kzalloc_objs(uint64_t, num_values);
+		property->values = kcalloc(num_values, sizeof(uint64_t),
+					   GFP_KERNEL);
 		if (!property->values)
 			goto fail;
 	}

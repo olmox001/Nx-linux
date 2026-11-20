@@ -20,6 +20,7 @@ struct sess_data {
 	unsigned int xid;
 	struct cifs_ses *ses;
 	struct TCP_Server_Info *server;
+	struct nls_table *nls_cp;
 	void (*func)(struct sess_data *);
 	int result;
 	unsigned int in_len;
@@ -105,7 +106,8 @@ unicode_oslm_strings(char **pbcc_area, const struct nls_table *nls_cp)
 	*pbcc_area = bcc_ptr;
 }
 
-static void ascii_oslm_strings(char **pbcc_area)
+static void
+ascii_oslm_strings(char **pbcc_area, const struct nls_table *nls_cp)
 {
 	char *bcc_ptr = *pbcc_area;
 
@@ -120,7 +122,8 @@ static void ascii_oslm_strings(char **pbcc_area)
 	*pbcc_area = bcc_ptr;
 }
 
-static void unicode_domain_string(char **pbcc_area, struct cifs_ses *ses)
+static void unicode_domain_string(char **pbcc_area, struct cifs_ses *ses,
+				   const struct nls_table *nls_cp)
 {
 	char *bcc_ptr = *pbcc_area;
 	int bytes_ret = 0;
@@ -136,15 +139,15 @@ static void unicode_domain_string(char **pbcc_area, struct cifs_ses *ses)
 		bytes_ret = 0;
 	} else
 		bytes_ret = cifs_strtoUTF16((__le16 *) bcc_ptr, ses->domainName,
-					    CIFS_MAX_DOMAINNAME_LEN,
-					    ses->local_nls);
+					    CIFS_MAX_DOMAINNAME_LEN, nls_cp);
 	bcc_ptr += 2 * bytes_ret;
 	bcc_ptr += 2;  /* account for null terminator */
 
 	*pbcc_area = bcc_ptr;
 }
 
-static void ascii_domain_string(char **pbcc_area, struct cifs_ses *ses)
+static void ascii_domain_string(char **pbcc_area, struct cifs_ses *ses,
+				const struct nls_table *nls_cp)
 {
 	char *bcc_ptr = *pbcc_area;
 	int len;
@@ -162,7 +165,8 @@ static void ascii_domain_string(char **pbcc_area, struct cifs_ses *ses)
 	*pbcc_area = bcc_ptr;
 }
 
-static void unicode_ssetup_strings(char **pbcc_area, struct cifs_ses *ses)
+static void unicode_ssetup_strings(char **pbcc_area, struct cifs_ses *ses,
+				   const struct nls_table *nls_cp)
 {
 	char *bcc_ptr = *pbcc_area;
 	int bytes_ret = 0;
@@ -176,19 +180,19 @@ static void unicode_ssetup_strings(char **pbcc_area, struct cifs_ses *ses)
 		*(bcc_ptr+1) = 0;
 	} else {
 		bytes_ret = cifs_strtoUTF16((__le16 *) bcc_ptr, ses->user_name,
-					    CIFS_MAX_USERNAME_LEN,
-					    ses->local_nls);
+					    CIFS_MAX_USERNAME_LEN, nls_cp);
 	}
 	bcc_ptr += 2 * bytes_ret;
 	bcc_ptr += 2; /* account for null termination */
 
-	unicode_domain_string(&bcc_ptr, ses);
-	unicode_oslm_strings(&bcc_ptr, ses->local_nls);
+	unicode_domain_string(&bcc_ptr, ses, nls_cp);
+	unicode_oslm_strings(&bcc_ptr, nls_cp);
 
 	*pbcc_area = bcc_ptr;
 }
 
-static void ascii_ssetup_strings(char **pbcc_area, struct cifs_ses *ses)
+static void ascii_ssetup_strings(char **pbcc_area, struct cifs_ses *ses,
+				 const struct nls_table *nls_cp)
 {
 	char *bcc_ptr = *pbcc_area;
 	int len;
@@ -208,14 +212,15 @@ static void ascii_ssetup_strings(char **pbcc_area, struct cifs_ses *ses)
 
 	/* BB check for overflow here */
 
-	ascii_domain_string(&bcc_ptr, ses);
-	ascii_oslm_strings(&bcc_ptr);
+	ascii_domain_string(&bcc_ptr, ses, nls_cp);
+	ascii_oslm_strings(&bcc_ptr, nls_cp);
 
 	*pbcc_area = bcc_ptr;
 }
 
-static void decode_unicode_ssetup(char **pbcc_area, int bleft,
-				  struct cifs_ses *ses)
+static void
+decode_unicode_ssetup(char **pbcc_area, int bleft, struct cifs_ses *ses,
+		      const struct nls_table *nls_cp)
 {
 	int len;
 	char *data = *pbcc_area;
@@ -223,8 +228,7 @@ static void decode_unicode_ssetup(char **pbcc_area, int bleft,
 	cifs_dbg(FYI, "bleft %d\n", bleft);
 
 	kfree(ses->serverOS);
-	ses->serverOS = cifs_strndup_from_utf16(data, bleft, true,
-						ses->local_nls);
+	ses->serverOS = cifs_strndup_from_utf16(data, bleft, true, nls_cp);
 	cifs_dbg(FYI, "serverOS=%s\n", ses->serverOS);
 	len = (UniStrnlen((wchar_t *) data, bleft / 2) * 2) + 2;
 	data += len;
@@ -233,8 +237,7 @@ static void decode_unicode_ssetup(char **pbcc_area, int bleft,
 		return;
 
 	kfree(ses->serverNOS);
-	ses->serverNOS = cifs_strndup_from_utf16(data, bleft, true,
-						 ses->local_nls);
+	ses->serverNOS = cifs_strndup_from_utf16(data, bleft, true, nls_cp);
 	cifs_dbg(FYI, "serverNOS=%s\n", ses->serverNOS);
 	len = (UniStrnlen((wchar_t *) data, bleft / 2) * 2) + 2;
 	data += len;
@@ -243,15 +246,15 @@ static void decode_unicode_ssetup(char **pbcc_area, int bleft,
 		return;
 
 	kfree(ses->serverDomain);
-	ses->serverDomain = cifs_strndup_from_utf16(data, bleft, true,
-						    ses->local_nls);
+	ses->serverDomain = cifs_strndup_from_utf16(data, bleft, true, nls_cp);
 	cifs_dbg(FYI, "serverDomain=%s\n", ses->serverDomain);
 
 	return;
 }
 
 static void decode_ascii_ssetup(char **pbcc_area, __u16 bleft,
-				struct cifs_ses *ses)
+				struct cifs_ses *ses,
+				const struct nls_table *nls_cp)
 {
 	int len;
 	char *bcc_ptr = *pbcc_area;
@@ -440,7 +443,7 @@ sess_auth_ntlmv2(struct sess_data *sess_data)
 
 	if (ses->user_name != NULL) {
 		/* calculate nlmv2 response and session key */
-		rc = setup_ntlmv2_rsp(ses);
+		rc = setup_ntlmv2_rsp(ses, sess_data->nls_cp);
 		if (rc) {
 			cifs_dbg(VFS, "Error %d during NTLMv2 authentication\n", rc);
 			goto out;
@@ -464,9 +467,9 @@ sess_auth_ntlmv2(struct sess_data *sess_data)
 			*bcc_ptr = 0;
 			bcc_ptr++;
 		}
-		unicode_ssetup_strings(&bcc_ptr, ses);
+		unicode_ssetup_strings(&bcc_ptr, ses, sess_data->nls_cp);
 	} else {
-		ascii_ssetup_strings(&bcc_ptr, ses);
+		ascii_ssetup_strings(&bcc_ptr, ses, sess_data->nls_cp);
 	}
 
 
@@ -504,9 +507,11 @@ sess_auth_ntlmv2(struct sess_data *sess_data)
 			++bcc_ptr;
 			--bytes_remaining;
 		}
-		decode_unicode_ssetup(&bcc_ptr, bytes_remaining, ses);
+		decode_unicode_ssetup(&bcc_ptr, bytes_remaining, ses,
+				      sess_data->nls_cp);
 	} else {
-		decode_ascii_ssetup(&bcc_ptr, bytes_remaining, ses);
+		decode_ascii_ssetup(&bcc_ptr, bytes_remaining, ses,
+				    sess_data->nls_cp);
 	}
 
 	rc = sess_establish_session(sess_data);
@@ -587,11 +592,11 @@ sess_auth_kerberos(struct sess_data *sess_data)
 			*bcc_ptr = 0;
 			bcc_ptr++;
 		}
-		unicode_oslm_strings(&bcc_ptr, sess_data->ses->local_nls);
-		unicode_domain_string(&bcc_ptr, ses);
+		unicode_oslm_strings(&bcc_ptr, sess_data->nls_cp);
+		unicode_domain_string(&bcc_ptr, ses, sess_data->nls_cp);
 	} else {
-		ascii_oslm_strings(&bcc_ptr);
-		ascii_domain_string(&bcc_ptr, ses);
+		ascii_oslm_strings(&bcc_ptr, sess_data->nls_cp);
+		ascii_domain_string(&bcc_ptr, ses, sess_data->nls_cp);
 	}
 
 	sess_data->iov[2].iov_len = (long) bcc_ptr -
@@ -638,9 +643,11 @@ sess_auth_kerberos(struct sess_data *sess_data)
 			++bcc_ptr;
 			--bytes_remaining;
 		}
-		decode_unicode_ssetup(&bcc_ptr, bytes_remaining, ses);
+		decode_unicode_ssetup(&bcc_ptr, bytes_remaining, ses,
+				      sess_data->nls_cp);
 	} else {
-		decode_ascii_ssetup(&bcc_ptr, bytes_remaining, ses);
+		decode_ascii_ssetup(&bcc_ptr, bytes_remaining, ses,
+				    sess_data->nls_cp);
 	}
 
 	rc = sess_establish_session(sess_data);
@@ -685,9 +692,9 @@ _sess_auth_rawntlmssp_assemble_req(struct sess_data *sess_data)
 			*bcc_ptr = 0;
 			bcc_ptr++;
 		}
-		unicode_oslm_strings(&bcc_ptr, sess_data->ses->local_nls);
+		unicode_oslm_strings(&bcc_ptr, sess_data->nls_cp);
 	} else {
-		ascii_oslm_strings(&bcc_ptr);
+		ascii_oslm_strings(&bcc_ptr, sess_data->nls_cp);
 	}
 
 	sess_data->iov[2].iov_len = (long) bcc_ptr -
@@ -734,7 +741,8 @@ sess_auth_rawntlmssp_negotiate(struct sess_data *sess_data)
 
 	/* Build security blob before we assemble the request */
 	rc = build_ntlmssp_negotiate_blob(&ntlmsspblob,
-				     &blob_len, ses, server);
+				     &blob_len, ses, server,
+				     sess_data->nls_cp);
 	if (rc)
 		goto out_free_ntlmsspblob;
 
@@ -828,7 +836,8 @@ sess_auth_rawntlmssp_authenticate(struct sess_data *sess_data)
 	pSMB = (SESSION_SETUP_ANDX *)sess_data->iov[0].iov_base;
 	smb_buf = (struct smb_hdr *)pSMB;
 	rc = build_ntlmssp_auth_blob(&ntlmsspblob,
-					&blob_len, ses, server);
+					&blob_len, ses, server,
+					sess_data->nls_cp);
 	if (rc)
 		goto out_free_ntlmsspblob;
 	sess_data->iov[1].iov_len = blob_len;
@@ -887,9 +896,11 @@ sess_auth_rawntlmssp_authenticate(struct sess_data *sess_data)
 			++bcc_ptr;
 			--bytes_remaining;
 		}
-		decode_unicode_ssetup(&bcc_ptr, bytes_remaining, ses);
+		decode_unicode_ssetup(&bcc_ptr, bytes_remaining, ses,
+				      sess_data->nls_cp);
 	} else {
-		decode_ascii_ssetup(&bcc_ptr, bytes_remaining, ses);
+		decode_ascii_ssetup(&bcc_ptr, bytes_remaining, ses,
+				    sess_data->nls_cp);
 	}
 
 out_free_ntlmsspblob:
@@ -947,33 +958,38 @@ static int select_sec(struct sess_data *sess_data)
 }
 
 int CIFS_SessSetup(const unsigned int xid, struct cifs_ses *ses,
-		   struct TCP_Server_Info *server)
+		   struct TCP_Server_Info *server,
+		   const struct nls_table *nls_cp)
 {
-	struct sess_data sess_data;
 	int rc = 0;
+	struct sess_data *sess_data;
 
 	if (ses == NULL) {
 		WARN(1, "%s: ses == NULL!", __func__);
 		return -EINVAL;
 	}
 
-	sess_data = (struct sess_data) {
-		.xid		= xid,
-		.ses		= ses,
-		.server		= server,
-		.buf0_type	= CIFS_NO_BUFFER,
-	};
+	sess_data = kzalloc_obj(struct sess_data);
+	if (!sess_data)
+		return -ENOMEM;
 
-	rc = select_sec(&sess_data);
+	sess_data->xid = xid;
+	sess_data->ses = ses;
+	sess_data->server = server;
+	sess_data->buf0_type = CIFS_NO_BUFFER;
+	sess_data->nls_cp = (struct nls_table *) nls_cp;
+
+	rc = select_sec(sess_data);
 	if (rc)
 		goto out;
 
-	while (sess_data.func)
-		sess_data.func(&sess_data);
+	while (sess_data->func)
+		sess_data->func(sess_data);
 
-	rc = sess_data.result;
+	/* Store result before we free sess_data */
+	rc = sess_data->result;
 
 out:
-	memzero_explicit(&sess_data, sizeof(sess_data));
+	kfree_sensitive(sess_data);
 	return rc;
 }

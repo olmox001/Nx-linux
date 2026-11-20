@@ -155,7 +155,6 @@ extern "C" {
 /* Panel type property */
 #define DRM_MODE_PANEL_TYPE_UNKNOWN	0
 #define DRM_MODE_PANEL_TYPE_OLED	1
-#define DRM_MODE_PANEL_TYPE_LCD		2
 
 /*
  * DRM_MODE_ROTATE_<degrees>
@@ -955,18 +954,6 @@ enum drm_colorop_type {
 	 *         color = lut3d[index]
 	 */
 	DRM_COLOROP_3D_LUT,
-
-	/**
-	 * @DRM_COLOROP_FIXED_MATRIX:
-	 *
-	 * enum string "Fixed Matrix"
-	 *
-	 * A Colorop block that performs a pre-defined matrix operation selected
-	 * via the FIXED_MATRIX_TYPE enum property. The driver advertises the supported
-	 * operations through this property.
-	 */
-	DRM_COLOROP_FIXED_MATRIX,
-
 };
 
 /**

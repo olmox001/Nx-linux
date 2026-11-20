@@ -8,7 +8,6 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
-#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
@@ -127,11 +126,7 @@ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
 			   VSDC_FB_CONFIG_UV_SWIZZLE_EN,
 			   vs_state->format.uv_swizzle);
 
-	/*
-	 * Primary plane cannot be moved, no clipping is involved,
-	 * so the non-clipped framebuffer address can be used.
-	 */
-	dma_addr = drm_fb_dma_get_gem_addr(fb, state, 0);
+	dma_addr = vs_fb_get_dma_addr(fb, &state->src);
 
 	regmap_write(dc->regs, VSDC_FB_ADDRESS(output),
 		     lower_32_bits(dma_addr));
@@ -160,10 +155,10 @@ static const struct drm_plane_helper_funcs vs_primary_plane_helper_funcs = {
 };
 
 static const struct drm_plane_funcs vs_primary_plane_funcs = {
-	.atomic_create_state	= vs_plane_create_state,
 	.atomic_destroy_state	= vs_plane_destroy_state,
 	.atomic_duplicate_state	= vs_plane_duplicate_state,
 	.disable_plane		= drm_atomic_helper_disable_plane,
+	.reset			= vs_plane_reset,
 	.update_plane		= drm_atomic_helper_update_plane,
 };
 
@@ -173,8 +168,8 @@ struct drm_plane *vs_primary_plane_init(struct drm_device *drm_dev, struct vs_dc
 
 	plane = drmm_universal_plane_alloc(drm_dev, struct drm_plane, dev, 0,
 					   &vs_primary_plane_funcs,
-					   dc->identity.formats->primary_array,
-					   dc->identity.formats->primary_num,
+					   dc->identity.formats->array,
+					   dc->identity.formats->num,
 					   NULL,
 					   DRM_PLANE_TYPE_PRIMARY,
 					   NULL);

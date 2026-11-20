@@ -744,7 +744,8 @@ static int peak_pciefd_probe(struct pci_dev *pdev,
 		can_count = 1;
 
 	/* allocate board structure object */
-	pciefd = devm_kzalloc_flex(&pdev->dev, *pciefd, can, can_count);
+	pciefd = devm_kzalloc(&pdev->dev, struct_size(pciefd, can, can_count),
+			      GFP_KERNEL);
 	if (!pciefd) {
 		err = -ENOMEM;
 		goto err_release_regions;

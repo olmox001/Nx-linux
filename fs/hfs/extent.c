@@ -121,18 +121,12 @@ static int __hfs_ext_write_extent(struct inode *inode, struct hfs_find_data *fd)
 		res = hfs_bmap_reserve(fd->tree, fd->tree->depth + 1);
 		if (res)
 			return res;
-		res = hfs_brec_insert(fd, HFS_I(inode)->cached_extents,
-				      sizeof(hfs_extent_rec));
-		if (res)
-			return res;
+		hfs_brec_insert(fd, HFS_I(inode)->cached_extents, sizeof(hfs_extent_rec));
 		HFS_I(inode)->flags &= ~(HFS_FLG_EXT_DIRTY|HFS_FLG_EXT_NEW);
 	} else {
 		if (res)
 			return res;
-		if (!is_hfs_bnode_range_valid(fd, sizeof(hfs_extent_rec)))
-			return -ERANGE;
-		hfs_bnode_write(fd->bnode, HFS_I(inode)->cached_extents,
-				fd->entryoffset, fd->entrylength);
+		hfs_bnode_write(fd->bnode, HFS_I(inode)->cached_extents, fd->entryoffset, fd->entrylength);
 		HFS_I(inode)->flags &= ~HFS_FLG_EXT_DIRTY;
 	}
 	return 0;

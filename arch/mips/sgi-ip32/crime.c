@@ -27,9 +27,7 @@ EXPORT_SYMBOL_GPL(mace);
 
 void __init crime_init(void)
 {
-	static const char * const revs[] = { "1.1", "1.3", "1.4" };
-	const char *rev;
-	u64 id;
+	unsigned int id, rev;
 	const int field = 2 * sizeof(unsigned long);
 
 	set_io_port_base((unsigned long) ioremap(MACEPCI_LOW_IO, 0x2000000));
@@ -37,24 +35,10 @@ void __init crime_init(void)
 	mace = ioremap(MACE_BASE, sizeof(struct sgi_mace));
 
 	id = crime->id;
-	/* The revision of ID 0xa is in the upper word; 0xb is rev 1.5. */
-	switch (id & CRIME_ID_IDBITS) {
-	case CRIME_ID_IDVALUE:
-		rev = revs[min_t(u64, id >> 32, ARRAY_SIZE(revs) - 1)];
-		break;
-	case CRIME_ID_IDVALUE_B:
-		rev = "1.5";
-		break;
-	case 0x00:
-		rev = "Petty";
-		break;
-	default:
-		rev = "?";
-		break;
-	}
-	pr_info("CRIME id %1x rev %s at 0x%0*lx\n",
-		(unsigned int)(id & CRIME_ID_IDBITS) >> 4, rev, field,
-		(unsigned long)CRIME_BASE);
+	rev = id & CRIME_ID_REV;
+	id = (id & CRIME_ID_IDBITS) >> 4;
+	printk(KERN_INFO "CRIME id %1x rev %d at 0x%0*lx\n",
+	       id, rev, field, (unsigned long) CRIME_BASE);
 }
 
 irqreturn_t crime_memerr_intr(int irq, void *dev_id)

@@ -178,7 +178,8 @@ static int max7359_probe(struct i2c_client *client)
 
 	dev_dbg(&client->dev, "keys FIFO is 0x%02x\n", ret);
 
-	keypad = devm_kzalloc_obj(&client->dev, struct max7359_keypad);
+	keypad = devm_kzalloc(&client->dev, sizeof(struct max7359_keypad),
+			      GFP_KERNEL);
 	if (!keypad) {
 		dev_err(&client->dev, "failed to allocate memory\n");
 		return -ENOMEM;
@@ -197,6 +198,7 @@ static int max7359_probe(struct i2c_client *client)
 	input_dev->id.bustype = BUS_I2C;
 	input_dev->open = max7359_open;
 	input_dev->close = max7359_close;
+	input_dev->dev.parent = &client->dev;
 
 	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REP);
 	input_dev->keycodesize = sizeof(keypad->keycodes[0]);

@@ -59,6 +59,11 @@
 #include "tp_meter.h"
 #include "translation-table.h"
 
+/* List manipulations on hardif_list have to be rtnl_lock()'ed,
+ * list traversals just rcu-locked
+ */
+struct list_head batadv_hardif_list;
+unsigned int batadv_hardif_generation;
 static int (*batadv_rx_handler[256])(struct sk_buff *skb,
 				     struct batadv_hard_iface *recv_if);
 
@@ -82,14 +87,6 @@ static char *batadv_uev_type_str[] = {
 	"bla",
 };
 
-/**
- * batadv_init() - batman-adv module init function
- *
- * Initialise the global state used by all mesh interfaces, register the
- * netdevice notifier and the netlink/rtnl family.
- *
- * Return: 0 on success or negative error number in case of failure
- */
 static int __init batadv_init(void)
 {
 	int ret;
@@ -98,73 +95,45 @@ static int __init batadv_init(void)
 	if (ret < 0)
 		return ret;
 
+	INIT_LIST_HEAD(&batadv_hardif_list);
 	batadv_algo_init();
 
 	batadv_recv_handler_init();
 
-	ret = batadv_v_init();
-	if (ret < 0)
-		goto err_tt;
-
-	ret = batadv_iv_init();
-	if (ret < 0)
-		goto err_v;
-
+	batadv_v_init();
+	batadv_iv_init();
 	batadv_tp_meter_init();
-
-	ret = batadv_wifi_net_devices_init();
-	if (ret < 0)
-		goto err_iv;
 
 	batadv_event_workqueue = create_singlethread_workqueue("bat_events");
 	if (!batadv_event_workqueue) {
 		ret = -ENOMEM;
-		goto err_wifi;
+		goto err_create_wq;
 	}
 
-	ret = register_netdevice_notifier(&batadv_hard_if_notifier);
+	ret = batadv_wifi_net_devices_init();
 	if (ret < 0)
-		goto err_wq;
+		goto err_init_wifi;
 
-	ret = rtnl_link_register(&batadv_link_ops);
-	if (ret < 0)
-		goto err_notifier;
-
-	ret = batadv_netlink_register();
-	if (ret < 0)
-		goto err_rtnl;
+	register_netdevice_notifier(&batadv_hard_if_notifier);
+	rtnl_link_register(&batadv_link_ops);
+	batadv_netlink_register();
 
 	pr_info("B.A.T.M.A.N. advanced %s (compatibility version %i) loaded\n",
 		init_utsname()->release, BATADV_COMPAT_VERSION);
 
 	return 0;
 
-err_rtnl:
-	rtnl_link_unregister(&batadv_link_ops);
-err_notifier:
-	unregister_netdevice_notifier(&batadv_hard_if_notifier);
-err_wq:
+err_init_wifi:
 	destroy_workqueue(batadv_event_workqueue);
 	batadv_event_workqueue = NULL;
 	rcu_barrier();
-err_wifi:
-	batadv_wifi_net_devices_deinit();
-err_iv:
-	batadv_iv_deinit();
-err_v:
-	batadv_v_deinit();
-err_tt:
+
+err_create_wq:
 	batadv_tt_cache_destroy();
 
 	return ret;
 }
 
-/**
- * batadv_exit() - batman-adv module exit function
- *
- * Unregister the netdevice notifier and tear down all global state allocated
- * by batadv_init().
- */
 static void __exit batadv_exit(void)
 {
 	batadv_netlink_unregister();
@@ -198,7 +167,6 @@ int batadv_mesh_init(struct net_device *mesh_iface)
 	spin_lock_init(&bat_priv->tt.roam_list_lock);
 	spin_lock_init(&bat_priv->tt.last_changeset_lock);
 	spin_lock_init(&bat_priv->tt.commit_lock);
-	spin_lock_init(&bat_priv->tt.reserve_lock);
 	spin_lock_init(&bat_priv->gw.list_lock);
 #ifdef CONFIG_BATMAN_ADV_MCAST
 	spin_lock_init(&bat_priv->mcast.mla_lock);
@@ -294,11 +262,6 @@ void batadv_mesh_free(struct net_device *mesh_iface)
 	struct batadv_meshif_vlan *vlan;
 
 	WRITE_ONCE(bat_priv->mesh_state, BATADV_MESH_DEACTIVATING);
-
-	/* the originator purge worker accesses (among others) the TT tables
-	 * and must therefore be stopped before any of them are freed
-	 */
-	disable_delayed_work_sync(&bat_priv->orig_work);
 
 	batadv_purge_outstanding_packets(bat_priv, NULL);
 	batadv_tp_stop_all(bat_priv);
@@ -397,14 +360,10 @@ int batadv_max_header_len(void)
  */
 void batadv_skb_set_priority(struct sk_buff *skb, int offset)
 {
-	struct vlan_ethhdr vhdr_tmp;
-	struct ipv6hdr ip6_hdr_tmp;
-	struct ethhdr ethhdr_tmp;
-	struct vlan_ethhdr *vhdr;
-	struct iphdr ip_hdr_tmp;
-	struct ipv6hdr *ip6_hdr;
-	struct ethhdr *ethhdr;
-	struct iphdr *ip_hdr;
+	struct iphdr ip_hdr_tmp, *ip_hdr;
+	struct ipv6hdr ip6_hdr_tmp, *ip6_hdr;
+	struct ethhdr ethhdr_tmp, *ethhdr;
+	struct vlan_ethhdr *vhdr, vhdr_tmp;
 	u32 prio;
 
 	/* already set, do nothing */
@@ -445,17 +404,6 @@ void batadv_skb_set_priority(struct sk_buff *skb, int offset)
 	skb->priority = prio + 256;
 }
 
-/**
- * batadv_recv_unhandled_packet() - default RX handler for unsupported packet
- *  types
- * @skb: incoming packet
- * @recv_if: interface on which the packet was received (unused)
- *
- * Drop incoming packets whose packet_type has no dedicated RX handler
- * registered.
- *
- * Return: NET_RX_DROP
- */
 static int batadv_recv_unhandled_packet(struct sk_buff *skb,
 					struct batadv_hard_iface *recv_if)
 {
@@ -463,6 +411,10 @@ static int batadv_recv_unhandled_packet(struct sk_buff *skb,
 
 	return NET_RX_DROP;
 }
+
+/* incoming packets with the batman ethertype received on any active hard
+ * interface
+ */
 
 /**
  * batadv_batman_skb_recv() - Handle incoming message from an hard interface
@@ -477,9 +429,9 @@ int batadv_batman_skb_recv(struct sk_buff *skb, struct net_device *dev,
 			   struct packet_type *ptype,
 			   struct net_device *orig_dev)
 {
+	struct batadv_priv *bat_priv;
 	struct batadv_ogm_packet *batadv_ogm_packet;
 	struct batadv_hard_iface *hard_iface;
-	struct batadv_priv *bat_priv;
 	u8 idx;
 
 	hard_iface = container_of(ptype, struct batadv_hard_iface,
@@ -489,10 +441,8 @@ int batadv_batman_skb_recv(struct sk_buff *skb, struct net_device *dev,
 	 * shut down otherwise the packet may trigger de-reference errors
 	 * further down in the receive path.
 	 */
-	if (!kref_get_unless_zero(&hard_iface->refcount)) {
-		kfree_skb(skb);
-		return NET_RX_DROP;
-	}
+	if (!kref_get_unless_zero(&hard_iface->refcount))
+		goto err_out;
 
 	skb = skb_share_check(skb, GFP_ATOMIC);
 
@@ -510,6 +460,9 @@ int batadv_batman_skb_recv(struct sk_buff *skb, struct net_device *dev,
 
 	/* expect a valid ethernet header here. */
 	if (unlikely(skb->mac_len != ETH_HLEN || !skb_mac_header(skb)))
+		goto err_free;
+
+	if (!hard_iface->mesh_iface)
 		goto err_free;
 
 	bat_priv = netdev_priv(hard_iface->mesh_iface);
@@ -548,16 +501,10 @@ err_free:
 	kfree_skb(skb);
 err_put:
 	batadv_hardif_put(hard_iface);
+err_out:
 	return NET_RX_DROP;
 }
 
-/**
- * batadv_recv_handler_init() - initialise the RX handler dispatch table
- *
- * Initialise all entries of the RX handler table as either "unhandled" or with
- * protocol indepentend handlers, and perform compile-time size sanity checks on
- * all on-wire packet structs.
- */
 static void batadv_recv_handler_init(void)
 {
 	int i;
@@ -648,11 +595,6 @@ void batadv_recv_handler_unregister(u8 packet_type)
  * The caller must ensure that at least @header_len + ETH_HLEN bytes are
  * accessible after skb->data.
  *
- * Warning: This function may reallocate the skb data buffer via
- * pskb_may_pull()/... Any pointer into the skb data (e.g. obtained from skb->data
- * or eth_hdr()) before this call must be considered invalid afterwards and has
- * to be reacquired.
- *
  * Return: VID with the BATADV_VLAN_HAS_TAG flag when the packet embedded in the
  * skb is vlan tagged. Otherwise BATADV_NO_FLAGS.
  */
@@ -721,9 +663,9 @@ bool batadv_vlan_ap_isola_get(struct batadv_priv *bat_priv, unsigned short vid)
 int batadv_throw_uevent(struct batadv_priv *bat_priv, enum batadv_uev_type type,
 			enum batadv_uev_action action, const char *data)
 {
-	char *uevent_env[4] = { NULL, NULL, NULL, NULL };
-	struct kobject *bat_kobj;
 	int ret = -ENOMEM;
+	struct kobject *bat_kobj;
+	char *uevent_env[4] = { NULL, NULL, NULL, NULL };
 
 	bat_kobj = &bat_priv->mesh_iface->dev.kobj;
 

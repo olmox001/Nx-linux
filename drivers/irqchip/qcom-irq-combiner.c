@@ -234,7 +234,8 @@ static int combiner_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	combiner = devm_kzalloc_flex(&pdev->dev, *combiner, regs, nregs);
+	combiner = devm_kzalloc(&pdev->dev, struct_size(combiner, regs, nregs),
+				GFP_KERNEL);
 	if (!combiner)
 		return -ENOMEM;
 
@@ -261,7 +262,7 @@ static int combiner_probe(struct platform_device *pdev)
 }
 
 static const struct acpi_device_id qcom_irq_combiner_ids[] = {
-	{ .id = "QCOM80B1" },
+	{ "QCOM80B1", },
 	{ }
 };
 

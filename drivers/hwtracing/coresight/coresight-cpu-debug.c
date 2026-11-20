@@ -562,7 +562,7 @@ static int __debug_probe(struct device *dev, struct resource *res)
 	void __iomem *base;
 	int ret;
 
-	drvdata = devm_kzalloc_obj(dev, *drvdata);
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 

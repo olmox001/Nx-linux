@@ -51,7 +51,7 @@ ktime_t do_timens_ktime_to_host(clockid_t clockid, ktime_t tim,
 		tim = 0;
 	} else {
 		tim = ktime_sub(tim, offset);
-		if (unlikely(tim < 0))
+		if (unlikely(tim > KTIME_MAX))
 			tim = KTIME_MAX;
 	}
 

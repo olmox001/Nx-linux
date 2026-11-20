@@ -6,7 +6,7 @@
 
 #include <vdso/datapage.h>
 #include <vdso/page.h>
-#include <asm/vdso.h>
+#include <asm/vdso/vsyscall.h>
 
 SECTIONS
 {

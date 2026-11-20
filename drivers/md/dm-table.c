@@ -165,16 +165,14 @@ int dm_table_create(struct dm_table **result, blk_mode_t mode,
 
 static void free_devices(struct list_head *devices, struct mapped_device *md)
 {
-	struct dm_dev_internal *dd, *dd_next;
-	struct dm_dev_ref *ref, *ref_next;
+	struct list_head *tmp, *next;
 
-	list_for_each_entry_safe(dd, dd_next, devices, list) {
-		list_for_each_entry_safe(ref, ref_next, &dd->refs, list) {
-			DMWARN("%s: dm_table_destroy: dm_put_device call missing for %s",
-			       dm_device_name(md), ref->dm_dev->name);
-			dm_put_table_device(md, ref->dm_dev);
-			kfree(ref);
-		}
+	list_for_each_safe(tmp, next, devices) {
+		struct dm_dev_internal *dd =
+		    list_entry(tmp, struct dm_dev_internal, list);
+		DMWARN("%s: dm_table_destroy: dm_put_device call missing for %s",
+		       dm_device_name(md), dd->dm_dev->name);
+		dm_put_table_device(md, dd->dm_dev);
 		kfree(dd);
 	}
 }
@@ -220,23 +218,8 @@ static struct dm_dev_internal *find_device(struct list_head *l, dev_t dev)
 	struct dm_dev_internal *dd;
 
 	list_for_each_entry(dd, l, list)
-		if (dd->bdev->bd_dev == dev)
+		if (dd->dm_dev->bdev->bd_dev == dev)
 			return dd;
-
-	return NULL;
-}
-
-/*
- * See if the device is already open with a mode that covers the
- * requested one.
- */
-static struct dm_dev_ref *find_ref(struct dm_dev_internal *dd, blk_mode_t mode)
-{
-	struct dm_dev_ref *ref;
-
-	list_for_each_entry(ref, &dd->refs, list)
-		if ((ref->dm_dev->mode & mode) == mode)
-			return ref;
 
 	return NULL;
 }
@@ -321,6 +304,31 @@ static int device_area_is_invalid(struct dm_target *ti, struct dm_dev *dev,
 }
 
 /*
+ * This upgrades the mode on an already open dm_dev, being
+ * careful to leave things as they were if we fail to reopen the
+ * device and not to touch the existing bdev field in case
+ * it is accessed concurrently.
+ */
+static int upgrade_mode(struct dm_dev_internal *dd, blk_mode_t new_mode,
+			struct mapped_device *md)
+{
+	int r;
+	struct dm_dev *old_dev, *new_dev;
+
+	old_dev = dd->dm_dev;
+
+	r = dm_get_table_device(md, dd->dm_dev->bdev->bd_dev,
+				dd->dm_dev->mode | new_mode, &new_dev);
+	if (r)
+		return r;
+
+	dd->dm_dev = new_dev;
+	dm_put_table_device(md, old_dev);
+
+	return 0;
+}
+
+/*
  * Note: the __ref annotation is because this function can call the __init
  * marked early_lookup_bdev when called during early boot code from dm-init.c.
  */
@@ -352,9 +360,7 @@ EXPORT_SYMBOL(dm_devt_from_path);
 
 /*
  * Add a device to the list, or just increment the usage count if
- * it's already present with a mode that covers the requested one.
- * Otherwise open the device again with the requested mode, so the
- * dm_devs returned earlier stay valid.
+ * it's already present.
  */
 int dm_get_device(struct dm_target *ti, const char *path, blk_mode_t mode,
 		  struct dm_dev **result)
@@ -362,7 +368,6 @@ int dm_get_device(struct dm_target *ti, const char *path, blk_mode_t mode,
 	int r;
 	dev_t dev;
 	struct dm_dev_internal *dd;
-	struct dm_dev_ref *ref;
 	struct dm_table *t = ti->table;
 
 	BUG_ON(!t);
@@ -375,46 +380,30 @@ int dm_get_device(struct dm_target *ti, const char *path, blk_mode_t mode,
 		return -EINVAL;
 
 	dd = find_device(&t->devices, dev);
-	if (dd) {
-		ref = find_ref(dd, mode);
-		if (ref) {
-			refcount_inc(&ref->count);
-			goto out;
-		}
-	} else {
+	if (!dd) {
 		dd = kmalloc_obj(*dd);
 		if (!dd)
 			return -ENOMEM;
-		INIT_LIST_HEAD(&dd->refs);
-	}
 
-	ref = kmalloc_obj(*ref);
-	if (!ref) {
-		r = -ENOMEM;
-		goto bad;
-	}
+		r = dm_get_table_device(t->md, dev, mode, &dd->dm_dev);
+		if (r) {
+			kfree(dd);
+			return r;
+		}
 
-	r = dm_get_table_device(t->md, dev, mode, &ref->dm_dev);
-	if (r) {
-		kfree(ref);
-		goto bad;
-	}
-	refcount_set(&ref->count, 1);
-
-	/* A device in the list always has at least one ref */
-	if (list_empty(&dd->refs)) {
-		dd->bdev = ref->dm_dev->bdev;
+		refcount_set(&dd->count, 1);
 		list_add(&dd->list, &t->devices);
-	}
-	list_add_tail(&ref->list, &dd->refs);
-out:
-	*result = ref->dm_dev;
-	return 0;
+		goto out;
 
-bad:
-	if (list_empty(&dd->refs))
-		kfree(dd);
-	return r;
+	} else if (dd->dm_dev->mode != (mode | dd->dm_dev->mode)) {
+		r = upgrade_mode(dd, mode, t->md);
+		if (r)
+			return r;
+	}
+	refcount_inc(&dd->count);
+out:
+	*result = dd->dm_dev;
+	return 0;
 }
 EXPORT_SYMBOL(dm_get_device);
 
@@ -464,28 +453,23 @@ static int dm_set_device_limits(struct dm_target *ti, struct dm_dev *dev,
  */
 void dm_put_device(struct dm_target *ti, struct dm_dev *d)
 {
+	int found = 0;
 	struct list_head *devices = &ti->table->devices;
 	struct dm_dev_internal *dd;
-	struct dm_dev_ref *ref;
 
-	list_for_each_entry(dd, devices, list)
-		list_for_each_entry(ref, &dd->refs, list)
-			if (ref->dm_dev == d)
-				goto found;
-
-	DMERR("%s: device %s not in table devices list",
-	      dm_device_name(ti->table->md), d->name);
-	return;
-
-found:
-	if (!refcount_dec_and_test(&ref->count))
+	list_for_each_entry(dd, devices, list) {
+		if (dd->dm_dev == d) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found) {
+		DMERR("%s: device %s not in table devices list",
+		      dm_device_name(ti->table->md), d->name);
 		return;
-
-	dm_put_table_device(ti->table->md, d);
-	list_del(&ref->list);
-	kfree(ref);
-
-	if (list_empty(&dd->refs)) {
+	}
+	if (refcount_dec_and_test(&dd->count)) {
+		dm_put_table_device(ti->table->md, d);
 		list_del(&dd->list);
 		kfree(dd);
 	}
@@ -529,7 +513,7 @@ static char **realloc_argv(unsigned int *size, char **old_argv)
 		new_size = 8;
 		gfp = GFP_NOIO;
 	}
-	argv = kmalloc_objs(*argv, new_size, gfp);
+	argv = kmalloc_array(new_size, sizeof(*argv), gfp);
 	if (argv) {
 		if (old_argv)
 			memcpy(argv, old_argv, *size * sizeof(*argv));
@@ -2051,7 +2035,7 @@ int dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 		limits->features &= ~BLK_FEAT_NOWAIT;
 
 	/*
-	 * The current polling implementation does not support request based
+	 * The current polling impementation does not support request based
 	 * stacking.
 	 */
 	if (!__table_type_bio_based(t->type))

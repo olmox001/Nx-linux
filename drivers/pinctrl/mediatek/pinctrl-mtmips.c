@@ -217,8 +217,10 @@ static int mtmips_pinctrl_index(struct mtmips_priv *p)
 	p->func_count++;
 
 	/* allocate our function and group mapping index buffers */
-	p->func = devm_kzalloc_objs(p->dev, *p->func, p->func_count);
-	gpio_func.groups = devm_kzalloc_objs(p->dev, int, p->group_count);
+	p->func = devm_kcalloc(p->dev, p->func_count,
+			       sizeof(*p->func), GFP_KERNEL);
+	gpio_func.groups = devm_kcalloc(p->dev, p->group_count, sizeof(int),
+					GFP_KERNEL);
 	if (!p->func || !gpio_func.groups)
 		return -ENOMEM;
 
@@ -234,7 +236,8 @@ static int mtmips_pinctrl_index(struct mtmips_priv *p)
 	for (i = 0; i < p->group_count; i++) {
 		for (j = 0; j < p->groups[i].func_count; j++) {
 			p->func[c] = &p->groups[i].func[j];
-			p->func[c]->groups = devm_kzalloc_obj(p->dev, int);
+			p->func[c]->groups = devm_kzalloc(p->dev, sizeof(int),
+						    GFP_KERNEL);
 			if (!p->func[c]->groups)
 				return -ENOMEM;
 			p->func[c]->groups[0] = i;
@@ -259,8 +262,10 @@ static int mtmips_pinctrl_pins(struct mtmips_priv *p)
 		if (!p->func[i]->pin_count)
 			continue;
 
-		p->func[i]->pins = devm_kzalloc_objs(p->dev, int,
-						     p->func[i]->pin_count);
+		p->func[i]->pins = devm_kcalloc(p->dev,
+						p->func[i]->pin_count,
+						sizeof(int),
+						GFP_KERNEL);
 		if (!p->func[i]->pins)
 			return -ENOMEM;
 		for (j = 0; j < p->func[i]->pin_count; j++)
@@ -274,8 +279,8 @@ static int mtmips_pinctrl_pins(struct mtmips_priv *p)
 	/* the buffer that tells us which pins are gpio */
 	p->gpio = devm_kcalloc(p->dev, p->max_pins, sizeof(u8), GFP_KERNEL);
 	/* the pads needed to tell pinctrl about our pins */
-	p->pads = devm_kzalloc_objs(p->dev, struct pinctrl_pin_desc,
-				    p->max_pins);
+	p->pads = devm_kcalloc(p->dev, p->max_pins,
+			       sizeof(struct pinctrl_pin_desc), GFP_KERNEL);
 	if (!p->pads || !p->gpio)
 		return -ENOMEM;
 
@@ -319,7 +324,7 @@ int mtmips_pinctrl_init(struct platform_device *pdev,
 		return -ENOTSUPP;
 
 	/* setup the private data */
-	p = devm_kzalloc_obj(&pdev->dev, struct mtmips_priv);
+	p = devm_kzalloc(&pdev->dev, sizeof(struct mtmips_priv), GFP_KERNEL);
 	if (!p)
 		return -ENOMEM;
 
@@ -344,7 +349,3 @@ int mtmips_pinctrl_init(struct platform_device *pdev,
 
 	return PTR_ERR_OR_ZERO(dev);
 }
-EXPORT_SYMBOL_NS_GPL(mtmips_pinctrl_init, "MTK_PINCTRL");
-
-MODULE_DESCRIPTION("MediaTek MIPS Pinctrl Common Driver");
-MODULE_LICENSE("GPL v2");

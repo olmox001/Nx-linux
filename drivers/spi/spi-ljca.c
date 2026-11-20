@@ -105,13 +105,7 @@ static int ljca_spi_read_write(struct ljca_spi_dev *ljca_spi, const u8 *w_data,
 			    (u8 *)r_packet, LJCA_SPI_BUF_SIZE);
 	if (ret < 0)
 		return ret;
-
-	if (ret < sizeof(*r_packet))
-		return -EIO;
-
-	/* write acks carry no payload */
-	if (!r_packet->len || r_packet->len > len ||
-	    (r_data && ret < sizeof(*r_packet) + r_packet->len))
+	else if (ret < sizeof(*r_packet) || r_packet->len <= 0)
 		return -EIO;
 
 	if (r_data)

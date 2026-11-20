@@ -108,7 +108,7 @@ static int th1520_dw_hdmi_probe(struct platform_device *pdev)
 	struct dw_hdmi_plat_data *plat_data;
 	struct device *dev = &pdev->dev;
 
-	hdmi = devm_kzalloc_obj(dev, *hdmi);
+	hdmi = devm_kzalloc(dev, sizeof(*hdmi), GFP_KERNEL);
 	if (!hdmi)
 		return -ENOMEM;
 

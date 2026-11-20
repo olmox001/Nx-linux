@@ -853,7 +853,8 @@ static struct debugfs_reg32 *hisi_dma_get_ch_regs(struct hisi_dma_dev *hdma_dev,
 	else
 		*regs_sz = regs_sz_comm + ARRAY_SIZE(hisi_dma_hip09_chan_regs);
 
-	regs = devm_kzalloc_objs(dev, struct debugfs_reg32, *regs_sz);
+	regs = devm_kcalloc(dev, *regs_sz, sizeof(struct debugfs_reg32),
+			    GFP_KERNEL);
 	if (!regs)
 		return NULL;
 	memcpy(regs, hisi_dma_comm_chan_regs, sizeof(hisi_dma_comm_chan_regs));
@@ -881,7 +882,8 @@ static int hisi_dma_create_chan_dir(struct hisi_dma_dev *hdma_dev)
 
 	dev = &hdma_dev->pdev->dev;
 
-	regsets = devm_kzalloc_objs(dev, *regsets, hdma_dev->chan_num);
+	regsets = devm_kcalloc(dev, hdma_dev->chan_num,
+			       sizeof(*regsets), GFP_KERNEL);
 	if (!regsets)
 		return -ENOMEM;
 
@@ -919,7 +921,7 @@ static void hisi_dma_create_debugfs(struct hisi_dma_dev *hdma_dev)
 	if (hdma_dev->dma_dev.dbg_dev_root == NULL)
 		return;
 
-	regset = devm_kzalloc_obj(dev, *regset);
+	regset = devm_kzalloc(dev, sizeof(*regset), GFP_KERNEL);
 	if (!regset)
 		return;
 
@@ -978,7 +980,8 @@ static int hisi_dma_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 
 	chan_num = hisi_dma_get_chan_num(pdev);
-	hdma_dev = devm_kzalloc_flex(dev, *hdma_dev, chan, chan_num);
+	hdma_dev = devm_kzalloc(dev, struct_size(hdma_dev, chan, chan_num),
+				GFP_KERNEL);
 	if (!hdma_dev)
 		return -ENOMEM;
 

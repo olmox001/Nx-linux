@@ -39,7 +39,6 @@
 #include "scrub/newbt.h"
 #include "scrub/reap.h"
 #include "scrub/rcbag.h"
-#include "scrub/refcount.h"
 
 /*
  * Rebuilding the Reference Count Btree
@@ -296,7 +295,7 @@ xrep_refc_encode_startblock(
 }
 
 /* Sort in the same order as the ondisk records. */
-int
+static int
 xrep_refc_extent_cmp(
 	const void			*a,
 	const void			*b)
@@ -412,7 +411,7 @@ xrep_refc_find_refcounts(
 	bool			have;
 	int			error;
 
-	xrep_ag_btcur_init(sc);
+	xrep_ag_btcur_init(sc, &sc->sa);
 
 	/*
 	 * Set up a bag to store all the rmap records that we're tracking to
@@ -504,7 +503,7 @@ xrep_refc_find_refcounts(
 out_bag:
 	rcbag_free(&rcstack);
 out_cur:
-	xchk_ag_btcur_free(sc);
+	xchk_ag_btcur_free(&sc->sa);
 	return error;
 }
 

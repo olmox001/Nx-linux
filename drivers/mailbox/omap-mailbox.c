@@ -475,7 +475,7 @@ static int omap_mbox_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	mdev = devm_kzalloc_obj(&pdev->dev, *mdev);
+	mdev = devm_kzalloc(&pdev->dev, sizeof(*mdev), GFP_KERNEL);
 	if (!mdev)
 		return -ENOMEM;
 
@@ -489,11 +489,13 @@ static int omap_mbox_probe(struct platform_device *pdev)
 	if (IS_ERR(mdev->mbox_base))
 		return PTR_ERR(mdev->mbox_base);
 
-	mdev->irq_ctx = devm_kzalloc_objs(&pdev->dev, u32, num_users);
+	mdev->irq_ctx = devm_kcalloc(&pdev->dev, num_users, sizeof(u32),
+				     GFP_KERNEL);
 	if (!mdev->irq_ctx)
 		return -ENOMEM;
 
-	chnls = devm_kzalloc_objs(&pdev->dev, *chnls, info_count + 1);
+	chnls = devm_kcalloc(&pdev->dev, info_count + 1, sizeof(*chnls),
+			     GFP_KERNEL);
 	if (!chnls)
 		return -ENOMEM;
 
@@ -502,7 +504,7 @@ static int omap_mbox_probe(struct platform_device *pdev)
 		int tx_id, tx_irq, tx_usr;
 		int rx_id,         rx_usr;
 
-		mbox = devm_kzalloc_obj(&pdev->dev, *mbox);
+		mbox = devm_kzalloc(&pdev->dev, sizeof(*mbox), GFP_KERNEL);
 		if (!mbox)
 			return -ENOMEM;
 
@@ -561,7 +563,7 @@ static int omap_mbox_probe(struct platform_device *pdev)
 	mdev->num_fifos = num_fifos;
 	mdev->intr_type = intr_type;
 
-	controller = devm_kzalloc_obj(&pdev->dev, *controller);
+	controller = devm_kzalloc(&pdev->dev, sizeof(*controller), GFP_KERNEL);
 	if (!controller)
 		return -ENOMEM;
 	/*

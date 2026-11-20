@@ -194,7 +194,6 @@ enum rtw_chip_type {
 	RTW_CHIP_TYPE_8723D,
 	RTW_CHIP_TYPE_8821C,
 	RTW_CHIP_TYPE_8703B,
-	RTW_CHIP_TYPE_8723B,
 	RTW_CHIP_TYPE_8821A,
 	RTW_CHIP_TYPE_8812A,
 	RTW_CHIP_TYPE_8814A,
@@ -378,7 +377,6 @@ enum rtw_flags {
 	RTW_FLAG_RESTARTING,
 	RTW_FLAG_RESTART_TRIGGERING,
 	RTW_FLAG_FORCE_LOWEST_RATE,
-	RTW_FLAG_SWITCHING_USB_MODE,
 
 	NUM_OF_RTW_FLAGS,
 };
@@ -1965,7 +1963,6 @@ struct rtw_sar {
 
 struct rtw_hal {
 	u32 rcr;
-	u16 rxfltmap1;
 
 	u32 chip_version;
 	u8 cut_version;
@@ -2104,11 +2101,6 @@ struct rtw_dev {
 
 	struct rtw_tx_report tx_report;
 
-	/* protects hiq_budget and hiq_refill */
-	spinlock_t hiq_lock;
-	u32 hiq_budget;
-	unsigned long hiq_refill;
-
 	struct {
 		/* indicate the mail box to use with fw */
 		u8 last_box_num;
@@ -2199,12 +2191,6 @@ static inline bool rtw_chip_has_rx_ldpc(struct rtw_dev *rtwdev)
 static inline bool rtw_chip_has_tx_stbc(struct rtw_dev *rtwdev)
 {
 	return rtwdev->chip->tx_stbc;
-}
-
-static inline bool rtw_is_8723bs(struct rtw_dev *rtwdev)
-{
-	return rtwdev->chip->id == RTW_CHIP_TYPE_8723B &&
-	       rtwdev->hci.type == RTW_HCI_TYPE_SDIO;
 }
 
 static inline u8 rtw_acquire_macid(struct rtw_dev *rtwdev)

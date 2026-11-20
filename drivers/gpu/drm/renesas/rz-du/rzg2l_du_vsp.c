@@ -266,23 +266,26 @@ static void rzg2l_du_vsp_plane_atomic_destroy_state(struct drm_plane *plane,
 	kfree(to_rzg2l_vsp_plane_state(state));
 }
 
-static struct drm_plane_state *rzg2l_du_vsp_plane_create_state(struct drm_plane *plane)
+static void rzg2l_du_vsp_plane_reset(struct drm_plane *plane)
 {
 	struct rzg2l_du_vsp_plane_state *state;
 
+	if (plane->state) {
+		rzg2l_du_vsp_plane_atomic_destroy_state(plane, plane->state);
+		plane->state = NULL;
+	}
+
 	state = kzalloc_obj(*state);
 	if (!state)
-		return ERR_PTR(-ENOMEM);
+		return;
 
-	__drm_atomic_helper_plane_state_init(&state->state, plane);
-
-	return &state->state;
+	__drm_atomic_helper_plane_reset(plane, &state->state);
 }
 
 static const struct drm_plane_funcs rzg2l_du_vsp_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.atomic_create_state = rzg2l_du_vsp_plane_create_state,
+	.reset = rzg2l_du_vsp_plane_reset,
 	.atomic_duplicate_state = rzg2l_du_vsp_plane_atomic_duplicate_state,
 	.atomic_destroy_state = rzg2l_du_vsp_plane_atomic_destroy_state,
 };

@@ -6,10 +6,8 @@
  * Author: Matthias Brugger <matthias.bgg@gmail.com>
  */
 #include <linux/clk.h>
-#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/pinctrl/consumer.h>
@@ -69,7 +67,7 @@ enum dma_rx_status {
 #endif
 
 struct mtk8250_data {
-	struct uart_8250_port	*uport;
+	int			line;
 	unsigned int		rx_pos;
 	unsigned int		clk_count;
 	struct clk		*uart_clk;
@@ -432,7 +430,7 @@ mtk8250_set_termios(struct uart_port *port, struct ktermios *termios,
 static int __maybe_unused mtk8250_runtime_suspend(struct device *dev)
 {
 	struct mtk8250_data *data = dev_get_drvdata(dev);
-	struct uart_8250_port *up = data->uport;
+	struct uart_8250_port *up = serial8250_get_port(data->line);
 
 	/* wait until UART in idle status */
 	while
@@ -503,7 +501,8 @@ static int mtk8250_probe_of(struct platform_device *pdev, struct uart_port *p,
 #ifdef CONFIG_SERIAL_8250_DMA
 	dmacnt = of_property_count_strings(pdev->dev.of_node, "dma-names");
 	if (dmacnt == 2) {
-		data->dma = devm_kzalloc_obj(&pdev->dev, *data->dma);
+		data->dma = devm_kzalloc(&pdev->dev, sizeof(*data->dma),
+					 GFP_KERNEL);
 		if (!data->dma)
 			return -ENOMEM;
 
@@ -522,7 +521,7 @@ static int mtk8250_probe(struct platform_device *pdev)
 	struct uart_8250_port uart = {};
 	struct mtk8250_data *data;
 	struct resource *regs;
-	int irq, err, line;
+	int irq, err;
 	struct fwnode_handle *fwnode = dev_fwnode(&pdev->dev);
 
 	irq = platform_get_irq(pdev, 0);
@@ -540,7 +539,7 @@ static int mtk8250_probe(struct platform_device *pdev)
 	if (!uart.port.membase)
 		return -ENOMEM;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -576,10 +575,6 @@ static int mtk8250_probe(struct platform_device *pdev)
 #endif
 
 	if (is_of_node(fwnode)) {
-		line = of_alias_get_id(pdev->dev.of_node, "serial");
-		if (line >= 0)
-			uart.port.line = line;
-
 		/* Disable Rate Fix function */
 		writel(0x0, uart.port.membase +
 			(MTK_UART_RATE_FIX << uart.port.regshift));
@@ -587,9 +582,9 @@ static int mtk8250_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 
-	data->uport = serial8250_register_8250_port(&uart);
-	if (IS_ERR(data->uport))
-		return PTR_ERR(data->uport);
+	data->line = serial8250_register_8250_port(&uart);
+	if (data->line < 0)
+		return data->line;
 
 	data->rx_wakeup_irq = platform_get_irq_optional(pdev, 1);
 
@@ -605,7 +600,7 @@ static void mtk8250_remove(struct platform_device *pdev)
 
 	pm_runtime_get_sync(&pdev->dev);
 
-	serial8250_unregister_port(data->uport);
+	serial8250_unregister_port(data->line);
 
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
@@ -617,7 +612,7 @@ static int __maybe_unused mtk8250_suspend(struct device *dev)
 	int irq = data->rx_wakeup_irq;
 	int err;
 
-	serial8250_suspend_port(data->uport);
+	serial8250_suspend_port(data->line);
 
 	pinctrl_pm_select_sleep_state(dev);
 	if (irq >= 0) {
@@ -627,7 +622,7 @@ static int __maybe_unused mtk8250_suspend(struct device *dev)
 				"failed to enable irq wake on IRQ %d: %d\n",
 				irq, err);
 			pinctrl_pm_select_default_state(dev);
-			serial8250_resume_port(data->uport);
+			serial8250_resume_port(data->line);
 			return err;
 		}
 	}
@@ -644,7 +639,7 @@ static int __maybe_unused mtk8250_resume(struct device *dev)
 		disable_irq_wake(irq);
 	pinctrl_pm_select_default_state(dev);
 
-	serial8250_resume_port(data->uport);
+	serial8250_resume_port(data->line);
 
 	return 0;
 }

@@ -268,7 +268,8 @@ static int mpq7920_i2c_probe(struct i2c_client *client)
 	struct regmap *regmap;
 	int i;
 
-	info = devm_kzalloc_obj(dev, struct mpq7920_regulator_info);
+	info = devm_kzalloc(dev, sizeof(struct mpq7920_regulator_info),
+				GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
@@ -308,8 +309,8 @@ static const struct of_device_id mpq7920_of_match[] = {
 MODULE_DEVICE_TABLE(of, mpq7920_of_match);
 
 static const struct i2c_device_id mpq7920_id[] = {
-	{ .name = "mpq7920" },
-	{ }
+	{ "mpq7920", },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, mpq7920_id);
 

@@ -2,33 +2,30 @@
 #ifndef __PERF_EVLIST_H
 #define __PERF_EVLIST_H 1
 
-#include <signal.h>
-
 #include <linux/compiler.h>
 #include <linux/kernel.h>
-#include <linux/list.h>
 #include <linux/refcount.h>
-#include <pthread.h>
-#include <unistd.h>
-
+#include <linux/list.h>
 #include <api/fd/array.h>
 #include <internal/evlist.h>
 #include <internal/evsel.h>
 #include <internal/rc_check.h>
 #include <perf/evlist.h>
-
 #include "affinity.h"
 #include "events_stats.h"
 #include "evsel.h"
 #include "rblist.h"
+#include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
 
+struct pollfd;
+struct thread_map;
 struct perf_cpu_map;
 struct perf_stat_config;
-struct pollfd;
 struct record_opts;
 struct strbuf;
 struct target;
-struct thread_map;
 
 /*
  * State machine of bkw_mmap_state:
@@ -331,9 +328,6 @@ static inline void evlist__set_selected(struct evlist *evlist, struct evsel *evs
 
 struct evlist *evlist__new(void);
 struct evlist *evlist__new_default(const struct target *target, bool sample_callchains);
-struct perf_env;
-bool evlist__can_merge_hybrid(struct evlist *evlist, struct perf_env *env);
-void evlist__merge_hybrid(struct evlist *evlist, struct perf_env *env);
 struct evlist *evlist__new_dummy(void);
 struct evlist *evlist__get(struct evlist *evlist);
 void evlist__put(struct evlist *evlist);

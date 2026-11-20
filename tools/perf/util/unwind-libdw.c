@@ -4,7 +4,6 @@
 #include <elfutils/libdw.h>
 #include <elfutils/libdwfl.h>
 #include <inttypes.h>
-#include <byteswap.h>
 #include <errno.h>
 #include "debug.h"
 #include "dso.h"
@@ -18,8 +17,6 @@
 #include <linux/types.h>
 #include <linux/zalloc.h>
 #include "event.h"
-#include "evsel.h"
-#include "memswap.h"
 #include "perf_regs.h"
 #include "callchain.h"
 #include "util/env.h"
@@ -45,10 +42,8 @@ static int __find_debuginfo(Dwfl_Module *mod __maybe_unused, void **userdata,
 	const struct dso *dso = *userdata;
 
 	assert(dso);
-	mutex_lock(dso__lock((struct dso *)dso));
 	if (dso__symsrc_filename(dso) && strcmp(file_name, dso__symsrc_filename(dso)))
 		*debuginfo_file_name = strdup(dso__symsrc_filename(dso));
-	mutex_unlock(dso__lock((struct dso *)dso));
 	return -1;
 }
 
@@ -206,10 +201,9 @@ static bool get_thread(Dwfl *dwfl __maybe_unused, pid_t tid, void *arg,
 }
 
 static int access_dso_mem(struct unwind_info *ui, Dwarf_Addr addr,
-			  Dwarf_Word *data, size_t len)
+			  Dwarf_Word *data)
 {
 	struct addr_location al;
-	union u64_swap u;
 	ssize_t size;
 	struct dso *dso;
 
@@ -222,36 +216,13 @@ static int access_dso_mem(struct unwind_info *ui, Dwarf_Addr addr,
 	if (!dso)
 		goto out_fail;
 
-	size = dso__data_read_addr(dso, al.map, ui->machine, addr, (u8 *)&u, len);
+	size = dso__data_read_addr(dso, al.map, ui->machine, addr, (u8 *) data, sizeof(*data));
 
 	addr_location__exit(&al);
-	if (size != (ssize_t)len)
-		return 1;
-	*data = len == sizeof(u32) ? u.val32[0] : u.val64;
-	return 0;
+	return !(size == sizeof(*data));
 out_fail:
 	addr_location__exit(&al);
 	return -1;
-}
-
-/*
- * libdw expects a 32-bit task's words zero-extended.  A recording of the
- * other byte order was swapped in 8-byte units when it was read (see
- * perf_event__all64_swap()), so a 4-byte word is picked out of its unit with
- * that swap undone, as for PERF_SAMPLE_CPU in __evsel__parse_sample().
- */
-static Dwarf_Word stack_word(struct stack_dump *stack, int offset, size_t len,
-			     bool swapped)
-{
-	union u64_swap u;
-
-	if (len == sizeof(u64))
-		return *(Dwarf_Word *)&stack->data[offset];
-	if (!swapped)
-		return *(u32 *)&stack->data[offset];
-
-	u.val64 = bswap_64(*(u64 *)&stack->data[offset & ~7]);
-	return bswap_32(u.val32[(offset & 4) / 4]);
 }
 
 static bool memory_read(Dwfl *dwfl __maybe_unused, Dwarf_Addr addr, Dwarf_Word *result,
@@ -261,16 +232,11 @@ static bool memory_read(Dwfl *dwfl __maybe_unused, Dwarf_Addr addr, Dwarf_Word *
 	struct unwind_info *ui = dwfl_ui_ti->ui;
 	struct stack_dump *stack = &ui->sample->user_stack;
 	u64 start, end;
-	bool swapped;
-	size_t len;
 	int offset;
 	int ret;
 
 	if (!ui->sample->user_regs)
 		return false;
-	len = ui->sample->user_regs->abi == PERF_SAMPLE_REGS_ABI_32 ?
-	      sizeof(u32) : sizeof(u64);
-	swapped = ui->sample->evsel && ui->sample->evsel->needs_swap;
 
 	ret = perf_reg_value(&start, ui->sample->user_regs,
 			     perf_arch_reg_sp(ui->e_machine));
@@ -280,11 +246,11 @@ static bool memory_read(Dwfl *dwfl __maybe_unused, Dwarf_Addr addr, Dwarf_Word *
 	end = start + stack->size;
 
 	/* Check overflow. */
-	if (addr + len < addr)
+	if (addr + sizeof(Dwarf_Word) < addr)
 		return false;
 
-	if (addr < start || addr + len > end) {
-		ret = access_dso_mem(ui, addr, result, len);
+	if (addr < start || addr + sizeof(Dwarf_Word) > end) {
+		ret = access_dso_mem(ui, addr, result);
 		if (ret) {
 			pr_debug("unwind: access_mem 0x%" PRIx64 " not inside range"
 				 " 0x%" PRIx64 "-0x%" PRIx64 "\n",
@@ -295,7 +261,7 @@ static bool memory_read(Dwfl *dwfl __maybe_unused, Dwarf_Addr addr, Dwarf_Word *
 	}
 
 	offset  = addr - start;
-	*result = stack_word(stack, offset, len, swapped);
+	*result = *(Dwarf_Word *)&stack->data[offset];
 	pr_debug("unwind: access_mem addr 0x%" PRIx64 ", val %lx, offset %d\n",
 		 addr, (unsigned long)*result, offset);
 	return true;
@@ -324,8 +290,7 @@ static bool libdw_set_initial_registers(Dwfl_Thread *thread, void *arg)
 			int dwarf_reg =
 				get_dwarf_regnum_for_perf_regnum(perf_reg, e_machine,
 								 e_flags,
-								 /*only_libdw_supported=*/true,
-								 user_regs->abi);
+								 /*only_libdw_supported=*/true);
 			if (dwarf_reg > max_dwarf_reg)
 				max_dwarf_reg = dwarf_reg;
 		}
@@ -340,8 +305,7 @@ static bool libdw_set_initial_registers(Dwfl_Thread *thread, void *arg)
 			int dwarf_reg =
 				get_dwarf_regnum_for_perf_regnum(perf_reg, e_machine,
 								 e_flags,
-								 /*only_libdw_supported=*/true,
-								 user_regs->abi);
+								 /*only_libdw_supported=*/true);
 			if (dwarf_reg >= 0) {
 				val = 0;
 				if (perf_reg_value(&val, user_regs, perf_reg) == 0)
@@ -433,11 +397,6 @@ int libdw__get_entries(unwind_entry_cb_t cb, void *arg,
 		dwfl = dwfl_ui_ti->dwfl;
 	} else {
 		dwfl_ui_ti = zalloc(sizeof(*dwfl_ui_ti));
-		if (!dwfl_ui_ti) {
-			free(ui);
-			return -ENOMEM;
-		}
-
 		dwfl = dwfl_begin(&offline_callbacks);
 		if (!dwfl)
 			goto out;

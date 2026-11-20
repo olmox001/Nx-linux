@@ -17,7 +17,7 @@ description: |
       not leave the parser in block-comment state.
 
 maintainers:
-  - Rob Herring <robh@kernel.org>
+  - Test User <test@example.com>
 
 properties:
   compatible:

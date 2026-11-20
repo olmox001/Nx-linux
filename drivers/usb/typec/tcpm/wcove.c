@@ -612,7 +612,7 @@ static int wcove_typec_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	wcove = devm_kzalloc_obj(&pdev->dev, *wcove);
+	wcove = devm_kzalloc(&pdev->dev, sizeof(*wcove), GFP_KERNEL);
 	if (!wcove)
 		return -ENOMEM;
 

@@ -146,9 +146,9 @@ static u32 *ipv4_cow_metrics(struct dst_entry *dst, unsigned long old)
 	return NULL;
 }
 
-static struct neighbour *ipv4_dst_neigh_lookup(const struct dst_entry *dst,
-					       struct sk_buff *skb,
-					       const void *daddr);
+static struct neighbour *ipv4_neigh_lookup(const struct dst_entry *dst,
+					   struct sk_buff *skb,
+					   const void *daddr);
 static void ipv4_confirm_neigh(const struct dst_entry *dst, const void *daddr);
 
 static struct dst_ops ipv4_dst_ops = {
@@ -163,7 +163,7 @@ static struct dst_ops ipv4_dst_ops = {
 	.update_pmtu =		ip_rt_update_pmtu,
 	.redirect =		ip_do_redirect,
 	.local_out =		__ip_local_out,
-	.neigh_lookup =		ipv4_dst_neigh_lookup,
+	.neigh_lookup =		ipv4_neigh_lookup,
 	.confirm_neigh =	ipv4_confirm_neigh,
 };
 
@@ -409,9 +409,9 @@ void rt_cache_flush(struct net *net)
 	rt_genid_bump_ipv4(net);
 }
 
-static struct neighbour *ipv4_dst_neigh_lookup(const struct dst_entry *dst,
-					       struct sk_buff *skb,
-					       const void *daddr)
+static struct neighbour *ipv4_neigh_lookup(const struct dst_entry *dst,
+					   struct sk_buff *skb,
+					   const void *daddr)
 {
 	const struct rtable *rt = container_of(dst, struct rtable, dst);
 	struct net_device *dev;
@@ -573,17 +573,6 @@ static void ip_rt_build_flow_key(struct flowi4 *fl4, const struct sock *sk,
 
 static DEFINE_SPINLOCK(fnhe_lock);
 
-/* Other CPUs may still be using @rt, so don't dst_dev_put() it.
- * rt_flush_dev() handles it if its device is unregistered.
- * Marking it dead makes ipv4_dst_check() fail for users that cached it.
- */
-static void fnhe_retire_route(struct rtable *rt)
-{
-	WRITE_ONCE(rt->dst.obsolete, DST_OBSOLETE_DEAD);
-	rt_add_uncached_list(rt);
-	dst_release(&rt->dst);
-}
-
 static void fnhe_flush_routes(struct fib_nh_exception *fnhe)
 {
 	struct rtable *rt;
@@ -591,12 +580,14 @@ static void fnhe_flush_routes(struct fib_nh_exception *fnhe)
 	rt = rcu_dereference(fnhe->fnhe_rth_input);
 	if (rt) {
 		RCU_INIT_POINTER(fnhe->fnhe_rth_input, NULL);
-		fnhe_retire_route(rt);
+		dst_dev_put(&rt->dst);
+		dst_release(&rt->dst);
 	}
 	rt = rcu_dereference(fnhe->fnhe_rth_output);
 	if (rt) {
 		RCU_INIT_POINTER(fnhe->fnhe_rth_output, NULL);
-		fnhe_retire_route(rt);
+		dst_dev_put(&rt->dst);
+		dst_release(&rt->dst);
 	}
 }
 
@@ -826,7 +817,7 @@ static void __ip_do_redirect(struct rtable *rt, struct sk_buff *skb, struct flow
 
 	n = __ipv4_neigh_lookup(rt->dst.dev, (__force u32)new_gw);
 	if (!n)
-		n = ipv4_neigh_create(rt->dst.dev, &new_gw);
+		n = neigh_create(&arp_tbl, &new_gw, rt->dst.dev);
 	if (!IS_ERR(n)) {
 		if (!(READ_ONCE(n->nud_state) & NUD_VALID)) {
 			neigh_event_send(n, NULL);
@@ -912,23 +903,21 @@ void ip_rt_send_redirect(struct sk_buff *skb)
 {
 	struct rtable *rt = skb_rtable(skb);
 	struct in_device *in_dev;
-	struct net_device *dev;
 	struct inet_peer *peer;
-	int log_martians;
 	struct net *net;
+	int log_martians;
 	int vif;
 
 	rcu_read_lock();
-	dev = dst_dev_rcu(&rt->dst);
-	in_dev = __in_dev_get_rcu(dev);
+	in_dev = __in_dev_get_rcu(rt->dst.dev);
 	if (!in_dev || !IN_DEV_TX_REDIRECTS(in_dev)) {
 		rcu_read_unlock();
 		return;
 	}
 	log_martians = IN_DEV_LOG_MARTIANS(in_dev);
-	vif = l3mdev_master_ifindex_rcu(dev);
+	vif = l3mdev_master_ifindex_rcu(rt->dst.dev);
 
-	net = dev_net_rcu(dev);
+	net = dev_net(rt->dst.dev);
 	peer = inet_getpeer_v4(net->ipv4.peers, ip_hdr(skb)->saddr, vif);
 	if (!peer) {
 		rcu_read_unlock();
@@ -1327,32 +1316,29 @@ void ip_rt_get_source(u8 *addr, struct sk_buff *skb, struct rtable *rt)
 {
 	__be32 src;
 
-	rcu_read_lock();
-	if (rt_is_output_route(rt)) {
+	if (rt_is_output_route(rt))
 		src = ip_hdr(skb)->saddr;
-	} else {
-		struct net_device *dev = dst_dev_rcu(&rt->dst);
-		struct net *net = dev_net_rcu(dev);
-		struct iphdr *iph = ip_hdr(skb);
+	else {
 		struct fib_result res;
+		struct iphdr *iph = ip_hdr(skb);
 		struct flowi4 fl4 = {
 			.daddr = iph->daddr,
 			.saddr = iph->saddr,
 			.flowi4_dscp = ip4h_dscp(iph),
-			.flowi4_oif = dev->ifindex,
+			.flowi4_oif = rt->dst.dev->ifindex,
 			.flowi4_iif = skb->dev->ifindex,
 			.flowi4_mark = skb->mark,
 		};
 
-		if (fib_lookup(net, &fl4, &res, 0) == 0)
-			src = fib_result_prefsrc(net, &res);
+		rcu_read_lock();
+		if (fib_lookup(dev_net(rt->dst.dev), &fl4, &res, 0) == 0)
+			src = fib_result_prefsrc(dev_net(rt->dst.dev), &res);
 		else
-			src = inet_select_addr(dev,
+			src = inet_select_addr(rt->dst.dev,
 					       rt_nexthop(rt, iph->daddr),
 					       RT_SCOPE_UNIVERSE);
+		rcu_read_unlock();
 	}
-	rcu_read_unlock();
-
 	memcpy(addr, &src, 4);
 }
 
@@ -1374,8 +1360,8 @@ static unsigned int ipv4_default_advmss(const struct dst_entry *dst)
 
 	rcu_read_lock();
 	net = dst_dev_net_rcu(dst);
-	advmss = max_t(unsigned int, ipv4_mtu(dst) - header_size,
-				   net->ipv4.ip_rt_min_advmss);
+	advmss = max_t(unsigned int, ip_dst_mtu_configured(dst) - header_size,
+		       net->ipv4.ip_rt_min_advmss);
 	rcu_read_unlock();
 
 	return min(advmss, IPV4_MAX_PMTU - header_size);
@@ -1514,8 +1500,10 @@ static bool rt_bind_exception(struct rtable *rt, struct fib_nh_exception *fnhe,
 		if (do_cache) {
 			dst_hold(&rt->dst);
 			rcu_assign_pointer(*porig, rt);
-			if (orig)
-				fnhe_retire_route(orig);
+			if (orig) {
+				dst_dev_put(&orig->dst);
+				dst_release(&orig->dst);
+			}
 			ret = true;
 		}
 
@@ -1596,9 +1584,6 @@ void rt_flush_dev(struct net_device *dev)
 	struct rtable *rt, *safe;
 	int cpu;
 
-	if (dev && dev->dismantle)
-		return;
-
 	for_each_possible_cpu(cpu) {
 		struct uncached_list *ul = &per_cpu(rt_uncached_list, cpu);
 
@@ -1607,14 +1592,10 @@ void rt_flush_dev(struct net_device *dev)
 
 		spin_lock_bh(&ul->lock);
 		list_for_each_entry_safe(rt, safe, &ul->head, dst.rt_uncached) {
-			struct net_device *rt_dev = rt->dst.dev;
-
-			if (dev ? rt_dev != dev :
-			    READ_ONCE(rt_dev->reg_state) != NETREG_UNREGISTERED)
+			if (rt->dst.dev != dev)
 				continue;
-
-			rcu_assign_pointer(rt->dst.dev_rcu, blackhole_netdev);
-			netdev_ref_replace(rt_dev, blackhole_netdev,
+			rt->dst.dev = blackhole_netdev;
+			netdev_ref_replace(dev, blackhole_netdev,
 					   &rt->dst.dev_tracker, GFP_ATOMIC);
 			list_del_init(&rt->dst.rt_uncached);
 		}
@@ -2501,8 +2482,6 @@ local_input:
 
 		if (unlikely(!rt_cache_route(nhc, rth)))
 			rt_add_uncached_list(rth);
-	} else {
-		rt_add_uncached_list(rth);
 	}
 	skb_dst_set(skb, &rth->dst);
 	reason = SKB_NOT_DROPPED_YET;
@@ -2928,7 +2907,7 @@ out:
 static struct dst_ops ipv4_dst_blackhole_ops = {
 	.family			= AF_INET,
 	.default_advmss		= ipv4_default_advmss,
-	.neigh_lookup		= ipv4_dst_neigh_lookup,
+	.neigh_lookup		= ipv4_neigh_lookup,
 	.check			= dst_blackhole_check,
 	.cow_metrics		= dst_blackhole_cow_metrics,
 	.update_pmtu		= dst_blackhole_update_pmtu,
@@ -3240,7 +3219,7 @@ static struct sk_buff *inet_rtm_getroute_build_skb(__be32 src, __be32 dst,
 		udph = skb_put_zero(skb, sizeof(struct udphdr));
 		udph->source = sport;
 		udph->dest = dport;
-		udp_set_len_short(udph, sizeof(struct udphdr));
+		udph->len = htons(sizeof(struct udphdr));
 		udph->check = 0;
 		break;
 	}

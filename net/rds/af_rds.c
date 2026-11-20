@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2025, Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -30,22 +30,209 @@
  * SOFTWARE.
  *
  */
+#include <linux/string.h>
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
-#include <linux/gfp.h>
 #include <linux/in.h>
 #include <linux/ipv6.h>
 #include <linux/poll.h>
-#include <linux/uio.h>
+#include <linux/version.h>
+#include <linux/random.h>
+#include <linux/mutex.h>
+#include <linux/trace.h>
+#include <asm/ioctls.h>
+#include <linux/sockios.h>
 #include <net/sock.h>
 
+#include "trace.h"
 #include "rds.h"
 
-/* this is just used for stats gathering :/ */
-static DEFINE_SPINLOCK(rds_sock_lock);
-static LIST_HEAD(rds_sock_list);
+/* UNUSED for backwards compat only */
+static int rds_ib_retry_count_unused = 0xdead;
+module_param(rds_ib_retry_count_unused, int, 0444);
+MODULE_PARM_DESC(rds_ib_retry_count_unused,
+		 "UNUSED, set param in rds_rdma instead");
+
+static char *rds_qos_threshold = NULL;
+module_param(rds_qos_threshold, charp, 0444);
+MODULE_PARM_DESC(rds_qos_threshold, "<tos>:<max_msg_size>[,<tos>:<max_msg_size>]*");
+
+static	int rds_qos_threshold_action = 0;
+module_param(rds_qos_threshold_action, int, 0644);
+MODULE_PARM_DESC(rds_qos_threshold_action,
+	"0=Ignore,1=Error,2=Statistic,3=Error_Statistic");
+
+static int rt_debug_bitmap_set(const char *val, const struct kernel_param *kp);
+
+/* used for backwards compat only, enables tracepoints */
+static const struct kernel_param_ops rt_debug_bitmap_ops = {
+	.set = rt_debug_bitmap_set,
+	.get = param_get_uint,
+};
+
+u32 kernel_rds_rt_debug_bitmap = 0x488B;
+EXPORT_SYMBOL(kernel_rds_rt_debug_bitmap);
+module_param_cb(rds_rt_debug_bitmap, &rt_debug_bitmap_ops,
+		&kernel_rds_rt_debug_bitmap, 0644);
+MODULE_PARM_DESC(rds_rt_debug_bitmap,
+		 "RDS Runtime Debug Message Enabling Bitmap [default 0x488B]");
+
+static struct trace_array *rds_trace_array;
+static DEFINE_MUTEX(rds_trace_mutex);
+static bool rds_trace_exiting;
+
+static int rds_trace_set_clr_event_locked(const char *event, bool enable)
+{
+	if (rds_trace_exiting)
+		return -ENODEV;
+
+	if (rds_trace_array)
+		return trace_array_set_clr_event(rds_trace_array, "rds", event,
+						 enable);
+
+	return trace_set_clr_event("rds", event, enable ? 1 : 0);
+}
+
+static void rds_trace_init(void)
+{
+	mutex_lock(&rds_trace_mutex);
+	rds_trace_exiting = false;
+	rds_trace_array = trace_array_get_by_name("rds", "rds");
+	mutex_unlock(&rds_trace_mutex);
+
+	if (!rds_trace_array)
+		pr_warn("RDS: Unable to create rds trace instance, using global trace buffer\n");
+}
+
+static void rds_trace_exit(void)
+{
+	struct trace_array *tr;
+	int ret;
+
+	mutex_lock(&rds_trace_mutex);
+	rds_trace_exiting = true;
+	tr = rds_trace_array;
+	rds_trace_array = NULL;
+
+	if (tr) {
+		trace_array_put(tr);
+		ret = trace_array_destroy(tr);
+		if (ret && ret != -ENODEV)
+			pr_warn("RDS: Unable to destroy rds trace instance: %d\n",
+				ret);
+	}
+	mutex_unlock(&rds_trace_mutex);
+}
+
+struct rt_debug_tp {
+	int flag;
+	const char *tps[10];
+};
+
+/* Map from RDS_RTD_ flag to replacement tracepoints. */
+static struct rt_debug_tp rt_debug_tp_map[] = {
+	{ RDS_RTD_ERR,
+	  { "rds_ib_add_device_err", "rds_ib_setup_qp_err",
+	    "rds_conn_drop", "rds_ib_cm_handle_connect_err",
+	    "rds_ib_setup_fastreg_err", "rds_rdma_cm_event_handler_err",
+	    NULL }},
+	{ RDS_RTD_ERR_EXT,
+	  { "rds_send_worker_err", "rds_receive_worker_err", NULL }},
+	{ RDS_RTD_CM,
+	  { "rds_conn_destroy_init", "rds_conn_destroy_fini", "rds_conn_drop",
+	    "rds_ib_cm_initiate_connect_err", "rds_ib_conn_path_connect",
+	    "rds_rdma_cm_event_handler", "rds_rdma_cm_event_handler_err",
+	    NULL }},
+	{ RDS_RTD_CM_EXT,
+	  { "rds_conn_create", "rds_conn_shutdown",
+	    "rds_conn_update_connect_time", NULL }},
+	{ RDS_RTD_ACT_BND,
+	  { "rds_ib_remove_device_err", "rds_ib_remove_device", NULL }},
+	{ RDS_RTD_RCV,
+	  { "rds_receive_err", "rds_drop_ingress", NULL }},
+	{ RDS_RTD_RCV_EXT,
+	  { "rds_receive_worker_err", NULL }},
+	{ RDS_RTD_SND,
+	  { "rds_send_err", "rds_drop_egress", "rds_cong_cleared",
+	    "rds_cong_seen", NULL }},
+	{ RDS_RTD_SND_EXT,
+	  { "rds_send_worker_err", NULL }},
+	{ RDS_RTD_FLOW_CNTRL,
+	  { "rds_ib_flow_cntrl_grab_credits", "rds_ib_flow_cntrl_add_credits",
+	    "rds_ib_flow_cntrl_advertise_credits", NULL }},
+	{ RDS_RTD_RDMA_IB,
+	  { "rds_ib_add_device", "rds_ib_remove_device", NULL }},
+	{ RDS_RTD_ALL,
+	  { NULL } },
+};
+
+/* Enable all tracepoints associated with RDS_RTD_ flags that are set. */
+void rds_rt_debug_tp_enable(void)
+{
+	int enable, i, j;
+
+	mutex_lock(&rds_trace_mutex);
+	rds_trace_set_clr_event_locked(NULL, false);
+	if (kernel_rds_rt_debug_bitmap & RDS_RTD_ALL) {
+		rds_trace_set_clr_event_locked(NULL, true);
+		mutex_unlock(&rds_trace_mutex);
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(rt_debug_tp_map); i++) {
+		enable = (kernel_rds_rt_debug_bitmap &
+			  rt_debug_tp_map[i].flag) != 0;
+		for (j = 0; rt_debug_tp_map[i].tps[j] != NULL; j++)
+			rds_trace_set_clr_event_locked(rt_debug_tp_map[i].tps[j],
+						       enable);
+	}
+
+	mutex_unlock(&rds_trace_mutex);
+}
+EXPORT_SYMBOL_GPL(rds_rt_debug_tp_enable);
+
+static int rt_debug_bitmap_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned int n;
+	int ret;
+
+	ret = kstrtouint(val, 0, &n);
+	if (ret != 0)
+		return -EINVAL;
+
+	ret = param_set_uint(val, kp);
+	if (ret)
+		return ret;
+
+	rds_rt_debug_tp_enable();
+
+	return 0;
+}
+
+static unsigned long rds_qos_threshold_tbl[256];
+
+char *rds_str_array(char **array, size_t elements, size_t index)
+{
+	if ((index < elements) && array[index])
+		return array[index];
+	else
+		return "unknown";
+}
+EXPORT_SYMBOL(rds_str_array);
+
 DECLARE_WAIT_QUEUE_HEAD(rds_poll_waitq);
+
+/* kmem cache slab for struct rds_buf_info */
+static struct kmem_cache *rds_rs_buf_info_slab;
+
+/* Helper function to be passed to rhashtable_free_and_destroy() to free a
+ * struct rs_buf_info.
+ */
+static void rds_buf_info_free(void *rsbi, void *arg __attribute__((unused)))
+{
+	kmem_cache_free(rds_rs_buf_info_slab, rsbi);
+}
 
 /*
  * This is called as the final descriptor referencing this socket is closed.
@@ -73,21 +260,26 @@ static int rds_release(struct socket *sock)
 	rds_clear_recv_queue(rs);
 	rds_cong_remove_socket(rs);
 
-	rds_remove_bound(rs);
+	rds_remove_bound(rs->rs_rns, rs);
 
 	rds_send_drop_to(rs, NULL);
-	rds_rdma_drop_keys(rs);
 	rds_notify_queue_get(rs, NULL);
-	rds_notify_msg_zcopy_purge(&rs->rs_zcookie_queue);
 
-	spin_lock_bh(&rds_sock_lock);
+	if (rs->rs_transport && rs->rs_transport->sock_release)
+		rs->rs_transport->sock_release(rs);
+
+	rhashtable_free_and_destroy(&rs->rs_buf_info_tbl, rds_buf_info_free,
+				    NULL);
+
+	mutex_lock(&rs->rs_rns->rns_sock_lock);
 	list_del_init(&rs->rs_item);
-	spin_unlock_bh(&rds_sock_lock);
+	rs->rs_rns->rns_sock_count--;
+	mutex_unlock(&rs->rs_rns->rns_sock_lock);
 
 	rds_trans_put(rs->rs_transport);
 
 	sock->sk = NULL;
-	sock_put(sk);
+	debug_sock_put(sk);
 out:
 	return 0;
 }
@@ -113,10 +305,10 @@ void rds_wake_sk_sleep(struct rds_sock *rs)
 static int rds_getname(struct socket *sock, struct sockaddr *uaddr,
 		       int peer)
 {
+	int ret = 0;
 	struct rds_sock *rs = rds_sk_to_rs(sock->sk);
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
-	int uaddr_len;
 
 	/* racey, don't care */
 	if (peer) {
@@ -129,15 +321,16 @@ static int rds_getname(struct socket *sock, struct sockaddr *uaddr,
 			sin->sin_family = AF_INET;
 			sin->sin_port = rs->rs_conn_port;
 			sin->sin_addr.s_addr = rs->rs_conn_addr_v4;
-			uaddr_len = sizeof(*sin);
+			ret = sizeof(*sin);
 		} else {
 			sin6 = (struct sockaddr_in6 *)uaddr;
 			sin6->sin6_family = AF_INET6;
 			sin6->sin6_port = rs->rs_conn_port;
 			sin6->sin6_addr = rs->rs_conn_addr;
 			sin6->sin6_flowinfo = 0;
-			sin6->sin6_scope_id = rs->rs_conn_scope_id;
-			uaddr_len = sizeof(*sin6);
+			/* scope_id is the same as in the bound address. */
+			sin6->sin6_scope_id = rs->rs_bound_scope_id;
+			ret = sizeof(*sin6);
 		}
 	} else {
 		/* If socket is not yet bound and the socket is connected,
@@ -175,7 +368,7 @@ static int rds_getname(struct socket *sock, struct sockaddr *uaddr,
 			sin->sin_family = AF_INET;
 			sin->sin_port = rs->rs_bound_port;
 			sin->sin_addr.s_addr = rs->rs_bound_addr_v4;
-			uaddr_len = sizeof(*sin);
+			ret = sizeof(*sin);
 		} else {
 			sin6 = (struct sockaddr_in6 *)uaddr;
 			sin6->sin6_family = AF_INET6;
@@ -183,69 +376,77 @@ static int rds_getname(struct socket *sock, struct sockaddr *uaddr,
 			sin6->sin6_addr = rs->rs_bound_addr;
 			sin6->sin6_flowinfo = 0;
 			sin6->sin6_scope_id = rs->rs_bound_scope_id;
-			uaddr_len = sizeof(*sin6);
+			ret = sizeof(*sin6);
 		}
 	}
 
-	return uaddr_len;
+	return ret;
 }
 
 /*
  * RDS' poll is without a doubt the least intuitive part of the interface,
- * as EPOLLIN and EPOLLOUT do not behave entirely as you would expect from
+ * as POLLIN and POLLOUT do not behave entirely as you would expect from
  * a network protocol.
  *
- * EPOLLIN is asserted if
+ * POLLIN is asserted if
  *  -	there is data on the receive queue.
  *  -	to signal that a previously congested destination may have become
  *	uncongested
  *  -	A notification has been queued to the socket (this can be a congestion
- *	update, or a RDMA completion, or a MSG_ZEROCOPY completion).
+ *	update, or a RDMA completion).
  *
- * EPOLLOUT is asserted if there is room on the send queue. This does not mean
+ * POLLOUT is asserted if there is room on the send queue. This does not mean
  * however, that the next sendmsg() call will succeed. If the application tries
  * to send to a congested destination, the system call may still fail (and
  * return ENOBUFS).
  */
-static __poll_t rds_poll(struct file *file, struct socket *sock,
+static unsigned int rds_poll(struct file *file, struct socket *sock,
 			     poll_table *wait)
 {
 	struct sock *sk = sock->sk;
 	struct rds_sock *rs = rds_sk_to_rs(sk);
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 	unsigned long flags;
 
 	poll_wait(file, sk_sleep(sk), wait);
 
-	if (READ_ONCE(rs->rs_seen_congestion))
+	if (rs->rs_seen_congestion)
 		poll_wait(file, &rds_poll_waitq, wait);
 
 	read_lock_irqsave(&rs->rs_recv_lock, flags);
 	if (!rs->rs_cong_monitor) {
-		/* When a congestion map was updated, we signal EPOLLIN for
+		/* When a congestion map was updated, we signal POLLIN for
 		 * "historical" reasons. Applications can also poll for
 		 * WRBAND instead. */
-		if (rds_cong_updated_since(&rs->rs_cong_track))
-			mask |= (EPOLLIN | EPOLLRDNORM | EPOLLWRBAND);
+		if (rds_cong_updated_since(rs))
+			mask |= (POLLIN | POLLRDNORM | POLLWRBAND);
 	} else {
-		spin_lock(&rs->rs_lock);
-		if (rs->rs_cong_notify)
-			mask |= (EPOLLIN | EPOLLRDNORM);
-		spin_unlock(&rs->rs_lock);
+		if (atomic64_read(&rs->rs_cong_notify))
+			mask |= (POLLIN | POLLRDNORM);
 	}
-	if (!list_empty(&rs->rs_recv_queue) ||
-	    !list_empty(&rs->rs_notify_queue) ||
-	    !list_empty(&rs->rs_zcookie_queue.zcookie_head))
-		mask |= (EPOLLIN | EPOLLRDNORM);
-	if (rs->rs_snd_bytes < rds_sk_sndbuf(rs))
-		mask |= (EPOLLOUT | EPOLLWRNORM);
-	if (sk->sk_err || !skb_queue_empty(&sk->sk_error_queue))
-		mask |= EPOLLERR;
+	if (!list_empty(&rs->rs_recv_queue)
+	 || !list_empty(&rs->rs_notify_queue))
+		mask |= (POLLIN | POLLRDNORM);
 	read_unlock_irqrestore(&rs->rs_recv_lock, flags);
 
+	/* Use the number of destination this socket has to estimate the
+	 * send buffer size.  When there is no peer yet, return the default
+	 * send buffer size.
+	 */
+	spin_lock_irqsave(&rs->rs_snd_lock, flags);
+	if (rs->rs_snd_bytes < max_t(u32, rs->rs_buf_info_dest_cnt, 1) *
+	    rds_sk_sndbuf(rs))
+		mask |= (POLLOUT | POLLWRNORM);
+	spin_unlock_irqrestore(&rs->rs_snd_lock, flags);
+
 	/* clear state any time we wake a seen-congested socket */
-	if (mask)
-		WRITE_ONCE(rs->rs_seen_congestion, 0);
+	if (mask) {
+		if (rs->rs_seen_congestion == 1)
+			trace_rds_cong_cleared(rs, NULL, NULL,
+					       "poll woke seen-congested sock",
+					       0);
+		rs->rs_seen_congestion = 0;
+	}
 
 	return mask;
 }
@@ -253,32 +454,36 @@ static __poll_t rds_poll(struct file *file, struct socket *sock,
 static int rds_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 {
 	struct rds_sock *rs = rds_sk_to_rs(sock->sk);
-	rds_tos_t utos, tos = 0;
+	struct mutex *sock_lock;
+	rds_tos_t tos;
 
+	sock_lock = &rs->rs_rns->rns_sock_lock;
 	switch (cmd) {
 	case SIOCRDSSETTOS:
-		if (get_user(utos, (rds_tos_t __user *)arg))
+		if (get_user(tos, (rds_tos_t __user *)arg))
 			return -EFAULT;
 
 		if (rs->rs_transport &&
-		    rs->rs_transport->get_tos_map)
-			tos = rs->rs_transport->get_tos_map(utos);
-		else
-			return -ENOIOCTLCMD;
+		    rs->rs_transport->t_type == RDS_TRANS_TCP)
+			tos = 0;
 
-		spin_lock_bh(&rds_sock_lock);
-		if (rs->rs_tos || rs->rs_conn) {
-			spin_unlock_bh(&rds_sock_lock);
+		mutex_lock(sock_lock);
+		if (rs->rs_tos || rs->rs_tos_frozen) {
+			mutex_unlock(sock_lock);
 			return -EINVAL;
 		}
 		rs->rs_tos = tos;
-		spin_unlock_bh(&rds_sock_lock);
+		mutex_unlock(sock_lock);
 		break;
 	case SIOCRDSGETTOS:
-		spin_lock_bh(&rds_sock_lock);
+		mutex_lock(sock_lock);
 		tos = rs->rs_tos;
-		spin_unlock_bh(&rds_sock_lock);
+		mutex_unlock(sock_lock);
 		if (put_user(tos, (rds_tos_t __user *)arg))
+			return -EFAULT;
+		break;
+	case SIOCOUTQ:
+		if (put_user(rds_get_pending_sends(rs), (int __user *)arg))
 			return -EFAULT;
 		break;
 	default:
@@ -288,11 +493,13 @@ static int rds_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	return 0;
 }
 
-static int rds_cancel_sent_to(struct rds_sock *rs, sockptr_t optval, int len)
+static int rds_cancel_sent_to(struct rds_sock *rs, sockptr_t optval,
+			      int len)
 {
 	struct sockaddr_in6 sin6;
-	struct sockaddr_in sin;
+	int cpy_len;
 	int ret = 0;
+	bool is_v4;
 
 	/* racing with another thread binding seems ok here */
 	if (ipv6_addr_any(&rs->rs_bound_addr)) {
@@ -303,21 +510,37 @@ static int rds_cancel_sent_to(struct rds_sock *rs, sockptr_t optval, int len)
 	if (len < sizeof(struct sockaddr_in)) {
 		ret = -EINVAL;
 		goto out;
-	} else if (len < sizeof(struct sockaddr_in6)) {
-		/* Assume IPv4 */
-		if (copy_from_sockptr(&sin, optval,
-				sizeof(struct sockaddr_in))) {
-			ret = -EFAULT;
-			goto out;
-		}
-		ipv6_addr_set_v4mapped(sin.sin_addr.s_addr, &sin6.sin6_addr);
-		sin6.sin6_port = sin.sin_port;
-	} else {
-		if (copy_from_sockptr(&sin6, optval,
-				   sizeof(struct sockaddr_in6))) {
-			ret = -EFAULT;
-			goto out;
-		}
+	}
+
+	/* Lets restrict copying to at most sizeof(sin6) */
+	cpy_len = min_t(int, (int)sizeof(sin6), len);
+	if (copy_from_sockptr(&sin6, optval, cpy_len)) {
+		ret = -EFAULT;
+		goto out;
+	}
+
+	/* We only support IPv4 and IPv6 */
+	if (sin6.sin6_family != AF_INET && sin6.sin6_family != AF_INET6) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	is_v4 = (sin6.sin6_family == AF_INET);
+
+	/* Check that the bound address matches the supplied af */
+	if (ipv6_addr_v4mapped(&rs->rs_bound_sin6.sin6_addr) != is_v4) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (is_v4) {
+		const struct sockaddr_in *sin4p = (struct sockaddr_in *)&sin6;
+
+		ipv6_addr_set_v4mapped(sin4p->sin_addr.s_addr, &sin6.sin6_addr);
+		sin6.sin6_port = sin4p->sin_port;
+	} else if (cpy_len != sizeof(sin6)) {
+		ret = -EINVAL;
+		goto out;
 	}
 
 	rds_send_drop_to(rs, &sin6);
@@ -338,7 +561,8 @@ static int rds_set_bool_option(unsigned char *optvar, sockptr_t optval,
 	return 0;
 }
 
-static int rds_cong_monitor(struct rds_sock *rs, sockptr_t optval, int optlen)
+static int rds_cong_monitor(struct rds_sock *rs, sockptr_t optval,
+			    int optlen)
 {
 	int ret;
 
@@ -348,12 +572,178 @@ static int rds_cong_monitor(struct rds_sock *rs, sockptr_t optval, int optlen)
 			rds_cong_add_socket(rs);
 		} else {
 			rds_cong_remove_socket(rs);
-			rs->rs_cong_mask = 0;
-			rs->rs_cong_notify = 0;
+			atomic64_set(&rs->rs_cong_mask, 0);
+			atomic64_set(&rs->rs_cong_notify, 0);
 		}
 	}
 	return ret;
 }
+
+static void rds_user_conn_paths_drop(struct rds_connection *conn)
+{
+	int i;
+	struct rds_conn_path *cp;
+
+	if (!conn->c_trans->t_mp_capable || conn->c_npaths == 1) {
+		cp = &conn->c_path[0];
+		cp->cp_drop_source = DR_USER_RESET;
+		set_bit_mb(RDS_USER_RESET, &cp->cp_flags);
+		rds_conn_path_drop(cp, DR_USER_RESET, 0);
+	} else {
+		for (i = 0; i < RDS_MPATH_WORKERS; i++) {
+			cp = &conn->c_path[i];
+			cp->cp_drop_source = DR_USER_RESET;
+			set_bit_mb(RDS_USER_RESET, &cp->cp_flags);
+			rds_conn_path_drop(cp, DR_USER_RESET, 0);
+		}
+	}
+}
+
+static int rds_user_reset_or_reap(struct rds_sock *rs, int optname,
+				  sockptr_t optval, int optlen)
+{
+	struct rds_reset reset = {};
+	struct rds_connection *conn;
+	struct in6_addr src6, dst6;
+	struct hlist_head *head;
+	int ret = 0, reap_ret = 0;
+
+	if (optname == RDS_CONN_REAP && !rds_sysctl_conn_user_reap_enable)
+		return -EPERM;
+
+	/* Support struct rds_reset with/out all_tos */
+	if (optlen != sizeof(struct rds_reset) &&
+	    optlen != offsetof(struct rds_reset, all_tos))
+		return -EINVAL;
+
+	if (copy_from_sockptr(&reset, optval, optlen))
+		return -EFAULT;
+
+	ipv6_addr_set_v4mapped(reset.src.s_addr, &src6);
+	ipv6_addr_set_v4mapped(reset.dst.s_addr, &dst6);
+
+	/* Reset or reap all conns associated with source addr.
+	 * If reset.dst == 0, option reset.all_tos is ignored
+	 * and a reap is attempted for all reset.src addrs.
+	 *
+	 * Also we do not check if sibling ToS lanes are down
+	 * for user reap requests (unlike timer-based reaping).
+	 */
+	if (reset.all_tos || reset.dst.s_addr == 0) {
+		pr_info("RDS: %s ALL conns for Source %pI4 Destination %pI4\n",
+			(optname == RDS_CONN_RESET ? "Reset" : "Reap"),
+			&reset.src.s_addr, &reset.dst.s_addr);
+
+		rcu_read_lock();
+		for_each_conn_hash_bucket(rs->rs_rns, head) {
+			hlist_for_each_entry_rcu(conn, head, c_hash_node) {
+				if (ipv6_addr_equal(&conn->c_laddr, &src6) &&
+				    (reset.dst.s_addr ?
+				     ipv6_addr_equal(&conn->c_faddr, &dst6) : 1)) {
+					if (optname == RDS_CONN_RESET) {
+						rds_user_conn_paths_drop(conn);
+					} else if (optname == RDS_CONN_REAP) {
+						reap_ret = rds_conn_reap(conn);
+						ret = ret ? : reap_ret;
+					}
+				}
+			}
+		}
+		rcu_read_unlock();
+		return ret;
+	}
+
+	conn = rds_conn_find(rs->rs_rns, &src6, &dst6,
+			     rs->rs_transport, reset.tos,
+			     rs->rs_bound_scope_id);
+
+	if (conn) {
+		bool is_tcp = conn->c_trans->t_type == RDS_TRANS_TCP;
+
+		if (optname == RDS_CONN_RESET) {
+			pr_info("Resetting RDS/%s connection <%pI4,%pI4,%d>\n",
+				is_tcp ? "TCP" : "IB", &reset.src.s_addr,
+				&reset.dst.s_addr, conn->c_tos);
+			rds_user_conn_paths_drop(conn);
+		} else if (optname == RDS_CONN_REAP) {
+			ret = rds_conn_reap(conn);
+		}
+		rds_conn_put(conn); /* for rds_conn_find */
+	}
+	return ret;
+}
+
+#if IS_ENABLED(CONFIG_IPV6)
+static int rds6_user_reset_or_reap(struct rds_sock *rs, int optname,
+				   sockptr_t optval, int optlen)
+{
+	struct rds6_reset reset = {};
+	struct rds_connection *conn;
+	struct hlist_head *head;
+	int ret = 0, reap_ret = 0;
+
+	if (optname == RDS6_CONN_REAP && !rds_sysctl_conn_user_reap_enable)
+		return -EPERM;
+
+	/* Support struct rds_reset with/out all_tos */
+	if (optlen != sizeof(struct rds6_reset) &&
+	    optlen != offsetof(struct rds6_reset, all_tos))
+		return -EINVAL;
+
+	if (copy_from_sockptr(&reset, optval, optlen))
+		return -EFAULT;
+
+	/* Reset or reap all conns associated with source addr.
+	 * If reset.dst == 0, option reset.all_tos is ignored
+	 * and a reap is attempted for all reset.src addrs.
+	 *
+	 * Also we do not check if sibling ToS lanes are down
+	 * for user reap requests (unlike timer-based reaping).
+	 */
+	if (reset.all_tos || ipv6_addr_any(&reset.dst)) {
+		pr_info("RDS: %s ALL conns for Source %pI6c Destination %pI6c\n",
+			(optname == RDS6_CONN_RESET ? "Reset" : "Reap"),
+			&reset.src, &reset.dst);
+
+		rcu_read_lock();
+		for_each_conn_hash_bucket(rs->rs_rns, head) {
+			hlist_for_each_entry_rcu(conn, head, c_hash_node) {
+				if (ipv6_addr_equal(&conn->c_laddr, &reset.src) &&
+				    (ipv6_addr_any(&reset.dst) ? 1 :
+				     ipv6_addr_equal(&conn->c_faddr, &reset.dst))) {
+					if (optname == RDS6_CONN_RESET) {
+						rds_user_conn_paths_drop(conn);
+					} else if (optname == RDS6_CONN_REAP) {
+						reap_ret = rds_conn_reap(conn);
+						ret = ret ? : reap_ret;
+					}
+				}
+			}
+		}
+		rcu_read_unlock();
+		return ret;
+	}
+
+	conn = rds_conn_find(rs->rs_rns, &reset.src, &reset.dst,
+			     rs->rs_transport, reset.tos,
+			     rs->rs_bound_scope_id);
+
+	if (conn) {
+		bool is_tcp = conn->c_trans->t_type == RDS_TRANS_TCP;
+
+		if (conn && optname == RDS6_CONN_RESET) {
+			pr_info("Resetting RDS/%s connection <%pI6c,%pI6c,%d>\n",
+				is_tcp ? "tcp" : "IB",
+				&reset.src, &reset.dst, conn->c_tos);
+			rds_user_conn_paths_drop(conn);
+		} else if (conn && optname == RDS6_CONN_REAP) {
+			ret = rds_conn_reap(conn);
+		}
+		rds_conn_put(conn); /* for rds_conn_find */
+	}
+	return ret;
+}
+#endif
 
 static int rds_set_transport(struct net *net, struct rds_sock *rs,
 			     sockptr_t optval, int optlen)
@@ -372,7 +762,7 @@ static int rds_set_transport(struct net *net, struct rds_sock *rs,
 	if (t_type < 0 || t_type >= RDS_TRANS_COUNT)
 		return -EINVAL;
 
-	/* RDS/IB is restricted to the initial network namespace */
+	/* Only RDS/TCP supports non-initial network namespaces */
 	if (t_type != RDS_TRANS_TCP && !net_eq(net, &init_net))
 		return -EPROTOTYPE;
 
@@ -382,7 +772,7 @@ static int rds_set_transport(struct net *net, struct rds_sock *rs,
 }
 
 static int rds_enable_recvtstamp(struct sock *sk, sockptr_t optval,
-				 int optlen, int optname)
+				 int optlen)
 {
 	int val, valbool;
 
@@ -393,9 +783,6 @@ static int rds_enable_recvtstamp(struct sock *sk, sockptr_t optval,
 		return -EFAULT;
 
 	valbool = val ? 1 : 0;
-
-	if (optname == SO_TIMESTAMP_NEW)
-		sock_set_flag(sk, SOCK_TSTAMP_NEW);
 
 	if (valbool)
 		sock_set_flag(sk, SOCK_RCVTSTAMP);
@@ -422,7 +809,7 @@ static int rds_recv_track_latency(struct rds_sock *rs, sockptr_t optval,
 
 	rs->rs_rx_traces = trace.rx_traces;
 	for (i = 0; i < rs->rs_rx_traces; i++) {
-		if (trace.rx_trace_pos[i] >= RDS_MSG_RX_DGRAM_TRACE_MAX) {
+		if (trace.rx_trace_pos[i] > RDS_MSG_RX_DGRAM_TRACE_MAX) {
 			rs->rs_rx_traces = 0;
 			return -EFAULT;
 		}
@@ -463,19 +850,39 @@ static int rds_setsockopt(struct socket *sock, int level, int optname,
 	case RDS_CONG_MONITOR:
 		ret = rds_cong_monitor(rs, optval, optlen);
 		break;
+	case RDS_CONN_RESET:
+	case RDS_CONN_REAP:
+		if (!ns_capable(net->user_ns, CAP_NET_ADMIN)) {
+			ret =  -EACCES;
+			break;
+		}
+		ret = rds_user_reset_or_reap(rs, optname, optval, optlen);
+		break;
+#if IS_ENABLED(CONFIG_IPV6)
+	case RDS6_CONN_RESET:
+	case RDS6_CONN_REAP:
+		if (!ns_capable(net->user_ns, CAP_NET_ADMIN)) {
+			ret =  -EACCES;
+			break;
+		}
+		ret = rds6_user_reset_or_reap(rs, optname, optval, optlen);
+		break;
+#endif
 	case SO_RDS_TRANSPORT:
 		lock_sock(sock->sk);
 		ret = rds_set_transport(net, rs, optval, optlen);
 		release_sock(sock->sk);
 		break;
 	case SO_TIMESTAMP_OLD:
-	case SO_TIMESTAMP_NEW:
 		lock_sock(sock->sk);
-		ret = rds_enable_recvtstamp(sock->sk, optval, optlen, optname);
+		ret = rds_enable_recvtstamp(sock->sk, optval, optlen);
 		release_sock(sock->sk);
 		break;
 	case SO_RDS_MSG_RXPATH_LATENCY:
 		ret = rds_recv_track_latency(rs, optval, optlen);
+		break;
+	case SO_RDS_INQ:
+		ret = rds_set_bool_option(&rs->rs_inq, optval, optlen);
 		break;
 	default:
 		ret = -ENOPROTOOPT;
@@ -485,36 +892,35 @@ out:
 }
 
 static int rds_getsockopt(struct socket *sock, int level, int optname,
-			  sockopt_t *opt)
+			  char __user *optval, int __user *optlen)
 {
 	struct rds_sock *rs = rds_sk_to_rs(sock->sk);
 	int ret = -ENOPROTOOPT, len;
 	int trans;
-	int val;
 
 	if (level != SOL_RDS)
 		goto out;
 
-	len = opt->optlen;
+	if (get_user(len, optlen)) {
+		ret = -EFAULT;
+		goto out;
+	}
 
 	switch (optname) {
 	case RDS_INFO_FIRST ... RDS_INFO_LAST:
-		ret = rds_info_getsockopt(sock, optname, opt);
+		ret = rds_info_getsockopt(sock, optname, optval,
+					  optlen);
 		break;
 
 	case RDS_RECVERR:
-		if (len < sizeof(int)) {
+		if (len < sizeof(int))
 			ret = -EINVAL;
-			break;
-		}
-		val = rs->rs_recverr;
-		if (copy_to_iter(&val, sizeof(int), &opt->iter_out) !=
-		    sizeof(int)) {
+		else
+		if (put_user(rs->rs_recverr, (int __user *) optval)
+		 || put_user(sizeof(int), optlen))
 			ret = -EFAULT;
-		} else {
-			opt->optlen = sizeof(int);
+		else
 			ret = 0;
-		}
 		break;
 	case SO_RDS_TRANSPORT:
 		if (len < sizeof(int)) {
@@ -523,13 +929,22 @@ static int rds_getsockopt(struct socket *sock, int level, int optname,
 		}
 		trans = (rs->rs_transport ? rs->rs_transport->t_type :
 			 RDS_TRANS_NONE); /* unbound */
-		if (copy_to_iter(&trans, sizeof(int), &opt->iter_out) !=
-		    sizeof(int)) {
+		if (put_user(trans, (int __user *)optval) ||
+		    put_user(sizeof(int), optlen))
 			ret = -EFAULT;
-		} else {
-			opt->optlen = sizeof(int);
+		else
 			ret = 0;
+		break;
+	case SO_RDS_INQ:
+		if (len < sizeof(int)) {
+			ret = -EINVAL;
+			break;
 		}
+		if (put_user(rs->rs_inq, (int __user *)optval) ||
+		    put_user(sizeof(int), optlen))
+			ret = -EINVAL;
+		else
+			ret = 0;
 		break;
 	default:
 		break;
@@ -538,6 +953,77 @@ static int rds_getsockopt(struct socket *sock, int level, int optname,
 out:
 	return ret;
 
+}
+
+/* Check if there is a rs_buf_info associated with the given address.  If not,
+ * add one to the rds_sock.  The found or added rs_buf_info is returned.  If
+ * there is no rs_buf_info found and a new rs_buf_info cannot be allocated,
+ * NULL is returned and ret is set to the error.  Once an address' rs_buf_info
+ * is added, it will not be removed until the rs_sock is closed.
+ */
+struct rs_buf_info *rds_add_buf_info(struct rds_sock *rs, struct in6_addr *addr,
+				     int *ret, gfp_t gfp)
+{
+	struct rs_buf_info *info, *tmp_info;
+	unsigned long flags;
+
+	/* Normal path, peer is expected to be found most of the time. */
+	info = rhashtable_lookup_fast(&rs->rs_buf_info_tbl, addr,
+				      rs_buf_info_params);
+	if (info) {
+		*ret = 0;
+		return info;
+	}
+
+	/* Allocate the buffer outside of lock first. */
+	tmp_info = kmem_cache_alloc(rds_rs_buf_info_slab, gfp);
+	if (!tmp_info) {
+		*ret = -ENOMEM;
+		return NULL;
+	}
+
+	spin_lock_irqsave(&rs->rs_snd_lock, flags);
+
+	/* Cannot add more peer. */
+	if (rs->rs_buf_info_dest_cnt + 1 > rds_sock_max_peers) {
+		spin_unlock_irqrestore(&rs->rs_snd_lock, flags);
+		kmem_cache_free(rds_rs_buf_info_slab, tmp_info);
+		*ret = -ENFILE;
+		return NULL;
+	}
+
+	tmp_info->rsbi_key = *addr;
+	tmp_info->rsbi_snd_bytes = 0;
+	spin_unlock_irqrestore(&rs->rs_snd_lock, flags);
+	*ret = rhashtable_insert_fast(&rs->rs_buf_info_tbl,
+				      &tmp_info->rsbi_link, rs_buf_info_params);
+	if (!*ret) {
+		spin_lock_irqsave(&rs->rs_snd_lock, flags);
+		rs->rs_buf_info_dest_cnt++;
+		spin_unlock_irqrestore(&rs->rs_snd_lock, flags);
+		return tmp_info;
+	} else if (*ret != -EEXIST) {
+		kmem_cache_free(rds_rs_buf_info_slab, tmp_info);
+		/* Very unlikely to happen... */
+		pr_err("%s: cannot add rs_buf_info for %pI6c: %d\n", __func__,
+		       addr, *ret);
+		return NULL;
+	}
+
+	/* Another thread beats us in adding the rs_buf_info.... */
+	info = rhashtable_lookup_fast(&rs->rs_buf_info_tbl, addr,
+				      rs_buf_info_params);
+	kmem_cache_free(rds_rs_buf_info_slab, tmp_info);
+
+	if (info) {
+		*ret = 0;
+		return info;
+	}
+
+	/* Should not happen... */
+	pr_err("%s: cannot find rs_buf_info for %pI6c\n", __func__, addr);
+	*ret = -EINVAL;
+	return NULL;
 }
 
 static int rds_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
@@ -564,14 +1050,13 @@ static int rds_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 			ret = -EDESTADDRREQ;
 			break;
 		}
-		if (ipv4_is_multicast(sin->sin_addr.s_addr) ||
+		if (IN_MULTICAST(ntohl(sin->sin_addr.s_addr)) ||
 		    sin->sin_addr.s_addr == htonl(INADDR_BROADCAST)) {
 			ret = -EINVAL;
 			break;
 		}
 		ipv6_addr_set_v4mapped(sin->sin_addr.s_addr, &rs->rs_conn_addr);
 		rs->rs_conn_port = sin->sin_port;
-		rs->rs_conn_scope_id = 0;
 		break;
 
 #if IS_ENABLED(CONFIG_IPV6)
@@ -599,14 +1084,13 @@ static int rds_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 			addr4 = sin6->sin6_addr.s6_addr32[3];
 			if (addr4 == htonl(INADDR_ANY) ||
 			    addr4 == htonl(INADDR_BROADCAST) ||
-			    ipv4_is_multicast(addr4)) {
+			    IN_MULTICAST(ntohl(addr4))) {
 				ret = -EPROTOTYPE;
 				break;
 			}
 		}
-
 		if (addr_type & IPV6_ADDR_LINKLOCAL) {
-			/* If socket is already bound to a link local address,
+			/* If socket is arleady bound to a link local address,
 			 * the peer address must be on the same link.
 			 */
 			if (sin6->sin6_scope_id == 0 ||
@@ -616,14 +1100,11 @@ static int rds_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 				ret = -EINVAL;
 				break;
 			}
-			/* Remember the connected address scope ID.  It is
-			 * checked against the binding local address when
-			 * the socket is bound, and gives a send without a
-			 * destination its scope.
+			/* Remember the connected address scope ID.  It will
+			 * be checked against the binding local address when
+			 * the socket is bound.
 			 */
-			rs->rs_conn_scope_id = sin6->sin6_scope_id;
-		} else {
-			rs->rs_conn_scope_id = 0;
+			rs->rs_bound_scope_id = sin6->sin6_scope_id;
 		}
 		rs->rs_conn_addr = sin6->sin6_addr;
 		rs->rs_conn_port = sin6->sin6_port;
@@ -632,10 +1113,16 @@ static int rds_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 #endif
 
 	default:
-		ret = -EAFNOSUPPORT;
+		ret = -EINVAL;
 		break;
 	}
 
+	if (!ret &&
+	    !rds_add_buf_info(rs, &rs->rs_conn_addr, &ret, GFP_KERNEL)) {
+		/* Need to clear the connected info in case of error. */
+		rs->rs_conn_addr = in6addr_any;
+		rs->rs_conn_port = 0;
+	}
 	release_sock(sk);
 	return ret;
 }
@@ -646,7 +1133,7 @@ static struct proto rds_proto = {
 	.obj_size = sizeof(struct rds_sock),
 };
 
-static const struct proto_ops rds_proto_ops = {
+static struct proto_ops rds_proto_ops = {
 	.family =	AF_RDS,
 	.owner =	THIS_MODULE,
 	.release =	rds_release,
@@ -660,7 +1147,7 @@ static const struct proto_ops rds_proto_ops = {
 	.listen =	sock_no_listen,
 	.shutdown =	sock_no_shutdown,
 	.setsockopt =	rds_setsockopt,
-	.getsockopt_iter =	rds_getsockopt,
+	.getsockopt =	rds_getsockopt,
 	.sendmsg =	rds_sendmsg,
 	.recvmsg =	rds_recvmsg,
 	.mmap =		sock_no_mmap,
@@ -670,13 +1157,15 @@ static void rds_sock_destruct(struct sock *sk)
 {
 	struct rds_sock *rs = rds_sk_to_rs(sk);
 
-	WARN_ON((&rs->rs_item != rs->rs_item.next ||
-		 &rs->rs_item != rs->rs_item.prev));
+	BUG_ON((&rs->rs_item != rs->rs_item.next ||
+	    &rs->rs_item != rs->rs_item.prev));
 }
 
 static int __rds_create(struct socket *sock, struct sock *sk, int protocol)
 {
 	struct rds_sock *rs;
+	struct net *net;
+	int ret;
 
 	sock_init_data(sock, sk);
 	sock->ops		= &rds_proto_ops;
@@ -690,24 +1179,43 @@ static int __rds_create(struct socket *sock, struct sock *sk, int protocol)
 	INIT_LIST_HEAD(&rs->rs_recv_queue);
 	INIT_LIST_HEAD(&rs->rs_notify_queue);
 	INIT_LIST_HEAD(&rs->rs_cong_list);
-	rds_message_zcopy_queue_init(&rs->rs_zcookie_queue);
 	spin_lock_init(&rs->rs_rdma_lock);
 	rs->rs_rdma_keys = RB_ROOT;
-	rs->rs_rx_traces = 0;
+	rs->poison = 0xABABABAB;
 	rs->rs_tos = 0;
-	rs->rs_conn = NULL;
+	rs->rs_tos_frozen = 0;
+	rs->rs_rx_traces = 0;
+	rs->rs_pid = current->pid;
+	net = sock_net(sk);
 
-	spin_lock_bh(&rds_sock_lock);
-	list_add_tail(&rs->rs_item, &rds_sock_list);
-	spin_unlock_bh(&rds_sock_lock);
+	rs->rs_rns = rds_ns(net);
+	rs->rs_stats = __rds_get_mod_stats(rs->rs_rns, RDS_MOD_RDS);
+
+	spin_lock_init(&rs->rs_snd_lock);
+	ret = rhashtable_init(&rs->rs_buf_info_tbl, &rs_buf_info_params);
+	if (ret)
+		return ret;
+
+	rs->rs_trans_private = NULL;
+	mutex_init(&rs->rs_trans_lock);
+
+	if (!ipv6_addr_any(&rs->rs_bound_addr)) {
+		printk(KERN_CRIT "bound addr %pI6c at create\n",
+		       &rs->rs_bound_addr);
+	}
+
+	mutex_lock(&rs->rs_rns->rns_sock_lock);
+	list_add_tail(&rs->rs_item, &rs->rs_rns->rns_sock_list);
+	rs->rs_rns->rns_sock_count++;
+	mutex_unlock(&rs->rs_rns->rns_sock_lock);
 
 	return 0;
 }
 
-static int rds_create(struct net *net, struct socket *sock, int protocol,
-		      int kern)
+static int rds_create(struct net *net, struct socket *sock, int protocol, int kern)
 {
 	struct sock *sk;
+	int ret;
 
 	if (sock->type != SOCK_SEQPACKET || protocol)
 		return -ESOCKTNOSUPPORT;
@@ -716,20 +1224,59 @@ static int rds_create(struct net *net, struct socket *sock, int protocol,
 	if (!sk)
 		return -ENOMEM;
 
-	return __rds_create(sock, sk, protocol);
+	ret = __rds_create(sock, sk, protocol);
+	if (ret)
+		sk_free(sk);
+	return ret;
 }
+
+void debug_sock_hold(struct sock *sk)
+{
+	struct rds_sock *rs = rds_sk_to_rs(sk);
+	if ((refcount_read(&sk->sk_refcnt) == 0)) {
+		printk(KERN_CRIT "zero refcnt on sock hold\n");
+		WARN_ON(1);
+	}
+	if (rs->poison != 0xABABABAB) {
+		printk(KERN_CRIT "bad poison on hold %x\n", rs->poison);
+		WARN_ON(1);
+	}
+	sock_hold(sk);
+}
+
 
 void rds_sock_addref(struct rds_sock *rs)
 {
-	sock_hold(rds_rs_to_sk(rs));
+	debug_sock_hold(rds_rs_to_sk(rs));
 }
+EXPORT_SYMBOL_GPL(rds_sock_addref);
+
+void debug_sock_put(struct sock *sk)
+{
+	if ((refcount_read(&sk->sk_refcnt) == 0)) {
+		printk(KERN_CRIT "zero refcnt on sock put\n");
+		WARN_ON(1);
+	}
+	if (refcount_dec_and_test(&sk->sk_refcnt)) {
+		struct rds_sock *rs = rds_sk_to_rs(sk);
+
+		if (rs->poison != 0xABABABAB) {
+			printk(KERN_CRIT "bad poison on put %x\n", rs->poison);
+			WARN_ON(1);
+		}
+		rs->poison = 0xDEADBEEF;
+		sk_free(sk);
+	}
+}
+
 
 void rds_sock_put(struct rds_sock *rs)
 {
-	sock_put(rds_rs_to_sk(rs));
+	debug_sock_put(rds_rs_to_sk(rs));
 }
+EXPORT_SYMBOL_GPL(rds_sock_put);
 
-static const struct net_proto_family rds_family_ops = {
+static struct net_proto_family rds_family_ops = {
 	.family =	AF_RDS,
 	.create =	rds_create,
 	.owner	=	THIS_MODULE,
@@ -739,24 +1286,20 @@ static void rds_sock_inc_info(struct socket *sock, unsigned int len,
 			      struct rds_info_iterator *iter,
 			      struct rds_info_lengths *lens)
 {
-	struct net *net = sock_net(sock->sk);
+	struct rds_net *rns;
 	struct rds_sock *rs;
 	struct rds_incoming *inc;
 	unsigned int total = 0;
+	unsigned long flags;
 
 	len /= sizeof(struct rds_info_message);
 
-	spin_lock_bh(&rds_sock_lock);
+	rns = rds_ns(sock_net(sock->sk));
+	mutex_lock(&rns->rns_sock_lock);
 
-	list_for_each_entry(rs, &rds_sock_list, rs_item) {
-		/* Only show sockets in the caller's netns. */
-		if (!net_eq(sock_net(rds_rs_to_sk(rs)), net))
-			continue;
-		/* This option only supports IPv4 sockets. */
-		if (!ipv6_addr_v4mapped(&rs->rs_bound_addr))
-			continue;
-
-		read_lock(&rs->rs_recv_lock);
+	list_for_each_entry(rs, &rns->rns_sock_list, rs_item) {
+		(void)rds_rs_to_sk(rs);
+		read_lock_irqsave(&rs->rs_recv_lock, flags);
 
 		/* XXX too lazy to maintain counts.. */
 		list_for_each_entry(inc, &rs->rs_recv_queue, i_item) {
@@ -768,10 +1311,10 @@ static void rds_sock_inc_info(struct socket *sock, unsigned int len,
 						  1);
 		}
 
-		read_unlock(&rs->rs_recv_lock);
+		read_unlock_irqrestore(&rs->rs_recv_lock, flags);
 	}
 
-	spin_unlock_bh(&rds_sock_lock);
+	mutex_unlock(&rns->rns_sock_lock);
 
 	lens->nr = total;
 	lens->each = sizeof(struct rds_info_message);
@@ -782,21 +1325,21 @@ static void rds6_sock_inc_info(struct socket *sock, unsigned int len,
 			       struct rds_info_iterator *iter,
 			       struct rds_info_lengths *lens)
 {
-	struct net *net = sock_net(sock->sk);
+	struct rds_net *rns;
+	struct rds_sock *rs;
 	struct rds_incoming *inc;
 	unsigned int total = 0;
-	struct rds_sock *rs;
+	unsigned long flags;
 
 	len /= sizeof(struct rds6_info_message);
 
-	spin_lock_bh(&rds_sock_lock);
+	rns = rds_ns(sock_net(sock->sk));
+	mutex_lock(&rns->rns_sock_lock);
 
-	list_for_each_entry(rs, &rds_sock_list, rs_item) {
-		/* Only show sockets in the caller's netns. */
-		if (!net_eq(sock_net(rds_rs_to_sk(rs)), net))
-			continue;
-		read_lock(&rs->rs_recv_lock);
+	list_for_each_entry(rs, &rns->rns_sock_list, rs_item) {
+		read_lock_irqsave(&rs->rs_recv_lock, flags);
 
+		/* XXX too lazy to maintain counts.. */
 		list_for_each_entry(inc, &rs->rs_recv_queue, i_item) {
 			total++;
 			if (total <= len)
@@ -804,10 +1347,10 @@ static void rds6_sock_inc_info(struct socket *sock, unsigned int len,
 						   &rs->rs_bound_addr, 1);
 		}
 
-		read_unlock(&rs->rs_recv_lock);
+		read_unlock_irqrestore(&rs->rs_recv_lock, flags);
 	}
 
-	spin_unlock_bh(&rds_sock_lock);
+	mutex_unlock(&rns->rns_sock_lock);
 
 	lens->nr = total;
 	lens->each = sizeof(struct rds6_info_message);
@@ -818,36 +1361,27 @@ static void rds_sock_info(struct socket *sock, unsigned int len,
 			  struct rds_info_iterator *iter,
 			  struct rds_info_lengths *lens)
 {
-	struct net *net = sock_net(sock->sk);
-	struct rds_info_socket sinfo;
-	unsigned int copied = 0;
-	unsigned int cnt = 0;
+	struct rds_net *rns;
+	u32 sock_count;
 	struct rds_sock *rs;
 
 	len /= sizeof(struct rds_info_socket);
 
-	spin_lock_bh(&rds_sock_lock);
+	rns = rds_ns(sock_net(sock->sk));
+	mutex_lock(&rns->rns_sock_lock);
 
-	/* First pass: count entries visible in the caller's netns. */
-	list_for_each_entry(rs, &rds_sock_list, rs_item) {
-		if (!net_eq(sock_net(rds_rs_to_sk(rs)), net))
-			continue;
-		if (!ipv6_addr_v4mapped(&rs->rs_bound_addr))
-			continue;
-		cnt++;
+	if (len < rns->rns_sock_count) {
+		sock_count = rns->rns_sock_count;
+		goto out;
+	} else {
+		sock_count = 0;
 	}
 
-	if (len < cnt)
-		goto out;
+	list_for_each_entry(rs, &rns->rns_sock_list, rs_item) {
+		struct rds_info_socket sinfo = {};
 
-	list_for_each_entry(rs, &rds_sock_list, rs_item) {
-		if (copied >= cnt)
-			break;
-		/* Only show sockets in the caller's netns. */
-		if (!net_eq(sock_net(rds_rs_to_sk(rs)), net))
-			continue;
-		/* This option only supports IPv4 sockets. */
-		if (!ipv6_addr_v4mapped(&rs->rs_bound_addr))
+		if (!ipv6_addr_any(&rs->rs_bound_addr) &&
+		    !ipv6_addr_v4mapped(&rs->rs_bound_addr))
 			continue;
 		sinfo.sndbuf = rds_sk_sndbuf(rs);
 		sinfo.rcvbuf = rds_sk_rcvbuf(rs);
@@ -856,21 +1390,19 @@ static void rds_sock_info(struct socket *sock, unsigned int len,
 		sinfo.bound_port = rs->rs_bound_port;
 		sinfo.connected_port = rs->rs_conn_port;
 		sinfo.inum = sock_i_ino(rds_rs_to_sk(rs));
-
+		sinfo.pid = rs->rs_pid;
+		sinfo.cong = rs->rs_congested;
+		if (rs->rs_transport)
+			strscpy(sinfo.t_name, rs->rs_transport->t_name, sizeof(sinfo.t_name));
 		rds_info_copy(iter, &sinfo, sizeof(sinfo));
-		copied++;
+		sock_count++;
 	}
-	/* A concurrent rds_bind() can change rs_bound_addr between the
-	 * two passes without holding rds_sock_lock, so copied may be
-	 * less than cnt. Report what was actually copied.
-	 */
-	cnt = copied;
 
 out:
-	lens->nr = cnt;
+	lens->nr = sock_count;
 	lens->each = sizeof(struct rds_info_socket);
 
-	spin_unlock_bh(&rds_sock_lock);
+	mutex_unlock(&rns->rns_sock_lock);
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
@@ -878,32 +1410,20 @@ static void rds6_sock_info(struct socket *sock, unsigned int len,
 			   struct rds_info_iterator *iter,
 			   struct rds_info_lengths *lens)
 {
-	struct net *net = sock_net(sock->sk);
-	struct rds6_info_socket sinfo6;
-	unsigned int copied = 0;
-	unsigned int cnt = 0;
+	struct rds_net *rns;
 	struct rds_sock *rs;
 
 	len /= sizeof(struct rds6_info_socket);
 
-	spin_lock_bh(&rds_sock_lock);
+	rns = rds_ns(sock_net(sock->sk));
+	mutex_lock(&rns->rns_sock_lock);
 
-	/* First pass: count entries visible in the caller's netns. */
-	list_for_each_entry(rs, &rds_sock_list, rs_item) {
-		if (!net_eq(sock_net(rds_rs_to_sk(rs)), net))
-			continue;
-		cnt++;
-	}
-
-	if (len < cnt)
+	if (len < rns->rns_sock_count)
 		goto out;
 
-	list_for_each_entry(rs, &rds_sock_list, rs_item) {
-		if (copied >= cnt)
-			break;
-		/* Only show sockets in the caller's netns. */
-		if (!net_eq(sock_net(rds_rs_to_sk(rs)), net))
-			continue;
+	list_for_each_entry(rs, &rns->rns_sock_list, rs_item) {
+		struct rds6_info_socket sinfo6 = {};
+
 		sinfo6.sndbuf = rds_sk_sndbuf(rs);
 		sinfo6.rcvbuf = rds_sk_rcvbuf(rs);
 		sinfo6.bound_addr = rs->rs_bound_addr;
@@ -911,81 +1431,176 @@ static void rds6_sock_info(struct socket *sock, unsigned int len,
 		sinfo6.bound_port = rs->rs_bound_port;
 		sinfo6.connected_port = rs->rs_conn_port;
 		sinfo6.inum = sock_i_ino(rds_rs_to_sk(rs));
-
+		sinfo6.pid = rs->rs_pid;
+		sinfo6.cong = rs->rs_congested;
+		if (rs->rs_transport)
+			strscpy(sinfo6.t_name, rs->rs_transport->t_name, sizeof(sinfo6.t_name));
 		rds_info_copy(iter, &sinfo6, sizeof(sinfo6));
-		copied++;
 	}
-	cnt = copied;
 
- out:
-	lens->nr = cnt;
+out:
+	lens->nr = rns->rns_sock_count;
 	lens->each = sizeof(struct rds6_info_socket);
+	mutex_unlock(&rns->rns_sock_lock);
 
-	spin_unlock_bh(&rds_sock_lock);
 }
 #endif
 
-static bool rds_initialized;
-
-static void rds_exit(void)
+static unsigned long parse_ul(char *ptr, unsigned long max)
 {
-	rds_initialized = false;
+	unsigned long val;
+	char *endptr;
+
+	val = simple_strtoul(ptr, &endptr, 0);
+	switch (*endptr) {
+	case 'k': case 'K':
+		val <<= 10;
+		endptr++;
+		break;
+	case 'm': case 'M':
+		val <<= 20;
+		endptr++;
+		break;
+	}
+
+	if (*ptr && !*endptr && val <= max)
+		return val;
+
+	printk(KERN_WARNING "RDS: Invalid threshold number\n");
+	return 0;
+}
+
+int rds_check_qos_threshold(struct rds_statistics __percpu *stats, u8 tos,
+			    size_t payload_len)
+{
+	if (rds_qos_threshold_action == 0)
+		return 0;
+
+	if (rds_qos_threshold_tbl[tos] && payload_len &&
+		rds_qos_threshold_tbl[tos] < payload_len) {
+		if (rds_qos_threshold_action == 1)
+			return 1;
+		else if (rds_qos_threshold_action == 2) {
+			rds_stats_inc(stats, s_qos_threshold_exceeded);
+			return 0;
+		} else if (rds_qos_threshold_action == 3) {
+			rds_stats_inc(stats, s_qos_threshold_exceeded);
+			return 1;
+		} else
+			return 0;
+	} else
+		return 0;
+}
+
+static void rds_qos_threshold_init(void)
+{
+	char *tok, *nxt_tok, *end;
+	char str[1024];
+	int	i;
+
+	for (i = 0; i < 256; i++)
+		rds_qos_threshold_tbl[i] = 0;
+
+	if (rds_qos_threshold == NULL)
+		return;
+
+	strcpy(str, rds_qos_threshold);
+	nxt_tok = strchr(str, ',');
+	if (nxt_tok) {
+		*nxt_tok = '\0';
+		nxt_tok++;
+	}
+
+	tok = str;
+	while (tok) {
+		char *qos_str, *threshold_str;
+
+		qos_str = tok;
+		threshold_str = strchr(tok, ':');
+		if (threshold_str) {
+			unsigned long qos, threshold;
+
+			*threshold_str = '\0';
+			threshold_str++;
+			qos = simple_strtol(qos_str, &end, 0);
+			if (*end) {
+				printk(KERN_WARNING "RDS: Warning: QoS "
+					"%s is improperly formatted\n", qos_str);
+			} else if (qos > 255) {
+				printk(KERN_WARNING "RDS: Warning: QoS "
+					"%s out of range\n", qos_str);
+			}
+			threshold = parse_ul(threshold_str, (u32)~0);
+			rds_qos_threshold_tbl[qos] = threshold;
+		} else {
+			printk(KERN_WARNING "RDS: Warning: QoS:Threshold "
+				"%s is improperly formatted\n", tok);
+		}
+
+		if (!nxt_tok)
+			break;
+		tok = nxt_tok;
+		nxt_tok = strchr(nxt_tok, ',');
+		if (nxt_tok) {
+			*nxt_tok = '\0';
+			nxt_tok++;
+		}
+	}
+}
+
+static void __exit rds_exit(void)
+{
+	rds_trace_exit();
 	sock_unregister(rds_family_ops.family);
 	proto_unregister(&rds_proto);
+	rds_unreg_pernet();
 	rds_conn_exit();
-	rds_cong_exit();
 	rds_sysctl_exit();
+	rds_cfu_fini_cache();
 	rds_threads_exit();
-	rds_stats_exit();
 	rds_page_exit();
-	rds_bind_lock_destroy();
 	rds_info_deregister_func(RDS_INFO_SOCKETS, rds_sock_info);
 	rds_info_deregister_func(RDS_INFO_RECV_MESSAGES, rds_sock_inc_info);
 #if IS_ENABLED(CONFIG_IPV6)
 	rds_info_deregister_func(RDS6_INFO_SOCKETS, rds6_sock_info);
 	rds_info_deregister_func(RDS6_INFO_RECV_MESSAGES, rds6_sock_inc_info);
 #endif
+	kmem_cache_destroy(rds_rs_buf_info_slab);
 }
+
 module_exit(rds_exit);
-
-u32 rds_gen_num;
-
-/* When RDS is built in, a failed rds_init() does not stop the rds_rdma
- * and rds_tcp initcalls from running against a core that has already
- * been torn down (rds_wq in particular).  Let them bail out early.
- */
-bool rds_is_initialized(void)
-{
-	return rds_initialized;
-}
-EXPORT_SYMBOL_GPL(rds_is_initialized);
 
 static int __init rds_init(void)
 {
 	int ret;
 
-	net_get_random_once(&rds_gen_num, sizeof(rds_gen_num));
+	rds_trace_init();
+	rds_rt_debug_tp_enable();
 
-	ret = rds_bind_lock_init();
+	rds_rs_buf_info_slab = kmem_cache_create("rds_rs_buf_info",
+						 sizeof(struct rs_buf_info),
+						 0, SLAB_HWCACHE_ALIGN, NULL);
+	if (!rds_rs_buf_info_slab) {
+		ret = -ENOMEM;
+		goto out_trace;
+	}
+
+	ret = rds_reg_pernet();
 	if (ret)
-		goto out;
+		goto out_slab;
 
 	ret = rds_conn_init();
 	if (ret)
-		goto out_bind;
-
+		goto out_net;
 	ret = rds_threads_init();
 	if (ret)
 		goto out_conn;
 	ret = rds_sysctl_init();
 	if (ret)
 		goto out_threads;
-	ret = rds_stats_init();
-	if (ret)
-		goto out_sysctl;
 	ret = proto_register(&rds_proto, 1);
 	if (ret)
-		goto out_stats;
+		goto out_sysctl;
 	ret = sock_register(&rds_family_ops);
 	if (ret)
 		goto out_proto;
@@ -996,31 +1611,37 @@ static int __init rds_init(void)
 	rds_info_register_func(RDS6_INFO_SOCKETS, rds6_sock_info);
 	rds_info_register_func(RDS6_INFO_RECV_MESSAGES, rds6_sock_inc_info);
 #endif
-	rds_initialized = true;
+
+	rds_qos_threshold_init();
+	rds_cfu_init_cache();
 
 	goto out;
 
 out_proto:
 	proto_unregister(&rds_proto);
-out_stats:
-	rds_stats_exit();
 out_sysctl:
 	rds_sysctl_exit();
 out_threads:
 	rds_threads_exit();
 out_conn:
 	rds_conn_exit();
-	rds_cong_exit();
 	rds_page_exit();
-out_bind:
-	rds_bind_lock_destroy();
+out_net:
+	rds_unreg_pernet();
+
+out_slab:
+	kmem_cache_destroy(rds_rs_buf_info_slab);
+
+out_trace:
+	rds_trace_exit();
+
 out:
 	return ret;
 }
 module_init(rds_init);
 
-#define DRV_VERSION     "4.0"
-#define DRV_RELDATE     "Feb 12, 2009"
+#define DRV_VERSION     "4.1"
+#define DRV_RELDATE     "Jan 04, 2013"
 
 MODULE_AUTHOR("Oracle Corporation <rds-devel@oss.oracle.com>");
 MODULE_DESCRIPTION("RDS: Reliable Datagram Sockets"

@@ -539,7 +539,7 @@ static int usbhs_omap_probe(struct platform_device *pdev)
 
 	if (dev->of_node) {
 		/* For DT boot we populate platform data from OF node */
-		pdata = devm_kzalloc_obj(dev, *pdata);
+		pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 		if (!pdata)
 			return -ENOMEM;
 
@@ -561,7 +561,7 @@ static int usbhs_omap_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	omap = devm_kzalloc_obj(dev, *omap);
+	omap = devm_kzalloc(dev, sizeof(*omap), GFP_KERNEL);
 	if (!omap) {
 		dev_err(dev, "Memory allocation failed\n");
 		return -ENOMEM;

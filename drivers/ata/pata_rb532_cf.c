@@ -103,14 +103,16 @@ static int rb532_pata_driver_probe(struct platform_device *pdev)
 {
 	int irq;
 	struct gpio_desc *gpiod;
+	struct resource *res;
 	struct ata_host *ah;
 	struct rb532_cf_info *info;
-	void __iomem *iobase;
 	int ret;
 
-	iobase = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(iobase))
-		return PTR_ERR(iobase);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		dev_err(&pdev->dev, "no IOMEM resource found\n");
+		return -EINVAL;
+	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -130,14 +132,18 @@ static int rb532_pata_driver_probe(struct platform_device *pdev)
 	if (!ah)
 		return -ENOMEM;
 
-	info = devm_kzalloc_obj(&pdev->dev, *info);
+	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
 	ah->private_data = info;
 	info->gpio_line = gpiod;
 	info->irq = irq;
-	info->iobase = iobase;
+
+	info->iobase = devm_ioremap(&pdev->dev, res->start,
+				resource_size(res));
+	if (!info->iobase)
+		return -ENOMEM;
 
 	rb532_pata_setup_ports(ah);
 

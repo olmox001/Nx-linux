@@ -11,7 +11,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
-#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 #define WDT_CTRL		0x00
@@ -39,7 +38,7 @@ MODULE_PARM_DESC(timeout, "Watchdog timeout in seconds");
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-			__stringify(WATCHDOG_NOWAYOUT) ")");
+			__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 struct sp_wdt_priv {
 	struct watchdog_device wdev;
@@ -147,7 +146,7 @@ static int sp_wdt_probe(struct platform_device *pdev)
 	struct sp_wdt_priv *priv;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

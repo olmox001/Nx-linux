@@ -76,7 +76,7 @@ static const char * const rproc_coredump_str[] = {
 	[RPROC_COREDUMP_INLINE]		= "inline",
 };
 
-/* Expose the current coredump configuration via sysfs */
+/* Expose the current coredump configuration via debugfs */
 static ssize_t coredump_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
 {
@@ -87,15 +87,14 @@ static ssize_t coredump_show(struct device *dev,
 
 /*
  * By writing to the 'coredump' sysfs entry, we control the behavior of the
- * coredump mechanism dynamically. The default value of this entry is
- * "disabled".
+ * coredump mechanism dynamically. The default value of this entry is "default".
  *
  * The 'coredump' sysfs entry supports these commands:
  *
  * disabled:	This is the default coredump mechanism. Recovery will proceed
  *		without collecting any dump.
  *
- * enabled:	When the remoteproc crashes the entire coredump will be
+ * default:	When the remoteproc crashes the entire coredump will be
  *		copied to a separate buffer and exposed to userspace.
  *
  * inline:	The coredump will not be copied to a separate buffer and the

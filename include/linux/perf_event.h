@@ -304,8 +304,8 @@ struct perf_event_pmu_context;
 #define PERF_PMU_CAP_AUX_OUTPUT		0x0080
 #define PERF_PMU_CAP_EXTENDED_HW_TYPE	0x0100
 #define PERF_PMU_CAP_AUX_PAUSE		0x0200
-#define PERF_PMU_CAP_MEDIATED_VPMU	0x0400
-#define PERF_PMU_CAP_SIMD_REGS		0x0800
+#define PERF_PMU_CAP_AUX_PREFER_LARGE	0x0400
+#define PERF_PMU_CAP_MEDIATED_VPMU	0x0800
 
 /**
  * pmu::scope
@@ -1467,7 +1467,6 @@ static inline u32 perf_sample_data_size(struct perf_sample_data *data,
 	return size;
 }
 
-extern u64 perf_update_xregs_size(struct perf_event *event, bool intr);
 extern void perf_output_sample(struct perf_output_handle *handle,
 			       struct perf_event_header *header,
 			       struct perf_sample_data *data,
@@ -1518,27 +1517,6 @@ perf_event__output_id_sample(struct perf_event *event,
 
 extern void
 perf_log_lost_samples(struct perf_event *event, u64 lost);
-
-static inline bool event_has_simd_regs(struct perf_event *event)
-{
-	struct perf_event_attr *attr = &event->attr;
-
-	if (!(event->attr.sample_type &
-	      (PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER)))
-		return false;
-
-	return attr->sample_simd_regs_enabled != 0;
-}
-
-static inline bool event_has_extended_regs(struct perf_event *event)
-{
-	struct perf_event_attr *attr = &event->attr;
-
-	return ((attr->sample_type & PERF_SAMPLE_REGS_USER) &&
-		(attr->sample_regs_user & PERF_REG_EXTENDED_MASK)) ||
-	       ((attr->sample_type & PERF_SAMPLE_REGS_INTR) &&
-		(attr->sample_regs_intr & PERF_REG_EXTENDED_MASK));
-}
 
 static inline bool event_has_any_exclude_flag(struct perf_event *event)
 {
@@ -1797,8 +1775,22 @@ static inline int perf_is_paranoid(void)
 }
 
 extern int perf_allow_kernel(void);
-extern int perf_allow_cpu(void);
-extern int perf_allow_tracepoint(void);
+
+static inline int perf_allow_cpu(void)
+{
+	if (sysctl_perf_event_paranoid > 0 && !perfmon_capable())
+		return -EACCES;
+
+	return security_perf_event_open(PERF_SECURITY_CPU);
+}
+
+static inline int perf_allow_tracepoint(void)
+{
+	if (sysctl_perf_event_paranoid > -1 && !perfmon_capable())
+		return -EPERM;
+
+	return security_perf_event_open(PERF_SECURITY_TRACEPOINT);
+}
 
 extern int perf_exclude_event(struct perf_event *event, struct pt_regs *regs);
 
@@ -1812,12 +1804,6 @@ extern void perf_bp_event(struct perf_event *event, void *data);
 extern unsigned long perf_misc_flags(struct perf_event *event, struct pt_regs *regs);
 extern unsigned long perf_instruction_pointer(struct perf_event *event,
 					      struct pt_regs *regs);
-
-extern void perf_sample_regs_user(struct perf_regs *regs_user,
-				  struct pt_regs *regs);
-extern void perf_sample_regs_intr(struct perf_regs *regs_intr,
-				  struct pt_regs *regs,
-				  bool exclude_kernel);
 
 #ifndef perf_arch_misc_flags
 # define perf_arch_misc_flags(regs) \
@@ -2020,19 +2006,6 @@ static inline u64
 perf_event_pause(struct perf_event *event, bool reset)			{ return 0; }
 static inline int
 perf_exclude_event(struct perf_event *event, struct pt_regs *regs)	{ return 0; }
-
-static inline int perf_allow_kernel(void)
-{
-	return perfmon_capable() ? 0 : -EACCES;
-}
-static inline int perf_allow_cpu(void)
-{
-	return perfmon_capable() ? 0 : -EACCES;
-}
-static inline int perf_allow_tracepoint(void)
-{
-	return perfmon_capable() ? 0 : -EPERM;
-}
 
 #endif /* !CONFIG_PERF_EVENTS */
 

@@ -78,29 +78,28 @@ extern void bpf_key_put(struct bpf_key *key) __ksym;
 extern int bpf_verify_pkcs7_signature(const struct bpf_dynptr *data_ptr,
 				      const struct bpf_dynptr *sig_ptr,
 				      struct bpf_key *trusted_keyring) __ksym;
-/*
- * Description
+
+struct dentry;
+/* Description
  *  Returns xattr of a dentry
  * Returns
  *  Error code
  */
-struct dentry;
 extern int bpf_get_dentry_xattr(struct dentry *dentry, const char *name,
 			      struct bpf_dynptr *value_ptr) __ksym __weak;
+
 extern int bpf_set_dentry_xattr(struct dentry *dentry, const char *name__str,
 				const struct bpf_dynptr *value_p, int flags) __ksym __weak;
 extern int bpf_remove_dentry_xattr(struct dentry *dentry, const char *name__str) __ksym __weak;
 
-/*
- * Description
- *  Attach a xattr to an inode that is being created, from a program on the
- *  inode_init_security LSM hook. *xattrs* and *xattr_count* must be the
- *  hook's own arguments, passed through unmodified.
- * Returns
- *  0 on success, a negative value on error
- */
-struct xattr;
-extern int bpf_inode_init_xattr(struct xattr *xattrs, int *xattr_count,
-				const char *name__str,
-				const struct bpf_dynptr *value_p) __ksym __weak;
+struct bpf_res_spin_lock;
+
+extern int bpf_res_spin_lock(struct bpf_res_spin_lock *lock) __weak __ksym;
+extern int bpf_res_spin_lock_irqsave(struct bpf_res_spin_lock *lock, long unsigned int *flags__irq_flag) __weak __ksym;
+extern void bpf_res_spin_unlock(struct bpf_res_spin_lock *lock) __weak __ksym;
+extern void bpf_res_spin_unlock_irqrestore(struct bpf_res_spin_lock *lock, long unsigned int *flags__irq_flag) __weak __ksym;
+
+extern int bpf_stream_print_stack(int stream_id) __weak __ksym;
+extern int bpf_stream_vprintk(int stream_id, const char *fmt__str, const void *args, __u32 len__sz) __weak __ksym;
+
 #endif

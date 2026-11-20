@@ -22,6 +22,7 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_of.h>
+#include <drm/drm_panel.h>
 #include <video/mipi_display.h>
 #include <video/videomode.h>
 
@@ -136,6 +137,7 @@ static const char * const tc358768_supplies[] = {
 
 struct tc358768_dsi_output {
 	struct mipi_dsi_device *dev;
+	struct drm_panel *panel;
 	struct drm_bridge *bridge;
 };
 
@@ -441,6 +443,7 @@ static int tc358768_dsi_host_attach(struct mipi_dsi_host *host,
 {
 	struct tc358768_priv *priv = dsi_host_to_tc358768(host);
 	struct drm_bridge *bridge;
+	struct drm_panel *panel;
 	struct device_node *ep;
 	int ret;
 
@@ -468,15 +471,23 @@ static int tc358768_dsi_host_attach(struct mipi_dsi_host *host,
 		return -ENOTSUPP;
 	}
 
-	bridge = of_drm_get_bridge_by_endpoint(host->dev->of_node, 1, 0);
-	if (IS_ERR(bridge))
-		return PTR_ERR(bridge);
+	ret = drm_of_find_panel_or_bridge(host->dev->of_node, 1, 0, &panel,
+					  &bridge);
+	if (ret)
+		return ret;
 
-	bridge->type = DRM_MODE_CONNECTOR_DSI;
-	bridge->pre_enable_prev_first = true;
+	if (panel) {
+		bridge = drm_panel_bridge_add_typed(panel,
+						    DRM_MODE_CONNECTOR_DSI);
+		if (IS_ERR(bridge))
+			return PTR_ERR(bridge);
+
+		bridge->pre_enable_prev_first = true;
+	}
 
 	priv->output.dev = dev;
 	priv->output.bridge = bridge;
+	priv->output.panel = panel;
 
 	priv->dsi_lanes = dev->lanes;
 	priv->dsi_bpp = mipi_dsi_pixel_format_to_bpp(dev->format);
@@ -506,7 +517,8 @@ static int tc358768_dsi_host_detach(struct mipi_dsi_host *host,
 	struct tc358768_priv *priv = dsi_host_to_tc358768(host);
 
 	drm_bridge_remove(&priv->bridge);
-	drm_bridge_put(priv->output.bridge);
+	if (priv->output.panel)
+		drm_panel_bridge_remove(priv->output.bridge);
 
 	return 0;
 }
@@ -1227,7 +1239,8 @@ tc358768_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 
 	*num_input_fmts = 0;
 
-	input_fmts = kzalloc_objs(*input_fmts, MAX_INPUT_SEL_FORMATS);
+	input_fmts = kcalloc(MAX_INPUT_SEL_FORMATS, sizeof(*input_fmts),
+			     GFP_KERNEL);
 	if (!input_fmts)
 		return NULL;
 
@@ -1282,7 +1295,7 @@ static const struct drm_bridge_funcs tc358768_bridge_funcs = {
 
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_create_state = drm_atomic_helper_bridge_create_state,
+	.atomic_reset = drm_atomic_helper_bridge_reset,
 	.atomic_get_input_bus_fmts = tc358768_atomic_get_input_bus_fmts,
 };
 
@@ -1353,8 +1366,8 @@ static const struct regmap_config tc358768_regmap_config = {
 };
 
 static const struct i2c_device_id tc358768_i2c_ids[] = {
-	{ .name = "tc358768" },
-	{ .name = "tc358778" },
+	{ "tc358768" },
+	{ "tc358778" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tc358768_i2c_ids);

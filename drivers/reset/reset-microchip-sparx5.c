@@ -151,7 +151,7 @@ static int mchp_sparx5_reset_probe(struct platform_device *pdev)
 	struct mchp_reset_context *ctx;
 	int err;
 
-	ctx = devm_kzalloc_obj(&pdev->dev, *ctx);
+	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 

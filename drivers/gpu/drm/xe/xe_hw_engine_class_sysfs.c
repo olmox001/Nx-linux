@@ -4,7 +4,6 @@
  */
 
 #include <drm/drm_managed.h>
-#include <linux/error-injection.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
 

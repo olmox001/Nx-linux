@@ -746,7 +746,11 @@ static int nat_receive(struct garmin_data *garmin_data_p,
 			len = GARMIN_PKTHDR_LENGTH;
 
 		if (len >= GPS_IN_BUFSIZ) {
-			/* should never end up here given the dlen check below */
+			/* seems to be an invalid packet, ignore rest
+			   of input */
+			dev_dbg(&garmin_data_p->port->dev,
+				"%s - packet size too large: %d\n",
+				__func__, len);
 			garmin_data_p->insize = 0;
 			count = 0;
 			result = -EINVPKT;
@@ -765,17 +769,8 @@ static int nat_receive(struct garmin_data *garmin_data_p,
 
 		/* do we have a complete packet ? */
 		if (garmin_data_p->insize >= GARMIN_PKTHDR_LENGTH) {
-			u32 dlen = getDataLength(garmin_data_p->inbuffer);
-
-			if (dlen >= GPS_IN_BUFSIZ - GARMIN_PKTHDR_LENGTH) {
-				/* invalid packet, ignore rest of input */
-				dev_dbg(&garmin_data_p->port->dev, "%s - invalid length: %u\n",
-					__func__, dlen);
-				garmin_data_p->insize = 0;
-				result = -EINVPKT;
-				break;
-			}
-			len = GARMIN_PKTHDR_LENGTH + dlen;
+			len = GARMIN_PKTHDR_LENGTH+
+			   getDataLength(garmin_data_p->inbuffer);
 			if (garmin_data_p->insize >= len) {
 				garmin_write_bulk(garmin_data_p->port,
 						   garmin_data_p->inbuffer,
@@ -823,9 +818,10 @@ static void priv_status_resp(struct usb_serial_port *port)
  * Garmin specific driver functions
  ******************************************************************************/
 
-static void process_resetdev_request(struct usb_serial_port *port)
+static int process_resetdev_request(struct usb_serial_port *port)
 {
 	unsigned long flags;
+	int status;
 	struct garmin_data *garmin_data_p = usb_get_serial_port_data(port);
 
 	spin_lock_irqsave(&garmin_data_p->lock, flags);
@@ -834,8 +830,13 @@ static void process_resetdev_request(struct usb_serial_port *port)
 	garmin_data_p->serial_num = 0;
 	spin_unlock_irqrestore(&garmin_data_p->lock, flags);
 
-	dev_dbg(&port->dev, "%s - usb_queue_reset_device\n", __func__);
-	usb_queue_reset_device(port->serial->interface);
+	usb_kill_urb(port->interrupt_in_urb);
+	dev_dbg(&port->dev, "%s - usb_reset_device\n", __func__);
+	status = usb_reset_device(port->serial->dev);
+	if (status)
+		dev_dbg(&port->dev, "%s - usb_reset_device failed: %d\n",
+			__func__, status);
+	return status;
 }
 
 

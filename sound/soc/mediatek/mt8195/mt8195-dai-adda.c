@@ -262,8 +262,9 @@ static int mtk_audio_hires_event(struct snd_soc_dapm_widget *w,
 	default:
 		return 0;
 	}
+	mt8195_afe_set_clk_parent(afe, clk, clk_parent);
 
-	return mt8195_afe_set_clk_parent(afe, clk, clk_parent);
+	return 0;
 }
 
 static struct mtk_dai_adda_priv *get_adda_priv_by_name(struct mtk_base_afe *afe,
@@ -716,7 +717,9 @@ static int init_adda_priv_data(struct mtk_base_afe *afe)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(adda_dai_list); i++) {
-		adda_priv = devm_kzalloc_obj(afe->dev, struct mtk_dai_adda_priv);
+		adda_priv = devm_kzalloc(afe->dev,
+					 sizeof(struct mtk_dai_adda_priv),
+					 GFP_KERNEL);
 		if (!adda_priv)
 			return -ENOMEM;
 
@@ -730,7 +733,7 @@ int mt8195_dai_adda_register(struct mtk_base_afe *afe)
 {
 	struct mtk_base_afe_dai *dai;
 
-	dai = devm_kzalloc_obj(afe->dev, *dai);
+	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
 	if (!dai)
 		return -ENOMEM;
 

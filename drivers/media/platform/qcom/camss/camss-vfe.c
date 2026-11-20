@@ -808,7 +808,7 @@ int vfe_put_output(struct vfe_line *line)
 	return 0;
 }
 
-static void vfe_disable_output(struct vfe_line *line)
+static int vfe_disable_output(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
 	struct vfe_output *output = &line->output;
@@ -820,6 +820,8 @@ static void vfe_disable_output(struct vfe_line *line)
 		vfe->res->hw_ops->vfe_wm_stop(vfe, output->wm_idx[i]);
 	output->gen2.active_num = 0;
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	return vfe_reset(vfe);
 }
 
 /*
@@ -831,19 +833,21 @@ static void vfe_disable_output(struct vfe_line *line)
 int vfe_disable(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
-	int ret = 0;
+	int ret;
 
-	vfe_disable_output(line);
+	ret = vfe_disable_output(line);
+	if (ret)
+		goto error;
 
 	vfe_put_output(line);
 
 	mutex_lock(&vfe->stream_lock);
 
-	if (--vfe->stream_count == 0)
-		ret = vfe_reset(vfe);
+	vfe->stream_count--;
 
 	mutex_unlock(&vfe->stream_lock);
 
+error:
 	return ret;
 }
 
@@ -1558,7 +1562,6 @@ static int vfe_get_format(struct v4l2_subdev *sd,
 }
 
 static int vfe_set_selection(struct v4l2_subdev *sd,
-			     const struct v4l2_subdev_client_info *ci,
 			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_selection *sel);
 
@@ -1571,7 +1574,6 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
  * Return -EINVAL or zero on success
  */
 static int vfe_set_format(struct v4l2_subdev *sd,
-			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
@@ -1606,7 +1608,7 @@ static int vfe_set_format(struct v4l2_subdev *sd,
 		sel.target = V4L2_SEL_TGT_COMPOSE;
 		sel.r.width = fmt->format.width;
 		sel.r.height = fmt->format.height;
-		ret = vfe_set_selection(sd, ci, sd_state, &sel);
+		ret = vfe_set_selection(sd, sd_state, &sel);
 		if (ret < 0)
 			return ret;
 	}
@@ -1623,7 +1625,6 @@ static int vfe_set_format(struct v4l2_subdev *sd,
  * Return -EINVAL or zero on success
  */
 static int vfe_get_selection(struct v4l2_subdev *sd,
-			     const struct v4l2_subdev_client_info *ci,
 			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_selection *sel)
 {
@@ -1694,7 +1695,6 @@ static int vfe_get_selection(struct v4l2_subdev *sd,
  * Return -EINVAL or zero on success
  */
 static int vfe_set_selection(struct v4l2_subdev *sd,
-			     const struct v4l2_subdev_client_info *ci,
 			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_selection *sel)
 {
@@ -1721,7 +1721,7 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
 		crop.pad = MSM_VFE_PAD_SRC;
 		crop.target = V4L2_SEL_TGT_CROP;
 		crop.r = *rect;
-		ret = vfe_set_selection(sd, ci, sd_state, &crop);
+		ret = vfe_set_selection(sd, sd_state, &crop);
 	} else if (sel->target == V4L2_SEL_TGT_CROP &&
 		sel->pad == MSM_VFE_PAD_SRC) {
 		struct v4l2_subdev_format fmt = { 0 };
@@ -1742,7 +1742,7 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
 
 		fmt.format.width = rect->width;
 		fmt.format.height = rect->height;
-		ret = vfe_set_format(sd, ci, sd_state, &fmt);
+		ret = vfe_set_format(sd, sd_state, &fmt);
 	} else {
 		ret = -EINVAL;
 	}
@@ -1772,7 +1772,7 @@ static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 		}
 	};
 
-	return vfe_set_format(sd, NULL, fh ? fh->state : NULL, &format);
+	return vfe_set_format(sd, fh ? fh->state : NULL, &format);
 }
 
 /*
@@ -1863,7 +1863,8 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 	while (res->clock[vfe->nclocks])
 		vfe->nclocks++;
 
-	vfe->clock = devm_kzalloc_objs(dev, *vfe->clock, vfe->nclocks);
+	vfe->clock = devm_kcalloc(dev, vfe->nclocks, sizeof(*vfe->clock),
+				  GFP_KERNEL);
 	if (!vfe->clock)
 		return -ENOMEM;
 
@@ -1885,8 +1886,10 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 			continue;
 		}
 
-		clock->freq = devm_kzalloc_objs(dev, *clock->freq,
-						clock->nfreqs);
+		clock->freq = devm_kcalloc(dev,
+					   clock->nfreqs,
+					   sizeof(*clock->freq),
+					   GFP_KERNEL);
 		if (!clock->freq)
 			return -ENOMEM;
 

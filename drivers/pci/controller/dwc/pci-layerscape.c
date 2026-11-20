@@ -331,11 +331,11 @@ static int ls_pcie_probe(struct platform_device *pdev)
 	struct resource *dbi_base;
 	u32 index[2];
 
-	pcie = devm_kzalloc_obj(dev, *pcie);
+	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc_obj(dev, *pci);
+	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
 	if (!pci)
 		return -ENOMEM;
 
@@ -419,7 +419,6 @@ static struct platform_driver ls_pcie_driver = {
 		.of_match_table = ls_pcie_of_match,
 		.suppress_bind_attrs = true,
 		.pm = &ls_pcie_pm_ops,
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 module_platform_driver(ls_pcie_driver);

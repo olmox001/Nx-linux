@@ -701,7 +701,7 @@ int msm_hdmi_pll_8996_init(struct platform_device *pdev)
 	struct hdmi_pll_8996 *pll;
 	int i, ret;
 
-	pll = devm_kzalloc_obj(dev, *pll);
+	pll = devm_kzalloc(dev, sizeof(*pll), GFP_KERNEL);
 	if (!pll)
 		return -ENOMEM;
 

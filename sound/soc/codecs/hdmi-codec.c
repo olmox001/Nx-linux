@@ -4,7 +4,6 @@
  * Copyright (C) 2015 Texas Instruments Incorporated - https://www.ti.com/
  * Author: Jyri Sarha <jsarha@ti.com>
  */
-#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/string.h>
 #include <sound/core.h>
@@ -457,34 +456,31 @@ static int hdmi_codec_startup(struct snd_pcm_substream *substream,
 	if (!((has_playback && tx) || (has_capture && !tx)))
 		return 0;
 
-	guard(mutex)(&hcp->lock);
+	mutex_lock(&hcp->lock);
 	if (hcp->busy) {
 		dev_err(dai->dev, "Only one simultaneous stream supported!\n");
+		mutex_unlock(&hcp->lock);
 		return -EINVAL;
 	}
 
 	if (hcp->hcd.ops->audio_startup) {
 		ret = hcp->hcd.ops->audio_startup(dai->dev->parent, hcp->hcd.data);
 		if (ret)
-			return ret;
+			goto err;
 	}
 
 	if (tx && hcp->hcd.ops->get_eld) {
 		ret = hcp->hcd.ops->get_eld(dai->dev->parent, hcp->hcd.data,
 					    hcp->eld, sizeof(hcp->eld));
 		if (ret)
-			return ret;
+			goto err;
 
-		/* An empty ELD means no sink is connected; nothing to parse. */
-		if (hcp->eld[0])
-			snd_parse_eld(dai->dev, &hcp->eld_parsed,
-				      hcp->eld, sizeof(hcp->eld));
-		else
-			memset(&hcp->eld_parsed, 0, sizeof(hcp->eld_parsed));
+		snd_parse_eld(dai->dev, &hcp->eld_parsed,
+			      hcp->eld, sizeof(hcp->eld));
 
 		ret = snd_pcm_hw_constraint_eld(substream->runtime, hcp->eld);
 		if (ret)
-			return ret;
+			goto err;
 
 		/* Select chmap supported */
 		hdmi_codec_eld_chmap(hcp);
@@ -492,6 +488,8 @@ static int hdmi_codec_startup(struct snd_pcm_substream *substream,
 
 	hcp->busy = true;
 
+err:
+	mutex_unlock(&hcp->lock);
 	return ret;
 }
 
@@ -509,8 +507,9 @@ static void hdmi_codec_shutdown(struct snd_pcm_substream *substream,
 	hcp->chmap_idx = HDMI_CODEC_CHMAP_IDX_UNKNOWN;
 	hcp->hcd.ops->audio_shutdown(dai->dev->parent, hcp->hcd.data);
 
-	guard(mutex)(&hcp->lock);
+	mutex_lock(&hcp->lock);
 	hcp->busy = false;
+	mutex_unlock(&hcp->lock);
 }
 
 static int hdmi_codec_fill_codec_params(struct snd_soc_dai *dai,
@@ -925,7 +924,7 @@ static int hdmi_dai_probe(struct snd_soc_dai *dai)
 			return ret;
 	}
 
-	daifmt = devm_kzalloc_obj(dai->dev, *daifmt);
+	daifmt = devm_kzalloc(dai->dev, sizeof(*daifmt), GFP_KERNEL);
 	if (!daifmt)
 		return -ENOMEM;
 
@@ -1148,7 +1147,7 @@ static int hdmi_codec_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	hcp = devm_kzalloc_obj(dev, *hcp);
+	hcp = devm_kzalloc(dev, sizeof(*hcp), GFP_KERNEL);
 	if (!hcp)
 		return -ENOMEM;
 
@@ -1160,7 +1159,7 @@ static int hdmi_codec_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	daidrv = devm_kzalloc_objs(dev, *daidrv, dai_count);
+	daidrv = devm_kcalloc(dev, dai_count, sizeof(*daidrv), GFP_KERNEL);
 	if (!daidrv)
 		return -ENOMEM;
 

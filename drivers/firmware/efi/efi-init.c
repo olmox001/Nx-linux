@@ -165,10 +165,10 @@ static __init void reserve_regions(void)
 		pr_info("Processing EFI memory map:\n");
 
 	/*
-	 * Discard memblocks discovered so far except for KHO bootmem
+	 * Discard memblocks discovered so far except for KHO scratch
 	 * regions. Most memblocks at this point originate from memory nodes
 	 * in the DT and UEFI uses its own memory map instead. However, if
-	 * KHO is enabled, bootmem regions, which are good known memory
+	 * KHO is enabled, scratch regions, which are good known memory
 	 * must be preserved.
 	 */
 	memblock_dump_all();
@@ -178,7 +178,7 @@ static __init void reserve_regions(void)
 
 		/* Remove all non-KHO regions */
 		for_each_mem_region(r) {
-			if (!memblock_is_kho_noprsrv(r)) {
+			if (!memblock_is_kho_scratch(r)) {
 				memblock_remove(r->base, r->size);
 				r--;
 			}
@@ -234,9 +234,10 @@ void __init efi_init(void)
 {
 	struct efi_memory_map_data data;
 	u64 efi_system_table;
+	u32 secure_boot;
 
 	/* Grab UEFI information placed in FDT by stub */
-	efi_system_table = efi_get_fdt_params(&data);
+	efi_system_table = efi_get_fdt_params(&data, &secure_boot);
 	if (!efi_system_table)
 		return;
 
@@ -257,6 +258,8 @@ void __init efi_init(void)
 		efi_memmap_unmap();
 		return;
 	}
+
+	efi_set_secure_boot(secure_boot);
 
 	reserve_regions();
 	/*

@@ -45,8 +45,8 @@ static void fsdev_write_dax(void *addr, struct page *page,
 }
 
 static long __fsdev_dax_direct_access(struct dax_device *dax_dev, pgoff_t pgoff,
-		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		unsigned long *pfn)
+			long nr_pages, enum dax_access_mode mode, void **kaddr,
+			unsigned long *pfn)
 {
 	struct dev_dax *dev_dax = dax_get_private(dax_dev);
 	size_t size = nr_pages << PAGE_SHIFT;
@@ -80,8 +80,7 @@ static int fsdev_dax_zero_page_range(struct dax_device *dax_dev,
 	long rc;
 
 	WARN_ONCE(nr_pages > 1, "%s: nr_pages > 1\n", __func__);
-	rc = __fsdev_dax_direct_access(dax_dev, pgoff, 1, DAX_ACCESS,
-				       &kaddr, NULL);
+	rc = __fsdev_dax_direct_access(dax_dev, pgoff, 1, DAX_ACCESS, &kaddr, NULL);
 	if (rc < 0)
 		return rc;
 	fsdev_write_dax(kaddr, ZERO_PAGE(0), 0, PAGE_SIZE);
@@ -89,15 +88,15 @@ static int fsdev_dax_zero_page_range(struct dax_device *dax_dev,
 }
 
 static long fsdev_dax_direct_access(struct dax_device *dax_dev,
-		pgoff_t pgoff, long nr_pages, enum dax_access_mode mode,
-		void **kaddr, unsigned long *pfn)
+		  pgoff_t pgoff, long nr_pages, enum dax_access_mode mode,
+		  void **kaddr, unsigned long *pfn)
 {
 	return __fsdev_dax_direct_access(dax_dev, pgoff, nr_pages, mode,
 					 kaddr, pfn);
 }
 
-static size_t fsdev_dax_recovery_write(struct dax_device *dax_dev,
-		pgoff_t pgoff, void *addr, size_t bytes, struct iov_iter *i)
+static size_t fsdev_dax_recovery_write(struct dax_device *dax_dev, pgoff_t pgoff,
+		void *addr, size_t bytes, struct iov_iter *i)
 {
 	return _copy_from_iter_flushcache(addr, bytes, i);
 }
@@ -233,29 +232,6 @@ static const struct file_operations fsdev_fops = {
 	.open = fsdev_open,
 	.release = fsdev_release,
 };
-
-/**
- * fsdev_dax_from_file - get dax_device from an open file
- * @file: open device file
- *
- * Returns a dax_device pointer if @file refers to a fsdev_dax device.
- * Otherwise return NULL.
- *
- * Caller must put_dax() the returned device when done.
- */
-struct dax_device *fsdev_dax_from_file(struct file *file)
-{
-	struct dax_device *dax_dev;
-
-	if (file->f_op != &fsdev_fops)
-		return NULL;
-
-	dax_dev = inode_dax(file_inode(file));
-	ihold(dax_inode(dax_dev));
-
-	return dax_dev;
-}
-EXPORT_SYMBOL_GPL(fsdev_dax_from_file);
 
 /*
  * Acquire the dev_pagemap for probe: the static (pre-populated) one if

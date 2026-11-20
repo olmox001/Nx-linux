@@ -29,7 +29,7 @@ static int vs_bridge_attach(struct drm_bridge *bridge,
 {
 	struct vs_bridge *vbridge = drm_bridge_to_vs_bridge(bridge);
 
-	return drm_bridge_attach(encoder, vbridge->base.next_bridge,
+	return drm_bridge_attach(encoder, vbridge->next_bridge,
 				 bridge, flags);
 }
 
@@ -67,7 +67,8 @@ static u32 *vs_bridge_atomic_get_output_bus_fmts_dpi(struct drm_bridge *bridge,
 
 	*num_output_fmts = 2;
 
-	output_fmts = kzalloc_objs(*output_fmts, *num_output_fmts);
+	output_fmts = kcalloc(*num_output_fmts, sizeof(*output_fmts),
+			      GFP_KERNEL);
 	if (!output_fmts)
 		return NULL;
 
@@ -89,7 +90,8 @@ static u32 *vs_bridge_atomic_get_output_bus_fmts_dp(struct drm_bridge *bridge,
 
 	*num_output_fmts = ARRAY_SIZE(vsdc_dp_supported_fmts);
 
-	output_fmts = kzalloc_objs(*output_fmts, *num_output_fmts);
+	output_fmts = kcalloc(*num_output_fmts, sizeof(*output_fmts),
+			      GFP_KERNEL);
 	if (!output_fmts)
 		return NULL;
 
@@ -244,7 +246,7 @@ static const struct drm_bridge_funcs vs_dpi_bridge_funcs = {
 	.atomic_get_output_bus_fmts = vs_bridge_atomic_get_output_bus_fmts_dpi,
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_create_state = drm_atomic_helper_bridge_create_state,
+	.atomic_reset = drm_atomic_helper_bridge_reset,
 };
 
 static const struct drm_bridge_funcs vs_dp_bridge_funcs = {
@@ -256,7 +258,7 @@ static const struct drm_bridge_funcs vs_dp_bridge_funcs = {
 	.atomic_get_output_bus_fmts = vs_bridge_atomic_get_output_bus_fmts_dp,
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_create_state = drm_atomic_helper_bridge_create_state,
+	.atomic_reset = drm_atomic_helper_bridge_reset,
 };
 
 static int vs_bridge_detect_output_interface(struct device_node *of_node,
@@ -301,7 +303,8 @@ struct vs_bridge *vs_bridge_init(struct drm_device *drm_dev,
 		return NULL;
 	}
 
-	next = of_drm_get_bridge_by_endpoint(drm_dev->dev->of_node, output, intf);
+	next = devm_drm_of_get_bridge(drm_dev->dev, drm_dev->dev->of_node,
+				      output, intf);
 	if (IS_ERR(next)) {
 		ret = PTR_ERR(next);
 		if (ret != -EPROBE_DEFER)
@@ -318,14 +321,12 @@ struct vs_bridge *vs_bridge_init(struct drm_device *drm_dev,
 
 	bridge = devm_drm_bridge_alloc(drm_dev->dev, struct vs_bridge, base,
 				       bridge_funcs);
-	if (IS_ERR(bridge)) {
-		drm_bridge_put(next);
+	if (IS_ERR(bridge))
 		return ERR_PTR(PTR_ERR(bridge));
-	}
 
 	bridge->crtc = crtc;
 	bridge->intf = intf;
-	bridge->base.next_bridge = next;
+	bridge->next_bridge = next;
 
 	if (intf == VSDC_OUTPUT_INTERFACE_DPI)
 		enctype = DRM_MODE_ENCODER_DPI;

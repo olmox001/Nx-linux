@@ -865,7 +865,7 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 	u8 *buf;
 	struct mcp2221 *mcp = hid_get_drvdata(hdev);
 
-	if (size < sizeof(mcp->txbuf))
+	if (size < 4)
 		return 0;
 
 	switch (data[0]) {
@@ -1072,7 +1072,8 @@ static void mcp2221_remove(struct hid_device *hdev)
 #if IS_REACHABLE(CONFIG_IIO)
 	struct mcp2221 *mcp = hid_get_drvdata(hdev);
 
-	cancel_delayed_work_sync(&mcp->init_work);
+	if (!gpio_mode_enforce)
+		cancel_delayed_work_sync(&mcp->init_work);
 #endif
 }
 
@@ -1252,7 +1253,7 @@ static int mcp2221_probe(struct hid_device *hdev,
 	int ret;
 	struct mcp2221 *mcp;
 
-	mcp = devm_kzalloc_obj(&hdev->dev, *mcp);
+	mcp = devm_kzalloc(&hdev->dev, sizeof(*mcp), GFP_KERNEL);
 	if (!mcp)
 		return -ENOMEM;
 
@@ -1323,7 +1324,7 @@ static int mcp2221_probe(struct hid_device *hdev,
 
 #if IS_REACHABLE(CONFIG_GPIOLIB)
 	/* Setup GPIO chip */
-	mcp->gc = devm_kzalloc_obj(&hdev->dev, *mcp->gc);
+	mcp->gc = devm_kzalloc(&hdev->dev, sizeof(*mcp->gc), GFP_KERNEL);
 	if (!mcp->gc)
 		return -ENOMEM;
 
@@ -1346,9 +1347,10 @@ static int mcp2221_probe(struct hid_device *hdev,
 #endif
 
 #if IS_REACHABLE(CONFIG_IIO)
-	INIT_DELAYED_WORK(&mcp->init_work, mcp_init_work);
-	if (!gpio_mode_enforce)
+	if (!gpio_mode_enforce) {
+		INIT_DELAYED_WORK(&mcp->init_work, mcp_init_work);
 		schedule_delayed_work(&mcp->init_work, msecs_to_jiffies(100));
+	}
 #endif
 
 	return 0;

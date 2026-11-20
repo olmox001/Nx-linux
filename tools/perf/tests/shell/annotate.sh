@@ -6,6 +6,7 @@ set -e
 
 shelldir=$(dirname "$0")
 
+# shellcheck source=lib/perf_has_symbol.sh
 . "${shelldir}"/lib/perf_has_symbol.sh
 
 testsym="noploop"

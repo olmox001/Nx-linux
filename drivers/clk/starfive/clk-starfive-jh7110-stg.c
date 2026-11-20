@@ -81,7 +81,8 @@ static int jh7110_stgcrg_probe(struct platform_device *pdev)
 	unsigned int idx;
 	int ret;
 
-	priv = devm_kzalloc_flex(&pdev->dev, *priv, reg, JH7110_STGCLK_END);
+	priv = devm_kzalloc(&pdev->dev, struct_size(priv, reg, JH7110_STGCLK_END),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

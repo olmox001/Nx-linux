@@ -15,7 +15,7 @@
 
 #ifdef CONFIG_NVHE_EL2_TRACING
 #define HYPERVISOR_EVENT_IDS 					\
-	. = ALIGN(SZ_8);					\
+	. = ALIGN(PAGE_SIZE);					\
 	__hyp_event_ids_start = .;				\
 	*(HYP_SECTION_NAME(.event_ids))				\
 	__hyp_event_ids_end = .;
@@ -214,14 +214,6 @@ SECTIONS
 
 	HYPERVISOR_RODATA_SECTIONS
 
-#ifdef CONFIG_NVHE_EL2_TRACING
-	.rodata.hyp_string_fmts : {
-		__hyp_string_fmts_start = .;
-		*(_hyp_string_fmts)
-		__hyp_string_fmts_end = .;
-	}
-#endif
-
 	.got : { *(.got) }
 	/*
 	 * Make sure that the .got.plt is either completely empty or it
@@ -289,7 +281,7 @@ SECTIONS
 		INIT_CALLS
 		CON_INITCALL
 		INIT_RAM_FS
-		*(.init.altinstructions .init.bss)	/* from the EFI stub */
+		*(.init.altinstructions .init.bss .init.bss.*)	/* from the EFI stub */
 	}
 	.exit.data : {
 		EXIT_DATA

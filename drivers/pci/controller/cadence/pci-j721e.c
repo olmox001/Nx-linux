@@ -491,7 +491,7 @@ static int j721e_pcie_probe(struct platform_device *pdev)
 
 	mode = (u32)data->mode;
 
-	pcie = devm_kzalloc_obj(dev, *pcie);
+	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 
@@ -519,7 +519,7 @@ static int j721e_pcie_probe(struct platform_device *pdev)
 		if (!IS_ENABLED(CONFIG_PCI_J721E_EP))
 			return -ENODEV;
 
-		ep = devm_kzalloc_obj(dev, *ep);
+		ep = devm_kzalloc(dev, sizeof(*ep), GFP_KERNEL);
 		if (!ep)
 			return -ENOMEM;
 

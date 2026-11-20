@@ -228,8 +228,7 @@ static int emit_fiemap_extent(struct fiemap_extent_info *fieinfo,
 	 *
 	 * 3) Share same flags
 	 */
-	if (!(flags & FIEMAP_EXTENT_ENCODED) &&
-	    cache->offset + cache->len == offset &&
+	if (cache->offset + cache->len  == offset &&
 	    cache->phys + cache->len == phys  &&
 	    cache->flags == flags) {
 		cache->len += len;
@@ -642,7 +641,7 @@ static int extent_fiemap(struct btrfs_inode *inode,
 	u64 prev_extent_end;
 	u64 range_start;
 	u64 range_end;
-	const u32 sectorsize = inode->root->fs_info->sectorsize;
+	const u64 sectorsize = inode->root->fs_info->sectorsize;
 	bool stopped = false;
 	int ret;
 

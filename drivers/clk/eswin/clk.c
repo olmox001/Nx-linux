@@ -29,8 +29,9 @@ struct eswin_clock_data *eswin_clk_init(struct platform_device *pdev,
 {
 	struct eswin_clock_data *eclk_data;
 
-	eclk_data = devm_kzalloc_flex(&pdev->dev, *eclk_data, clk_data.hws,
-				      nr_clks);
+	eclk_data = devm_kzalloc(&pdev->dev,
+				 struct_size(eclk_data, clk_data.hws, nr_clks),
+				 GFP_KERNEL);
 	if (!eclk_data)
 		return ERR_PTR(-ENOMEM);
 
@@ -422,7 +423,7 @@ struct clk_hw *eswin_register_clkdiv(struct device *dev, unsigned int id,
 	struct clk_hw *clk_hw;
 	int ret;
 
-	dclk = devm_kzalloc_obj(dev, *dclk);
+	dclk = devm_kzalloc(dev, sizeof(*dclk), GFP_KERNEL);
 	if (!dclk)
 		return ERR_PTR(-ENOMEM);
 

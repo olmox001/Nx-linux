@@ -22,7 +22,6 @@
 
 /* PCI device IDs */
 #define	PCI_DEVID_OCTEONTX2_RVU_AF		0xA065
-#define	PCI_DEVID_OCTEONTX2_RVU_AFVF		0xA0F8
 #define	PCI_DEVID_OCTEONTX2_LBK			0xA061
 
 /* Subsystem Device ID */
@@ -76,6 +75,8 @@ static inline int rvu_pcifunc_pf_mask(struct pci_dev *pdev)
 
 #define RVU_AFPF           25
 
+#ifdef CONFIG_DEBUG_FS
+
 struct dump_ctx {
 	int	lf;
 	int	id;
@@ -110,6 +111,7 @@ struct rvu_debugfs {
 	int npa_qsize_id;
 	int nix_qsize_id;
 };
+#endif
 
 struct rvu_work {
 	struct	work_struct work;
@@ -646,7 +648,9 @@ struct rvu {
 	int			mcs_blk_cnt;
 	int			cpt_pf_num;
 
+#ifdef CONFIG_DEBUG_FS
 	struct rvu_debugfs	rvu_dbg;
+#endif
 	struct rvu_devlink	*rvu_dl;
 
 	/* RVU switch implementation over NPC with DMAC rules */
@@ -878,10 +882,11 @@ static inline bool is_rvu_supports_nix1(struct rvu *rvu)
 /* Function Prototypes
  * RVU
  */
+#define	RVU_LBK_VF_DEVID	0xA0F8
 static inline bool is_lbk_vf(struct rvu *rvu, u16 pcifunc)
 {
 	return (!(pcifunc & ~RVU_PFVF_FUNC_MASK) &&
-		(rvu->vf_devid == PCI_DEVID_OCTEONTX2_RVU_AFVF));
+		(rvu->vf_devid == RVU_LBK_VF_DEVID));
 }
 
 static inline bool is_vf(u16 pcifunc)
@@ -1122,7 +1127,6 @@ int rvu_cgx_prio_flow_ctrl_cfg(struct rvu *rvu, u16 pcifunc, u8 tx_pause, u8 rx_
 			       u16 pfc_en);
 int rvu_cgx_cfg_pause_frm(struct rvu *rvu, u16 pcifunc, u8 tx_pause, u8 rx_pause);
 void rvu_mac_reset(struct rvu *rvu, u16 pcifunc);
-u64 rvu_cgx_get_dmacflt_dropped_pktcnt(void *cgxd, int lmac_id);
 u32 rvu_cgx_get_lmac_fifolen(struct rvu *rvu, int cgx, int lmac);
 void cgx_start_linkup(struct rvu *rvu);
 int npc_get_nixlf_mcam_index(struct npc_mcam *mcam,
@@ -1179,7 +1183,7 @@ void rvu_switch_enable_lbk_link(struct rvu *rvu, u16 pcifunc, bool ena);
 
 int rvu_npc_set_parse_mode(struct rvu *rvu, u16 pcifunc, u64 mode, u8 dir,
 			   u64 pkind, u8 var_len_off, u8 var_len_off_mask,
-			   u8 shift_dir, u8 skip_size);
+			   u8 shift_dir);
 int rvu_get_hwvf(struct rvu *rvu, int pcifunc);
 
 /* CN10K MCS */

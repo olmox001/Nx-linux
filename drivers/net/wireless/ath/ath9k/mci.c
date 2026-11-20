@@ -348,7 +348,10 @@ static u8 ath_mci_process_status(struct ath_softc *sc,
 	if (status->conn_handle >= ATH_MCI_MAX_PROFILE)
 		return 0;
 
-	__assign_bit(status->conn_handle, mci->status, status->is_critical);
+	if (status->is_critical)
+		__set_bit(status->conn_handle, mci->status);
+	else
+		__clear_bit(status->conn_handle, mci->status);
 
 	mci->num_mgmt = 0;
 	do {

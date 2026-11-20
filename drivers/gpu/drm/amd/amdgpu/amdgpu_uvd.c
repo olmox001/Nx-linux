@@ -377,8 +377,7 @@ int amdgpu_uvd_sw_fini(struct amdgpu_device *adev)
 	void *addr = amdgpu_bo_kptr(adev->uvd.ib_bo);
 	int i, j;
 
-	if (adev->uvd.entity.rq)
-		drm_sched_entity_destroy(&adev->uvd.entity);
+	drm_sched_entity_destroy(&adev->uvd.entity);
 
 	for (j = 0; j < adev->uvd.num_uvd_inst; ++j) {
 		if (adev->uvd.harvest_config & (1 << j))
@@ -1115,13 +1114,11 @@ static int amdgpu_uvd_send_msg(struct amdgpu_ring *ring, struct amdgpu_bo *bo,
 	uint64_t addr;
 	int i, r;
 
-	r = amdgpu_job_alloc_with_ib(ring->adev,
-				     direct ? NULL : &adev->uvd.entity,
+	r = amdgpu_job_alloc_with_ib(ring->adev, &adev->uvd.entity,
 				     AMDGPU_FENCE_OWNER_UNDEFINED,
 				     64, direct ? AMDGPU_IB_POOL_DIRECT :
-				     AMDGPU_IB_POOL_DELAYED,
-				     AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST,
-				     &job);
+				     AMDGPU_IB_POOL_DELAYED, &job,
+				     AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
 	if (r)
 		return r;
 
@@ -1161,11 +1158,11 @@ static int amdgpu_uvd_send_msg(struct amdgpu_ring *ring, struct amdgpu_bo *bo,
 			goto err_free;
 
 		f = amdgpu_job_submit(job);
-
-		amdgpu_bo_reserve(bo, true);
-		amdgpu_bo_fence(bo, f, false);
-		amdgpu_bo_unreserve(bo);
 	}
+
+	amdgpu_bo_reserve(bo, true);
+	amdgpu_bo_fence(bo, f, false);
+	amdgpu_bo_unreserve(bo);
 
 	if (fence)
 		*fence = dma_fence_get(f);

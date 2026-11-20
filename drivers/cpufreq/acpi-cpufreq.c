@@ -197,13 +197,14 @@ static unsigned extract_io(struct cpufreq_policy *policy, u32 value)
 {
 	struct acpi_cpufreq_data *data = policy->driver_data;
 	struct acpi_processor_performance *perf;
-	struct cpufreq_frequency_table *pos;
+	int i;
 
 	perf = to_perf_data(data);
 
-	cpufreq_for_each_entry(pos, policy->freq_table)
-		if (value == perf->states[pos->driver_data].status)
-			return pos->frequency;
+	for (i = 0; i < perf->state_count; i++) {
+		if (value == perf->states[i].status)
+			return policy->freq_table[i].frequency;
+	}
 	return 0;
 }
 
@@ -245,32 +246,32 @@ static unsigned extract_freq(struct cpufreq_policy *policy, u32 val)
 
 static u32 cpu_freq_read_intel(struct acpi_pct_register *not_used)
 {
-	u64 val;
+	u32 val, dummy __always_unused;
 
-	rdmsrq(MSR_IA32_PERF_CTL, val);
-	return (u32)val;
+	rdmsr(MSR_IA32_PERF_CTL, val, dummy);
+	return val;
 }
 
 static void cpu_freq_write_intel(struct acpi_pct_register *not_used, u32 val)
 {
-	u64 msrval;
+	u32 lo, hi;
 
-	rdmsrq(MSR_IA32_PERF_CTL, msrval);
-	msrval = (msrval & ~(u64)INTEL_MSR_RANGE) | (val & INTEL_MSR_RANGE);
-	wrmsrq(MSR_IA32_PERF_CTL, msrval);
+	rdmsr(MSR_IA32_PERF_CTL, lo, hi);
+	lo = (lo & ~INTEL_MSR_RANGE) | (val & INTEL_MSR_RANGE);
+	wrmsr(MSR_IA32_PERF_CTL, lo, hi);
 }
 
 static u32 cpu_freq_read_amd(struct acpi_pct_register *not_used)
 {
-	u64 val;
+	u32 val, dummy __always_unused;
 
-	rdmsrq(MSR_AMD_PERF_CTL, val);
-	return (u32)val;
+	rdmsr(MSR_AMD_PERF_CTL, val, dummy);
+	return val;
 }
 
 static void cpu_freq_write_amd(struct acpi_pct_register *not_used, u32 val)
 {
-	wrmsrq(MSR_AMD_PERF_CTL, val);
+	wrmsr(MSR_AMD_PERF_CTL, val, 0);
 }
 
 static u32 cpu_freq_read_io(struct acpi_pct_register *reg)
@@ -625,7 +626,7 @@ static int acpi_cpufreq_blacklist(struct cpuinfo_x86 *c)
 static u64 get_max_boost_ratio(unsigned int cpu, u64 *nominal_freq)
 {
 	struct cppc_perf_caps perf_caps;
-	u64 numerator, denominator;
+	u64 highest_perf, nominal_perf;
 	int ret;
 
 	if (acpi_pstate_strict)
@@ -639,31 +640,32 @@ static u64 get_max_boost_ratio(unsigned int cpu, u64 *nominal_freq)
 	}
 
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
-		ret = amd_get_boost_ratio(cpu, &numerator, &denominator);
+		ret = amd_get_boost_ratio_numerator(cpu, &highest_perf);
 		if (ret) {
-			pr_debug("CPU%d: Unable to get boost ratio (%d)\n",
+			pr_debug("CPU%d: Unable to get boost ratio numerator (%d)\n",
 				 cpu, ret);
 			return 0;
 		}
 	} else {
-		numerator = perf_caps.highest_perf;
-		denominator = perf_caps.nominal_perf;
+		highest_perf = perf_caps.highest_perf;
 	}
+
+	nominal_perf = perf_caps.nominal_perf;
 
 	if (nominal_freq)
 		*nominal_freq = perf_caps.nominal_freq * 1000;
 
-	if (!numerator || !denominator) {
+	if (!highest_perf || !nominal_perf) {
 		pr_debug("CPU%d: highest or nominal performance missing\n", cpu);
 		return 0;
 	}
 
-	if (numerator < denominator) {
+	if (highest_perf < nominal_perf) {
 		pr_debug("CPU%d: nominal performance above highest\n", cpu);
 		return 0;
 	}
 
-	return div_u64(numerator << SCHED_CAPACITY_SHIFT, denominator);
+	return div_u64(highest_perf << SCHED_CAPACITY_SHIFT, nominal_perf);
 }
 
 #else

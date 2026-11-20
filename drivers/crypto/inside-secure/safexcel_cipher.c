@@ -375,7 +375,7 @@ static int safexcel_skcipher_aes_setkey(struct crypto_skcipher *ctfm,
 	struct crypto_tfm *tfm = crypto_skcipher_tfm(ctfm);
 	struct safexcel_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 	struct safexcel_crypto_priv *priv = ctx->base.priv;
-	struct crypto_aes_ctx aes __cleanup(aes_zeroize_ctx);
+	struct crypto_aes_ctx aes;
 	int ret, i;
 
 	ret = aes_expandkey(&aes, key, len);
@@ -396,6 +396,7 @@ static int safexcel_skcipher_aes_setkey(struct crypto_skcipher *ctfm,
 
 	ctx->key_len = len;
 
+	memzero_explicit(&aes, sizeof(aes));
 	return 0;
 }
 
@@ -406,6 +407,7 @@ static int safexcel_aead_setkey(struct crypto_aead *ctfm, const u8 *key,
 	struct safexcel_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 	struct safexcel_crypto_priv *priv = ctx->base.priv;
 	struct crypto_authenc_keys keys;
+	struct crypto_aes_ctx aes;
 	int err = -EINVAL, i;
 	const char *alg;
 
@@ -436,7 +438,7 @@ static int safexcel_aead_setkey(struct crypto_aead *ctfm, const u8 *key,
 			goto badkey;
 		break;
 	case SAFEXCEL_AES:
-		err = aes_check_keylen(keys.enckeylen);
+		err = aes_expandkey(&aes, keys.enckey, keys.enckeylen);
 		if (unlikely(err))
 			goto badkey;
 		break;
@@ -1360,7 +1362,7 @@ static int safexcel_skcipher_aesctr_setkey(struct crypto_skcipher *ctfm,
 	struct crypto_tfm *tfm = crypto_skcipher_tfm(ctfm);
 	struct safexcel_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 	struct safexcel_crypto_priv *priv = ctx->base.priv;
-	struct crypto_aes_ctx aes __cleanup(aes_zeroize_ctx);
+	struct crypto_aes_ctx aes;
 	int ret, i;
 	unsigned int keylen;
 
@@ -1386,6 +1388,7 @@ static int safexcel_skcipher_aesctr_setkey(struct crypto_skcipher *ctfm,
 
 	ctx->key_len = keylen;
 
+	memzero_explicit(&aes, sizeof(aes));
 	return 0;
 }
 
@@ -2539,7 +2542,7 @@ static int safexcel_skcipher_aesxts_setkey(struct crypto_skcipher *ctfm,
 	struct crypto_tfm *tfm = crypto_skcipher_tfm(ctfm);
 	struct safexcel_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 	struct safexcel_crypto_priv *priv = ctx->base.priv;
-	struct crypto_aes_ctx aes __cleanup(aes_zeroize_ctx);
+	struct crypto_aes_ctx aes;
 	int ret, i;
 	unsigned int keylen;
 
@@ -2587,6 +2590,7 @@ static int safexcel_skcipher_aesxts_setkey(struct crypto_skcipher *ctfm,
 
 	ctx->key_len = keylen << 1;
 
+	memzero_explicit(&aes, sizeof(aes));
 	return 0;
 }
 
@@ -2752,11 +2756,12 @@ static int safexcel_aead_ccm_setkey(struct crypto_aead *ctfm, const u8 *key,
 	struct crypto_tfm *tfm = crypto_aead_tfm(ctfm);
 	struct safexcel_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 	struct safexcel_crypto_priv *priv = ctx->base.priv;
-	struct crypto_aes_ctx aes __cleanup(aes_zeroize_ctx);
+	struct crypto_aes_ctx aes;
 	int ret, i;
 
 	ret = aes_expandkey(&aes, key, len);
 	if (ret) {
+		memzero_explicit(&aes, sizeof(aes));
 		return ret;
 	}
 
@@ -2785,6 +2790,7 @@ static int safexcel_aead_ccm_setkey(struct crypto_aead *ctfm, const u8 *key,
 	else
 		ctx->hash_alg = CONTEXT_CONTROL_CRYPTO_ALG_XCBC128;
 
+	memzero_explicit(&aes, sizeof(aes));
 	return 0;
 }
 

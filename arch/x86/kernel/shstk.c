@@ -490,7 +490,7 @@ static int wrss_control(bool enable)
 	 * when disabling.
 	 */
 	if (!features_enabled(ARCH_SHSTK_SHSTK))
-		return -EINVAL;
+		return -EPERM;
 
 	/* Already enabled/disabled? */
 	if (features_enabled(ARCH_SHSTK_WRSS) == enable)

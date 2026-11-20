@@ -321,24 +321,6 @@ out_inode:
 	return ret;
 }
 
-static int vfio_device_set_noiommu_and_name(struct vfio_device *device, enum vfio_group_type type)
-{
-	if (IS_ENABLED(CONFIG_IOMMUFD_NOIOMMU) && vfio_noiommu &&
-	    !device->dev->iommu && type == VFIO_IOMMU)
-		device->noiommu = true;
-
-	/*
-	 * device->noiommu records no-IOMMU support for the standalone cdev
-	 * interface. VFIO_NOIOMMU enables both group and cdev no-IOMMU; when
-	 * cdev no-IOMMU is available, device->noiommu is set before
-	 * vfio_device_set_group(), so the cdev is named noiommu-vfio%d up
-	 * front. If IOMMUFD_NOIOMMU is unavailable, no-IOMMU devices are
-	 * limited to the group interface and do not receive a device cdev.
-	 */
-	return dev_set_name(&device->device, "%svfio%d",
-		     device->noiommu ? "noiommu-" : "", device->index);
-}
-
 static int __vfio_register_dev(struct vfio_device *device,
 			       enum vfio_group_type type)
 {
@@ -358,19 +340,13 @@ static int __vfio_register_dev(struct vfio_device *device,
 	if (!device->dev_set)
 		vfio_assign_device_set(device, device);
 
-	ret = vfio_device_set_noiommu_and_name(device, type);
+	ret = dev_set_name(&device->device, "vfio%d", device->index);
 	if (ret)
 		return ret;
 
 	ret = vfio_device_set_group(device, type);
 	if (ret)
 		return ret;
-
-	if (vfio_device_is_noiommu(device) && IS_ENABLED(CONFIG_IOMMUFD_NOIOMMU)) {
-		add_taint(TAINT_USER, LOCKDEP_STILL_OK);
-		dev_warn(device->dev,
-			 "Adding kernel taint for vfio-noiommu cdev\n");
-	}
 
 	/*
 	 * VFIO always sets IOMMU_CACHE because we offer no way for userspace to
@@ -472,14 +448,36 @@ void vfio_unregister_group_dev(struct vfio_device *device)
 EXPORT_SYMBOL_GPL(vfio_unregister_group_dev);
 
 #if IS_ENABLED(CONFIG_KVM)
-void vfio_device_get_kvm(struct vfio_device *device, struct file *kvm)
+void vfio_device_get_kvm_safe(struct vfio_device *device, struct kvm *kvm)
 {
+	void (*pfn)(struct kvm *kvm);
+	bool (*fn)(struct kvm *kvm);
+	bool ret;
+
 	lockdep_assert_held(&device->dev_set->lock);
 
 	if (!kvm)
 		return;
 
-	device->kvm = get_file(kvm);
+	pfn = symbol_get(kvm_put_kvm);
+	if (WARN_ON(!pfn))
+		return;
+
+	fn = symbol_get(kvm_get_kvm_safe);
+	if (WARN_ON(!fn)) {
+		symbol_put(kvm_put_kvm);
+		return;
+	}
+
+	ret = fn(kvm);
+	symbol_put(kvm_get_kvm_safe);
+	if (!ret) {
+		symbol_put(kvm_put_kvm);
+		return;
+	}
+
+	device->put_kvm = pfn;
+	device->kvm = kvm;
 }
 
 void vfio_device_put_kvm(struct vfio_device *device)
@@ -489,7 +487,14 @@ void vfio_device_put_kvm(struct vfio_device *device)
 	if (!device->kvm)
 		return;
 
-	fput(device->kvm);
+	if (WARN_ON(!device->put_kvm))
+		goto clear;
+
+	device->put_kvm(device->kvm);
+	device->put_kvm = NULL;
+	symbol_put(kvm_put_kvm);
+
+clear:
 	device->kvm = NULL;
 }
 #endif
@@ -573,6 +578,13 @@ int vfio_df_open(struct vfio_device_file *df)
 	int ret = 0;
 
 	lockdep_assert_held(&device->dev_set->lock);
+
+	/*
+	 * Only the group path allows the device to be opened multiple
+	 * times.  The device cdev path doesn't have a secure way for it.
+	 */
+	if (device->open_count != 0 && !df->group)
+		return -EINVAL;
 
 	device->open_count++;
 	if (device->open_count == 1) {
@@ -1508,13 +1520,9 @@ bool vfio_file_enforced_coherent(struct file *file)
 }
 EXPORT_SYMBOL_GPL(vfio_file_enforced_coherent);
 
-static void vfio_device_file_set_kvm(struct file *file, struct file *kvm)
+static void vfio_device_file_set_kvm(struct file *file, struct kvm *kvm)
 {
 	struct vfio_device_file *df = file->private_data;
-	struct file *old;
-
-	if (kvm)
-		get_file(kvm);
 
 	/*
 	 * The kvm is first recorded in the vfio_device_file, and will
@@ -1522,32 +1530,28 @@ static void vfio_device_file_set_kvm(struct file *file, struct file *kvm)
 	 * iommufd successfully in the vfio device cdev path.
 	 */
 	spin_lock(&df->kvm_ref_lock);
-	old = df->kvm;
 	df->kvm = kvm;
 	spin_unlock(&df->kvm_ref_lock);
-
-	if (old)
-		fput(old);
 }
 
 /**
  * vfio_file_set_kvm - Link a kvm with VFIO drivers
- * @vfio_file: VFIO group file or VFIO device file
- * @kvm: KVM file to link
+ * @file: VFIO group file or VFIO device file
+ * @kvm: KVM to link
  *
  * When a VFIO device is first opened the KVM will be available in
  * device->kvm if one was associated with the file.
  */
-void vfio_file_set_kvm(struct file *vfio_file, struct file *kvm)
+void vfio_file_set_kvm(struct file *file, struct kvm *kvm)
 {
 	struct vfio_group *group;
 
-	group = vfio_group_from_file(vfio_file);
+	group = vfio_group_from_file(file);
 	if (group)
 		vfio_group_set_kvm(group, kvm);
 
-	if (vfio_device_from_file(vfio_file))
-		vfio_device_file_set_kvm(vfio_file, kvm);
+	if (vfio_device_from_file(file))
+		vfio_device_file_set_kvm(file, kvm);
 }
 EXPORT_SYMBOL_GPL(vfio_file_set_kvm);
 

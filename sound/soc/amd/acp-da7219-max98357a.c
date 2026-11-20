@@ -787,7 +787,8 @@ static int cz_probe(struct platform_device *pdev)
 		}
 	}
 
-	machine = devm_kzalloc_obj(&pdev->dev, struct acp_platform_info);
+	machine = devm_kzalloc(&pdev->dev, sizeof(struct acp_platform_info),
+			       GFP_KERNEL);
 	if (!machine)
 		return -ENOMEM;
 	card->dev = &pdev->dev;

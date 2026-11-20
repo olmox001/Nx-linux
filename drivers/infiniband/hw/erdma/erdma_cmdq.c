@@ -66,8 +66,8 @@ static int erdma_cmdq_wait_res_init(struct erdma_dev *dev,
 	int i;
 
 	cmdq->wait_pool =
-		devm_kzalloc_objs(&dev->pdev->dev, struct erdma_comp_wait,
-				  cmdq->max_outstandings);
+		devm_kcalloc(&dev->pdev->dev, cmdq->max_outstandings,
+			     sizeof(struct erdma_comp_wait), GFP_KERNEL);
 	if (!cmdq->wait_pool)
 		return -ENOMEM;
 

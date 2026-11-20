@@ -116,7 +116,8 @@ static int tps65910_gpio_probe(struct platform_device *pdev)
 
 	device_set_node(&pdev->dev, dev_fwnode(pdev->dev.parent));
 
-	tps65910_gpio = devm_kzalloc_obj(&pdev->dev, *tps65910_gpio);
+	tps65910_gpio = devm_kzalloc(&pdev->dev,
+				sizeof(*tps65910_gpio), GFP_KERNEL);
 	if (!tps65910_gpio)
 		return -ENOMEM;
 

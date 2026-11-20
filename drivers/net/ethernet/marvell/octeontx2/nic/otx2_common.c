@@ -732,6 +732,7 @@ int otx2_txschq_config(struct otx2_nic *pfvf, int lvl, int prio, bool txschq_for
 
 	return otx2_sync_mbox_msg(&pfvf->mbox);
 }
+EXPORT_SYMBOL(otx2_txschq_config);
 
 int otx2_smq_flush(struct otx2_nic *pfvf, int smq)
 {
@@ -755,6 +756,7 @@ int otx2_smq_flush(struct otx2_nic *pfvf, int smq)
 	mutex_unlock(&pfvf->mbox.lock);
 	return rc;
 }
+EXPORT_SYMBOL(otx2_smq_flush);
 
 int otx2_txsch_alloc(struct otx2_nic *pfvf)
 {
@@ -826,6 +828,7 @@ void otx2_txschq_free_one(struct otx2_nic *pfvf, u16 lvl, u16 schq)
 
 	mutex_unlock(&pfvf->mbox.lock);
 }
+EXPORT_SYMBOL(otx2_txschq_free_one);
 
 void otx2_txschq_stop(struct otx2_nic *pfvf)
 {
@@ -1033,6 +1036,7 @@ int otx2_sq_init(struct otx2_nic *pfvf, u16 qidx, u16 sqb_aura)
 	if (qidx > pfvf->hw.xdp_queues)
 		otx2_attach_xsk_buff(pfvf, sq, (qidx - pfvf->hw.xdp_queues));
 
+
 	chan_offset = qidx % pfvf->hw.tx_chan_cnt;
 	err = pfvf->hw_ops->sq_aq_init(pfvf, qidx, chan_offset, sqb_aura);
 	if (err) {
@@ -1198,8 +1202,8 @@ int otx2_config_nix_queues(struct otx2_nic *pfvf)
 							   NIX_LF_CQ_OP_STATUS);
 
 	/* Initialize work queue for receive buffer refill */
-	pfvf->refill_wrk = devm_kzalloc_objs(pfvf->dev, struct refill_work,
-					     pfvf->qset.cq_cnt);
+	pfvf->refill_wrk = devm_kcalloc(pfvf->dev, pfvf->qset.cq_cnt,
+					sizeof(struct refill_work), GFP_KERNEL);
 	if (!pfvf->refill_wrk)
 		return -ENOMEM;
 
@@ -1511,7 +1515,6 @@ int otx2_pool_aq_init(struct otx2_nic *pfvf, u16 pool_id,
 		pp_params.nid = NUMA_NO_NODE;
 		pp_params.dev = pfvf->dev;
 		pp_params.dma_dir = DMA_FROM_DEVICE;
-		pp_params.netdev = pfvf->netdev;
 		pool->page_pool = page_pool_create(&pp_params);
 		if (IS_ERR(pool->page_pool)) {
 			netdev_err(pfvf->netdev, "Creation of page pool failed\n");
@@ -1525,8 +1528,8 @@ int otx2_pool_aq_init(struct otx2_nic *pfvf, u16 pool_id,
 	if (xsk_pool) {
 		pool->xsk_pool = xsk_pool;
 		pool->xdp_cnt = numptrs;
-		pool->xdp = devm_kzalloc_objs(pfvf->dev, struct xdp_buff *,
-					      numptrs);
+		pool->xdp = devm_kcalloc(pfvf->dev,
+					 numptrs, sizeof(struct xdp_buff *), GFP_KERNEL);
 		if (!pool->xdp)
 			return -ENOMEM;
 	}
@@ -1687,8 +1690,8 @@ int otx2_config_npa(struct otx2_nic *pfvf)
 	if (!hw->pool_cnt)
 		return -EINVAL;
 
-	qset->pool = devm_kzalloc_objs(pfvf->dev, struct otx2_pool,
-				       hw->pool_cnt);
+	qset->pool = devm_kcalloc(pfvf->dev, hw->pool_cnt,
+				  sizeof(struct otx2_pool), GFP_KERNEL);
 	if (!qset->pool)
 		return -ENOMEM;
 
@@ -1831,6 +1834,7 @@ int otx2_nix_config_bp(struct otx2_nic *pfvf, bool enable)
 
 	return otx2_sync_mbox_msg(&pfvf->mbox);
 }
+EXPORT_SYMBOL(otx2_nix_config_bp);
 
 int otx2_nix_cpt_config_bp(struct otx2_nic *pfvf, bool enable)
 {
@@ -1855,6 +1859,7 @@ int otx2_nix_cpt_config_bp(struct otx2_nic *pfvf, bool enable)
 
 	return otx2_sync_mbox_msg(&pfvf->mbox);
 }
+EXPORT_SYMBOL(otx2_nix_cpt_config_bp);
 
 /* Mbox message handlers */
 void mbox_handler_cgx_stats(struct otx2_nic *pfvf,
@@ -2101,7 +2106,8 @@ otx2_mbox_up_handler_ ## _fn_name(struct otx2_nic *pfvf,		\
 {									\
 	/* Nothing to do here */					\
 	return 0;							\
-}
+}									\
+EXPORT_SYMBOL(otx2_mbox_up_handler_ ## _fn_name);
 MBOX_UP_CGX_MESSAGES
 MBOX_UP_MCS_MESSAGES
 #undef M
@@ -2115,8 +2121,10 @@ dma_addr_t otx2_dma_map_skb_frag(struct otx2_nic *pfvf,
 	int offset;
 
 	/* Crypto hardware need write permission for ipsec crypto offload */
-	if (unlikely(xfrm_offload(skb)))
+	if (unlikely(xfrm_offload(skb))) {
 		dir = DMA_BIDIRECTIONAL;
+		skb = skb_unshare(skb, GFP_ATOMIC);
+	}
 
 	/* First segment is always skb->data */
 	if (!seg) {
@@ -2132,12 +2140,13 @@ dma_addr_t otx2_dma_map_skb_frag(struct otx2_nic *pfvf,
 	return otx2_dma_map_page(pfvf, page, offset, *len, dir);
 }
 
-void otx2_dma_unmap_skb_frags(struct otx2_nic *pfvf, struct sg_list *sg,
-			      struct sk_buff *skb)
+void otx2_dma_unmap_skb_frags(struct otx2_nic *pfvf, struct sg_list *sg)
 {
 	enum dma_data_direction dir = DMA_TO_DEVICE;
+	struct sk_buff *skb = NULL;
 	int seg;
 
+	skb = (struct sk_buff *)sg->skb;
 	if (unlikely(xfrm_offload(skb)))
 		dir = DMA_BIDIRECTIONAL;
 

@@ -31,7 +31,6 @@ unsigned int fs_bio_integrity_alloc(struct bio *bio)
 		bio_integrity_setup_default(bio);
 	return action;
 }
-EXPORT_SYMBOL_GPL(fs_bio_integrity_alloc);
 
 void fs_bio_integrity_free(struct bio *bio)
 {
@@ -44,7 +43,6 @@ void fs_bio_integrity_free(struct bio *bio)
 	bio->bi_integrity = NULL;
 	bio->bi_opf &= ~REQ_INTEGRITY;
 }
-EXPORT_SYMBOL_GPL(fs_bio_integrity_free);
 
 void fs_bio_integrity_generate(struct bio *bio)
 {
@@ -54,10 +52,14 @@ void fs_bio_integrity_generate(struct bio *bio)
 }
 EXPORT_SYMBOL_GPL(fs_bio_integrity_generate);
 
-int fs_bio_integrity_verify(struct bio *bio, struct bvec_iter *data_iter)
+int fs_bio_integrity_verify(struct bio *bio, sector_t sector, unsigned int size)
 {
 	struct blk_integrity *bi = blk_get_integrity(bio->bi_bdev->bd_disk);
 	struct bio_integrity_payload *bip = bio_integrity(bio);
+	struct bvec_iter data_iter = {
+		.bi_sector	= sector,
+		.bi_size	= size,
+	};
 
 	if (!bip || !(bip->bip_flags & BIP_CHECK_FLAGS))
 		return 0;
@@ -69,10 +71,9 @@ int fs_bio_integrity_verify(struct bio *bio, struct bvec_iter *data_iter)
 	 * bio.  Requires the submitter to remember the sector and the size.
 	 */
 	memset(&bip->bip_iter, 0, sizeof(bip->bip_iter));
-	bip->bip_iter.bi_sector = data_iter->bi_sector;
-	bip->bip_iter.bi_size =
-		bio_integrity_bytes(bi, data_iter->bi_size >> SECTOR_SHIFT);
-	return blk_status_to_errno(bio_integrity_verify(bio, data_iter));
+	bip->bip_iter.bi_sector = sector;
+	bip->bip_iter.bi_size = bio_integrity_bytes(bi, size >> SECTOR_SHIFT);
+	return blk_status_to_errno(bio_integrity_verify(bio, &data_iter));
 }
 
 static int __init fs_bio_integrity_init(void)

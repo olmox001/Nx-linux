@@ -1870,7 +1870,8 @@ static bool slab_legacy_tp_is_exposed(void)
 	 * means the tool is running on an old kernel, we need to
 	 * rollback to support these legacy tracepoints.
 	 */
-	return trace_event__tp_format("kmem", "kmalloc_node");
+	return IS_ERR(trace_event__tp_format("kmem", "kmalloc_node")) ?
+		false : true;
 }
 
 static int __cmd_record(int argc, const char **argv)

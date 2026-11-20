@@ -7,7 +7,6 @@
 #include <linux/slab.h>
 #include <linux/namei.h>
 #include <linux/poll.h>
-#include <linux/uio.h>
 #include <linux/vmalloc.h>
 #include <linux/io_uring.h>
 
@@ -326,10 +325,8 @@ static int io_ring_buffers_peek(struct io_kiocb *req, struct buf_sel_arg *arg,
 
 		arg->out_len += len;
 		arg->max_len -= len;
-		if (!arg->max_len) {
-			head++;
+		if (!arg->max_len)
 			break;
-		}
 
 		buf = io_ring_head_to_buf(br, ++head, bl->mask);
 	} while (--nr_iovs);

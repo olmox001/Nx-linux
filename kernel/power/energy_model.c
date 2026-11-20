@@ -156,7 +156,8 @@ static void em_debug_create_pd(struct device *dev)
 
 	debugfs_create_file("id", 0444, d, dev->em_pd, &em_debug_id_fops);
 
-	em_dbg = devm_kzalloc_objs(dev, *em_dbg, dev->em_pd->nr_perf_states);
+	em_dbg = devm_kcalloc(dev, dev->em_pd->nr_perf_states,
+			      sizeof(*em_dbg), GFP_KERNEL);
 	if (!em_dbg)
 		return;
 
@@ -438,9 +439,7 @@ static int em_create_pd(struct device *dev, int nr_states,
 
 		cpumask_copy(em_span_cpus(pd), cpus);
 	} else {
-		/* Readers expect pd->cpus to exist and remain empty. */
-		pd = kzalloc_flex(*pd, cpus,
-				  BITS_TO_LONGS(large_cpumask_bits));
+		pd = kzalloc_obj(*pd);
 		if (!pd)
 			return -ENOMEM;
 	}
@@ -1032,9 +1031,7 @@ int for_each_em_perf_domain(int (*cb)(struct em_perf_domain*, void *),
 	return 0;
 }
 
-/* Run @cb on the matching domain with em_pd_list_mutex held. */
-int em_perf_domain_for_id(int id, int (*cb)(struct em_perf_domain *, void *),
-			  void *data)
+struct em_perf_domain *em_perf_domain_get_by_id(int id)
 {
 	struct em_perf_domain *pd;
 
@@ -1043,9 +1040,9 @@ int em_perf_domain_for_id(int id, int (*cb)(struct em_perf_domain *, void *),
 
 	list_for_each_entry(pd, &em_pd_list, node) {
 		if (pd->id == id)
-			return cb(pd, data);
+			return pd;
 	}
 
-	return -EINVAL;
+	return NULL;
 }
 #endif

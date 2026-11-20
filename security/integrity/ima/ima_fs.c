@@ -32,9 +32,7 @@
  */
 #define STAGED_REQ_LENGTH 21
 
-/* lock for protecting concurrent IMA policy updates */
-DEFINE_MUTEX(ima_write_mutex);
-
+static DEFINE_MUTEX(ima_write_mutex);
 static DEFINE_MUTEX(ima_measure_mutex);
 static long ima_measure_users;
 static struct task_struct *measure_writer;
@@ -592,13 +590,12 @@ static ssize_t ima_write_policy(struct file *file, const char __user *buf,
 	if (data[0] == '/') {
 		result = ima_read_policy(data);
 	} else if (ima_appraise & IMA_APPRAISE_POLICY) {
-		result = -EACCES;
 		pr_err("signed policy file (specified as an absolute pathname) required\n");
 		integrity_audit_msg(AUDIT_INTEGRITY_STATUS, NULL, NULL,
 				    "policy_update", "signed policy required",
-				    result, 0, result);
+				    1, 0);
+		result = -EACCES;
 	} else {
-		ima_measure_raw_policy(data, datalen);
 		result = ima_parse_add_rule(data);
 	}
 	mutex_unlock(&ima_write_mutex);
@@ -745,8 +742,7 @@ static int ima_release_policy(struct inode *inode, struct file *file)
 
 	pr_info("policy update %s\n", cause);
 	integrity_audit_msg(AUDIT_INTEGRITY_STATUS, NULL, NULL,
-			    "policy_update", cause, !valid_policy, 0,
-			    !valid_policy ? -EINVAL : 0);
+			    "policy_update", cause, !valid_policy, 0);
 
 	if (!valid_policy) {
 		ima_delete_rules();
@@ -756,10 +752,6 @@ static int ima_release_policy(struct inode *inode, struct file *file)
 	}
 
 	ima_update_policy();
-
-	mutex_lock(&ima_write_mutex);
-	ima_measure_loaded_policy();
-	mutex_unlock(&ima_write_mutex);
 #if !defined(CONFIG_IMA_WRITE_POLICY) && !defined(CONFIG_IMA_READ_POLICY)
 	securityfs_remove(file->f_path.dentry);
 #elif defined(CONFIG_IMA_WRITE_POLICY)

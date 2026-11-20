@@ -4,6 +4,7 @@
 #include <linux/auxiliary_bus.h>
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
+#include <linux/devm-helpers.h>
 #include <linux/hwmon.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
@@ -325,13 +326,11 @@ static int create_dimm_temp_info(struct peci_dimmtemp *priv)
 	if (ret == -ENODEV) {
 		dev_dbg(priv->dev, "No DIMMs found\n");
 		return 0;
-	}
-	if (ret == -EAGAIN) {
+	} else if (ret) {
 		schedule_delayed_work(&priv->detect_work, DIMM_MASK_CHECK_DELAY_JIFFIES);
 		dev_dbg(priv->dev, "Deferred populating DIMM temp info\n");
-	}
-	if (ret)
 		return ret;
+	}
 
 	channels = priv->gen_info->chan_rank_max * priv->gen_info->dimm_idx_max;
 
@@ -376,7 +375,7 @@ static int peci_dimmtemp_probe(struct auxiliary_device *adev, const struct auxil
 	struct peci_dimmtemp *priv;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -399,8 +398,10 @@ static int peci_dimmtemp_probe(struct auxiliary_device *adev, const struct auxil
 			 "Unexpected PECI revision %#x, some features may be unavailable\n",
 			 peci_dev->info.peci_revision);
 
-	auxiliary_set_drvdata(adev, priv);
-	INIT_DELAYED_WORK(&priv->detect_work, create_dimm_temp_info_delayed);
+	ret = devm_delayed_work_autocancel(priv->dev, &priv->detect_work,
+					   create_dimm_temp_info_delayed);
+	if (ret)
+		return ret;
 
 	ret = create_dimm_temp_info(priv);
 	if (ret && ret != -EAGAIN) {
@@ -409,13 +410,6 @@ static int peci_dimmtemp_probe(struct auxiliary_device *adev, const struct auxil
 	}
 
 	return 0;
-}
-
-static void peci_dimmtemp_remove(struct auxiliary_device *adev)
-{
-	struct peci_dimmtemp *priv = auxiliary_get_drvdata(adev);
-
-	cancel_delayed_work_sync(&priv->detect_work);
 }
 
 static int
@@ -671,7 +665,6 @@ MODULE_DEVICE_TABLE(auxiliary, peci_dimmtemp_ids);
 
 static struct auxiliary_driver peci_dimmtemp_driver = {
 	.probe		= peci_dimmtemp_probe,
-	.remove		= peci_dimmtemp_remove,
 	.id_table	= peci_dimmtemp_ids,
 };
 

@@ -46,7 +46,7 @@ affs_free_block(struct super_block *sb, u32 block)
 
 	pr_debug("%s(%u)\n", __func__, block);
 
-	if (!affs_validblock(sb, block))
+	if (block > sbi->s_partition_size)
 		goto err_range;
 
 	blk     = block - sbi->s_reserved;

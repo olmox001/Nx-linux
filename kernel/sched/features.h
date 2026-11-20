@@ -73,6 +73,8 @@ SCHED_FEAT(HRTICK, false)
 SCHED_FEAT(HRTICK_DL, false)
 #endif
 
+SCHED_FEAT(VCPU_IDLE_PREEMPTION_CHK, false)
+
 /*
  * Decrement CPU capacity based on time not spent running tasks
  */
@@ -129,6 +131,8 @@ SCHED_FEAT(ATTACH_AGE_LOAD, true)
 SCHED_FEAT(WA_IDLE, true)
 SCHED_FEAT(WA_WEIGHT, true)
 SCHED_FEAT(WA_BIAS, true)
+SCHED_FEAT(WA_RUNNABLE, false)
+SCHED_FEAT(WA_NUMA, true)
 
 /*
  * UtilEstimation. Use estimated CPU utilization.

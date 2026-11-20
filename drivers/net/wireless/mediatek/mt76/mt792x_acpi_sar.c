@@ -225,7 +225,7 @@ int mt792x_init_acpi_sar(struct mt792x_dev *dev)
 	struct mt792x_acpi_sar *asar;
 	int ret;
 
-	asar = devm_kzalloc_obj(dev->mt76.dev, *asar);
+	asar = devm_kzalloc(dev->mt76.dev, sizeof(*asar), GFP_KERNEL);
 	if (!asar)
 		return -ENOMEM;
 
@@ -365,8 +365,7 @@ int mt792x_init_acpi_sar_power(struct mt792x_phy *phy, bool set_default)
 	const struct cfg80211_sar_capa *capa = phy->mt76->hw->wiphy->sar_capa;
 	int i;
 
-	if (!capa || !phy->acpisar ||
-	    !((struct mt792x_acpi_sar *)phy->acpisar)->dyn)
+	if (!phy->acpisar || !((struct mt792x_acpi_sar *)phy->acpisar)->dyn)
 		return 0;
 
 	/* When ACPI SAR enabled in HW, we should apply rules for .frp

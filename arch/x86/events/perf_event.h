@@ -141,203 +141,10 @@ static inline bool is_acr_self_reload_event(struct perf_event *event)
 {
 	struct hw_perf_event *hwc = &event->hw;
 
-	if (hwc->idx < 0 || !is_acr_event_group(event))
+	if (hwc->idx < 0)
 		return false;
 
 	return test_bit(hwc->idx, (unsigned long *)&hwc->config1);
-}
-
-static inline bool __event_needs_xmm(struct perf_event *event, u64 sample_type)
-{
-	if (event->attr.sample_simd_regs_enabled) {
-		if (event->attr.sample_simd_vec_reg_qwords < PERF_X86_XMM_QWORDS)
-			return false;
-
-		if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-		    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-		    (event->attr.sample_simd_vec_reg_user > 0))
-			return true;
-
-		if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-		    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-		    (event->attr.sample_simd_vec_reg_intr > 0))
-			return true;
-	} else {
-		if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-		    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-		    (event->attr.sample_regs_user & PERF_REG_EXTENDED_MASK))
-			return true;
-
-		if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-		    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-		    (event->attr.sample_regs_intr & PERF_REG_EXTENDED_MASK))
-			return true;
-	}
-
-	return false;
-}
-
-static inline bool event_needs_xmm(struct perf_event *event)
-{
-	return __event_needs_xmm(event,
-			PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER);
-}
-
-static inline bool __event_needs_ymm(struct perf_event *event, u64 sample_type)
-{
-	if (!event->attr.sample_simd_regs_enabled)
-		return false;
-	if (event->attr.sample_simd_vec_reg_qwords < PERF_X86_YMM_QWORDS)
-		return false;
-
-	if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_simd_vec_reg_user > 0))
-		return true;
-
-	if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_simd_vec_reg_intr > 0))
-		return true;
-
-	return false;
-}
-
-static inline bool event_needs_ymm(struct perf_event *event)
-{
-	return __event_needs_ymm(event,
-			PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER);
-}
-
-static inline bool __event_needs_low16_zmm(struct perf_event *event,
-					   u64 sample_type)
-{
-	if (!event->attr.sample_simd_regs_enabled)
-		return false;
-	if (event->attr.sample_simd_vec_reg_qwords < PERF_X86_ZMM_QWORDS)
-		return false;
-
-	if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_simd_vec_reg_user > 0))
-		return true;
-
-	if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_simd_vec_reg_intr > 0))
-		return true;
-
-	return false;
-}
-
-static inline bool event_needs_low16_zmm(struct perf_event *event)
-{
-	return __event_needs_low16_zmm(event,
-			PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER);
-}
-
-static inline bool __event_needs_high16_zmm(struct perf_event *event,
-					    u64 sample_type)
-{
-	if (!event->attr.sample_simd_regs_enabled)
-		return false;
-	if (event->attr.sample_simd_vec_reg_qwords < PERF_X86_ZMM_QWORDS)
-		return false;
-
-	if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (fls64(event->attr.sample_simd_vec_reg_user) > PERF_X86_H16ZMM_BASE))
-		return true;
-
-	if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (fls64(event->attr.sample_simd_vec_reg_intr) > PERF_X86_H16ZMM_BASE))
-		return true;
-
-	return false;
-}
-
-static inline bool event_needs_high16_zmm(struct perf_event *event)
-{
-	return __event_needs_high16_zmm(event,
-			PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER);
-}
-
-static inline bool __event_needs_opmask(struct perf_event *event,
-					u64 sample_type)
-{
-	if (!event->attr.sample_simd_regs_enabled)
-		return false;
-	if (event->attr.sample_simd_pred_reg_qwords != PERF_X86_OPMASK_QWORDS)
-		return false;
-
-	if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_simd_pred_reg_user > 0))
-		return true;
-
-	if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_simd_pred_reg_intr > 0))
-		return true;
-
-	return false;
-}
-
-static inline bool event_needs_opmask(struct perf_event *event)
-{
-	return __event_needs_opmask(event,
-			PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER);
-}
-
-static inline bool __event_needs_egprs(struct perf_event *event,
-				       u64 sample_type)
-{
-	if (!event->attr.sample_simd_regs_enabled)
-		return false;
-
-	if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_regs_user & PERF_X86_EGPRS_MASK))
-		return true;
-
-	if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_regs_intr & PERF_X86_EGPRS_MASK))
-		return true;
-
-	return false;
-}
-
-static inline bool event_needs_egprs(struct perf_event *event)
-{
-	return __event_needs_egprs(event,
-			PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER);
-}
-
-static inline bool __event_needs_ssp(struct perf_event *event,
-				     u64 sample_type)
-{
-	if (!event->attr.sample_simd_regs_enabled)
-		return false;
-
-	if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (event->attr.sample_regs_user & BIT_ULL(PERF_REG_X86_SSP)))
-		return true;
-
-	if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_type & PERF_SAMPLE_REGS_INTR) &&
-	    (event->attr.sample_regs_intr & BIT_ULL(PERF_REG_X86_SSP)))
-		return true;
-
-	return false;
-}
-
-static inline bool event_needs_ssp(struct perf_event *event)
-{
-	return __event_needs_ssp(event,
-			PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER);
 }
 
 struct amd_nb {
@@ -540,8 +347,8 @@ struct cpu_hw_events {
 	/*
 	 * Intel host/guest exclude bits
 	 */
-	u64				intel_ctrl_exclude_host_mask;
-	u64				intel_ctrl_exclude_guest_mask;
+	u64				intel_ctrl_guest_mask;
+	u64				intel_ctrl_host_mask;
 	struct perf_guest_switch_msr	guest_switch_msrs[X86_PMC_IDX_MAX];
 
 	/*
@@ -1141,7 +948,7 @@ struct x86_pmu {
 	int		pebs_record_size;
 	int		pebs_buffer_size;
 	u64		pebs_events_mask;
-	int		(*drain_pebs)(struct pt_regs *regs, struct perf_sample_data *data);
+	void		(*drain_pebs)(struct pt_regs *regs, struct perf_sample_data *data);
 	struct event_constraint *pebs_constraints;
 	void		(*pebs_aliases)(struct perf_event *event);
 	u64		(*pebs_latency_data)(struct perf_event *event, u64 status);
@@ -1218,16 +1025,9 @@ struct x86_pmu {
 	unsigned int flags;
 
 	/*
-	 * Extended regs, e.g., vector registers
-	 * Utilize the same format as the XFEATURE_MASK_*
-	 */
-	u64		ext_regs_mask;
-
-	/*
 	 * Intel host/guest support (KVM)
 	 */
-	struct perf_guest_switch_msr *(*guest_get_msrs)(int *nr,
-							struct x86_guest_pebs *guest_pebs);
+	struct perf_guest_switch_msr *(*guest_get_msrs)(int *nr, void *data);
 
 	/*
 	 * Check period value for PERF_EVENT_IOC_PERIOD ioctl.
@@ -1246,7 +1046,7 @@ struct x86_pmu {
 	 * unique capabilities.
 	 */
 	int				num_hybrid_pmus;
-	struct x86_hybrid_pmu		*hybrid_pmu __counted_by_ptr(num_hybrid_pmus);
+	struct x86_hybrid_pmu		*hybrid_pmu;
 	enum intel_cpu_type (*get_hybrid_cpu_type)	(void);
 };
 
@@ -1357,7 +1157,6 @@ static struct perf_pmu_format_hybrid_attr format_attr_hybrid_##_name = {\
 	.pmu_type	= _pmu,						\
 }
 
-struct pmu *x86_get_static_pmu(void);
 struct pmu *x86_get_pmu(unsigned int cpu);
 extern struct x86_pmu x86_pmu __read_mostly;
 
@@ -1372,7 +1171,7 @@ DECLARE_STATIC_CALL(x86_pmu_pebs_disable_all, *x86_pmu.pebs_disable_all);
 
 static __always_inline struct x86_perf_task_context_opt *task_context_opt(void *ctx)
 {
-	if (cpu_feature_enabled(X86_FEATURE_ARCH_LBR))
+	if (static_cpu_has(X86_FEATURE_ARCH_LBR))
 		return &((struct x86_perf_task_context_arch_lbr *)ctx)->opt;
 
 	return &((struct x86_perf_task_context *)ctx)->opt;
@@ -1439,7 +1238,7 @@ static inline int x86_pmu_rdpmc_index(int index)
 	return x86_pmu.rdpmc_index ? x86_pmu.rdpmc_index(index) : index;
 }
 
-bool check_hw_exists(unsigned long *cntr_mask,
+bool check_hw_exists(struct pmu *pmu, unsigned long *cntr_mask,
 		     unsigned long *fixed_cntr_mask);
 
 int x86_add_exclusive(unsigned int what);
@@ -1510,13 +1309,6 @@ static inline void x86_pmu_disable_event(struct perf_event *event)
 void x86_pmu_enable_event(struct perf_event *event);
 
 int x86_pmu_handle_irq(struct pt_regs *regs);
-
-void x86_pmu_clear_perf_regs(struct pt_regs *regs);
-
-void x86_pmu_update_perf_regs(struct perf_event *event,
-			      struct perf_sample_data *data,
-			      struct pt_regs *regs,
-			      bool from_pebs);
 
 void x86_pmu_show_pmu_cap(struct pmu *pmu);
 
@@ -1658,6 +1450,13 @@ ssize_t events_ht_sysfs_show(struct device *dev, struct device_attribute *attr,
 ssize_t events_hybrid_sysfs_show(struct device *dev,
 				 struct device_attribute *attr,
 				 char *page);
+
+static inline bool fixed_counter_disabled(int i, struct pmu *pmu)
+{
+	u64 intel_ctrl = hybrid(pmu, intel_ctrl);
+
+	return !(intel_ctrl >> (i + INTEL_PMC_IDX_FIXED));
+}
 
 #ifdef CONFIG_CPU_SUP_AMD
 

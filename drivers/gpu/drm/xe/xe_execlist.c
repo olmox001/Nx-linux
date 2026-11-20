@@ -453,10 +453,16 @@ static void execlist_exec_queue_resume(struct xe_exec_queue *q)
 	/* NIY */
 }
 
-static u64 execlist_exec_queue_reset_status(struct xe_exec_queue *q)
+static bool execlist_exec_queue_reset_status(struct xe_exec_queue *q)
 {
 	/* NIY */
-	return 0;
+	return false;
+}
+
+static bool execlist_exec_queue_active(struct xe_exec_queue *q)
+{
+	/* NIY */
+	return false;
 }
 
 static const struct xe_exec_queue_ops execlist_exec_queue_ops = {
@@ -469,9 +475,9 @@ static const struct xe_exec_queue_ops execlist_exec_queue_ops = {
 	.set_preempt_timeout = execlist_exec_queue_set_preempt_timeout,
 	.suspend = execlist_exec_queue_suspend,
 	.suspend_wait = execlist_exec_queue_suspend_wait,
-	.suspend_wait_blocking = execlist_exec_queue_suspend_wait,
 	.resume = execlist_exec_queue_resume,
 	.reset_status = execlist_exec_queue_reset_status,
+	.active = execlist_exec_queue_active,
 };
 
 int xe_execlist_init(struct xe_gt *gt)

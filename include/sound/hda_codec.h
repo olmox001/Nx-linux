@@ -28,7 +28,6 @@ struct hda_codec;
 struct hda_pcm;
 struct hda_pcm_stream;
 struct hda_codec_ops;
-struct hda_jack_tbl;
 
 /*
  * codec bus
@@ -257,7 +256,6 @@ struct hda_codec {
 	unsigned int link_down_at_suspend:1; /* link down at runtime suspend */
 	unsigned int relaxed_resume:1;	/* don't resume forcibly for jack */
 	unsigned int forced_resume:1; /* forced resume for jack */
-	unsigned int acomp_requested_resume:1; /* resume requested by acomp */
 	unsigned int no_stream_clean_at_suspend:1; /* do not clean streams at suspend */
 	unsigned int ctl_dev_id:1; /* old control element id build behaviour */
 	unsigned int eld_jack_detect:1;	/* Machine jack-detection by ELD */
@@ -275,8 +273,7 @@ struct hda_codec {
 				 struct hda_codec *codec, hda_nid_t nid);
 
 	/* jack detection */
-	struct hda_jack_tbl *jacktbl, *jacktbl_last; /* linked list head/tail */
-	int jacktbl_used; /* number of jacktbl elements */
+	struct snd_array jacktbl;
 	unsigned long jackpoll_interval; /* In jiffies. Zero means no poll, rely on unsol events */
 	struct delayed_work jackpoll_work;
 
@@ -521,7 +518,7 @@ void snd_hda_update_power_acct(struct hda_codec *codec);
 
 static inline bool hda_codec_need_resume(struct hda_codec *codec)
 {
-	return !codec->relaxed_resume && codec->jacktbl_used;
+	return !codec->relaxed_resume && codec->jacktbl.used;
 }
 
 /*

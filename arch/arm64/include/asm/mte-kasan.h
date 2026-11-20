@@ -53,16 +53,14 @@ static inline bool system_uses_mte_async_or_asymm_mode(void)
  */
 static inline void mte_disable_tco(void)
 {
-	if (!IS_ENABLED(CONFIG_KASAN_HW_TAGS))
-		return;
-	asm volatile(ALTERNATIVE("nop", SET_PSTATE_TCO(0), ARM64_MTE));
+	asm volatile(ALTERNATIVE("nop", SET_PSTATE_TCO(0),
+				 ARM64_MTE, CONFIG_KASAN_HW_TAGS));
 }
 
 static inline void mte_enable_tco(void)
 {
-	if (!IS_ENABLED(CONFIG_KASAN_HW_TAGS))
-		return;
-	asm volatile(ALTERNATIVE("nop", SET_PSTATE_TCO(1), ARM64_MTE));
+	asm volatile(ALTERNATIVE("nop", SET_PSTATE_TCO(1),
+				 ARM64_MTE, CONFIG_KASAN_HW_TAGS));
 }
 
 /*

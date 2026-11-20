@@ -381,7 +381,7 @@ static void gpio_mockup_debugfs_setup(struct device *dev,
 		if (!name)
 			return;
 
-		priv = devm_kzalloc_obj(dev, *priv);
+		priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 		if (!priv)
 			return;
 
@@ -436,7 +436,7 @@ static int gpio_mockup_probe(struct platform_device *pdev)
 	if (rv)
 		name = dev_name(dev);
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -460,7 +460,8 @@ static int gpio_mockup_probe(struct platform_device *pdev)
 	gc->request = gpio_mockup_request;
 	gc->free = gpio_mockup_free;
 
-	chip->lines = devm_kzalloc_objs(dev, *chip->lines, gc->ngpio);
+	chip->lines = devm_kcalloc(dev, gc->ngpio,
+				   sizeof(*chip->lines), GFP_KERNEL);
 	if (!chip->lines)
 		return -ENOMEM;
 

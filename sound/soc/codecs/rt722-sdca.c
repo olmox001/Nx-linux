@@ -6,7 +6,6 @@
 //
 //
 
-#include <linux/cleanup.h>
 #include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/dmi.h>
@@ -24,7 +23,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc-dapm.h>
-#include <sound/sdw.h>
 #include <sound/tlv.h>
 
 #include "rt722-sdca.h"
@@ -296,7 +294,7 @@ io_error:
 
 static void rt722_sdca_jack_init(struct rt722_sdca_priv *rt722)
 {
-	guard(mutex)(&rt722->calibrate_mutex);
+	mutex_lock(&rt722->calibrate_mutex);
 	if (rt722->hs_jack) {
 		/* set SCP_SDCA_IntMask1[0]=1 */
 		sdw_write_no_pm(rt722->slave, SDW_SCP_SDCA_INTMASK1,
@@ -319,6 +317,7 @@ static void rt722_sdca_jack_init(struct rt722_sdca_priv *rt722)
 		rt722_sdca_index_update_bits(rt722, RT722_VENDOR_HDA_CTL,
 			RT722_GE_RELATED_CTL2, 0x4000, 0x4000);
 	}
+	mutex_unlock(&rt722->calibrate_mutex);
 }
 
 static int rt722_sdca_set_jack_detect(struct snd_soc_component *component,
@@ -353,6 +352,8 @@ static int rt722_cae_load(struct rt722_sdca_priv *rt722)
 	static const char func_tag[] = "FUNC";
 	static const char xu_tag[] = "XU";
 	const char *dmi_vendor, *dmi_product, *dmi_sku;
+	char *cae_filename;
+	const struct firmware *cae_fw = NULL;
 	unsigned int cae_st_spk, cae_st_hp, cae_st_mic;
 	unsigned int func, value;
 	unsigned int combined_val;
@@ -384,8 +385,7 @@ static int rt722_cae_load(struct rt722_sdca_priv *rt722)
 	space = strchr(dmi_sku, ' ');
 	s_len = space ? space - dmi_sku : strlen(dmi_sku);
 
-	char *cae_filename __free(kfree) =
-		kasprintf(GFP_KERNEL,
+	cae_filename = kasprintf(GFP_KERNEL,
 				 "realtek/rt722/rt722_RAE_%.*s_%.*s_%.*s.dat",
 				 v_len, dmi_vendor,
 				 p_len, dmi_product,
@@ -399,8 +399,8 @@ static int rt722_cae_load(struct rt722_sdca_priv *rt722)
 	regmap_write(rt722->regmap, RT722_MIC_CAE_PARAM39, 0x5f);
 	usleep_range(50000, 60000);
 
-	const struct firmware *cae_fw __free(firmware) = NULL;
 	request_firmware(&cae_fw, cae_filename, dev);
+	kfree(cae_filename);
 	if (!cae_fw) {
 		dev_err(dev, "%s: Failed to load CAE firmware\n", __func__);
 		return -ENOENT;
@@ -555,6 +555,7 @@ static int rt722_cae_load(struct rt722_sdca_priv *rt722)
 	regcache_cache_bypass(rt722->regmap, false);
 	rt722->cae_update_done = 1;
 	dev_dbg(dev, "%s: CAE FW update done.\n", __func__);
+	release_firmware(cae_fw);
 	return 0;
 
 verify_abort:
@@ -564,6 +565,7 @@ verify_abort:
 out_release:
 	rt722_sdca_index_update_bits(rt722, RT722_VENDOR_REG,
 			RT722_MISC_CTRL1, 0x8000, 0x0000);
+	release_firmware(cae_fw);
 	dev_err(dev, "%s: CAE FW update aborted (ret=%d).\n", __func__, ret);
 	return ret;
 }
@@ -1443,10 +1445,11 @@ static int rt722_sdca_pcm_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_component *component = dai->component;
 	struct rt722_sdca_priv *rt722 = snd_soc_component_get_drvdata(component);
-	struct sdw_stream_config stream_config = {0};
+	struct sdw_stream_config stream_config;
 	struct sdw_port_config port_config;
+	enum sdw_data_direction direction;
 	struct sdw_stream_runtime *sdw_stream;
-	int retval, port;
+	int retval, port, num_channels;
 	unsigned int sampling_rate;
 
 	dev_dbg(dai->dev, "%s %s", __func__, dai->name);
@@ -1465,6 +1468,7 @@ static int rt722_sdca_pcm_hw_params(struct snd_pcm_substream *substream,
 	 * RT722_AIF3 with port = 6 for digital-mic capture
 	 */
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		direction = SDW_DATA_DIR_RX;
 		if (dai->id == RT722_AIF1)
 			port = 1;
 		else if (dai->id == RT722_AIF2)
@@ -1472,6 +1476,7 @@ static int rt722_sdca_pcm_hw_params(struct snd_pcm_substream *substream,
 		else
 			return -EINVAL;
 	} else {
+		direction = SDW_DATA_DIR_TX;
 		if (dai->id == RT722_AIF1)
 			port = 2;
 		else if (dai->id == RT722_AIF3)
@@ -1479,9 +1484,13 @@ static int rt722_sdca_pcm_hw_params(struct snd_pcm_substream *substream,
 		else
 			return -EINVAL;
 	}
+	stream_config.frame_rate = params_rate(params);
+	stream_config.ch_count = params_channels(params);
+	stream_config.bps = snd_pcm_format_width(params_format(params));
+	stream_config.direction = direction;
 
-	/* SoundWire specific configuration */
-	snd_sdw_params_to_config(substream, params, &stream_config, &port_config);
+	num_channels = params_channels(params);
+	port_config.ch_mask = GENMASK(num_channels - 1, 0);
 	port_config.num = port;
 
 	retval = sdw_stream_add_slave(rt722->slave, &stream_config,
@@ -1617,7 +1626,7 @@ int rt722_sdca_init(struct device *dev, struct regmap *regmap, struct sdw_slave 
 {
 	struct rt722_sdca_priv *rt722;
 
-	rt722 = devm_kzalloc_obj(dev, *rt722);
+	rt722 = devm_kzalloc(dev, sizeof(*rt722), GFP_KERNEL);
 	if (!rt722)
 		return -ENOMEM;
 
@@ -1651,17 +1660,6 @@ int rt722_sdca_init(struct device *dev, struct regmap *regmap, struct sdw_slave 
 	return devm_snd_soc_register_component(dev,
 			&soc_sdca_dev_rt722, rt722_sdca_dai, ARRAY_SIZE(rt722_sdca_dai));
 }
-
-static const struct dmi_system_id dmi_dell_mono_spk_quirk_table[] = {
-	{
-		.ident = "Dell Pro 5 Micro P5M1270",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_SKU, "0EBA"),
-		}
-	},
-	{}
-};
 
 static void rt722_sdca_dmic_preset(struct rt722_sdca_priv *rt722)
 {
@@ -1751,13 +1749,6 @@ static void rt722_sdca_amp_preset(struct rt722_sdca_priv *rt722)
 
 		if (rt722->hw_vid == RT722_VB)
 			regmap_write(rt722->regmap, 0x2f54, 0x00);
-
-		/* This Dell machine only uses the mono speaker */
-		if (dmi_check_system(dmi_dell_mono_spk_quirk_table)) {
-			rt722_sdca_index_write(rt722, RT722_VENDOR_REG, RT722_CLSD_CTRL2, 0x391a);
-			rt722_sdca_index_update_bits(rt722, RT722_VENDOR_REG,
-				RT722_MISC_CTRL2, 0x0010, 0x0010);
-		}
 
 		/* clear flag */
 		regmap_write(rt722->regmap,
@@ -1914,9 +1905,6 @@ int rt722_sdca_io_init(struct device *dev, struct sdw_slave *slave)
 	rt722_sdca_dmic_preset(rt722);
 	rt722_sdca_amp_preset(rt722);
 	rt722_sdca_jack_preset(rt722);
-
-	if (rt722->hs_jack && (!rt722->first_hw_init))
-		rt722_sdca_jack_init(rt722);
 
 	if (rt722->first_hw_init) {
 		regcache_cache_bypass(rt722->regmap, false);

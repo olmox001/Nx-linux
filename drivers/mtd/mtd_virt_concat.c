@@ -130,7 +130,6 @@ int mtd_virt_concat_destroy(struct mtd_info *mtd)
 			mtd_concat_destroy(&concat->mtd);
 		}
 
-		list_del(&item->head);
 		for (idx = 0; idx < item->count; idx++)
 			of_node_put(item->nodes[idx]);
 
@@ -167,7 +166,7 @@ static int mtd_virt_concat_create_item(struct device_node *parts,
 			return 0;
 	}
 
-	item = kzalloc_flex(*item, nodes, count);
+	item = kzalloc_flex(*item, nodes, count, GFP_KERNEL);
 	if (!item)
 		return -ENOMEM;
 
@@ -183,7 +182,7 @@ static int mtd_virt_concat_create_item(struct device_node *parts,
 	for (i = 1; i < count; i++)
 		item->nodes[i] = of_parse_phandle(parts, CONCAT_PROP, (i - 1));
 
-	concat = kzalloc_flex(*concat, subdev, count);
+	concat = kzalloc_flex(*concat, subdev, count, GFP_KERNEL);
 	if (!concat) {
 		kfree(item);
 		return -ENOMEM;
@@ -202,7 +201,6 @@ void mtd_virt_concat_destroy_items(void)
 	int i;
 
 	list_for_each_entry_safe(item, temp, &concat_node_list, head) {
-		list_del(&item->head);
 		for (i = 0; i < item->count; i++)
 			of_node_put(item->nodes[i]);
 

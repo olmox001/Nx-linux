@@ -250,9 +250,9 @@ static int si3474_get_of_channels(struct si3474_priv *priv)
 					"Failed to read channel reg property\n");
 				return ret;
 			}
-			if (chan_id >= SI3474_MAX_CHANS) {
+			if (chan_id > SI3474_MAX_CHANS) {
 				dev_err(&priv->client[0]->dev,
-					"Incorrect channel number: %u\n", chan_id);
+					"Incorrect channel number: %d\n", chan_id);
 				return -EINVAL;
 			}
 
@@ -265,16 +265,6 @@ static int si3474_get_of_channels(struct si3474_priv *priv)
 			dev_err(&priv->client[0]->dev,
 				"Second pairset is missing for PI %pOF, only 4p configs are supported\n",
 				pi->np);
-			return -EINVAL;
-		}
-
-		/* The 2P/4P mode bit pairs channels 0+1 and 2+3 of a quad */
-		if (pairset_found &&
-		    (priv->pi[pi_no].chan[0] ^ 1) != priv->pi[pi_no].chan[1]) {
-			dev_err(&priv->client[0]->dev,
-				"PI %pOF: channels %u and %u are not a channel pair\n",
-				pi->np, priv->pi[pi_no].chan[0],
-				priv->pi[pi_no].chan[1]);
 			return -EINVAL;
 		}
 	}
@@ -322,13 +312,8 @@ static int si3474_pi_enable(struct pse_controller_dev *pcdev, int id)
 	/* DETECT_CLASS_ENABLE must be set when using AUTO mode,
 	 * otherwise PI does not power up - datasheet section 2.10.2
 	 */
-	ret = i2c_smbus_read_byte_data(client, DETECT_CLASS_ENABLE_REG);
-	if (ret < 0)
-		return ret;
-
-	val = (u8)ret;
-	val |= CHAN_BIT(chan0) | CHAN_UPPER_BIT(chan0) |
-	       CHAN_BIT(chan1) | CHAN_UPPER_BIT(chan1);
+	val = CHAN_BIT(chan0) | CHAN_UPPER_BIT(chan0) |
+	      CHAN_BIT(chan1) | CHAN_UPPER_BIT(chan1);
 
 	ret = i2c_smbus_write_byte_data(client, DETECT_CLASS_ENABLE_REG, val);
 	if (ret)
@@ -497,7 +482,7 @@ static int si3474_i2c_probe(struct i2c_client *client)
 		return -ENXIO;
 	}
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -531,8 +516,10 @@ static int si3474_i2c_probe(struct i2c_client *client)
 		return PTR_ERR(priv->client[1]);
 
 	ret = devm_add_action_or_reset(dev, si3474_ancillary_i2c_remove, priv->client[1]);
-	if (ret)
+	if (ret < 0) {
+		dev_err(&priv->client[1]->dev, "Cannot register remove callback\n");
 		return ret;
+	}
 
 	ret = i2c_smbus_read_byte_data(priv->client[1], VENDOR_IC_ID_REG);
 	if (ret < 0) {
@@ -554,9 +541,10 @@ static int si3474_i2c_probe(struct i2c_client *client)
 	priv->pcdev.nr_lines = SI3474_MAX_CHANS;
 
 	ret = devm_pse_controller_register(dev, &priv->pcdev);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "Failed to register PSE controller\n");
+	if (ret) {
+		dev_err(dev, "Failed to register PSE controller: 0x%x\n", ret);
+		return ret;
+	}
 
 	return 0;
 }

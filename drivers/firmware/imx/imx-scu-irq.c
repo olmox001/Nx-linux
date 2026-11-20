@@ -219,7 +219,7 @@ int imx_scu_enable_general_irq_channel(struct device *dev)
 	if (ret)
 		return ret;
 
-	cl = devm_kzalloc_obj(dev, *cl);
+	cl = devm_kzalloc(dev, sizeof(*cl), GFP_KERNEL);
 	if (!cl)
 		return -ENOMEM;
 

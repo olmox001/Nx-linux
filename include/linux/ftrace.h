@@ -416,7 +416,6 @@ void free_ftrace_hash(struct ftrace_hash *hash);
 struct ftrace_func_entry *add_ftrace_hash_entry_direct(struct ftrace_hash *hash,
 						       unsigned long ip, unsigned long direct);
 void add_ftrace_hash_entry(struct ftrace_hash *hash, struct ftrace_func_entry *entry);
-struct ftrace_func_entry *ftrace_lookup_ip(struct ftrace_hash *hash, unsigned long ip);
 void ftrace_hash_remove(struct ftrace_hash *hash);
 
 /* The hash used to know what functions callbacks trace */
@@ -618,21 +617,19 @@ static inline void arch_ftrace_set_direct_caller(struct ftrace_regs *fregs,
 #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
 
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_JMP
-#define FTRACE_JMP_BIT	BIT(BITS_PER_LONG - 1)
-
 static inline bool ftrace_is_jmp(unsigned long addr)
 {
-	return !(addr & FTRACE_JMP_BIT);
+	return addr & 1;
 }
 
 static inline unsigned long ftrace_jmp_set(unsigned long addr)
 {
-	return addr & ~FTRACE_JMP_BIT;
+	return addr | 1UL;
 }
 
 static inline unsigned long ftrace_jmp_get(unsigned long addr)
 {
-	return addr | FTRACE_JMP_BIT;
+	return addr & ~1UL;
 }
 #else
 static inline bool ftrace_is_jmp(unsigned long addr)

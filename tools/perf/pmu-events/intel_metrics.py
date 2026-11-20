@@ -5,10 +5,10 @@ import json
 import math
 import os
 import re
-from typing import Optional, Union
+from typing import Optional
 from common_metrics import Cycles
-from metric import (d_ratio, has_event, max, aggr_nr, CheckPmu, Constant, Event,
-                    Expression, JsonEncodeMetric, JsonEncodeMetricGroupDescriptions,
+from metric import (d_ratio, has_event, max, aggr_nr, CheckPmu, Event,
+                    JsonEncodeMetric, JsonEncodeMetricGroupDescriptions,
                     Literal, LoadEvents, Metric, MetricConstraint, MetricGroup,
                     MetricRef, Select)
 
@@ -90,7 +90,7 @@ def Tsx() -> Optional[MetricGroup]:
         # sysfs version so that we can detect its presence at runtime.
         transaction_start = Event("RTM_RETIRED.START")
         transaction_start = Event(f'{pmu}/tx\\-start/')
-    except ValueError:
+    except:
         return None
 
     elision_start = None
@@ -100,7 +100,7 @@ def Tsx() -> Optional[MetricGroup]:
         # case. Again, prefer the sysfs encoding of the event.
         elision_start = Event("HLE_RETIRED.START")
         elision_start = Event(f'{pmu}/el\\-start/')
-    except ValueError:
+    except:
         pass
 
     return MetricGroup('transaction', [
@@ -139,7 +139,7 @@ def IntelBr():
         br_clr = None
         try:
             br_clr = Event("BACLEARS.ANY", "BACLEARS.ALL")
-        except ValueError:
+        except:
             pass
 
         br_r = d_ratio(br_all, interval_sec)
@@ -171,7 +171,7 @@ def IntelBr():
             br_m_tk = Event("BR_MISP_RETIRED.NEAR_TAKEN",
                             "BR_MISP_RETIRED.TAKEN_JCC",
                             "BR_INST_RETIRED.MISPRED_TAKEN")
-        except ValueError:
+        except:
             pass
         br_r = d_ratio(br_all, interval_sec)
         ins_r = d_ratio(ins, br_all)
@@ -199,7 +199,7 @@ def IntelBr():
             br_m_cond = Event("BR_MISP_RETIRED.COND",
                               "BR_MISP_RETIRED.CONDITIONAL",
                               "BR_MISP_RETIRED.TAKEN_JCC")
-        except ValueError:
+        except:
             return None
 
         br_cond_nt = None
@@ -207,7 +207,7 @@ def IntelBr():
         try:
             br_cond_nt = Event("BR_INST_RETIRED.COND_NTAKEN")
             br_m_cond_nt = Event("BR_MISP_RETIRED.COND_NTAKEN")
-        except ValueError:
+        except:
             pass
         br_r = d_ratio(br_cond, interval_sec)
         ins_r = d_ratio(ins, br_cond)
@@ -222,7 +222,7 @@ def IntelBr():
                    "Retired conditional branch instructions mispredicted as a "
                    "percentage of all conditional branches.", misp_r, "100%"),
         ]
-        if not br_m_cond_nt or not br_cond_nt:
+        if not br_m_cond_nt:
             return MetricGroup("lpm_br_cond", taken_metrics)
 
         br_r = d_ratio(br_cond_nt, interval_sec)
@@ -247,7 +247,7 @@ def IntelBr():
     def Far() -> Optional[MetricGroup]:
         try:
             br_far = Event("BR_INST_RETIRED.FAR_BRANCH")
-        except ValueError:
+        except:
             return None
 
         br_r = d_ratio(br_far, interval_sec)
@@ -284,7 +284,7 @@ def IntelCtxSw() -> MetricGroup:
         ev = Event("MEM_INST_RETIRED.ALL_LOADS", "MEM_UOPS_RETIRED.ALL_LOADS")
         metrics.append(Metric("lpm_cs_loads", "Loads per context switch",
                               d_ratio(ev, cs), "loads/cs"))
-    except ValueError:
+    except:
         pass
 
     try:
@@ -292,14 +292,14 @@ def IntelCtxSw() -> MetricGroup:
                    "MEM_UOPS_RETIRED.ALL_STORES")
         metrics.append(Metric("lpm_cs_stores", "Stores per context switch",
                               d_ratio(ev, cs), "stores/cs"))
-    except ValueError:
+    except:
         pass
 
     try:
         ev = Event("BR_INST_RETIRED.NEAR_TAKEN", "BR_INST_RETIRED.TAKEN_JCC")
         metrics.append(Metric("lpm_cs_br_taken", "Branches taken per context switch",
                               d_ratio(ev, cs), "br_taken/cs"))
-    except ValueError:
+    except:
         pass
 
     try:
@@ -309,12 +309,12 @@ def IntelCtxSw() -> MetricGroup:
         try:
             l2_misses += Event("L2_RQSTS.HWPF_MISS",
                                "L2_RQSTS.L2_PF_MISS", "L2_RQSTS.PF_MISS")
-        except ValueError:
+        except:
             pass
 
         metrics.append(Metric("lpm_cs_l2_misses", "L2 misses per context switch",
                               d_ratio(l2_misses, cs), "l2_misses/cs"))
-    except ValueError:
+    except:
         pass
 
     return MetricGroup("lpm_cs", metrics,
@@ -327,7 +327,7 @@ def IntelFpu() -> Optional[MetricGroup]:
     try:
         s_64 = Event("FP_ARITH_INST_RETIRED.SCALAR_SINGLE",
                      "SIMD_INST_RETIRED.SCALAR_SINGLE")
-    except ValueError:
+    except:
         return None
     d_64 = Event("FP_ARITH_INST_RETIRED.SCALAR_DOUBLE",
                  "SIMD_INST_RETIRED.SCALAR_DOUBLE")
@@ -352,21 +352,21 @@ def IntelFpu() -> Optional[MetricGroup]:
         flop += 16 * s_512
         d_512 = Event("FP_ARITH_INST_RETIRED.512B_PACKED_DOUBLE")
         flop += 8 * d_512
-    except ValueError:
+    except:
         pass
 
     f_assist = Event("ASSISTS.FP", "FP_ASSIST.ANY", "FP_ASSIST.S")
-    nmi_constraint = MetricConstraint.GROUPED_EVENTS
-    if f_assist.name == "ASSISTS.FP":  # Icelake+
-        nmi_constraint = MetricConstraint.NO_GROUP_EVENTS_NMI
-    if f_assist.name in [
+    if f_assist in [
         "ASSISTS.FP",
         "FP_ASSIST.S",
     ]:
-        f_assist = Event(f"{f_assist.name}/cmask=1/")
+        f_assist += "/cmask=1/"
 
     flop_r = d_ratio(flop, interval_sec)
     flop_c = d_ratio(flop, cyc)
+    nmi_constraint = MetricConstraint.GROUPED_EVENTS
+    if f_assist.name == "ASSISTS.FP":  # Icelake+
+        nmi_constraint = MetricConstraint.NO_GROUP_EVENTS_NMI
 
     def FpuMetrics(group: str, fl: Optional[Event], mult: int, desc: str) -> Optional[MetricGroup]:
         if not fl:
@@ -421,17 +421,16 @@ def IntelFpu() -> Optional[MetricGroup]:
 def IntelIlp() -> MetricGroup:
     tsc = Event("msr/tsc/")
     c0 = Event("msr/mperf/")
-    low = max(tsc - c0, 0)
+    low = tsc - c0
     inst_ret = Event("INST_RETIRED.ANY_P")
+    inst_ret_c = [Event(f"{inst_ret.name}/cmask={x}/") for x in range(1, 6)]
     core_cycles = Event("CPU_CLK_UNHALTED.THREAD_P_ANY",
                         "CPU_CLK_UNHALTED.DISTRIBUTED",
                         "cycles")
-    inst_ret_c = [Event(f"{inst_ret.name}/cmask={x}/") for x in range(1, 6)]
-
     ilp = [d_ratio(max(inst_ret_c[x] - inst_ret_c[x + 1], 0), core_cycles)
            for x in range(0, 4)]
     ilp.append(d_ratio(inst_ret_c[4], core_cycles))
-    ilp0: Expression = Constant(1)
+    ilp0 = 1
     for x in ilp:
         ilp0 -= x
     return MetricGroup("lpm_ilp", [
@@ -466,7 +465,7 @@ def IntelIotlb() -> Optional[MetricGroup]:
         + Event("UNC_IIO_IOMMU0.1G_HITS")
     )
     total_miss = Event("UNC_IIO_IOMMU0.MISSES")
-  except ValueError:
+  except:
     return None
 
   miss_rate = d_ratio(total_miss, total_miss + total_hit)
@@ -509,7 +508,7 @@ def IntelIotlb() -> Optional[MetricGroup]:
             "100%",
         ),
     ]
-  except ValueError:
+  except:
     pass
 
   return MetricGroup(
@@ -520,92 +519,59 @@ def IntelIotlb() -> Optional[MetricGroup]:
 
 
 def IntelL2() -> Optional[MetricGroup]:
-    assert _args is not None
     try:
         DC_HIT = Event("L2_RQSTS.DEMAND_DATA_RD_HIT")
-    except ValueError:
+    except:
         return None
     try:
         DC_MISS = Event("L2_RQSTS.DEMAND_DATA_RD_MISS")
-        l2_dmnd_miss: Expression = DC_MISS
-        l2_dmnd_rd_all: Expression = DC_MISS + DC_HIT
-    except ValueError:
+        l2_dmnd_miss = DC_MISS
+        l2_dmnd_rd_all = DC_MISS + DC_HIT
+    except:
         DC_ALL = Event("L2_RQSTS.ALL_DEMAND_DATA_RD")
         l2_dmnd_miss = DC_ALL - DC_HIT
         l2_dmnd_rd_all = DC_ALL
     l2_dmnd_mrate = d_ratio(l2_dmnd_miss, interval_sec)
     l2_dmnd_rrate = d_ratio(l2_dmnd_rd_all, interval_sec)
 
-    l2_useless_rate = None
-    try:
-        DC_OUT_U = Event("L2_LINES_OUT.USELESS_HWPF")
-        l2_pf_useless = DC_OUT_U
-        l2_useless_rate = d_ratio(l2_pf_useless, interval_sec)
-    except ValueError:
-        pass
-
-    hwpf_group = None
+    DC_PFH = None
+    DC_PFM = None
+    l2_pf_all = None
+    l2_pf_mrate = None
+    l2_pf_rrate = None
     try:
         DC_PFH = Event("L2_RQSTS.PF_HIT")
         DC_PFM = Event("L2_RQSTS.PF_MISS")
         l2_pf_all = DC_PFH + DC_PFM
         l2_pf_mrate = d_ratio(DC_PFM, interval_sec)
         l2_pf_rrate = d_ratio(l2_pf_all, interval_sec)
-        hwpf_group = MetricGroup("lpm_l2_hwpf", [
-            Metric("lpm_l2_hwpf_hits", "L2 cache hardware prefetcher hits",
-                   d_ratio(DC_PFH, l2_pf_all), "100%"),
-            Metric("lpm_l2_hwpf_misses", "L2 cache hardware prefetcher misses",
-                   d_ratio(DC_PFM, l2_pf_all), "100%"),
-            Metric("lpm_l2_hwpf_useless", "L2 cache hardware prefetcher useless prefetches per second",
-                   l2_useless_rate, "100%") if l2_useless_rate else None,
-            Metric("lpm_l2_hwpf_requests", "L2 cache hardware prefetcher requests per second",
-                   l2_pf_rrate, "100%"),
-            Metric("lpm_l2_hwpf_misses", "L2 cache hardware prefetcher misses per second",
-                   l2_pf_mrate, "100%"),
-        ])
-    except ValueError:
+    except:
         pass
 
-    rfo_group = None
+    DC_RFOH = None
+    DC_RFOM = None
+    l2_rfo_all = None
+    l2_rfo_mrate = None
+    l2_rfo_rrate = None
     try:
         DC_RFOH = Event("L2_RQSTS.RFO_HIT")
         DC_RFOM = Event("L2_RQSTS.RFO_MISS")
         l2_rfo_all = DC_RFOH + DC_RFOM
         l2_rfo_mrate = d_ratio(DC_RFOM, interval_sec)
         l2_rfo_rrate = d_ratio(l2_rfo_all, interval_sec)
-        rfo_group = MetricGroup("lpm_l2_rfo", [
-            Metric("lpm_l2_rfo_hits", "L2 cache request for ownership (RFO) hits",
-                   d_ratio(DC_RFOH, l2_rfo_all), "100%"),
-            Metric("lpm_l2_rfo_misses", "L2 cache request for ownership (RFO) misses",
-                   d_ratio(DC_RFOM, l2_rfo_all), "100%"),
-            Metric("lpm_l2_rfo_requests", "L2 cache request for ownership (RFO) requests per second",
-                   l2_rfo_rrate, "requests/s"),
-            Metric("lpm_l2_rfo_misses", "L2 cache request for ownership (RFO) misses per second",
-                   l2_rfo_mrate, "misses/s"),
-        ])
-    except ValueError:
+    except:
         pass
 
     DC_CH = None
     try:
         DC_CH = Event("L2_RQSTS.CODE_RD_HIT")
-    except ValueError:
+    except:
         pass
     DC_CM = Event("L2_RQSTS.CODE_RD_MISS")
     DC_IN = Event("L2_LINES_IN.ALL")
-
-    DC_WB_U = None
-    DC_WB_D = None
-    wbu = None
-    wbd = None
-    try:
-        DC_WB_U = Event("IDI_MISC.WB_UPGRADE")
-        DC_WB_D = Event("IDI_MISC.WB_DOWNGRADE")
-        wbu = d_ratio(DC_WB_U, interval_sec)
-        wbd = d_ratio(DC_WB_D, interval_sec)
-    except ValueError:
-        pass
-
+    DC_OUT_NS = None
+    DC_OUT_S = None
+    l2_lines_out = None
     l2_out_rate = None
     wbn = None
     isd = None
@@ -617,24 +583,43 @@ def IntelL2() -> Optional[MetricGroup]:
                          "L2_LINES_OUT.DEMAND_CLEAN",
                          "L2_LINES_IN.I")
         if DC_OUT_S.name == "L2_LINES_OUT.SILENT" and (
-                _args.model.startswith("skylake") or
-                _args.model == "cascadelakex"):
+                args.model.startswith("skylake") or
+                args.model == "cascadelakex"):
             DC_OUT_S.name = "L2_LINES_OUT.SILENT/any/"
         # bring is back to per-CPU
         l2_s = Select(DC_OUT_S / 2, Literal("#smt_on"), DC_OUT_S)
         l2_ns = DC_OUT_NS
         l2_lines_out = l2_s + l2_ns
         l2_out_rate = d_ratio(l2_lines_out, interval_sec)
-        if DC_WB_U and DC_WB_D:
-            nlr = max(l2_ns - DC_WB_U - DC_WB_D, 0)
-            wbn = d_ratio(nlr, interval_sec)
+        nlr = max(l2_ns - DC_WB_U - DC_WB_D, 0)
+        wbn = d_ratio(nlr, interval_sec)
         isd = d_ratio(l2_s, interval_sec)
-    except ValueError:
+    except:
+        pass
+    DC_OUT_U = None
+    l2_pf_useless = None
+    l2_useless_rate = None
+    try:
+        DC_OUT_U = Event("L2_LINES_OUT.USELESS_HWPF")
+        l2_pf_useless = DC_OUT_U
+        l2_useless_rate = d_ratio(l2_pf_useless, interval_sec)
+    except:
+        pass
+    DC_WB_U = None
+    DC_WB_D = None
+    wbu = None
+    wbd = None
+    try:
+        DC_WB_U = Event("IDI_MISC.WB_UPGRADE")
+        DC_WB_D = Event("IDI_MISC.WB_DOWNGRADE")
+        wbu = d_ratio(DC_WB_U, interval_sec)
+        wbd = d_ratio(DC_WB_D, interval_sec)
+    except:
         pass
 
     l2_lines_in = DC_IN
     l2_code_all = (DC_CH + DC_CM) if DC_CH else None
-    l2_code_rate = d_ratio(l2_code_all, interval_sec) if l2_code_all else None
+    l2_code_rate = d_ratio(l2_code_all, interval_sec) if DC_CH else None
     l2_code_miss_rate = d_ratio(DC_CM, interval_sec)
     l2_in_rate = d_ratio(l2_lines_in, interval_sec)
 
@@ -655,15 +640,35 @@ def IntelL2() -> Optional[MetricGroup]:
             Metric("lpm_l2_rd_misses", "L2 cache data read misses per second",
                    l2_dmnd_mrate, "misses/s"),
         ]),
-        hwpf_group,
-        rfo_group,
+        MetricGroup("lpm_l2_hwpf", [
+            Metric("lpm_l2_hwpf_hits", "L2 cache hardware prefetcher hits",
+                   d_ratio(DC_PFH, l2_pf_all), "100%"),
+            Metric("lpm_l2_hwpf_misses", "L2 cache hardware prefetcher misses",
+                   d_ratio(DC_PFM, l2_pf_all), "100%"),
+            Metric("lpm_l2_hwpf_useless", "L2 cache hardware prefetcher useless prefetches per second",
+                   l2_useless_rate, "100%") if l2_useless_rate else None,
+            Metric("lpm_l2_hwpf_requests", "L2 cache hardware prefetcher requests per second",
+                   l2_pf_rrate, "100%"),
+            Metric("lpm_l2_hwpf_misses", "L2 cache hardware prefetcher misses per second",
+                   l2_pf_mrate, "100%"),
+        ]) if DC_PFH else None,
+        MetricGroup("lpm_l2_rfo", [
+            Metric("lpm_l2_rfo_hits", "L2 cache request for ownership (RFO) hits",
+                   d_ratio(DC_RFOH, l2_rfo_all), "100%"),
+            Metric("lpm_l2_rfo_misses", "L2 cache request for ownership (RFO) misses",
+                   d_ratio(DC_RFOM, l2_rfo_all), "100%"),
+            Metric("lpm_l2_rfo_requests", "L2 cache request for ownership (RFO) requests per second",
+                   l2_rfo_rrate, "requests/s"),
+            Metric("lpm_l2_rfo_misses", "L2 cache request for ownership (RFO) misses per second",
+                   l2_rfo_mrate, "misses/s"),
+        ]) if DC_RFOH else None,
         MetricGroup("lpm_l2_code", [
             Metric("lpm_l2_code_hits", "L2 cache code hits",
-                   d_ratio(DC_CH, l2_code_all), "100%") if DC_CH and l2_code_all else None,
+                   d_ratio(DC_CH, l2_code_all), "100%") if DC_CH else None,
             Metric("lpm_l2_code_misses", "L2 cache code misses",
-                   d_ratio(DC_CM, l2_code_all), "100%") if DC_CH and l2_code_all else None,
+                   d_ratio(DC_CM, l2_code_all), "100%") if DC_CH else None,
             Metric("lpm_l2_code_requests", "L2 cache code requests per second",
-                   l2_code_rate, "requests/s") if l2_code_rate else None,
+                   l2_code_rate, "requests/s") if DC_CH else None,
             Metric("lpm_l2_code_misses", "L2 cache code misses per second",
                    l2_code_miss_rate, "misses/s"),
         ]),
@@ -701,7 +706,7 @@ def IntelMissLat() -> Optional[MetricGroup]:
                                 "UNC_CHA_TOR_INSERTS.IA_MISS",
                                 "UNC_C_TOR_INSERTS.MISS_REMOTE_OPCODE",
                                 "UNC_C_TOR_INSERTS.NID_MISS_OPCODE")
-    except ValueError:
+    except:
         return None
 
     if (data_rd_loc_occ.name == "UNC_C_TOR_OCCUPANCY.MISS_LOCAL_OPCODE" or
@@ -747,8 +752,8 @@ def IntelMissLat() -> Optional[MetricGroup]:
 def IntelMlp() -> Optional[Metric]:
     try:
         l1d = Event("L1D_PEND_MISS.PENDING")
-        l1dc: Expression = Event("L1D_PEND_MISS.PENDING_CYCLES")
-    except ValueError:
+        l1dc = Event("L1D_PEND_MISS.PENDING_CYCLES")
+    except:
         return None
 
     l1dc = Select(l1dc / 2, Literal("#smt_on"), l1dc)
@@ -759,9 +764,8 @@ def IntelMlp() -> Optional[Metric]:
 
 
 def IntelPorts() -> Optional[MetricGroup]:
-    assert _args is not None
-    with open(f"{_args.events_path}/x86/{_args.model}/pipeline.json", encoding="utf-8") as f:
-        pipeline_events = json.load(f)
+    pipeline_events = json.load(
+        open(f"{_args.events_path}/x86/{_args.model}/pipeline.json"))
 
     core_cycles = Event("CPU_CLK_UNHALTED.THREAD_P_ANY",
                         "CPU_CLK_UNHALTED.DISTRIBUTED",
@@ -773,10 +777,11 @@ def IntelPorts() -> Optional[MetricGroup]:
     for x in pipeline_events:
         if "EventName" in x and re.search("^UOPS_DISPATCHED.PORT", x["EventName"]):
             name = x["EventName"]
-            match = re.search(r"(PORT_[0-9].*)", name)
-            assert match is not None
-            port = match.group(0).lower()
-            cyc: Expression = core_cycles if name.endswith("_CORE") else smt_cycles
+            port = re.search(r"(PORT_[0-9].*)", name).group(0).lower()
+            if name.endswith("_CORE"):
+                cyc = core_cycles
+            else:
+                cyc = smt_cycles
             metrics.append(Metric(f"lpm_{port}", f"{port} utilization (higher is better)",
                                   d_ratio(Event(name), cyc), "100%"))
     if len(metrics) == 0:
@@ -795,7 +800,7 @@ def IntelSwpf() -> Optional[MetricGroup]:
         s_t0 = Event("SW_PREFETCH_ACCESS.T0")
         s_t1 = Event("SW_PREFETCH_ACCESS.T1_T2")
         s_w = Event("SW_PREFETCH_ACCESS.PREFETCHW")
-    except ValueError:
+    except:
         return None
 
     all_sw = s_nta + s_t0 + s_t1 + s_w
@@ -852,7 +857,6 @@ def IntelSwpf() -> Optional[MetricGroup]:
 
 
 def IntelLdSt() -> Optional[MetricGroup]:
-    assert _args is not None
     if _args.model in [
         "bonnell",
         "nehalemep",
@@ -878,12 +882,12 @@ def IntelLdSt() -> Optional[MetricGroup]:
     LDST_PRE = None
     try:
         LDST_PRE = Event("LOAD_HIT_PREFETCH.SWPF", "LOAD_HIT_PRE.SW_PF")
-    except ValueError:
+    except:
         pass
     LDST_AT = None
     try:
         LDST_AT = Event("MEM_INST_RETIRED.LOCK_LOADS")
-    except ValueError:
+    except:
         pass
     cyc = LDST_CYC
 
@@ -941,8 +945,8 @@ def UncoreCState() -> Optional[MetricGroup]:
         pcu_ticks = Event("UNC_P_CLOCKTICKS")
         c0 = Event("UNC_P_POWER_STATE_OCCUPANCY.CORES_C0")
         c3 = Event("UNC_P_POWER_STATE_OCCUPANCY.CORES_C3")
-        c6: Expression = Event("UNC_P_POWER_STATE_OCCUPANCY.CORES_C6")
-    except ValueError:
+        c6 = Event("UNC_P_POWER_STATE_OCCUPANCY.CORES_C6")
+    except:
         return None
 
     num_cores = Literal("#num_cores") / Literal("#num_packages")
@@ -977,10 +981,13 @@ def UncoreDir() -> Optional[MetricGroup]:
         cha_upd = Event("UNC_CHA_DIR_UPDATE.HA")
         # Turn the umask into a ANY rather than HA filter.
         cha_upd.name += "/umask=3,name=UNC_CHA_DIR_UPDATE.ANY/"
-    except ValueError:
+    except:
         return None
 
     m2m_total = m2m_hits + m2m_miss
+    upd = m2m_upd + cha_upd  # in cache lines
+    upd_r = upd / interval_sec
+    look_r = m2m_total / interval_sec
 
     scale = 64 / 1_000_000  # Cache lines to MB
     return MetricGroup("lpm_dir", [
@@ -1007,7 +1014,7 @@ def UncoreMem() -> Optional[MetricGroup]:
                         "UNC_H_REQUESTS.WRITES_LOCAL")
         rem_wrs = Event("UNC_CHA_REQUESTS.WRITES_REMOTE",
                         "UNC_H_REQUESTS.WRITES_REMOTE")
-    except ValueError:
+    except:
         return None
 
     scale = 64 / 1_000_000
@@ -1028,18 +1035,16 @@ def UncoreMem() -> Optional[MetricGroup]:
 
 
 def UncoreMemBw() -> Optional[MetricGroup]:
-    assert _args is not None
     mem_events = []
     try:
-        with open(f"{os.path.dirname(os.path.realpath(__file__))}"
-                  f"/arch/x86/{_args.model}/uncore-memory.json", encoding="utf-8") as f:
-            mem_events = json.load(f)
-    except (OSError, ValueError):
+        mem_events = json.load(open(f"{os.path.dirname(os.path.realpath(__file__))}"
+                                    f"/arch/x86/{args.model}/uncore-memory.json"))
+    except:
         pass
 
-    ddr_rds: Union[int, Expression] = 0
-    ddr_wrs: Union[int, Expression] = 0
-    ddr_total: Union[int, Expression] = 0
+    ddr_rds = 0
+    ddr_wrs = 0
+    ddr_total = 0
     for x in mem_events:
         if "EventName" in x:
             name = x["EventName"]
@@ -1054,17 +1059,17 @@ def UncoreMemBw() -> Optional[MetricGroup]:
         try:
             ddr_rds = Event("UNC_M_CAS_COUNT.RD")
             ddr_wrs = Event("UNC_M_CAS_COUNT.WR")
-        except ValueError:
+        except:
             return None
 
     ddr_total = ddr_rds + ddr_wrs
 
-    pmm_rds: Union[int, Expression] = 0
-    pmm_wrs: Union[int, Expression] = 0
+    pmm_rds = 0
+    pmm_wrs = 0
     try:
         pmm_rds = Event("UNC_M_PMM_RPQ_INSERTS")
         pmm_wrs = Event("UNC_M_PMM_WPQ_INSERTS")
-    except ValueError:
+    except:
         pass
 
     pmm_total = pmm_rds + pmm_wrs
@@ -1094,9 +1099,8 @@ def UncoreMemSat() -> Optional[Metric]:
     try:
         clocks = Event("UNC_CHA_CLOCKTICKS", "UNC_C_CLOCKTICKS")
         sat = Event("UNC_CHA_DISTRESS_ASSERTED.VERT", "UNC_CHA_FAST_ASSERTED.VERT",
-                    "UNC_C_FAST_ASSERTED", "UNC_CHA_DISTRESS_ASSERTED.DPT_ANY",
-                    "UNC_CHA_DISTRESS_ASSERTED.DPT_NONLOCAL")
-    except ValueError:
+                    "UNC_C_FAST_ASSERTED")
+    except:
         return None
 
     desc = ("Mesh Bandwidth saturation (% CBOX cycles with FAST signal asserted, "
@@ -1111,8 +1115,10 @@ def UncoreUpiBw() -> Optional[MetricGroup]:
     try:
         upi_rds = Event("UNC_UPI_RxL_FLITS.ALL_DATA")
         upi_wrs = Event("UNC_UPI_TxL_FLITS.ALL_DATA")
-    except ValueError:
+    except:
         return None
+
+    upi_total = upi_rds + upi_wrs
 
     # From "Uncore Performance Monitoring": When measuring the amount of
     # bandwidth consumed by transmission of the data (i.e. NOT including

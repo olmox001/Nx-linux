@@ -43,7 +43,7 @@ static int qcom_pmic_typec_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENODEV;
 
-	tcpm = devm_kzalloc_obj(dev, *tcpm);
+	tcpm = devm_kzalloc(dev, sizeof(*tcpm), GFP_KERNEL);
 	if (!tcpm)
 		return -ENOMEM;
 

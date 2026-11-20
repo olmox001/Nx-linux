@@ -106,8 +106,7 @@ define RUN_TESTS
 	if [ "X$(summary)" != "X" ]; then       \
 		per_test_logging=1;		\
 	fi;                                     \
-	run_many $(1);				\
-	ktap_print_totals
+	run_many $(1)
 endef
 
 define INSTALL_INCLUDES
@@ -156,7 +155,7 @@ endef
 
 define INSTALL_MODS_RULE
 	$(if $(INSTALL_LIST),@mkdir -p $(INSTALL_PATH)/$(INSTALL_LIST))
-	$(if $(wildcard $(INSTALL_LIST)/*.ko),rsync -a --copy-unsafe-links $(INSTALL_LIST)/*.ko $(INSTALL_PATH)/$(INSTALL_LIST))
+	$(if $(INSTALL_LIST),rsync -a --copy-unsafe-links $(INSTALL_LIST)/*.ko $(INSTALL_PATH)/$(INSTALL_LIST))
 endef
 
 define INSTALL_RULE
@@ -179,15 +178,11 @@ else
 	$(error Error: set INSTALL_PATH to use install)
 endif
 
-define EMIT_TESTS
+emit_tests:
 	for TEST in $(TEST_GEN_PROGS) $(TEST_CUSTOM_PROGS) $(TEST_PROGS); do \
 		BASENAME_TEST=`basename $$TEST`;	\
 		echo "$(COLLECTION):$$BASENAME_TEST";	\
 	done
-endef
-
-emit_tests:
-	+$(EMIT_TESTS)
 
 # define if isn't already. It is undefined in make O= case.
 ifeq ($(RM),)

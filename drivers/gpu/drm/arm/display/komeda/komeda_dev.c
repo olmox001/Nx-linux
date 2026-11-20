@@ -188,7 +188,7 @@ struct komeda_dev *komeda_dev_create(struct device *dev)
 	if (!komeda_identify)
 		return ERR_PTR(-ENODEV);
 
-	mdev = devm_kzalloc_obj(dev, *mdev);
+	mdev = devm_kzalloc(dev, sizeof(*mdev), GFP_KERNEL);
 	if (!mdev)
 		return ERR_PTR(-ENOMEM);
 

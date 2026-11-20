@@ -73,11 +73,7 @@
 	status = "okay";
 };
 
-&pwm0 {
-	status = "okay";
-};
-
-&pwm1 {
+&pwm {
 	status = "okay";
 };
 

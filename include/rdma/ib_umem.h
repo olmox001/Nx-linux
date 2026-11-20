@@ -7,7 +7,6 @@
 #ifndef IB_UMEM_H
 #define IB_UMEM_H
 
-#include <linux/dma-direction.h>
 #include <linux/scatterlist.h>
 
 struct ib_device;
@@ -20,7 +19,6 @@ struct ib_umem {
 	size_t			length;
 	unsigned long		address;
 	unsigned long		dma_attrs;
-	enum dma_data_direction dma_dir;
 	u32 writable : 1;
 	u32 is_odp : 1;
 	u32 is_dmabuf : 1;
@@ -252,7 +250,7 @@ struct ib_umem_dmabuf *ib_umem_dmabuf_get(struct ib_device *device,
 					  unsigned long offset,
 					  size_t size, int fd,
 					  int access,
-					  const struct dma_buf_attach_ops *ops)
+					  struct dma_buf_attach_ops *ops)
 {
 	return ERR_PTR(-EOPNOTSUPP);
 }

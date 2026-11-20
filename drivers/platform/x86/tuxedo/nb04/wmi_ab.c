@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * This driver implements the WMI AB device found on TUXEDO notebooks with board
- * vendor NB04. This enables keyboard backlight control via a virtual HID
- * LampArray device.
- *
- * The device will be available through the regular HID interfaces, such as
- * hidraw and can be used by any userspace program that implements the HID
- * LampArray standard.
+ * vendor NB04.
  *
  * Copyright (C) 2024-2025 Werner Sembach <wse@tuxedocomputers.com>
- * Copyright (C) 2026 Aaron Erhardt <aer@tuxedocomputers.com>
  */
 
 #include <linux/dmi.h>
@@ -238,8 +232,8 @@ static const struct tux_kbl_map_entry_t sirius_16_ansii_kbl_map[] = {
 	{ 0x2e, { 246000,  67500, 5250 } },
 	{ 0x2a, { 269500,  67500, 5250 } },
 	{ 0x53, { 294500,  67500, 5250 } },
-	{ 0x54, { 311200,  67500, 5250 } },
-	{ 0x55, { 327900,  67500, 5250 } },
+	{ 0x55, { 311200,  67500, 5250 } },
+	{ 0x54, { 327900,  67500, 5250 } },
 	{ 0x56, { 344600,  67500, 5250 } },
 	{ 0x2b, {  31000,  85500, 5500 } },
 	{ 0x14, {  51500,  85500, 5500 } },
@@ -343,8 +337,8 @@ static const struct tux_kbl_map_entry_t sirius_16_iso_kbl_map[] = {
 	{ 0x2e, { 246000,  67500, 5250 } },
 	{ 0x2a, { 269500,  67500, 5250 } },
 	{ 0x53, { 294500,  67500, 5250 } },
-	{ 0x54, { 311200,  67500, 5250 } },
-	{ 0x55, { 327900,  67500, 5250 } },
+	{ 0x55, { 311200,  67500, 5250 } },
+	{ 0x54, { 327900,  67500, 5250 } },
 	{ 0x56, { 344600,  67500, 5250 } },
 	{ 0x2b, {  31000,  85500, 5500 } },
 	{ 0x14, {  51500,  85500, 5500 } },
@@ -433,7 +427,7 @@ static int tux_ll_start(struct hid_device *hdev)
 	u8 keyboard_type;
 	int ret;
 
-	driver_data = devm_kzalloc_obj(&hdev->dev, *driver_data);
+	driver_data = devm_kzalloc(&hdev->dev, sizeof(*driver_data), GFP_KERNEL);
 	if (!driver_data)
 		return -ENOMEM;
 
@@ -454,7 +448,7 @@ static int tux_ll_start(struct hid_device *hdev)
 	}
 	driver_data->next_lamp_id = 0;
 
-	hdev->driver_data = driver_data;
+	dev_set_drvdata(&hdev->dev, driver_data);
 
 	return ret;
 }
@@ -491,17 +485,15 @@ struct __packed lamp_array_attributes_report_t {
 static int handle_lamp_array_attributes_report(struct hid_device *hdev,
 					       struct lamp_array_attributes_report_t *rep)
 {
-	struct tux_hdev_driver_data_t *driver_data = hdev->driver_data;
+	struct tux_hdev_driver_data_t *driver_data = dev_get_drvdata(&hdev->dev);
 
 	rep->lamp_count = driver_data->lamp_count;
-
-	// Physical dimensions of the Sirius 16 keyboard
 	rep->bounding_box_width_in_micrometers = 368000;
 	rep->bounding_box_height_in_micrometers = 266000;
 	rep->bounding_box_depth_in_micrometers = 30000;
 	/*
 	 * LampArrayKindKeyboard, see "26.2.1 LampArrayKind Values" of
-	 * "HID Usage Tables v1.7"
+	 * "HID Usage Tables v1.5"
 	 */
 	rep->lamp_array_kind = 1;
 	// Some guessed value for interval microseconds
@@ -518,7 +510,7 @@ struct __packed lamp_attributes_request_report_t {
 static int handle_lamp_attributes_request_report(struct hid_device *hdev,
 						 struct lamp_attributes_request_report_t *rep)
 {
-	struct tux_hdev_driver_data_t *driver_data = hdev->driver_data;
+	struct tux_hdev_driver_data_t *driver_data = dev_get_drvdata(&hdev->dev);
 
 	if (rep->lamp_id < driver_data->lamp_count)
 		driver_data->next_lamp_id = rep->lamp_id;
@@ -547,7 +539,7 @@ struct __packed lamp_attributes_response_report_t {
 static int handle_lamp_attributes_response_report(struct hid_device *hdev,
 						  struct lamp_attributes_response_report_t *rep)
 {
-	struct tux_hdev_driver_data_t *driver_data = hdev->driver_data;
+	struct tux_hdev_driver_data_t *driver_data = dev_get_drvdata(&hdev->dev);
 	u16 lamp_id = driver_data->next_lamp_id;
 
 	rep->lamp_id = lamp_id;
@@ -555,21 +547,21 @@ static int handle_lamp_attributes_response_report(struct hid_device *hdev,
 	rep->update_latency_in_microseconds = 100;
 	/*
 	 * LampPurposeControl, see "26.3.1 LampPurposes Flags" of
-	 * "HID Usage Tables v1.7"
+	 * "HID Usage Tables v1.5"
 	 */
 	rep->lamp_purpose = 1;
 	rep->red_level_count = 0xff;
 	rep->green_level_count = 0xff;
 	rep->blue_level_count = 0xff;
-	rep->intensity_level_count = 0x1;
+	rep->intensity_level_count = 0xff;
 	rep->is_programmable = 1;
 
 	if (driver_data->kbl_map[lamp_id].code <= 0xe8) {
 		rep->input_binding = driver_data->kbl_map[lamp_id].code;
 	} else {
 		/*
-		 * Everything bigger than 0xe8 is reserved/undefined, see
-		 * "10 Keyboard/Keypad Page (0x07)" of "HID Usage Tables v1.7"
+		 * Everything bigger is reserved/undefined, see
+		 * "10 Keyboard/Keypad Page (0x07)" of "HID Usage Tables v1.5"
 		 * and should return 0, see "26.8.3 Lamp Attributes" of the same
 		 * document.
 		 */
@@ -606,7 +598,7 @@ struct __packed lamp_multi_update_report_t {
 static int handle_lamp_multi_update_report(struct hid_device *hdev,
 					   struct lamp_multi_update_report_t *rep)
 {
-	struct tux_hdev_driver_data_t *driver_data = hdev->driver_data;
+	struct tux_hdev_driver_data_t *driver_data = dev_get_drvdata(&hdev->dev);
 	union tux_wmi_xx_496in_80out_in_t *next = &driver_data->next_kbl_set_multiple_keys_in;
 	struct tux_kbl_set_multiple_keys_in_rgb_config_t *rgb_configs_j;
 	struct wmi_device *wdev = to_wmi_device(hdev->dev.parent);
@@ -614,7 +606,10 @@ static int handle_lamp_multi_update_report(struct hid_device *hdev,
 	u8 key_id, key_id_j, intensity_i, red_i, green_i, blue_i;
 	int ret;
 
-	// Catch bad reports and fail silently according to "HID Usage Tables v1.7"
+	/*
+	 * Catching misformatted lamp_multi_update_report and fail silently
+	 * according to "HID Usage Tables v1.5"
+	 */
 	for (unsigned int i = 0; i < rep->lamp_count; ++i) {
 		if (rep->lamp_id[i] > driver_data->lamp_count) {
 			hid_dbg(hdev, "Out of bounds lamp_id in lamp_multi_update_report. Skipping whole report!\n");
@@ -629,7 +624,6 @@ static int handle_lamp_multi_update_report(struct hid_device *hdev,
 		}
 	}
 
-	// Fill kbl_set_multiple_keys_in update buffer
 	for (unsigned int i = 0; i < rep->lamp_count; ++i) {
 		key_id = driver_data->kbl_map[rep->lamp_id[i]].code;
 
@@ -638,8 +632,6 @@ static int handle_lamp_multi_update_report(struct hid_device *hdev,
 		     ++j) {
 			rgb_configs_j = &next->kbl_set_multiple_keys_in.rgb_configs[j];
 			key_id_j = rgb_configs_j->key_id;
-
-			// Search for existing or empty entry
 			if (key_id_j != 0x00 && key_id_j != key_id)
 				continue;
 
@@ -648,23 +640,22 @@ static int handle_lamp_multi_update_report(struct hid_device *hdev,
 					j + 1;
 			rgb_configs_j->key_id = key_id;
 			/*
-			 * This driver uses update_channel.intensity according to
-			 * "Color Attributes Examples" in "HID Usage Tables v1.7".
-			 * Only two intensity values are allowed for turning LEDs
-			 * on or off, while color and brightness can be controlled
-			 * through the RGB values. This is also identical to the
-			 * Microsoft MacroPad reference implementation
+			 * While this driver respects update_channel.intensity
+			 * according to "HID Usage Tables v1.5" also on RGB
+			 * leds, the Microsoft MacroPad reference implementation
 			 * (https://github.com/microsoft/RP2040MacropadHidSample
-			 * 1d6c3ad).
+			 * 1d6c3ad) does not and ignores it. If it turns out
+			 * that Windows writes intensity = 0 for RGB leds
+			 * instead of intensity = 255, this driver should also
+			 * ignore the update_channel.intensity.
 			 */
-			intensity_i = min(1, rep->update_channels[i].intensity);
+			intensity_i = rep->update_channels[i].intensity;
 			red_i = rep->update_channels[i].red;
 			green_i = rep->update_channels[i].green;
 			blue_i = rep->update_channels[i].blue;
-
-			rgb_configs_j->red = red_i * intensity_i;
-			rgb_configs_j->green = green_i * intensity_i;
-			rgb_configs_j->blue = blue_i * intensity_i;
+			rgb_configs_j->red = red_i * intensity_i / 0xff;
+			rgb_configs_j->green = green_i * intensity_i / 0xff;
+			rgb_configs_j->blue = blue_i * intensity_i / 0xff;
 
 			break;
 		}
@@ -692,14 +683,17 @@ struct __packed lamp_range_update_report_t {
 static int handle_lamp_range_update_report(struct hid_device *hdev,
 					   struct lamp_range_update_report_t *rep)
 {
-	struct tux_hdev_driver_data_t *driver_data = hdev->driver_data;
+	struct tux_hdev_driver_data_t *driver_data = dev_get_drvdata(&hdev->dev);
 	struct lamp_multi_update_report_t lamp_multi_update_report = {
 		.report_id = LAMP_MULTI_UPDATE_REPORT_ID,
 	};
 	struct lamp_rgbi_tuple_t *update_channels_j;
 	int ret;
 
-	// Catch bad reports and fail silently according to "HID Usage Tables v1.7"
+	/*
+	 * Catching misformatted lamp_range_update_report and fail silently
+	 * according to "HID Usage Tables v1.5"
+	 */
 	if (rep->lamp_id_start > rep->lamp_id_end) {
 		hid_dbg(hdev, "lamp_id_start > lamp_id_end in lamp_range_update_report. Skipping whole report!\n");
 		return sizeof(*rep);
@@ -711,8 +705,8 @@ static int handle_lamp_range_update_report(struct hid_device *hdev,
 	}
 
 	/*
-	 * Break handle_lamp_range_update_report call down into multiple
-	 * handle_lamp_multi_update_report calls to ensure that mixing
+	 * Break handle_lamp_range_update_report call down to multiple
+	 * handle_lamp_multi_update_report calls to easily ensure that mixing
 	 * handle_lamp_range_update_report and handle_lamp_multi_update_report
 	 * does not break things.
 	 */
@@ -755,12 +749,15 @@ static int handle_lamp_array_control_report(struct hid_device *hdev __always_unu
 					    struct lamp_array_control_report_t *rep)
 {
 	/*
-	 * The keyboard's firmware doesn't have any built-in controls and the
-	 * built-in effects are not implemented so this is a NOOP.
-	 * According to the HID Documentation (HID Usage Tables v1.7) this
+	 * The keyboards firmware doesn't have any built in controls and the
+	 * built in effects are not implemented so this is a NOOP.
+	 * According to the HID Documentation (HID Usage Tables v1.5) this
 	 * function is optional and can be removed from the HID Report
 	 * Descriptor, but it should first be confirmed that userspace respects
-	 * this possibility too.
+	 * this possibility too. The Microsoft MacroPad reference implementation
+	 * (https://github.com/microsoft/RP2040MacropadHidSample 1d6c3ad)
+	 * already deviates from the spec at another point, see
+	 * handle_lamp_*_update_report.
 	 */
 
 	return sizeof(*rep);
@@ -769,8 +766,6 @@ static int handle_lamp_array_control_report(struct hid_device *hdev __always_unu
 static int tux_ll_raw_request(struct hid_device *hdev, u8 reportnum, u8 *buf,
 			      size_t len, unsigned char rtype, int reqtype)
 {
-	int ret = -EINVAL;
-
 	if (rtype != HID_FEATURE_REPORT)
 		return -EINVAL;
 
@@ -780,15 +775,13 @@ static int tux_ll_raw_request(struct hid_device *hdev, u8 reportnum, u8 *buf,
 		case LAMP_ARRAY_ATTRIBUTES_REPORT_ID:
 			if (len != sizeof(struct lamp_array_attributes_report_t))
 				return -EINVAL;
-			ret = handle_lamp_array_attributes_report(hdev,
+			return handle_lamp_array_attributes_report(hdev,
 				(struct lamp_array_attributes_report_t *)buf);
-			break;
 		case LAMP_ATTRIBUTES_RESPONSE_REPORT_ID:
 			if (len != sizeof(struct lamp_attributes_response_report_t))
 				return -EINVAL;
-			ret = handle_lamp_attributes_response_report(hdev,
+			return handle_lamp_attributes_response_report(hdev,
 				(struct lamp_attributes_response_report_t *)buf);
-			break;
 		}
 		break;
 	case HID_REQ_SET_REPORT:
@@ -796,36 +789,28 @@ static int tux_ll_raw_request(struct hid_device *hdev, u8 reportnum, u8 *buf,
 		case LAMP_ATTRIBUTES_REQUEST_REPORT_ID:
 			if (len != sizeof(struct lamp_attributes_request_report_t))
 				return -EINVAL;
-			ret = handle_lamp_attributes_request_report(hdev,
+			return handle_lamp_attributes_request_report(hdev,
 				(struct lamp_attributes_request_report_t *)buf);
-			break;
 		case LAMP_MULTI_UPDATE_REPORT_ID:
 			if (len != sizeof(struct lamp_multi_update_report_t))
 				return -EINVAL;
-			ret = handle_lamp_multi_update_report(hdev,
+			return handle_lamp_multi_update_report(hdev,
 				(struct lamp_multi_update_report_t *)buf);
-			break;
 		case LAMP_RANGE_UPDATE_REPORT_ID:
 			if (len != sizeof(struct lamp_range_update_report_t))
 				return -EINVAL;
-			ret = handle_lamp_range_update_report(hdev,
+			return handle_lamp_range_update_report(hdev,
 				(struct lamp_range_update_report_t *)buf);
-			break;
 		case LAMP_ARRAY_CONTROL_REPORT_ID:
 			if (len != sizeof(struct lamp_array_control_report_t))
 				return -EINVAL;
-			ret = handle_lamp_array_control_report(hdev,
+			return handle_lamp_array_control_report(hdev,
 				(struct lamp_array_control_report_t *)buf);
-			break;
 		}
 		break;
 	}
 
-	/* Set report number on success */
-	if (ret > 0)
-		buf[0] = reportnum;
-
-	return ret;
+	return -EINVAL;
 }
 
 static const struct hid_ll_driver tux_ll_driver = {
@@ -868,7 +853,7 @@ static int tux_probe(struct wmi_device *wdev, const void *context __always_unuse
 {
 	struct tux_driver_data_t *driver_data;
 
-	driver_data = devm_kzalloc_obj(&wdev->dev, *driver_data);
+	driver_data = devm_kzalloc(&wdev->dev, sizeof(*driver_data), GFP_KERNEL);
 	if (!driver_data)
 		return -ENOMEM;
 
@@ -896,8 +881,8 @@ static struct wmi_driver tuxedo_nb04_wmi_tux_driver = {
 };
 
 /*
- * We don't know whether the WMI API is stable and how unique the GUID is for
- * this ODM. To be on the safe side we therefore only run this driver on tested
+ * We don't know if the WMI API is stable and how unique the GUID is for this
+ * ODM. To be on the safe side we therefore only run this driver on tested
  * devices defined by this list.
  */
 static const struct dmi_system_id tested_devices_dmi_table[] __initconst = {
@@ -935,5 +920,4 @@ module_exit(tuxedo_nb04_wmi_tux_exit);
 
 MODULE_DESCRIPTION("Virtual HID LampArray interface for TUXEDO NB04 devices");
 MODULE_AUTHOR("Werner Sembach <wse@tuxedocomputers.com>");
-MODULE_AUTHOR("Aaron Erhardt <aer@tuxedocomputers.com>");
 MODULE_LICENSE("GPL");

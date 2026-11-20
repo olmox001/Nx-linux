@@ -480,7 +480,7 @@ static int cros_ec_debugfs_probe(struct platform_device *pd)
 	struct cros_ec_debugfs *debug_info;
 	int ret;
 
-	debug_info = devm_kzalloc_obj(ec->dev, *debug_info);
+	debug_info = devm_kzalloc(ec->dev, sizeof(*debug_info), GFP_KERNEL);
 	if (!debug_info)
 		return -ENOMEM;
 
@@ -561,8 +561,8 @@ static SIMPLE_DEV_PM_OPS(cros_ec_debugfs_pm_ops,
 			 cros_ec_debugfs_suspend, cros_ec_debugfs_resume);
 
 static const struct platform_device_id cros_ec_debugfs_id[] = {
-	{ .name = DRV_NAME },
-	{ }
+	{ DRV_NAME, 0 },
+	{}
 };
 MODULE_DEVICE_TABLE(platform, cros_ec_debugfs_id);
 

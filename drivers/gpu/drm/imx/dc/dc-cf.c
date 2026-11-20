@@ -90,7 +90,7 @@ static int dc_cf_bind(struct device *dev, struct device *master, void *data)
 	struct dc_cf *cf;
 	int id;
 
-	cf = devm_kzalloc_obj(dev, *cf);
+	cf = devm_kzalloc(dev, sizeof(*cf), GFP_KERNEL);
 	if (!cf)
 		return -ENOMEM;
 

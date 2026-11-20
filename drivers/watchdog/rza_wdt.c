@@ -170,7 +170,7 @@ static int rza_wdt_probe(struct platform_device *pdev)
 	struct rza_wdt *priv;
 	unsigned long rate;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

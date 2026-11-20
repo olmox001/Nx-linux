@@ -471,6 +471,7 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 	newxprt->sc_max_requests = svcrdma_max_requests;
 	newxprt->sc_max_bc_requests = svcrdma_max_bc_requests;
 	newxprt->sc_recv_batch = RPCRDMA_MAX_RECV_BATCH;
+	newxprt->sc_fc_credits = cpu_to_be32(newxprt->sc_max_requests);
 
 	/* Qualify the transport's resource defaults with the
 	 * capabilities of this particular device.
@@ -490,8 +491,6 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 		newxprt->sc_max_requests = rq_depth - 2;
 		newxprt->sc_max_bc_requests = 2;
 	}
-
-	newxprt->sc_fc_credits = cpu_to_be32(newxprt->sc_max_requests);
 
 	/* Estimate the needed number of rdma_rw contexts. The maximum
 	 * Read and Write chunks have one segment each. Each request
@@ -575,7 +574,8 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 	set_bit(RDMAXPRT_CONN_PENDING, &newxprt->sc_flags);
 	memset(&conn_param, 0, sizeof conn_param);
 	conn_param.responder_resources = 0;
-	conn_param.initiator_depth = min(newxprt->sc_ord, dev->attrs.max_qp_init_rd_atom);
+	conn_param.initiator_depth = min_t(int, newxprt->sc_ord,
+					   dev->attrs.max_qp_init_rd_atom);
 	if (!conn_param.initiator_depth) {
 		ret = -EINVAL;
 		trace_svcrdma_initdepth_err(newxprt, ret);
@@ -600,7 +600,7 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 		dprintk("    local address   : %pIS:%u\n", sap, rpc_get_port(sap));
 		sap = (struct sockaddr *)&newxprt->sc_cm_id->route.addr.dst_addr;
 		dprintk("    remote address  : %pIS:%u\n", sap, rpc_get_port(sap));
-		dprintk("    max_sge         : %u\n", newxprt->sc_max_send_sges);
+		dprintk("    max_sge         : %d\n", newxprt->sc_max_send_sges);
 		dprintk("    sq_depth        : %d\n", newxprt->sc_sq_depth);
 		dprintk("    rdma_rw_ctxs    : %d\n", ctxts);
 		dprintk("    max_requests    : %d\n", newxprt->sc_max_requests);

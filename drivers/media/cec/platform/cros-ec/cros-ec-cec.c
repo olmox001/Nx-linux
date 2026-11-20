@@ -452,7 +452,7 @@ static int cros_ec_cec_init_port(struct device *dev,
 	struct cros_ec_cec_port *port;
 	int ret;
 
-	port = devm_kzalloc_obj(dev, *port);
+	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
 	if (!port)
 		return -ENOMEM;
 
@@ -507,7 +507,8 @@ static int cros_ec_cec_probe(struct platform_device *pdev)
 	if (IS_ERR(hdmi_dev))
 		return PTR_ERR(hdmi_dev);
 
-	cros_ec_cec = devm_kzalloc_obj(&pdev->dev, *cros_ec_cec);
+	cros_ec_cec = devm_kzalloc(&pdev->dev, sizeof(*cros_ec_cec),
+				   GFP_KERNEL);
 	if (!cros_ec_cec)
 		return -ENOMEM;
 

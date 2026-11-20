@@ -449,9 +449,7 @@ static void push_back_to_ready_list(struct snd_usb_endpoint *ep,
 				    struct snd_urb_ctx *ctx)
 {
 	guard(spinlock_irqsave)(&ep->lock);
-	/* ctx may still be linked: a stale completion racing a stop/restart. */
-	if (list_empty(&ctx->ready_list))
-		list_add_tail(&ctx->ready_list, &ep->ready_playback_urbs);
+	list_add_tail(&ctx->ready_list, &ep->ready_playback_urbs);
 }
 
 /*
@@ -1039,7 +1037,6 @@ void snd_usb_endpoint_sync_pending_stop(struct snd_usb_endpoint *ep)
  */
 static int stop_urbs(struct snd_usb_endpoint *ep, bool force, bool keep_pending)
 {
-	struct snd_urb_ctx *ctx, *n;
 	unsigned int i;
 
 	if (!force && atomic_read(&ep->running))
@@ -1049,9 +1046,7 @@ static int stop_urbs(struct snd_usb_endpoint *ep, bool force, bool keep_pending)
 		return 0;
 
 	scoped_guard(spinlock_irqsave, &ep->lock) {
-		/* Unlink each ctx; INIT_LIST_HEAD() alone would leave them looking linked. */
-		list_for_each_entry_safe(ctx, n, &ep->ready_playback_urbs, ready_list)
-			list_del_init(&ctx->ready_list);
+		INIT_LIST_HEAD(&ep->ready_playback_urbs);
 		ep->next_packet_head = 0;
 		ep->next_packet_queued = 0;
 	}
@@ -1242,10 +1237,7 @@ static int data_ep_set_params(struct snd_usb_endpoint *ep)
 		/* try to use enough URBs to contain an entire ALSA buffer */
 		max_urbs = min((unsigned) MAX_URBS,
 				MAX_QUEUE * packs_per_ms / urb_packs);
-		if (chip->quirk_flags & QUIRK_FLAG_PLAYBACK_URB_FIXUP)
-			ep->nurbs = MAX_URBS;
-		else
-			ep->nurbs = min(max_urbs, urbs_per_period * ep->cur_buffer_periods);
+		ep->nurbs = min(max_urbs, urbs_per_period * ep->cur_buffer_periods);
 	}
 
 	if (fmt->fmt_type == UAC_FORMAT_TYPE_II)
@@ -1270,8 +1262,6 @@ static int data_ep_set_params(struct snd_usb_endpoint *ep)
 			goto out_of_memory;
 		u->urb->pipe = ep->pipe;
 		u->urb->transfer_flags = URB_NO_TRANSFER_DMA_MAP;
-		if (chip->quirk_flags & QUIRK_FLAG_PLAYBACK_URB_FIXUP)
-			u->urb->transfer_flags |= URB_ISO_ASAP;
 		u->urb->interval = 1 << ep->datainterval;
 		u->urb->context = u;
 		u->urb->complete = snd_complete_urb;
@@ -1642,9 +1632,9 @@ int snd_usb_endpoint_start(struct snd_usb_endpoint *ep)
 			err = -ENODEV;
 		if (err < 0) {
 			if (!atomic_read(&ep->chip->shutdown))
-				usb_audio_err_ratelimited(ep->chip,
-							  "cannot submit urb %d, error %d: %s\n",
-							  i, err, usb_error_string(err));
+				usb_audio_err(ep->chip,
+					      "cannot submit urb %d, error %d: %s\n",
+					      i, err, usb_error_string(err));
 			goto __error;
 		}
 		set_bit(i, &ep->active_mask);
@@ -1907,22 +1897,6 @@ static void snd_usb_handle_sync_urb(struct snd_usb_endpoint *ep,
 		f <<= ep->freqshift;
 	else
 		f >>= -ep->freqshift;
-
-	if (unlikely(sender->snap_fb_quirk) &&
-	    (f < ep->freqn - ep->freqn / 128 ||
-	     f > ep->freqn + ep->freqn / 128)) {
-		/*
-		 * Feedback deviates from nominal far beyond what real
-		 * clock differences can explain.  This firmware can get
-		 * stuck at nominal+1 sample per frame, causing audible
-		 * pops.  Trust the nominal rate instead.
-		 */
-		dev_warn_ratelimited(&ep->chip->dev->dev,
-				     "EP 0x%x: ignoring implausible feedback 0x%x.%04x (nominal 0x%x.%04x)\n",
-				     ep->ep_num, f >> 16, f & 0xffff,
-				     ep->freqn >> 16, ep->freqn & 0xffff);
-		f = ep->freqn;
-	}
 
 	if (likely(f >= ep->freqn - ep->freqn / 8 && f <= ep->freqmax)) {
 		/*

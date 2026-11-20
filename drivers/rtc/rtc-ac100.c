@@ -310,8 +310,10 @@ static int ac100_rtc_register_clks(struct ac100_rtc_dev *chip)
 	const char *parents[2] = {AC100_RTC_32K_NAME};
 	int i, ret;
 
-	chip->clk_data = devm_kzalloc_flex(chip->dev, *chip->clk_data, hws,
-					   AC100_CLKOUT_NUM);
+	chip->clk_data = devm_kzalloc(chip->dev,
+				      struct_size(chip->clk_data, hws,
+						  AC100_CLKOUT_NUM),
+				      GFP_KERNEL);
 	if (!chip->clk_data)
 		return -ENOMEM;
 
@@ -514,12 +516,12 @@ static irqreturn_t ac100_rtc_irq(int irq, void *data)
 	unsigned int val = 0;
 	int ret;
 
-	guard(rtc_ops)(chip->rtc);
+	rtc_lock(chip->rtc);
 
 	/* read status */
 	ret = regmap_read(regmap, AC100_ALM_INT_STA, &val);
 	if (ret)
-		return IRQ_HANDLED;
+		goto out;
 
 	if (val & AC100_ALM_INT_ENABLE) {
 		/* signal rtc framework */
@@ -528,14 +530,16 @@ static irqreturn_t ac100_rtc_irq(int irq, void *data)
 		/* clear status */
 		ret = regmap_write(regmap, AC100_ALM_INT_STA, val);
 		if (ret)
-			return IRQ_HANDLED;
+			goto out;
 
 		/* disable interrupt */
 		ret = ac100_rtc_alarm_irq_enable(chip->dev, 0);
 		if (ret)
-			return IRQ_HANDLED;
+			goto out;
 	}
 
+out:
+	rtc_unlock(chip->rtc);
 	return IRQ_HANDLED;
 }
 
@@ -553,7 +557,7 @@ static int ac100_rtc_probe(struct platform_device *pdev)
 	struct ac100_rtc_dev *chip;
 	int ret;
 
-	chip = devm_kzalloc_obj(&pdev->dev, *chip);
+	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

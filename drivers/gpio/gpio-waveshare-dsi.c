@@ -121,7 +121,7 @@ static int waveshare_gpio_probe(struct i2c_client *i2c)
 	unsigned int data;
 	int ret;
 
-	state = devm_kzalloc_obj(dev, *state);
+	state = devm_kzalloc(dev, sizeof(*state), GFP_KERNEL);
 	if (!state)
 		return -ENOMEM;
 

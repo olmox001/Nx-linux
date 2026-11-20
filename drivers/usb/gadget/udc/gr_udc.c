@@ -2127,7 +2127,7 @@ static int gr_probe(struct platform_device *pdev)
 	int retval;
 	u32 status;
 
-	dev = devm_kzalloc_obj(&pdev->dev, *dev);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 	dev->dev = &pdev->dev;

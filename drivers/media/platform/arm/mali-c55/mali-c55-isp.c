@@ -203,7 +203,6 @@ static int mali_c55_isp_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static int mali_c55_isp_set_fmt(struct v4l2_subdev *sd,
-				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_format *format)
 {
@@ -266,7 +265,6 @@ static int mali_c55_isp_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int mali_c55_isp_get_selection(struct v4l2_subdev *sd,
-				      const struct v4l2_subdev_client_info *ci,
 				      struct v4l2_subdev_state *state,
 				      struct v4l2_subdev_selection *sel)
 {
@@ -280,7 +278,6 @@ static int mali_c55_isp_get_selection(struct v4l2_subdev *sd,
 }
 
 static int mali_c55_isp_set_selection(struct v4l2_subdev *sd,
-				      const struct v4l2_subdev_client_info *ci,
 				      struct v4l2_subdev_state *state,
 				      struct v4l2_subdev_selection *sel)
 {
@@ -644,7 +641,6 @@ void mali_c55_unregister_isp(struct mali_c55 *mali_c55)
 
 	mutex_destroy(&isp->capture_lock);
 	v4l2_device_unregister_subdev(&isp->sd);
-	v4l2_ctrl_handler_free(&isp->handler);
 	v4l2_subdev_cleanup(&isp->sd);
 	media_entity_cleanup(&isp->sd.entity);
 }

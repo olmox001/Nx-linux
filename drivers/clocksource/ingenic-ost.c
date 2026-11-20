@@ -77,7 +77,7 @@ static int __init ingenic_ost_probe(struct platform_device *pdev)
 	if (!soc_info)
 		return -EINVAL;
 
-	ost = devm_kzalloc_obj(dev, *ost);
+	ost = devm_kzalloc(dev, sizeof(*ost), GFP_KERNEL);
 	if (!ost)
 		return -ENOMEM;
 

@@ -1487,8 +1487,8 @@ static const struct nfc_digital_ops port100_digital_ops = {
 };
 
 static const struct usb_device_id port100_table[] = {
-	{ USB_DEVICE(SONY_VENDOR_ID, RCS380S_PRODUCT_ID) },
-	{ USB_DEVICE(SONY_VENDOR_ID, RCS380P_PRODUCT_ID) },
+	{ USB_DEVICE(SONY_VENDOR_ID, RCS380S_PRODUCT_ID), },
+	{ USB_DEVICE(SONY_VENDOR_ID, RCS380P_PRODUCT_ID), },
 	{ }
 };
 MODULE_DEVICE_TABLE(usb, port100_table);
@@ -1502,7 +1502,7 @@ static int port100_probe(struct usb_interface *interface,
 	u16 fw_version;
 	u64 cmd_type_mask;
 
-	dev = devm_kzalloc_obj(&interface->dev, struct port100);
+	dev = devm_kzalloc(&interface->dev, sizeof(struct port100), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 

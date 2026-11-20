@@ -46,11 +46,6 @@ int prom_argc;
 char **prom_argv;
 char **prom_envp;
 
-static char prom_ethaddr[6] __initdata;
-static bool prom_ethaddr_valid __initdata;
-
-static void __init prom_init_ethernet_addr(void);
-
 void __init prom_init_cmdline(void)
 {
 	int i;
@@ -100,9 +95,6 @@ void __init prom_init(void)
 	if (!memsize_str || kstrtoul(memsize_str, 0, &memsize))
 		memsize = SZ_64M; /* minimum memsize is 64MB RAM */
 
-	/* Save the MAC before the allocator can reuse the PROM environment. */
-	prom_init_ethernet_addr();
-
 	memblock_add(0, memsize);
 }
 
@@ -133,7 +125,7 @@ static inline void str2eaddr(unsigned char *ea, unsigned char *str)
 	}
 }
 
-static void __init prom_init_ethernet_addr(void)
+int __init prom_get_ethernet_addr(char *ethernet_addr)
 {
 	char *ethaddr_str;
 
@@ -143,21 +135,12 @@ static void __init prom_init_ethernet_addr(void)
 		/* Check command line */
 		ethaddr_str = strstr(arcs_cmdline, "ethaddr=");
 		if (!ethaddr_str)
-			return;
+			return -1;
 
 		ethaddr_str += strlen("ethaddr=");
 	}
 
-	str2eaddr(prom_ethaddr, ethaddr_str);
-	prom_ethaddr_valid = true;
-}
-
-int __init prom_get_ethernet_addr(char *ethernet_addr)
-{
-	if (!prom_ethaddr_valid)
-		return -1;
-
-	memcpy(ethernet_addr, prom_ethaddr, sizeof(prom_ethaddr));
+	str2eaddr(ethernet_addr, ethaddr_str);
 
 	return 0;
 }

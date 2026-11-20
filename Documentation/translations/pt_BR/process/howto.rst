@@ -67,8 +67,7 @@ Questões Legais
 O código-fonte do kernel Linux é lançado sob a GPL. Por favor, veja o arquivo
 COPYING no diretório principal da árvore de fontes. As regras de licenciamento
 do kernel Linux e como usar os identificadores `SPDX <https://spdx.org/>`_ no
-código-fonte estão descritas em
-:ref:`Documentation/translations/pt_BR/process/license-rules.rst <pt_BR_kernel_licensing>`.
+código-fonte estão descritas em :ref:`Documentation/process/license-rules.rst <kernel_licensing>`.
 Se você tiver mais perguntas sobre a licença, por favor, entre em contato com
 um advogado e não pergunte na lista de discussão do kernel Linux. As pessoas
 nas listas de discussão não são advogados e você não deve confiar em suas
@@ -95,7 +94,7 @@ a lista linux-api@vger.kernel.org.
 Aqui está uma lista de arquivos que estão na árvore de fontes do kernel e
 que são de leitura obrigatória:
 
-  :ref:`Documentation/translations/pt_BR/admin-guide/README.rst <pt_BR_readme>`
+  :ref:`Documentation/admin-guide/README.rst <readme>`
     Este arquivo fornece um breve histórico sobre o kernel Linux e descreve
     o que é necessário fazer para configurar e compilar o kernel. Pessoas
     que são novas no kernel devem começar por aqui.
@@ -105,14 +104,14 @@ que são de leitura obrigatória:
     software que são necessários para compilar e executar o kernel com
     sucesso.
 
-  :ref:`Documentation/translations/pt_BR/process/coding-style.rst <pt_BR_codingstyle>`
+  :ref:`Documentation/process/coding-style.rst <codingstyle>`
     Este documento descreve o estilo de codificação do kernel Linux e parte
     da fundamentação por trás dele. Espera-se que todo código novo siga as
     diretrizes deste documento. A maioria dos mantenedores apenas aceitará
     patches se essas regras forem seguidas, e muitas pessoas apenas
     revisarão o código se ele estiver no estilo adequado.
 
-  :ref:`Documentation/translations/pt_BR/process/submitting-patches.rst <pt_BR_submittingpatches>`
+  :ref:`Documentation/process/submitting-patches.rst <submittingpatches>`
     Este arquivo descreve em detalhes explícitos como criar e enviar
     um patch com sucesso, incluindo (mas não limitado a):
 
@@ -145,12 +144,12 @@ Outras excelentes descrições de como criar patches adequadamente são:
     do Linux e é muito importante para pessoas que estão migrando para o
     Linux vindas do desenvolvimento em outros Sistemas Operacionais.
 
-  :ref:`Documentation/translations/pt_BR/process/security-bugs.rst <pt_BR_securitybugs>`
+  :ref:`Documentation/process/security-bugs.rst <securitybugs>`
     Se você acredita ter encontrado um problema de segurança no kernel Linux,
     por favor, siga os passos descritos neste documento para ajudar a
     notificar os desenvolvedores do kernel e auxiliar na resolução do problema.
 
-  :ref:`Documentation/translations/pt_BR/process/management-style.rst <pt_BR_managementstyle>`
+  :ref:`Documentation/process/management-style.rst <managementstyle>`
     Este documento descreve como os mantenedores do kernel Linux operam e o
     ethos compartilhado por trás de suas metodologias. Esta é uma leitura
     importante para qualquer pessoa nova no desenvolvimento do kernel (ou
@@ -163,12 +162,12 @@ Outras excelentes descrições de como criar patches adequadamente são:
     versões estáveis (stable) do kernel e o que fazer se você desejar que
     uma alteração seja incluída em um desses lançamentos.
 
-  :ref:`Documentation/translations/pt_BR/process/kernel-docs.rst <pt_BR_kernel_docs>`
+  :ref:`Documentation/process/kernel-docs.rst <kernel_docs>`
     Uma lista de documentação externa que pertence ao desenvolvimento do
     kernel. Por favor, consulte esta lista caso não encontre o que está
     procurando dentro da documentação interna do kernel.
 
-  :ref:`Documentation/translations/pt_BR/process/applying-patches.rst <pt_BR_applying_patches>`
+  :ref:`Documentation/process/applying-patches.rst <applying_patches>`
     Uma boa introdução descrevendo exatamente o que é um patch e como
     aplicá-lo aos diferentes ramos (branches) de desenvolvimento do kernel.
 
@@ -436,7 +435,7 @@ individualmente, em vez de escrever tudo no topo do e-mail.
 
 Se você adicionar patches ao seu e-mail, certifique-se de que sejam texto
 puro legível, conforme declarado em
-:ref:`Documentation/translations/pt_BR/process/submitting-patches.rst <pt_BR_submittingpatches>`.
+:ref:`Documentation/process/submitting-patches.rst <submittingpatches>`.
 Os desenvolvedores do kernel não querem lidar com anexos ou patches
 compactados; eles podem querer comentar linhas individuais do seu patch,
 o que só funciona dessa forma. Certifique-se de usar um programa de

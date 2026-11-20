@@ -221,8 +221,7 @@ static void TEA_transform(__u32 buf[4], __u32 const in[])
 	buf[1] += b1;
 }
 
-static void str2hashbuf(const char *msg, int len, __u32 *buf, int num,
-			bool legacy_signed)
+static void str2hashbuf(const char *msg, int len, __u32 *buf, int num)
 {
 	__u32	pad, val;
 	int	i;
@@ -236,10 +235,7 @@ static void str2hashbuf(const char *msg, int len, __u32 *buf, int num,
 	for (i = 0; i < len; i++) {
 		if ((i % 4) == 0)
 			val = pad;
-		if (legacy_signed)
-			val = (signed char)msg[i] + (val << 8);
-		else
-			val = (unsigned char)msg[i] + (val << 8);
+		val = msg[i] + (val << 8);
 		if ((i % 4) == 3) {
 			*buf++ = val;
 			val = pad;
@@ -252,9 +248,8 @@ static void str2hashbuf(const char *msg, int len, __u32 *buf, int num,
 		*buf++ = pad;
 }
 
-static void __ocfs2_dx_dir_name_hash(struct inode *dir, const char *name,
-				     int len, struct ocfs2_dx_hinfo *hinfo,
-				     bool legacy_signed)
+static void ocfs2_dx_dir_name_hash(struct inode *dir, const char *name, int len,
+				   struct ocfs2_dx_hinfo *hinfo)
 {
 	struct ocfs2_super *osb = OCFS2_SB(dir->i_sb);
 	const char	*p;
@@ -284,7 +279,7 @@ static void __ocfs2_dx_dir_name_hash(struct inode *dir, const char *name,
 
 	p = name;
 	while (len > 0) {
-		str2hashbuf(p, len, in, 4, legacy_signed);
+		str2hashbuf(p, len, in, 4);
 		TEA_transform(buf, in);
 		len -= 16;
 		p += 16;
@@ -293,19 +288,6 @@ static void __ocfs2_dx_dir_name_hash(struct inode *dir, const char *name,
 out:
 	hinfo->major_hash = buf[0];
 	hinfo->minor_hash = buf[1];
-}
-
-static void ocfs2_dx_dir_name_hash(struct inode *dir, const char *name, int len,
-				   struct ocfs2_dx_hinfo *hinfo)
-{
-	__ocfs2_dx_dir_name_hash(dir, name, len, hinfo, false);
-}
-
-static void ocfs2_dx_dir_name_hash_signed(struct inode *dir, const char *name,
-					  int len,
-					  struct ocfs2_dx_hinfo *hinfo)
-{
-	__ocfs2_dx_dir_name_hash(dir, name, len, hinfo, true);
 }
 
 /*
@@ -623,49 +605,6 @@ static int ocfs2_validate_dx_root(struct super_block *sb,
 		goto bail;
 	}
 
-	if (le64_to_cpu(dx_root->dr_blkno) != bh->b_blocknr) {
-		ret = ocfs2_error(sb,
-				  "Dir Index Root # %llu has an invalid dr_blkno of %llu\n",
-				  (unsigned long long)bh->b_blocknr,
-				  (unsigned long long)le64_to_cpu(dx_root->dr_blkno));
-		goto bail;
-	}
-
-	if (le32_to_cpu(dx_root->dr_fs_generation) != OCFS2_SB(sb)->fs_generation) {
-		ret = ocfs2_error(sb,
-				  "Dir Index Root # %llu has an invalid dr_fs_generation of #%u\n",
-				  (unsigned long long)bh->b_blocknr,
-				  le32_to_cpu(dx_root->dr_fs_generation));
-		goto bail;
-	}
-
-	/*
-	 * Dir index root blocks are allocated from a per-slot suballocator,
-	 * so the slot must be in range.  Otherwise removing the index passes
-	 * it to get_local_system_inode(), which hits BUG_ON() for
-	 * OCFS2_INVALID_SLOT or computes an out-of-bounds index otherwise.
-	 */
-	if ((u32)le16_to_cpu(dx_root->dr_suballoc_slot) >= OCFS2_SB(sb)->max_slots) {
-		ret = ocfs2_error(sb,
-				  "Dir Index Root # %llu has invalid dr_suballoc_slot %u\n",
-				  (unsigned long long)le64_to_cpu(dx_root->dr_blkno),
-				  le16_to_cpu(dx_root->dr_suballoc_slot));
-		goto bail;
-	}
-
-	/*
-	 * Similarly the suballoc bit must fit in a block group bitmap.
-	 * Otherwise removing the index will pass the oversized bit to
-	 * _ocfs2_free_suballoc_bits() and trigger ocfs2_error() there.
-	 */
-	if (le16_to_cpu(dx_root->dr_suballoc_bit) >= ocfs2_suballoc_bits_per_block(sb)) {
-		ret = ocfs2_error(sb,
-				  "Dir Index Root # %llu has invalid dr_suballoc_bit %u\n",
-				  (unsigned long long)le64_to_cpu(dx_root->dr_blkno),
-				  le16_to_cpu(dx_root->dr_suballoc_bit));
-		goto bail;
-	}
-
 	if (!(dx_root->dr_flags & OCFS2_DX_FLAG_INLINE)) {
 		struct ocfs2_extent_list *el = &dx_root->dr_list;
 
@@ -750,18 +689,6 @@ static int ocfs2_validate_dx_leaf(struct super_block *sb,
 	if (!OCFS2_IS_VALID_DX_LEAF(dx_leaf))
 		return ocfs2_error(sb, "Dir Index Leaf has bad signature %.*s\n",
 				   7, dx_leaf->dl_signature);
-
-	if (le64_to_cpu(dx_leaf->dl_blkno) != bh->b_blocknr)
-		return ocfs2_error(sb,
-				   "Dir Index Leaf # %llu has an invalid dl_blkno of %llu\n",
-				   (unsigned long long)bh->b_blocknr,
-				   (unsigned long long)le64_to_cpu(dx_leaf->dl_blkno));
-
-	if (le32_to_cpu(dx_leaf->dl_fs_generation) != OCFS2_SB(sb)->fs_generation)
-		return ocfs2_error(sb,
-				   "Dir Index Leaf # %llu has an invalid dl_fs_generation of #%u\n",
-				   (unsigned long long)bh->b_blocknr,
-				   le32_to_cpu(dx_leaf->dl_fs_generation));
 
 	if (le16_to_cpu(dx_leaf->dl_list.de_count) !=
 	    ocfs2_dx_entries_per_leaf(sb))
@@ -1039,10 +966,10 @@ out:
 	return ret;
 }
 
-static int __ocfs2_dx_dir_search(const char *name, int namelen,
-				 struct inode *dir,
-				 struct ocfs2_dx_root_block *dx_root,
-				 struct ocfs2_dir_lookup_result *res)
+static int ocfs2_dx_dir_search(const char *name, int namelen,
+			       struct inode *dir,
+			       struct ocfs2_dx_root_block *dx_root,
+			       struct ocfs2_dir_lookup_result *res)
 {
 	int ret, i, found;
 	u64 phys;
@@ -1054,6 +981,8 @@ static int __ocfs2_dx_dir_search(const char *name, int namelen,
 	struct ocfs2_dx_hinfo *hinfo = &res->dl_hinfo;
 	struct ocfs2_extent_list *dr_el;
 	struct ocfs2_dx_entry_list *entry_list;
+
+	ocfs2_dx_dir_name_hash(dir, name, namelen, &res->dl_hinfo);
 
 	if (ocfs2_dx_root_inline(dx_root)) {
 		entry_list = &dx_root->dr_entries;
@@ -1149,44 +1078,6 @@ out:
 		brelse(dir_ent_bh);
 	}
 	return ret;
-}
-
-static int ocfs2_dx_dir_search(const char *name, int namelen,
-			       struct inode *dir,
-			       struct ocfs2_dx_root_block *dx_root,
-			       struct ocfs2_dir_lookup_result *res)
-{
-	struct ocfs2_dx_hinfo legacy;
-	int ret;
-
-	ocfs2_dx_dir_name_hash(dir, name, namelen, &res->dl_hinfo);
-
-	ret = __ocfs2_dx_dir_search(name, namelen, dir, dx_root, res);
-	if (ret != -ENOENT)
-		return ret;
-
-	/*
-	 * Nothing under the current hash.  The entry may have been indexed by
-	 * an older kernel, which sign-extended the name bytes when hashing.
-	 * New entries are always indexed under the unsigned hash, so only fall
-	 * back to the legacy signed one when it can actually differ: an ASCII
-	 * name hashes the same either way, and a genuine miss on one should
-	 * not have to walk the index twice.
-	 */
-	ocfs2_dx_dir_name_hash_signed(dir, name, namelen, &legacy);
-	if (legacy.major_hash == res->dl_hinfo.major_hash &&
-	    legacy.minor_hash == res->dl_hinfo.minor_hash)
-		return ret;
-
-	res->dl_hinfo = legacy;
-
-	ret = __ocfs2_dx_dir_search(name, namelen, dir, dx_root, res);
-	if (ret)
-		return ret;
-
-	pr_warn_once("ocfs2: directory index with signed name hash\n");
-
-	return 0;
 }
 
 static int ocfs2_find_entry_dx(const char *name, int namelen,
@@ -1958,12 +1849,7 @@ static int ocfs2_dir_foreach_blk_id(struct inode *inode,
 		 * dirent right now.  Scan from the start of the block
 		 * to make sure. */
 		if (!inode_eq_iversion(inode, *f_version)) {
-			loff_t size = i_size_read(inode);
-
-			for (i = 0; i + OCFS2_DIR_REC_LEN(1) <= size &&
-			     i < offset;) {
-				unsigned int rec_len;
-
+			for (i = 0; i < i_size_read(inode) && i < offset; ) {
 				de = (struct ocfs2_dir_entry *)
 					(data->id_data + i);
 				/* It's too expensive to do a full
@@ -1972,11 +1858,10 @@ static int ocfs2_dir_foreach_blk_id(struct inode *inode,
 				 * least that it is non-zero.  A
 				 * failure will be detected in the
 				 * dirent test below. */
-				rec_len = le16_to_cpu(de->rec_len);
-				if (rec_len < OCFS2_DIR_REC_LEN(1) ||
-				    i + rec_len > size)
+				if (le16_to_cpu(de->rec_len) <
+				    OCFS2_DIR_REC_LEN(1))
 					break;
-				i += rec_len;
+				i += le16_to_cpu(de->rec_len);
 			}
 			ctx->pos = offset = i;
 			*f_version = inode_query_iversion(inode);
@@ -2019,7 +1904,6 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
 	struct super_block * sb = inode->i_sb;
 	unsigned int ra_sectors = 16;
 	int stored = 0;
-	int ret;
 
 	bh = NULL;
 
@@ -2027,13 +1911,9 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
 
 	while (ctx->pos < i_size_read(inode)) {
 		blk = ctx->pos >> sb->s_blocksize_bits;
-		ret = ocfs2_read_dir_block(inode, blk, &bh, 0);
-		if (ret) {
-			if (persist)
-				return ret;
+		if (ocfs2_read_dir_block(inode, blk, &bh, 0)) {
 			/* Skip the corrupt dirblock and keep trying */
 			ctx->pos += sb->s_blocksize - offset;
-			offset = 0;
 			continue;
 		}
 
@@ -2060,10 +1940,7 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
 		 * dirent right now.  Scan from the start of the block
 		 * to make sure. */
 		if (!inode_eq_iversion(inode, *f_version)) {
-			for (i = 0; i + OCFS2_DIR_REC_LEN(1) <= sb->s_blocksize &&
-			     i < offset;) {
-				unsigned int rec_len;
-
+			for (i = 0; i < sb->s_blocksize && i < offset; ) {
 				de = (struct ocfs2_dir_entry *) (bh->b_data + i);
 				/* It's too expensive to do a full
 				 * dirent test each time round this
@@ -2071,11 +1948,10 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
 				 * least that it is non-zero.  A
 				 * failure will be detected in the
 				 * dirent test below. */
-				rec_len = le16_to_cpu(de->rec_len);
-				if (rec_len < OCFS2_DIR_REC_LEN(1) ||
-				    i + rec_len > sb->s_blocksize)
+				if (le16_to_cpu(de->rec_len) <
+				    OCFS2_DIR_REC_LEN(1))
 					break;
-				i += rec_len;
+				i += le16_to_cpu(de->rec_len);
 			}
 			offset = i;
 			ctx->pos = (ctx->pos & ~((loff_t)sb->s_blocksize - 1))
@@ -2131,7 +2007,8 @@ static int ocfs2_dir_foreach_blk(struct inode *inode, u64 *f_version,
 int ocfs2_dir_foreach(struct inode *inode, struct dir_context *ctx)
 {
 	u64 version = inode_query_iversion(inode);
-	return ocfs2_dir_foreach_blk(inode, &version, ctx, true);
+	ocfs2_dir_foreach_blk(inode, &version, ctx, true);
+	return 0;
 }
 
 /*
@@ -2328,7 +2205,7 @@ out:
 /*
  * routine to check that the specified directory is empty (for rmdir)
  *
- * Returns 1 if dir is empty, zero if not, and a negative errno on error.
+ * Returns 1 if dir is empty, zero otherwise.
  *
  * XXX: This is a performance problem for unindexed directories.
  */
@@ -2341,10 +2218,8 @@ int ocfs2_empty_dir(struct inode *inode)
 
 	if (ocfs2_dir_indexed(inode)) {
 		ret = ocfs2_empty_dir_dx(inode, &priv);
-		if (ret) {
+		if (ret)
 			mlog_errno(ret);
-			return ret;
-		}
 		/*
 		 * We still run ocfs2_dir_foreach to get the checks
 		 * for "." and "..".
@@ -2352,10 +2227,8 @@ int ocfs2_empty_dir(struct inode *inode)
 	}
 
 	ret = ocfs2_dir_foreach(inode, &priv.ctx);
-	if (ret) {
+	if (ret)
 		mlog_errno(ret);
-		return ret;
-	}
 
 	if (!priv.seen_dot || !priv.seen_dot_dot) {
 		mlog(ML_ERROR, "bad directory (dir #%llu) - no `.' or `..'\n",

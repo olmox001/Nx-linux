@@ -195,7 +195,7 @@ int dbc_dev_init(struct psp_device *psp)
 	struct psp_dbc_device *dbc_dev;
 	int ret;
 
-	dbc_dev = devm_kzalloc_obj(dev, *dbc_dev);
+	dbc_dev = devm_kzalloc(dev, sizeof(*dbc_dev), GFP_KERNEL);
 	if (!dbc_dev)
 		return -ENOMEM;
 
@@ -236,8 +236,6 @@ int dbc_dev_init(struct psp_device *psp)
 		goto cleanup_mbox;
 	}
 
-	mutex_init(&dbc_dev->ioctl_mutex);
-
 	dbc_dev->char_dev.minor = MISC_DYNAMIC_MINOR;
 	dbc_dev->char_dev.name = "dbc";
 	dbc_dev->char_dev.fops = &dbc_fops;
@@ -245,6 +243,8 @@ int dbc_dev_init(struct psp_device *psp)
 	ret = misc_register(&dbc_dev->char_dev);
 	if (ret)
 		goto cleanup_mbox;
+
+	mutex_init(&dbc_dev->ioctl_mutex);
 
 	return 0;
 

@@ -55,7 +55,7 @@ struct receiver {
 	atomic_long_t matches;
 	void (*func)(struct sk_buff *skb, void *data);
 	void *data;
-	u64 ino;
+	char *ident;
 	struct sock *sk;
 	struct rcu_head rcu;
 };

@@ -133,6 +133,10 @@ static int xgene_hwmon_pcc_rd(struct xgene_hwmon_dev *ctx, u32 *msg)
 	init_completion(&ctx->rd_complete);
 	ctx->resp_pending = true;
 
+	/* Write signature for subspace */
+	WRITE_ONCE(generic_comm_base->signature,
+		   cpu_to_le32(PCC_SIGNATURE | ctx->mbox_idx));
+
 	/* Write to the shared command region */
 	WRITE_ONCE(generic_comm_base->command,
 		   cpu_to_le16(MSG_TYPE(msg[0]) | PCC_CMD_GENERATE_DB_INTR));
@@ -595,9 +599,9 @@ static void xgene_hwmon_tx_done(struct mbox_client *cl, void *msg, int ret)
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id xgene_hwmon_acpi_match[] = {
-	{ .id = "APMC0D29", .driver_data = XGENE_HWMON_V1 },
-	{ .id = "APMC0D8A", .driver_data = XGENE_HWMON_V2 },
-	{ }
+	{"APMC0D29", XGENE_HWMON_V1},
+	{"APMC0D8A", XGENE_HWMON_V2},
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, xgene_hwmon_acpi_match);
 #endif
@@ -608,7 +612,7 @@ static int xgene_hwmon_probe(struct platform_device *pdev)
 	struct mbox_client *cl;
 	int rc;
 
-	ctx = devm_kzalloc_obj(&pdev->dev, *ctx);
+	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 

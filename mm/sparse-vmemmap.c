@@ -32,17 +32,37 @@
 #include <asm/dma.h>
 #include <asm/tlbflush.h>
 
-#include "internal.h"
-#include "mm_init.h"
-#include "sparse.h"
+#include "hugetlb_vmemmap.h"
 
-void __ref *vmemmap_alloc_block(unsigned long size, int node)
+/*
+ * Flags for vmemmap_populate_range and friends.
+ */
+/* Get a ref on the head page struct page, for ZONE_DEVICE compound pages */
+#define VMEMMAP_POPULATE_PAGEREF	0x0001
+
+#include "internal.h"
+
+/*
+ * Allocate a block of memory to be used to back the virtual memory map
+ * or to back the page tables that are used to create the mapping.
+ * Uses the main allocators if they are available, else bootmem.
+ */
+
+static void * __ref __earlyonly_bootmem_alloc(int node,
+				unsigned long size,
+				unsigned long align,
+				unsigned long goal)
+{
+	return memmap_alloc(size, align, goal, node, false);
+}
+
+void * __meminit vmemmap_alloc_block(unsigned long size, int node)
 {
 	/* If the main allocator is up use that, fallback to bootmem. */
 	if (slab_is_available()) {
 		gfp_t gfp_mask = GFP_KERNEL|__GFP_RETRY_MAYFAIL|__GFP_NOWARN;
 		int order = get_order(size);
-		static bool warned;
+		static bool warned __meminitdata;
 		struct page *page;
 
 		page = alloc_pages_node(node, gfp_mask, order);
@@ -56,7 +76,8 @@ void __ref *vmemmap_alloc_block(unsigned long size, int node)
 		}
 		return NULL;
 	} else
-		return memmap_alloc(size, size, __pa(MAX_DMA_ADDRESS), node);
+		return __earlyonly_bootmem_alloc(node, size, size,
+				__pa(MAX_DMA_ADDRESS));
 }
 
 static void * __meminit altmap_alloc_block_buf(unsigned long size,
@@ -125,29 +146,37 @@ void __meminit vmemmap_verify(pte_t *pte, int node,
 			start, end - 1);
 }
 
-int __meminit section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages)
+static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, int node,
+				       struct vmem_altmap *altmap,
+				       unsigned long ptpfn, unsigned long flags)
 {
-	const struct mem_section *ms = __pfn_to_section(pfn);
-	const int order = section_compound_order(ms);
-	const unsigned long pages_per_compound = 1UL << order;
+	pte_t *pte = pte_offset_kernel(pmd, addr);
+	if (pte_none(ptep_get(pte))) {
+		pte_t entry;
+		void *p;
 
-	VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, PAGES_PER_SUBSECTION));
-	VM_WARN_ON_ONCE(nr_pages > PAGES_PER_SECTION);
-
-	if (!section_vmemmap_optimizable(ms))
-		return DIV_ROUND_UP(nr_pages * sizeof(struct page), PAGE_SIZE);
-
-	if (order < PFN_SECTION_SHIFT) {
-		VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, pages_per_compound));
-		return VMEMMAP_OPTIMIZATION_PAGES * nr_pages / pages_per_compound;
+		if (ptpfn == (unsigned long)-1) {
+			p = vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
+			if (!p)
+				return NULL;
+			ptpfn = PHYS_PFN(__pa(p));
+		} else {
+			/*
+			 * When a PTE/PMD entry is freed from the init_mm
+			 * there's a free_pages() call to this page allocated
+			 * above. Thus this get_page() is paired with the
+			 * put_page_testzero() on the freeing path.
+			 * This can only called by certain ZONE_DEVICE path,
+			 * and through vmemmap_populate_compound_pages() when
+			 * slab is available.
+			 */
+			if (flags & VMEMMAP_POPULATE_PAGEREF)
+				get_page(pfn_to_page(ptpfn));
+		}
+		entry = pfn_pte(ptpfn, PAGE_KERNEL);
+		set_pte_at(&init_mm, addr, pte, entry);
 	}
-
-	VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, PAGES_PER_SECTION));
-
-	if (IS_ALIGNED(pfn, pages_per_compound))
-		return VMEMMAP_OPTIMIZATION_PAGES;
-
-	return 0;
+	return pte;
 }
 
 static void * __meminit vmemmap_alloc_block_zero(unsigned long size, int node)
@@ -159,146 +188,6 @@ static void * __meminit vmemmap_alloc_block_zero(unsigned long size, int node)
 	memset(p, 0, size);
 
 	return p;
-}
-
-#ifdef CONFIG_VMEMMAP_OPTIMIZATION
-#define VMEMMAP_OPTIMIZATION_NR_ORDERS	(MAX_FOLIO_ORDER - VMEMMAP_OPTIMIZATION_MIN_ORDER + 1)
-
-static __ref struct page **vmemmap_tails(struct zone *zone)
-{
-	const size_t size = array_size(VMEMMAP_OPTIMIZATION_NR_ORDERS,
-				       sizeof(*zone->vmemmap_tails));
-	struct page **pages = READ_ONCE(zone->vmemmap_tails);
-
-	if (pages)
-		return pages;
-
-	pages = slab_is_available() ? kzalloc_objs(*pages, VMEMMAP_OPTIMIZATION_NR_ORDERS) :
-		memblock_alloc(size, __alignof__(*pages));
-	if (!pages)
-		return NULL;
-
-	if (cmpxchg(&zone->vmemmap_tails, NULL, pages) != NULL) {
-		if (slab_is_available())
-			kfree(pages);
-		else
-			memblock_free(pages, size);
-		pages = READ_ONCE(zone->vmemmap_tails);
-	}
-
-	return pages;
-}
-
-struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zone)
-{
-	const unsigned int idx = order - VMEMMAP_OPTIMIZATION_MIN_ORDER;
-	struct page *page, **pages;
-	void *addr;
-
-	if (WARN_ON_ONCE(idx >= VMEMMAP_OPTIMIZATION_NR_ORDERS))
-		return NULL;
-
-	pages = vmemmap_tails(zone);
-	if (!pages)
-		return NULL;
-
-	page = READ_ONCE(pages[idx]);
-	if (page)
-		return page;
-
-	addr = vmemmap_alloc_block(PAGE_SIZE, zone_to_nid(zone));
-	if (!addr)
-		return NULL;
-
-	for (int i = 0; i < PAGE_SIZE / sizeof(struct page); i++) {
-		page = (struct page *)addr + i;
-		mm_zero_struct_page(page);
-		atomic_set(&page->_mapcount, -1);
-		set_page_node(page, zone_to_nid(zone));
-		set_page_zone(page, zone_idx(zone));
-		if (zone_is_zone_device(zone))
-			__SetPageReserved(page);
-		prep_compound_tail(page, NULL, order);
-	}
-
-	page = virt_to_page(addr);
-	if (cmpxchg(&pages[idx], NULL, page) != NULL) {
-		if (slab_is_available())
-			__free_page(page);
-		else
-			memblock_free(addr, PAGE_SIZE);
-		page = READ_ONCE(pages[idx]);
-	}
-
-	return page;
-}
-#endif
-
-static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
-		struct vmem_altmap *altmap)
-{
-	struct zone *zone;
-	struct page *page;
-	const unsigned int order = pfn_to_section_compound_order(pfn);
-
-	if (!vmemmap_optimizable_pfn(pfn))
-		return vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
-
-	/*
-	 * Before slab is available, vmemmap optimization is used for early
-	 * system RAM, whose zone can be determined from the PFN.
-	 *
-	 * Once slab is available, only ZONE_DEVICE memory reaches this
-	 * optimized population path. Its zone span has not been initialized
-	 * while its vmemmap is being populated, so pfn_to_zone() cannot be
-	 * used. Obtain ZONE_DEVICE directly from the node instead.
-	 */
-	zone = slab_is_available() ? device_zone(node) : pfn_to_zone(pfn, node);
-	page = vmemmap_shared_tail_page(order, zone);
-	if (!page)
-		return NULL;
-
-	/*
-	 * During early vmemmap population, the shared tail vmemmap backing
-	 * page is allocated from memblock before its struct page can safely
-	 * participate in page refcounting. Therefore, no reference can be
-	 * held for each shared PTE mapping, and the mappings must be unshared
-	 * before the vmemmap is depopulated.
-	 *
-	 * Once slab is available, the shared backing page is allocated from
-	 * the buddy allocator and can be refcounted. Hold one reference for
-	 * each shared PTE mapping. The architecture vmemmap teardown drops
-	 * the reference through __free_pages() when removing the mapping,
-	 * preventing the backing page from being freed while it is shared.
-	 *
-	 * The backing page may be shared by enough PTE mappings to exhaust
-	 * the positive range of its reference count. Stop populating the
-	 * vmemmap if another reference cannot be acquired.
-	 */
-	if (slab_is_available() && !try_get_page(page))
-		return NULL;
-
-	return page_address(page);
-}
-
-static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, int node,
-		struct vmem_altmap *altmap)
-{
-	pte_t *pte = pte_offset_kernel(pmd, addr);
-	unsigned long pfn = page_to_pfn((struct page *)addr);
-
-	if (pte_none(ptep_get(pte))) {
-		pte_t entry;
-		void *p = vmemmap_alloc_pte(pfn, node, altmap);
-
-		if (!p)
-			return NULL;
-
-		entry = pfn_pte(PHYS_PFN(__pa(p)), PAGE_KERNEL);
-		set_pte_at(&init_mm, addr, pte, entry);
-	} else if (WARN_ON_ONCE(vmemmap_optimizable_pfn(pfn)))
-		return NULL;
-	return pte;
 }
 
 static pmd_t * __meminit vmemmap_pmd_populate(pud_t *pud, unsigned long addr, int node)
@@ -352,8 +241,10 @@ static pgd_t * __meminit vmemmap_pgd_populate(unsigned long addr, int node)
 	return pgd;
 }
 
-int __meminit vmemmap_populate_basepages(unsigned long start, unsigned long end,
-					 int node, struct vmem_altmap *altmap)
+static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
+					      struct vmem_altmap *altmap,
+					      unsigned long ptpfn,
+					      unsigned long flags)
 {
 	pgd_t *pgd;
 	p4d_t *p4d;
@@ -361,26 +252,49 @@ int __meminit vmemmap_populate_basepages(unsigned long start, unsigned long end,
 	pmd_t *pmd;
 	pte_t *pte;
 
-	for (unsigned long addr = start; addr < end; addr += PAGE_SIZE) {
-		pgd = vmemmap_pgd_populate(addr, node);
-		if (!pgd)
-			return -ENOMEM;
-		p4d = vmemmap_p4d_populate(pgd, addr, node);
-		if (!p4d)
-			return -ENOMEM;
-		pud = vmemmap_pud_populate(p4d, addr, node);
-		if (!pud)
-			return -ENOMEM;
-		pmd = vmemmap_pmd_populate(pud, addr, node);
-		if (!pmd)
-			return -ENOMEM;
-		pte = vmemmap_pte_populate(pmd, addr, node, altmap);
+	pgd = vmemmap_pgd_populate(addr, node);
+	if (!pgd)
+		return NULL;
+	p4d = vmemmap_p4d_populate(pgd, addr, node);
+	if (!p4d)
+		return NULL;
+	pud = vmemmap_pud_populate(p4d, addr, node);
+	if (!pud)
+		return NULL;
+	pmd = vmemmap_pmd_populate(pud, addr, node);
+	if (!pmd)
+		return NULL;
+	pte = vmemmap_pte_populate(pmd, addr, node, altmap, ptpfn, flags);
+	if (!pte)
+		return NULL;
+	vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
+
+	return pte;
+}
+
+static int __meminit vmemmap_populate_range(unsigned long start,
+					    unsigned long end, int node,
+					    struct vmem_altmap *altmap,
+					    unsigned long ptpfn,
+					    unsigned long flags)
+{
+	unsigned long addr = start;
+	pte_t *pte;
+
+	for (; addr < end; addr += PAGE_SIZE) {
+		pte = vmemmap_populate_address(addr, node, altmap,
+					       ptpfn, flags);
 		if (!pte)
 			return -ENOMEM;
-		vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
 	}
 
 	return 0;
+}
+
+int __meminit vmemmap_populate_basepages(unsigned long start, unsigned long end,
+					 int node, struct vmem_altmap *altmap)
+{
+	return vmemmap_populate_range(start, end, node, altmap, -1, 0);
 }
 
 /*
@@ -405,6 +319,69 @@ void vmemmap_wrprotect_hvo(unsigned long addr, unsigned long end,
 		ptep_set_wrprotect(&init_mm, maddr, pte);
 	}
 }
+
+#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
+static __meminit struct page *vmemmap_get_tail(unsigned int order, struct zone *zone)
+{
+	struct page *p, *tail;
+	unsigned int idx;
+	int node = zone_to_nid(zone);
+
+	if (WARN_ON_ONCE(order < VMEMMAP_TAIL_MIN_ORDER))
+		return NULL;
+	if (WARN_ON_ONCE(order > MAX_FOLIO_ORDER))
+		return NULL;
+
+	idx = order - VMEMMAP_TAIL_MIN_ORDER;
+	tail = zone->vmemmap_tails[idx];
+	if (tail)
+		return tail;
+
+	/*
+	 * Only allocate the page, but do not initialize it.
+	 *
+	 * Any initialization done here will be overwritten by memmap_init().
+	 *
+	 * hugetlb_bootmem_struct_page_init() will take care of initialization
+	 * after memmap_init().
+	 */
+
+	p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
+	if (!p)
+		return NULL;
+
+	tail = virt_to_page(p);
+	zone->vmemmap_tails[idx] = tail;
+
+	return tail;
+}
+
+int __meminit vmemmap_populate_hvo(unsigned long addr, unsigned long end,
+				       unsigned int order, struct zone *zone,
+				       unsigned long headsize)
+{
+	unsigned long maddr;
+	struct page *tail;
+	pte_t *pte;
+	int node = zone_to_nid(zone);
+
+	tail = vmemmap_get_tail(order, zone);
+	if (!tail)
+		return -ENOMEM;
+
+	for (maddr = addr; maddr < addr + headsize; maddr += PAGE_SIZE) {
+		pte = vmemmap_populate_address(maddr, node, NULL, -1, 0);
+		if (!pte)
+			return -ENOMEM;
+	}
+
+	/*
+	 * Reuse the last page struct page mapped above for the rest.
+	 */
+	return vmemmap_populate_range(maddr, end, node, NULL,
+				      page_to_pfn(tail), 0);
+}
+#endif
 
 void __weak __meminit vmemmap_set_pmd(pmd_t *pmd, void *p, int node,
 				      unsigned long addr, unsigned long next)
@@ -433,9 +410,6 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
 	pmd_t *pmd;
 
 	for (addr = start; addr < end; addr = next) {
-		unsigned long pfn = page_to_pfn((struct page *)addr);
-		const struct mem_section *ms = __pfn_to_section(pfn);
-
 		next = pmd_addr_end(addr, end);
 
 		pgd = vmemmap_pgd_populate(addr, node);
@@ -451,7 +425,7 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
 			return -ENOMEM;
 
 		pmd = pmd_offset(pud, addr);
-		if (pmd_none(pmdp_get(pmd)) && !section_vmemmap_optimizable(ms)) {
+		if (pmd_none(pmdp_get(pmd))) {
 			void *p;
 
 			p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
@@ -469,16 +443,106 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
 				 */
 				return -ENOMEM;
 			}
-		} else if (vmemmap_check_pmd(pmd, node, addr, next)) {
-			if (WARN_ON_ONCE(section_vmemmap_optimizable(ms)))
-				return -EOPNOTSUPP;
+		} else if (vmemmap_check_pmd(pmd, node, addr, next))
 			continue;
-		}
 		if (vmemmap_populate_basepages(addr, next, node, altmap))
 			return -ENOMEM;
 	}
 	return 0;
 }
+
+#ifndef vmemmap_populate_compound_pages
+/*
+ * For compound pages bigger than section size (e.g. x86 1G compound
+ * pages with 2M subsection size) fill the rest of sections as tail
+ * pages.
+ *
+ * Note that memremap_pages() resets @nr_range value and will increment
+ * it after each range successful onlining. Thus the value or @nr_range
+ * at section memmap populate corresponds to the in-progress range
+ * being onlined here.
+ */
+static bool __meminit reuse_compound_section(unsigned long start_pfn,
+					     struct dev_pagemap *pgmap)
+{
+	unsigned long nr_pages = pgmap_vmemmap_nr(pgmap);
+	unsigned long offset = start_pfn -
+		PHYS_PFN(pgmap->ranges[pgmap->nr_range].start);
+
+	return !IS_ALIGNED(offset, nr_pages) && nr_pages > PAGES_PER_SUBSECTION;
+}
+
+static pte_t * __meminit compound_section_tail_page(unsigned long addr)
+{
+	pte_t *pte;
+
+	addr -= PAGE_SIZE;
+
+	/*
+	 * Assuming sections are populated sequentially, the previous section's
+	 * page data can be reused.
+	 */
+	pte = pte_offset_kernel(pmd_off_k(addr), addr);
+	if (!pte)
+		return NULL;
+
+	return pte;
+}
+
+static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+						     unsigned long start,
+						     unsigned long end, int node,
+						     struct dev_pagemap *pgmap)
+{
+	unsigned long size, addr;
+	pte_t *pte;
+	int rc;
+
+	if (reuse_compound_section(start_pfn, pgmap)) {
+		pte = compound_section_tail_page(start);
+		if (!pte)
+			return -ENOMEM;
+
+		/*
+		 * Reuse the page that was populated in the prior iteration
+		 * with just tail struct pages.
+		 */
+		return vmemmap_populate_range(start, end, node, NULL,
+					      pte_pfn(ptep_get(pte)),
+					      VMEMMAP_POPULATE_PAGEREF);
+	}
+
+	size = min(end - start, pgmap_vmemmap_nr(pgmap) * sizeof(struct page));
+	for (addr = start; addr < end; addr += size) {
+		unsigned long next, last = addr + size;
+
+		/* Populate the head page vmemmap page */
+		pte = vmemmap_populate_address(addr, node, NULL, -1, 0);
+		if (!pte)
+			return -ENOMEM;
+
+		/* Populate the tail pages vmemmap page */
+		next = addr + PAGE_SIZE;
+		pte = vmemmap_populate_address(next, node, NULL, -1, 0);
+		if (!pte)
+			return -ENOMEM;
+
+		/*
+		 * Reuse the previous page for the rest of tail pages
+		 * See layout diagram in Documentation/mm/vmemmap_dedup.rst
+		 */
+		next += PAGE_SIZE;
+		rc = vmemmap_populate_range(next, last, node, NULL,
+					    pte_pfn(ptep_get(pte)),
+					    VMEMMAP_POPULATE_PAGEREF);
+		if (rc)
+			return -ENOMEM;
+	}
+
+	return 0;
+}
+
+#endif
 
 struct page * __meminit __populate_section_memmap(unsigned long pfn,
 		unsigned long nr_pages, int nid, struct vmem_altmap *altmap,
@@ -492,7 +556,11 @@ struct page * __meminit __populate_section_memmap(unsigned long pfn,
 		!IS_ALIGNED(nr_pages, PAGES_PER_SUBSECTION)))
 		return NULL;
 
-	r = vmemmap_populate(start, end, nid, altmap);
+	if (vmemmap_can_optimize(altmap, pgmap))
+		r = vmemmap_populate_compound_pages(pfn, start, end, nid, pgmap);
+	else
+		r = vmemmap_populate(start, end, nid, altmap);
+
 	if (r < 0)
 		return NULL;
 
@@ -500,6 +568,31 @@ struct page * __meminit __populate_section_memmap(unsigned long pfn,
 
 	return pfn_to_page(pfn);
 }
+
+#ifdef CONFIG_SPARSEMEM_VMEMMAP_PREINIT
+/*
+ * This is called just before initializing sections for a NUMA node.
+ * Any special initialization that needs to be done before the
+ * generic initialization can be done from here. Sections that
+ * are initialized in hooks called from here will be skipped by
+ * the generic initialization.
+ */
+void __init sparse_vmemmap_init_nid_early(int nid)
+{
+	hugetlb_vmemmap_init_early(nid);
+}
+
+/*
+ * This is called just before the initialization of page structures
+ * through memmap_init. Zones are now initialized, so any work that
+ * needs to be done that needs zone information can be done from
+ * here.
+ */
+void __init sparse_vmemmap_init_nid_late(int nid)
+{
+	hugetlb_vmemmap_init_late(nid);
+}
+#endif
 
 static void subsection_mask_set(unsigned long *map, unsigned long pfn,
 		unsigned long nr_pages)
@@ -510,7 +603,7 @@ static void subsection_mask_set(unsigned long *map, unsigned long pfn,
 	bitmap_set(map, idx, end - idx + 1);
 }
 
-static void __init sparse_init_subsection_map_range(unsigned long pfn, unsigned long nr_pages)
+void __init sparse_init_subsection_map(unsigned long pfn, unsigned long nr_pages)
 {
 	int end_sec_nr = pfn_to_section_nr(pfn + nr_pages - 1);
 	unsigned long nr, start_sec_nr = pfn_to_section_nr(pfn);
@@ -531,15 +624,6 @@ static void __init sparse_init_subsection_map_range(unsigned long pfn, unsigned 
 		pfn += pfns;
 		nr_pages -= pfns;
 	}
-}
-
-void __init sparse_init_subsection_map(void)
-{
-	int i, nid;
-	unsigned long start, end;
-
-	for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, &nid)
-		sparse_init_subsection_map_range(start, end - start);
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG
@@ -570,6 +654,31 @@ void offline_mem_sections(unsigned long start_pfn, unsigned long end_pfn)
 	}
 }
 
+static int __meminit section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages,
+		struct vmem_altmap *altmap, struct dev_pagemap *pgmap)
+{
+	const unsigned int order = pgmap ? pgmap->vmemmap_shift : 0;
+	const unsigned long pages_per_compound = 1UL << order;
+
+	VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, PAGES_PER_SUBSECTION));
+	VM_WARN_ON_ONCE(nr_pages > PAGES_PER_SECTION);
+
+	if (!vmemmap_can_optimize(altmap, pgmap))
+		return DIV_ROUND_UP(nr_pages * sizeof(struct page), PAGE_SIZE);
+
+	if (order < PFN_SECTION_SHIFT) {
+		VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, pages_per_compound));
+		return VMEMMAP_RESERVE_NR * nr_pages / pages_per_compound;
+	}
+
+	VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, PAGES_PER_SECTION));
+
+	if (IS_ALIGNED(pfn, pages_per_compound))
+		return VMEMMAP_RESERVE_NR;
+
+	return 0;
+}
+
 static struct page * __meminit populate_section_memmap(unsigned long pfn,
 		unsigned long nr_pages, int nid, struct vmem_altmap *altmap,
 		struct dev_pagemap *pgmap)
@@ -577,7 +686,7 @@ static struct page * __meminit populate_section_memmap(unsigned long pfn,
 	struct page *page = __populate_section_memmap(pfn, nr_pages, nid, altmap,
 						      pgmap);
 
-	memmap_pages_add(section_nr_vmemmap_pages(pfn, nr_pages));
+	memmap_pages_add(section_nr_vmemmap_pages(pfn, nr_pages, altmap, pgmap));
 
 	return page;
 }
@@ -588,7 +697,7 @@ static void depopulate_section_memmap(unsigned long pfn, unsigned long nr_pages,
 	unsigned long start = (unsigned long) pfn_to_page(pfn);
 	unsigned long end = start + nr_pages * sizeof(struct page);
 
-	memmap_pages_add(-section_nr_vmemmap_pages(pfn, nr_pages));
+	memmap_pages_add(-section_nr_vmemmap_pages(pfn, nr_pages, altmap, pgmap));
 	vmemmap_free(start, end, altmap);
 }
 
@@ -598,7 +707,8 @@ static void free_map_bootmem(struct page *memmap)
 	unsigned long end = (unsigned long)(memmap + PAGES_PER_SECTION);
 	unsigned long pfn = page_to_pfn(memmap);
 
-	memmap_boot_pages_add(-section_nr_vmemmap_pages(pfn, PAGES_PER_SECTION));
+	memmap_boot_pages_add(-section_nr_vmemmap_pages(pfn, PAGES_PER_SECTION,
+							NULL, NULL));
 	vmemmap_free(start, end, NULL);
 }
 
@@ -706,10 +816,8 @@ static void section_deactivate(unsigned long pfn, unsigned long nr_pages,
 	else if (memmap)
 		free_map_bootmem(memmap);
 
-	if (empty) {
+	if (empty)
 		ms->section_mem_map = (unsigned long)NULL;
-		section_set_compound_order(ms, 0);
-	}
 }
 
 static struct page * __meminit section_activate(int nid, unsigned long pfn,
@@ -719,12 +827,7 @@ static struct page * __meminit section_activate(int nid, unsigned long pfn,
 	struct mem_section *ms = __pfn_to_section(pfn);
 	struct mem_section_usage *usage = NULL;
 	struct page *memmap;
-	unsigned int order;
 	int rc;
-
-	order = vmemmap_can_optimize(altmap, pgmap) ? pgmap->vmemmap_shift : 0;
-	if (nr_pages < PAGES_PER_SECTION && section_compound_order(ms))
-		return ERR_PTR(-EOPNOTSUPP);
 
 	if (!ms->usage) {
 		usage = kzalloc(mem_section_usage_size(), GFP_KERNEL);
@@ -751,7 +854,6 @@ static struct page * __meminit section_activate(int nid, unsigned long pfn,
 	if (nr_pages < PAGES_PER_SECTION && early_section(ms))
 		return pfn_to_page(pfn);
 
-	section_set_compound_order_range(pfn, nr_pages, order);
 	memmap = populate_section_memmap(pfn, nr_pages, nid, altmap, pgmap);
 	if (!memmap) {
 		section_deactivate(pfn, nr_pages, altmap, pgmap);
@@ -797,22 +899,19 @@ int __meminit sparse_add_section(int nid, unsigned long start_pfn,
 	if (IS_ERR(memmap))
 		return PTR_ERR(memmap);
 
-	ms = __nr_to_section(section_nr);
 	/*
-	 * Poison uninitialized struct pages to catch invalid flag combinations.
-	 *
-	 * Tail struct pages in a vmemmap-optimized section are initialized and
-	 * shared during vmemmap population, so they must not be overwritten here.
+	 * Poison uninitialized struct pages in order to catch invalid flags
+	 * combinations.
 	 */
-	if (!section_vmemmap_optimizable(ms))
-		page_init_poison(memmap, sizeof(struct page) * nr_pages);
+	page_init_poison(memmap, sizeof(struct page) * nr_pages);
 
-	__highest_used_section_nr = max(section_nr, __highest_used_section_nr);
+	ms = __nr_to_section(section_nr);
+	__section_mark_present(ms, section_nr);
 
 	/* Align memmap to section boundary in the subsection case */
 	if (section_nr_to_pfn(section_nr) != start_pfn)
 		memmap = pfn_to_page(section_nr_to_pfn(section_nr));
-	sparse_init_one_section(ms, section_nr, memmap, ms->usage);
+	sparse_init_one_section(ms, section_nr, memmap, ms->usage, 0);
 
 	return 0;
 }

@@ -158,7 +158,8 @@ static int bcm63268_tclk_probe(struct platform_device *pdev)
 		maxbit = max(maxbit, entry->bit);
 	maxbit++;
 
-	hw = devm_kzalloc_flex(&pdev->dev, *hw, data.hws, maxbit);
+	hw = devm_kzalloc(&pdev->dev, struct_size(hw, data.hws, maxbit),
+			  GFP_KERNEL);
 	if (!hw)
 		return -ENOMEM;
 

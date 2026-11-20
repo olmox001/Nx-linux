@@ -559,11 +559,6 @@ static void virtqueue_init(struct vring_virtqueue *vq, u32 num)
 	vq->in_use = false;
 	vq->last_add_time_valid = false;
 #endif
-
-	if (virtqueue_is_in_order(vq)) {
-		vq->free_head = 0;
-		vq->batch_last.id = UINT_MAX;
-	}
 }
 
 
@@ -910,6 +905,7 @@ static unsigned detach_buf_split_in_order(struct vring_virtqueue *vq,
 {
 	struct vring_desc_extra *extra;
 	unsigned int i;
+	__virtio16 nextflag = cpu_to_virtio16(vq->vq.vdev, VRING_DESC_F_NEXT);
 
 	/* Clear data ptr. */
 	vq->split.desc_state[head].data = NULL;
@@ -919,7 +915,7 @@ static unsigned detach_buf_split_in_order(struct vring_virtqueue *vq,
 	/* Put back on free list: unmap first-level descriptors and find end */
 	i = head;
 
-	while (extra[i].flags & VRING_DESC_F_NEXT) {
+	while (vq->split.vring.desc[i].flags & nextflag) {
 		i = vring_unmap_one_split(vq, &extra[i]);
 		vq->vq.num_free++;
 	}
@@ -1575,11 +1571,6 @@ static int virtqueue_add_indirect_packed(struct vring_virtqueue *vq,
 						0 : VRING_DESC_F_WRITE);
 			desc[i].addr = cpu_to_le64(addr);
 			desc[i].len = cpu_to_le32(len);
-			/* The id field is unused in indirect descriptors but
-			 * must be initialized to prevent leaking kernel heap
-			 * memory to the device through the DMA-mapped table.
-			 */
-			desc[i].id = 0;
 
 			if (unlikely(vq->use_map_api)) {
 				extra[i].addr = premapped ? DMA_MAPPING_ERROR : addr;
@@ -3271,14 +3262,6 @@ EXPORT_SYMBOL_GPL(virtqueue_enable_cb);
 bool virtqueue_enable_cb_delayed(struct virtqueue *_vq)
 {
 	struct vring_virtqueue *vq = to_vvq(_vq);
-
-	/*
-	 * When the device is broken there is no point in polling used->idx,
-	 * the backend will never update it. Return true to let callers
-	 * exit their cleanup loops instead of spinning forever.
-	 */
-	if (unlikely(vq->broken))
-		return true;
 
 	if (vq->event_triggered)
 		data_race(vq->event_triggered = false);

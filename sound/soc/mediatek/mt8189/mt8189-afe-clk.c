@@ -454,47 +454,30 @@ int mt8189_apll1_enable(struct mtk_base_afe *afe)
 
 	ret = mt8189_afe_enable_top_cg(afe, MT8189_CG_APLL1_CK);
 	if (ret)
-		goto err_clear_mux_setting;
+		return ret;
 
 	ret = mt8189_afe_enable_top_cg(afe, MT8189_PDN_APLL_TUNER1);
 	if (ret)
-		goto err_disable_apll1_ck;
+		return ret;
 
 	/* sel 44.1kHz:1, apll_div:7, upper bound:3 */
-	ret = regmap_update_bits(afe->regmap, AFE_APLL1_TUNER_CFG,
-				 XTAL_EN_128FS_SEL_MASK_SFT | APLL_DIV_MASK_SFT |
-				 UPPER_BOUND_MASK_SFT,
-				 (0x1 << XTAL_EN_128FS_SEL_SFT) | (7 << APLL_DIV_SFT) |
-				 (3 << UPPER_BOUND_SFT));
-	if (ret)
-		goto err_disable_apll_tuner1;
+	regmap_update_bits(afe->regmap, AFE_APLL1_TUNER_CFG,
+			   XTAL_EN_128FS_SEL_MASK_SFT | APLL_DIV_MASK_SFT |
+			   UPPER_BOUND_MASK_SFT,
+			   (0x1 << XTAL_EN_128FS_SEL_SFT) | (7 << APLL_DIV_SFT) |
+			   (3 << UPPER_BOUND_SFT));
 
 	/* apll1 freq tuner enable */
-	ret = regmap_update_bits(afe->regmap, AFE_APLL1_TUNER_CFG,
-				 FREQ_TUNER_EN_MASK_SFT,
-				 0x1 << FREQ_TUNER_EN_SFT);
-	if (ret)
-		goto err_disable_apll_tuner1;
+	regmap_update_bits(afe->regmap, AFE_APLL1_TUNER_CFG,
+			   FREQ_TUNER_EN_MASK_SFT,
+			   0x1 << FREQ_TUNER_EN_SFT);
 
 	/* audio apll1 on */
 	ret = mt8189_afe_enable_top_cg(afe, MT8189_AUDIO_APLL1_EN_ON);
 	if (ret)
-		goto err_clear_freq_tuner_en;
+		return ret;
 
 	return 0;
-
-err_clear_freq_tuner_en:
-	regmap_update_bits(afe->regmap, AFE_APLL1_TUNER_CFG,
-			   FREQ_TUNER_EN_MASK_SFT,
-			   0x0);
-err_disable_apll_tuner1:
-	mt8189_afe_disable_top_cg(afe, MT8189_PDN_APLL_TUNER1);
-err_disable_apll1_ck:
-	mt8189_afe_disable_top_cg(afe, MT8189_CG_APLL1_CK);
-err_clear_mux_setting:
-	apll1_mux_setting(afe, false);
-
-	return ret;
 }
 
 void mt8189_apll1_disable(struct mtk_base_afe *afe)
@@ -523,47 +506,30 @@ int mt8189_apll2_enable(struct mtk_base_afe *afe)
 
 	ret = mt8189_afe_enable_top_cg(afe, MT8189_CG_APLL2_CK);
 	if (ret)
-		goto err_clear_mux_setting;
+		return ret;
 
 	ret = mt8189_afe_enable_top_cg(afe, MT8189_PDN_APLL_TUNER2);
 	if (ret)
-		goto err_disable_apll2_ck;
+		return ret;
 
 	/* sel 48kHz: 2, apll_div: 7, upper bound: 3*/
-	ret = regmap_update_bits(afe->regmap, AFE_APLL2_TUNER_CFG,
-				 XTAL_EN_128FS_SEL_MASK_SFT | APLL_DIV_MASK_SFT |
-				 UPPER_BOUND_MASK_SFT,
-				 (0x2 << XTAL_EN_128FS_SEL_SFT) | (7 << APLL_DIV_SFT) |
-				 (3 << UPPER_BOUND_SFT));
-	if (ret)
-		goto err_disable_apll_tuner2;
+	regmap_update_bits(afe->regmap, AFE_APLL2_TUNER_CFG,
+			   XTAL_EN_128FS_SEL_MASK_SFT | APLL_DIV_MASK_SFT |
+			   UPPER_BOUND_MASK_SFT,
+			   (0x2 << XTAL_EN_128FS_SEL_SFT) | (7 << APLL_DIV_SFT) |
+			   (3 << UPPER_BOUND_SFT));
 
 	/* apll2 freq tuner enable */
-	ret = regmap_update_bits(afe->regmap, AFE_APLL2_TUNER_CFG,
-				 FREQ_TUNER_EN_MASK_SFT,
-				 0x1 << FREQ_TUNER_EN_SFT);
-	if (ret)
-		goto err_disable_apll_tuner2;
+	regmap_update_bits(afe->regmap, AFE_APLL2_TUNER_CFG,
+			   FREQ_TUNER_EN_MASK_SFT,
+			   0x1 << FREQ_TUNER_EN_SFT);
 
 	/* audio apll2 on */
 	ret = mt8189_afe_enable_top_cg(afe, MT8189_AUDIO_APLL2_EN_ON);
 	if (ret)
-		goto err_clear_freq_tuner_en;
+		return ret;
 
 	return 0;
-
-err_clear_freq_tuner_en:
-	regmap_update_bits(afe->regmap, AFE_APLL2_TUNER_CFG,
-			   FREQ_TUNER_EN_MASK_SFT,
-			   0x0);
-err_disable_apll_tuner2:
-	mt8189_afe_disable_top_cg(afe, MT8189_PDN_APLL_TUNER2);
-err_disable_apll2_ck:
-	mt8189_afe_disable_top_cg(afe, MT8189_CG_APLL2_CK);
-err_clear_mux_setting:
-	apll2_mux_setting(afe, false);
-
-	return ret;
 }
 
 void mt8189_apll2_disable(struct mtk_base_afe *afe)
@@ -639,7 +605,7 @@ int mt8189_mck_enable(struct mtk_base_afe *afe, int mck_id, int rate)
 		ret = mt8189_afe_set_clk_parent(afe, afe_priv->clk[m_sel_id],
 						afe_priv->clk[apll_clk_id]);
 		if (ret)
-			goto err_disable_m_sel_clk;
+			return ret;
 	}
 
 	/* enable div, set rate */
@@ -650,21 +616,13 @@ int mt8189_mck_enable(struct mtk_base_afe *afe, int mck_id, int rate)
 
 	ret = mt8189_afe_enable_clk(afe, afe_priv->clk[div_clk_id]);
 	if (ret)
-		goto err_disable_m_sel_clk;
+		return ret;
 
 	ret = mt8189_afe_set_clk_rate(afe, afe_priv->clk[div_clk_id], rate);
 	if (ret)
-		goto err_disable_div_clk;
+		return ret;
 
 	return 0;
-
-err_disable_div_clk:
-	mt8189_afe_disable_clk(afe, afe_priv->clk[div_clk_id]);
-err_disable_m_sel_clk:
-	if (m_sel_id >= 0)
-		mt8189_afe_disable_clk(afe, afe_priv->clk[m_sel_id]);
-
-	return ret;
 }
 
 int mt8189_mck_disable(struct mtk_base_afe *afe, int mck_id)
@@ -675,8 +633,8 @@ int mt8189_mck_disable(struct mtk_base_afe *afe, int mck_id)
 
 	dev_dbg(afe->dev, "mck_id: %d.\n", mck_id);
 
-	if (mck_id >= MT8189_MCK_NUM || mck_id < 0) {
-		dev_err(afe->dev, "mck_id = %d\n", mck_id);
+	if (mck_id < 0) {
+		dev_err(afe->dev, "mck_id = %d < 0\n", mck_id);
 		return -EINVAL;
 	}
 
@@ -700,36 +658,17 @@ int mt8189_mck_disable(struct mtk_base_afe *afe, int mck_id)
 int mt8189_afe_enable_reg_rw_clk(struct mtk_base_afe *afe)
 {
 	struct mt8189_afe_private *afe_priv = afe->platform_priv;
-	int ret;
 
 	/* bus clock for AFE internal access, like AFE SRAM */
-	ret = mt8189_afe_enable_clk(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIOINTBUS]);
-	if (ret)
-		return ret;
-
-	ret = mt8189_afe_set_clk_parent(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIOINTBUS],
-					afe_priv->clk[MT8189_CLK_TOP_CLK26M]);
-	if (ret)
-		goto err_disable_audiointbus_clk;
-
+	mt8189_afe_enable_clk(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIOINTBUS]);
+	mt8189_afe_set_clk_parent(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIOINTBUS],
+				  afe_priv->clk[MT8189_CLK_TOP_CLK26M]);
 	/* enable audio clock source */
-	ret = mt8189_afe_enable_clk(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIO_H]);
-	if (ret)
-		goto err_disable_audiointbus_clk;
-
-	ret = mt8189_afe_set_clk_parent(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIO_H],
-					afe_priv->clk[MT8189_CLK_TOP_CLK26M]);
-	if (ret)
-		goto err_disable_audio_h_clk;
+	mt8189_afe_enable_clk(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIO_H]);
+	mt8189_afe_set_clk_parent(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIO_H],
+				  afe_priv->clk[MT8189_CLK_TOP_CLK26M]);
 
 	return 0;
-
-err_disable_audio_h_clk:
-	mt8189_afe_disable_clk(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIO_H]);
-err_disable_audiointbus_clk:
-	mt8189_afe_disable_clk(afe, afe_priv->clk[MT8189_CLK_TOP_MUX_AUDIOINTBUS]);
-
-	return ret;
 }
 
 int mt8189_afe_disable_reg_rw_clk(struct mtk_base_afe *afe)
@@ -786,16 +725,17 @@ int mt8189_init_clock(struct mtk_base_afe *afe)
 	int ret;
 	int i;
 
-	afe_priv->clk = devm_kzalloc_objs(afe->dev, *afe_priv->clk,
-					  MT8189_CLK_NUM);
+	afe_priv->clk = devm_kcalloc(afe->dev, MT8189_CLK_NUM, sizeof(*afe_priv->clk),
+				     GFP_KERNEL);
 	if (!afe_priv->clk)
 		return -ENOMEM;
 
 	for (i = 0; i < MT8189_CLK_NUM; i++) {
 		afe_priv->clk[i] = devm_clk_get(afe->dev, aud_clks[i]);
-		if (IS_ERR(afe_priv->clk[i]))
-			return dev_err_probe(afe->dev, PTR_ERR(afe_priv->clk[i]),
-					     "failed to get clock %s\n", aud_clks[i]);
+		if (IS_ERR(afe_priv->clk[i])) {
+			dev_err(afe->dev, "devm_clk_get %s fail\n", aud_clks[i]);
+			return PTR_ERR(afe_priv->clk[i]);
+		}
 	}
 
 	ret = mt8189_afe_disable_apll(afe);

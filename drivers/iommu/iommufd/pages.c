@@ -781,7 +781,6 @@ struct pfn_reader_user {
 	struct file *file;
 	struct folio **ufolios;
 	size_t ufolios_len;
-	unsigned long ufolios_count;
 	unsigned long ufolios_offset;
 	struct folio **ufolios_next;
 };
@@ -801,7 +800,6 @@ static void pfn_reader_user_init(struct pfn_reader_user *user,
 	user->file = (pages->type == IOPT_ADDRESS_FILE) ? pages->file : NULL;
 	user->ufolios = NULL;
 	user->ufolios_len = 0;
-	user->ufolios_count = 0;
 	user->ufolios_next = NULL;
 	user->ufolios_offset = 0;
 }
@@ -845,7 +843,6 @@ static long pin_memfd_pages(struct pfn_reader_user *user, unsigned long start,
 
 	offset >>= PAGE_SHIFT;
 	user->ufolios_next = user->ufolios;
-	user->ufolios_count = nfolios;
 	user->ufolios_offset = offset;
 
 	for (i = 0; i < nfolios; i++) {
@@ -862,12 +859,8 @@ static long pin_memfd_pages(struct pfn_reader_user *user, unsigned long start,
 			} else {
 				int rc = folio_add_pins(folio, npin - 1);
 
-				if (rc) {
-					unpin_user_pages(user->upages,
-							 upages - user->upages);
-					unpin_folios(user->ufolios + i, nfolios - i);
+				if (rc)
 					return rc;
-				}
 
 				while (npin--)
 					*upages++ = folio_page(folio, offset++);
@@ -1185,15 +1178,6 @@ static int pfn_reader_fill_span(struct pfn_reader *pfns)
 	    WARN_ON(span->last_used < start_index))
 		return -EINVAL;
 
-	/*
-	 * Always read a dmabuf from its phys, even where a domain already
-	 * maps it: a domain can only report CPU memory PFNs, losing
-	 * BATCH_MMIO. last_hole aliases last_used, so this covers any span.
-	 */
-	if (iopt_is_dmabuf(pfns->pages))
-		return pfn_reader_fill_dmabuf(&pfns->dmabuf, &pfns->batch,
-					      start_index, span->last_hole);
-
 	if (span->is_used == 1) {
 		batch_from_xarray(&pfns->batch, &pfns->pages->pinned_pfns,
 				  start_index, span->last_used);
@@ -1216,6 +1200,10 @@ static int pfn_reader_fill_span(struct pfn_reader *pfns)
 			min(iopt_area_last_index(area), span->last_used));
 		return 0;
 	}
+
+	if (iopt_is_dmabuf(pfns->pages))
+		return pfn_reader_fill_dmabuf(&pfns->dmabuf, &pfns->batch,
+					      start_index, span->last_hole);
 
 	user = &pfns->user;
 	if (start_index >= user->upages_end) {
@@ -1258,14 +1246,14 @@ static int pfn_reader_next(struct pfn_reader *pfns)
 			return -EINVAL;
 
 		rc = pfn_reader_fill_span(pfns);
-		pfns->batch_end_index = pfns->batch_start_index +
-					pfns->batch.total_pfns;
 		if (rc)
 			return rc;
 
 		if (WARN_ON(!pfns->batch.total_pfns))
 			return -EINVAL;
 
+		pfns->batch_end_index =
+			pfns->batch_start_index + pfns->batch.total_pfns;
 		if (pfns->batch_end_index == pfns->span.last_used + 1)
 			interval_tree_double_span_iter_next(&pfns->span);
 
@@ -1327,7 +1315,7 @@ static void pfn_reader_release_pins(struct pfn_reader *pfns)
 		if (!user->file) {
 			unpin_user_pages(user->upages + start_index, npages);
 		} else {
-			const unsigned long n = user->ufolios_count;
+			long n = user->ufolios_len / sizeof(*user->ufolios);
 
 			unpin_folios(user->ufolios_next,
 				     user->ufolios + n - user->ufolios_next);

@@ -164,7 +164,7 @@ static int tda38640_probe(struct i2c_client *client)
 	struct tda38640_data *data;
 	int svid;
 
-	data = devm_kzalloc_obj(&client->dev, *data);
+	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 	memcpy(&data->info, &tda38640_info, sizeof(tda38640_info));

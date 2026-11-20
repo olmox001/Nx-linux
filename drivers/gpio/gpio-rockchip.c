@@ -201,25 +201,20 @@ static int rockchip_gpio_set_debounce(struct gpio_chip *gc,
 {
 	struct rockchip_pin_bank *bank = gpiochip_get_data(gc);
 	const struct rockchip_gpio_regs	*reg = bank->gpio_regs;
-	unsigned long flags, div_reg, freq;
+	unsigned long flags, div_reg, freq, max_debounce;
 	bool div_debounce_support;
 	unsigned int cur_div_reg;
-	u64 div, max_debounce;
+	u64 div;
 
 	if (bank->gpio_type == GPIO_TYPE_V2 && !IS_ERR(bank->db_clk)) {
 		div_debounce_support = true;
 		freq = clk_get_rate(bank->db_clk);
-		if (!freq)
-			return -EINVAL;
-
-		div = (u64)(GENMASK(23, 0) + 1) * 2 * USEC_PER_SEC;
-		max_debounce = div64_u64(div, freq);
+		max_debounce = (GENMASK(23, 0) + 1) * 2 * 1000000 / freq;
 		if (debounce > max_debounce)
 			return -EINVAL;
 
-		div = (u64)debounce * freq;
-		div_reg = DIV_ROUND_CLOSEST_ULL(div, 2 * USEC_PER_SEC);
-		div_reg = div_reg ? div_reg - 1 : 0;
+		div = debounce * freq;
+		div_reg = DIV_ROUND_CLOSEST_ULL(div, 2 * USEC_PER_SEC) - 1;
 	} else {
 		div_debounce_support = false;
 	}
@@ -652,17 +647,21 @@ static void rockchip_clk_put(void *data)
 
 static int rockchip_get_bank_data(struct rockchip_pin_bank *bank)
 {
-	struct platform_device *pdev = to_platform_device(bank->dev);
+	struct resource res;
 	int id = 0, ret;
 
-	bank->reg_base = devm_platform_ioremap_resource(pdev, 0);
+	if (of_address_to_resource(bank->of_node, 0, &res)) {
+		dev_err(bank->dev, "cannot find IO resource for bank\n");
+		return -ENOENT;
+	}
+
+	bank->reg_base = devm_ioremap_resource(bank->dev, &res);
 	if (IS_ERR(bank->reg_base))
 		return PTR_ERR(bank->reg_base);
 
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0)
-		return ret;
-	bank->irq = ret;
+	bank->irq = irq_of_parse_and_map(bank->of_node, 0);
+	if (!bank->irq)
+		return -EINVAL;
 
 	bank->clk = devm_clk_get_enabled(bank->dev, NULL);
 	if (IS_ERR(bank->clk))

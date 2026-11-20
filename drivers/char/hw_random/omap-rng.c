@@ -391,8 +391,11 @@ static int of_get_omap_rng_device_details(struct omap_rng_dev *priv,
 
 		err = devm_request_irq(dev, irq, omap4_rng_irq,
 				       IRQF_TRIGGER_NONE, dev_name(dev), priv);
-		if (err)
+		if (err) {
+			dev_err(dev, "unable to request irq %d, err = %d\n",
+				irq, err);
 			return err;
+		}
 
 		/*
 		 * On OMAP4, enabling the shutdown_oflo interrupt is
@@ -423,7 +426,7 @@ static int omap_rng_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, struct omap_rng_dev);
+	priv = devm_kzalloc(dev, sizeof(struct omap_rng_dev), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -530,7 +533,7 @@ static void omap_rng_remove(struct platform_device *pdev)
 	clk_disable_unprepare(priv->clk_reg);
 }
 
-static int omap_rng_suspend(struct device *dev)
+static int __maybe_unused omap_rng_suspend(struct device *dev)
 {
 	struct omap_rng_dev *priv = dev_get_drvdata(dev);
 
@@ -540,7 +543,7 @@ static int omap_rng_suspend(struct device *dev)
 	return 0;
 }
 
-static int omap_rng_resume(struct device *dev)
+static int __maybe_unused omap_rng_resume(struct device *dev)
 {
 	struct omap_rng_dev *priv = dev_get_drvdata(dev);
 	int ret;
@@ -556,12 +559,12 @@ static int omap_rng_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(omap_rng_pm, omap_rng_suspend, omap_rng_resume);
+static SIMPLE_DEV_PM_OPS(omap_rng_pm, omap_rng_suspend, omap_rng_resume);
 
 static struct platform_driver omap_rng_driver = {
 	.driver = {
 		.name		= "omap_rng",
-		.pm		= pm_sleep_ptr(&omap_rng_pm),
+		.pm		= &omap_rng_pm,
 		.of_match_table = of_match_ptr(omap_rng_of_match),
 	},
 	.probe		= omap_rng_probe,

@@ -10,7 +10,6 @@
 
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <linux/gpio/driver.h>
-#include <linux/module.h>
 
 #include <linux/pinctrl/consumer.h>
 
@@ -661,7 +660,7 @@ int mtk_moore_pinctrl_probe(struct platform_device *pdev,
 	struct mtk_pinctrl *hw;
 	int err, i;
 
-	hw = devm_kzalloc_obj(&pdev->dev, *hw);
+	hw = devm_kzalloc(&pdev->dev, sizeof(*hw), GFP_KERNEL);
 	if (!hw)
 		return -ENOMEM;
 
@@ -672,8 +671,8 @@ int mtk_moore_pinctrl_probe(struct platform_device *pdev,
 		return dev_err_probe(dev, -EINVAL,
 			"SoC should be assigned at least one register base\n");
 
-	hw->base = devm_kmalloc_objs(&pdev->dev, *hw->base,
-				     hw->soc->nbase_names);
+	hw->base = devm_kmalloc_array(&pdev->dev, hw->soc->nbase_names,
+				      sizeof(*hw->base), GFP_KERNEL);
 	if (!hw->base)
 		return -ENOMEM;
 
@@ -689,7 +688,8 @@ int mtk_moore_pinctrl_probe(struct platform_device *pdev,
 	spin_lock_init(&hw->lock);
 
 	/* Copy from internal struct mtk_pin_desc to register to the core */
-	pins = devm_kmalloc_objs(&pdev->dev, *pins, hw->soc->npins);
+	pins = devm_kmalloc_array(&pdev->dev, hw->soc->npins, sizeof(*pins),
+				  GFP_KERNEL);
 	if (!pins)
 		return -ENOMEM;
 
@@ -743,7 +743,3 @@ int mtk_moore_pinctrl_probe(struct platform_device *pdev,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(mtk_moore_pinctrl_probe, "MTK_PINCTRL");
-
-MODULE_DESCRIPTION("MediaTek Pinctrl Common Driver V2 Moore");
-MODULE_LICENSE("GPL v2");

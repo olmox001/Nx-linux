@@ -162,28 +162,28 @@ static int imx_audmix_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	num_dai += 1;
 	priv->num_dai = 2 * num_dai;
-	priv->dai = devm_kzalloc_objs(&pdev->dev, struct snd_soc_dai_link,
-				      priv->num_dai);
+	priv->dai = devm_kcalloc(&pdev->dev, priv->num_dai,
+				 sizeof(struct snd_soc_dai_link), GFP_KERNEL);
 	if (!priv->dai)
 		return -ENOMEM;
 
 	priv->num_dai_conf = num_dai;
-	priv->dai_conf = devm_kzalloc_objs(&pdev->dev,
-					   struct snd_soc_codec_conf,
-					   priv->num_dai_conf);
+	priv->dai_conf = devm_kcalloc(&pdev->dev, priv->num_dai_conf,
+				      sizeof(struct snd_soc_codec_conf),
+				      GFP_KERNEL);
 	if (!priv->dai_conf)
 		return -ENOMEM;
 
 	priv->num_dapm_routes = num_dai;
-	priv->dapm_routes = devm_kzalloc_objs(&pdev->dev,
-					      struct snd_soc_dapm_route,
-					      priv->num_dapm_routes);
+	priv->dapm_routes = devm_kcalloc(&pdev->dev, priv->num_dapm_routes,
+					 sizeof(struct snd_soc_dapm_route),
+					 GFP_KERNEL);
 	if (!priv->dapm_routes)
 		return -ENOMEM;
 
@@ -191,7 +191,7 @@ static int imx_audmix_probe(struct platform_device *pdev)
 		struct snd_soc_dai_link_component *dlc;
 
 		/* for CPU x 2 */
-		dlc = devm_kzalloc_objs(&pdev->dev, *dlc, 2);
+		dlc = devm_kcalloc(&pdev->dev, 2, sizeof(*dlc), GFP_KERNEL);
 		if (!dlc)
 			return -ENOMEM;
 

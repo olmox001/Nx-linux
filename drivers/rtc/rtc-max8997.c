@@ -451,7 +451,8 @@ static int max8997_rtc_probe(struct platform_device *pdev)
 	struct max8997_rtc_info *info;
 	int ret, virq;
 
-	info = devm_kzalloc_obj(&pdev->dev, struct max8997_rtc_info);
+	info = devm_kzalloc(&pdev->dev, sizeof(struct max8997_rtc_info),
+			GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

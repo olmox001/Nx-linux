@@ -178,7 +178,7 @@ static int devm_aperture_acquire(struct device *dev,
 		}
 	}
 
-	ap = devm_kzalloc_obj(dev, *ap);
+	ap = devm_kzalloc(dev, sizeof(*ap), GFP_KERNEL);
 	if (!ap) {
 		mutex_unlock(&apertures_lock);
 		return -ENOMEM;

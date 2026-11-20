@@ -274,7 +274,9 @@ static int process_scmi_regulator_of_node(struct scmi_device *sdev,
 		return -EINVAL;
 	}
 
-	rinfo->sregv[dom] = devm_kzalloc_obj(&sdev->dev, struct scmi_regulator);
+	rinfo->sregv[dom] = devm_kzalloc(&sdev->dev,
+					 sizeof(struct scmi_regulator),
+					 GFP_KERNEL);
 	if (!rinfo->sregv[dom])
 		return -ENOMEM;
 
@@ -320,7 +322,7 @@ static int scmi_regulator_probe(struct scmi_device *sdev)
 		return num_doms;
 	}
 
-	rinfo = devm_kzalloc_obj(&sdev->dev, *rinfo);
+	rinfo = devm_kzalloc(&sdev->dev, sizeof(*rinfo), GFP_KERNEL);
 	if (!rinfo)
 		return -ENOMEM;
 

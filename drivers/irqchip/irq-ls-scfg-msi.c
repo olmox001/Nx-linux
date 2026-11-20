@@ -333,7 +333,7 @@ static int ls_scfg_msi_probe(struct platform_device *pdev)
 	struct resource *res;
 	int i, ret;
 
-	msi_data = devm_kzalloc_obj(&pdev->dev, *msi_data);
+	msi_data = devm_kzalloc(&pdev->dev, sizeof(*msi_data), GFP_KERNEL);
 	if (!msi_data)
 		return -ENOMEM;
 
@@ -374,8 +374,9 @@ static int ls_scfg_msi_probe(struct platform_device *pdev)
 			msi_affinity_flag = 0;
 	}
 
-	msi_data->msir = devm_kzalloc_objs(&pdev->dev, *msi_data->msir,
-					   msi_data->msir_num);
+	msi_data->msir = devm_kcalloc(&pdev->dev, msi_data->msir_num,
+				      sizeof(*msi_data->msir),
+				      GFP_KERNEL);
 	if (!msi_data->msir)
 		return -ENOMEM;
 

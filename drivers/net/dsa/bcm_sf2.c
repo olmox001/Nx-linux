@@ -1059,7 +1059,6 @@ static int bcm_sf2_sw_setup(struct dsa_switch *ds)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	unsigned int port;
-	int ret;
 
 	/* Enable all valid ports and disable those unused */
 	for (port = 0; port < priv->hw_params.num_ports; port++) {
@@ -1074,10 +1073,6 @@ static int bcm_sf2_sw_setup(struct dsa_switch *ds)
 
 	b53_configure_vlan(ds);
 	bcm_sf2_enable_acb(ds);
-
-	ret = b53_enable_mcast_snooping(priv->dev);
-	if (ret)
-		return ret;
 
 	return b53_setup_devlink_resources(ds);
 }
@@ -1363,7 +1358,7 @@ static const struct of_device_id bcm_sf2_of_match[] = {
 	{ .compatible = "brcm,bcm7278-switch-v4.8",
 	  .data = &bcm_sf2_7278_data
 	},
-	{ /* sentinel */ }
+	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, bcm_sf2_of_match);
 
@@ -1384,11 +1379,11 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 	u32 reg, rev;
 	int ret;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
-	ops = devm_kzalloc_obj(&pdev->dev, *ops);
+	ops = devm_kzalloc(&pdev->dev, sizeof(*ops), GFP_KERNEL);
 	if (!ops)
 		return -ENOMEM;
 
@@ -1396,7 +1391,7 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 	if (!dev)
 		return -ENOMEM;
 
-	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 

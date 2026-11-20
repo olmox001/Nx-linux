@@ -38,36 +38,82 @@
 
 static void svc_unregister(const struct svc_serv *serv, struct net *net);
 
+#define SVC_POOL_DEFAULT	SVC_POOL_GLOBAL
+
 /*
- * Structure for mapping nodes to pools and vice versa.
+ * Mode for mapping cpus to pools.
+ */
+enum {
+	SVC_POOL_AUTO = -1,	/* choose one of the others */
+	SVC_POOL_GLOBAL,	/* no mapping, just a single global pool
+				 * (legacy & UP mode) */
+	SVC_POOL_PERCPU,	/* one pool per cpu */
+	SVC_POOL_PERNODE	/* one pool per numa node */
+};
+
+/*
+ * Structure for mapping cpus to pools and vice versa.
  * Setup once during sunrpc initialisation.
  */
 
 struct svc_pool_map {
 	int count;			/* How many svc_servs use us */
+	int mode;			/* Note: int not enum to avoid
+					 * warnings about "enumeration value
+					 * not handled in switch" */
 	unsigned int npools;
-	unsigned int *pool_to;		/* maps pool id to node */
-	unsigned int *to_pool;		/* maps node to pool id */
+	unsigned int *pool_to;		/* maps pool id to cpu or node */
+	unsigned int *to_pool;		/* maps cpu or node to pool id */
 };
 
-static struct svc_pool_map svc_pool_map;
+static struct svc_pool_map svc_pool_map = {
+	.mode = SVC_POOL_DEFAULT
+};
 
 static DEFINE_MUTEX(svc_pool_map_mutex);/* protects svc_pool_map.count only */
 
-/*
- * Pool modes that were historically accepted. They no longer select
- * anything: the pool mode is always pernode. The names are retained
- * only so that writing a previously-valid value still succeeds.
- */
-static const char * const pool_mode_names[] = {
-	"auto", "global", "percpu", "pernode",
-};
+static int
+__param_set_pool_mode(const char *val, struct svc_pool_map *m)
+{
+	int err, mode;
+
+	mutex_lock(&svc_pool_map_mutex);
+
+	err = 0;
+	if (!strncmp(val, "auto", 4))
+		mode = SVC_POOL_AUTO;
+	else if (!strncmp(val, "global", 6))
+		mode = SVC_POOL_GLOBAL;
+	else if (!strncmp(val, "percpu", 6))
+		mode = SVC_POOL_PERCPU;
+	else if (!strncmp(val, "pernode", 7))
+		mode = SVC_POOL_PERNODE;
+	else
+		err = -EINVAL;
+
+	if (err)
+		goto out;
+
+	if (m->count == 0)
+		m->mode = mode;
+	else if (mode != m->mode)
+		err = -EBUSY;
+out:
+	mutex_unlock(&svc_pool_map_mutex);
+	return err;
+}
+
+static int
+param_set_pool_mode(const char *val, const struct kernel_param *kp)
+{
+	struct svc_pool_map *m = kp->arg;
+
+	return __param_set_pool_mode(val, m);
+}
 
 int sunrpc_set_pool_mode(const char *val)
 {
-	int idx = sysfs_match_string(pool_mode_names, val);
-
-	return idx < 0 ? idx : 0;
+	return __param_set_pool_mode(val, &svc_pool_map);
 }
 EXPORT_SYMBOL(sunrpc_set_pool_mode);
 
@@ -76,31 +122,83 @@ EXPORT_SYMBOL(sunrpc_set_pool_mode);
  * @buf: where to write the current pool_mode
  * @size: size of @buf
  *
- * Write the pool_mode string to @buf. Returns the number of characters
+ * Grab the current pool_mode from the svc_pool_map and write
+ * the resulting string to @buf. Returns the number of characters
  * written to @buf (a'la snprintf()).
  */
 int
 sunrpc_get_pool_mode(char *buf, size_t size)
 {
-	return snprintf(buf, size, "pernode");
+	struct svc_pool_map *m = &svc_pool_map;
+
+	switch (m->mode)
+	{
+	case SVC_POOL_AUTO:
+		return snprintf(buf, size, "auto");
+	case SVC_POOL_GLOBAL:
+		return snprintf(buf, size, "global");
+	case SVC_POOL_PERCPU:
+		return snprintf(buf, size, "percpu");
+	case SVC_POOL_PERNODE:
+		return snprintf(buf, size, "pernode");
+	default:
+		return snprintf(buf, size, "%d", m->mode);
+	}
 }
 EXPORT_SYMBOL(sunrpc_get_pool_mode);
 
 static int
-param_set_pool_mode(const char *val, const struct kernel_param *kp)
-{
-	pr_notice_once("sunrpc: the pool_mode module parameter is deprecated and no longer has any effect; the pool mode is always 'pernode'\n");
-	return sunrpc_set_pool_mode(val);
-}
-
-static int
 param_get_pool_mode(char *buf, const struct kernel_param *kp)
 {
-	return sysfs_emit(buf, "pernode\n");
+	char str[16];
+	int len;
+
+	len = sunrpc_get_pool_mode(str, ARRAY_SIZE(str));
+
+	/* Ensure we have room for newline and NUL */
+	len = min_t(int, len, ARRAY_SIZE(str) - 2);
+
+	/* tack on the newline */
+	str[len] = '\n';
+	str[len + 1] = '\0';
+
+	return sysfs_emit(buf, "%s", str);
 }
 
 module_param_call(pool_mode, param_set_pool_mode, param_get_pool_mode,
-		  NULL, 0644);
+		  &svc_pool_map, 0644);
+
+/*
+ * Detect best pool mapping mode heuristically,
+ * according to the machine's topology.
+ */
+static int
+svc_pool_map_choose_mode(void)
+{
+	unsigned int node;
+
+	if (nr_online_nodes > 1) {
+		/*
+		 * Actually have multiple NUMA nodes,
+		 * so split pools on NUMA node boundaries
+		 */
+		return SVC_POOL_PERNODE;
+	}
+
+	node = first_online_node;
+	if (nr_cpus_node(node) > 2) {
+		/*
+		 * Non-trivial SMP, or CONFIG_NUMA on
+		 * non-NUMA hardware, e.g. with a generic
+		 * x86_64 kernel on Xeons.  In this case we
+		 * want to divide the pools on cpu boundaries.
+		 */
+		return SVC_POOL_PERCPU;
+	}
+
+	/* default: one global pool */
+	return SVC_POOL_GLOBAL;
+}
 
 /*
  * Allocate the to_pool[] and pool_to[] arrays.
@@ -109,10 +207,10 @@ module_param_call(pool_mode, param_set_pool_mode, param_get_pool_mode,
 static int
 svc_pool_map_alloc_arrays(struct svc_pool_map *m, unsigned int maxpools)
 {
-	m->to_pool = kzalloc_objs(unsigned int, maxpools);
+	m->to_pool = kcalloc(maxpools, sizeof(unsigned int), GFP_KERNEL);
 	if (!m->to_pool)
 		goto fail;
-	m->pool_to = kzalloc_objs(unsigned int, maxpools);
+	m->pool_to = kcalloc(maxpools, sizeof(unsigned int), GFP_KERNEL);
 	if (!m->pool_to)
 		goto fail_free;
 
@@ -126,7 +224,35 @@ fail:
 }
 
 /*
- * Initialise the pool map for one pool per NUMA node.
+ * Initialise the pool map for SVC_POOL_PERCPU mode.
+ * Returns number of pools or <0 on error.
+ */
+static int
+svc_pool_map_init_percpu(struct svc_pool_map *m)
+{
+	unsigned int maxpools = nr_cpu_ids;
+	unsigned int pidx = 0;
+	unsigned int cpu;
+	int err;
+
+	err = svc_pool_map_alloc_arrays(m, maxpools);
+	if (err)
+		return err;
+
+	for_each_online_cpu(cpu) {
+		BUG_ON(pidx >= maxpools);
+		m->to_pool[cpu] = pidx;
+		m->pool_to[pidx] = cpu;
+		pidx++;
+	}
+	/* cpus brought online later all get mapped to pool0, sorry */
+
+	return pidx;
+};
+
+
+/*
+ * Initialise the pool map for SVC_POOL_PERNODE mode.
  * Returns number of pools or <0 on error.
  */
 static int
@@ -155,16 +281,17 @@ svc_pool_map_init_pernode(struct svc_pool_map *m)
 
 
 /*
- * Add a reference to the global map of nodes to pools (and
+ * Add a reference to the global map of cpus to pools (and
  * vice versa) if pools are in use.
  * Initialise the map if we're the first user.
- * Returns the number of pools, or 0 on failure.
+ * Returns the number of pools. If this is '1', no reference
+ * was taken.
  */
 static unsigned int
 svc_pool_map_get(void)
 {
 	struct svc_pool_map *m = &svc_pool_map;
-	int npools;
+	int npools = -1;
 
 	mutex_lock(&svc_pool_map_mutex);
 	if (m->count++) {
@@ -172,11 +299,22 @@ svc_pool_map_get(void)
 		return m->npools;
 	}
 
-	npools = svc_pool_map_init_pernode(m);
+	if (m->mode == SVC_POOL_AUTO)
+		m->mode = svc_pool_map_choose_mode();
+
+	switch (m->mode) {
+	case SVC_POOL_PERCPU:
+		npools = svc_pool_map_init_percpu(m);
+		break;
+	case SVC_POOL_PERNODE:
+		npools = svc_pool_map_init_pernode(m);
+		break;
+	}
+
 	if (npools <= 0) {
-		m->count = 0;
-		mutex_unlock(&svc_pool_map_mutex);
-		return 0;
+		/* default, or memory allocation failure */
+		npools = 1;
+		m->mode = SVC_POOL_GLOBAL;
 	}
 	m->npools = npools;
 	mutex_unlock(&svc_pool_map_mutex);
@@ -184,7 +322,7 @@ svc_pool_map_get(void)
 }
 
 /*
- * Drop a reference to the global map of nodes to pools.
+ * Drop a reference to the global map of cpus to pools.
  * When the last reference is dropped, the map data is
  * freed; this allows the sysadmin to change the pool.
  */
@@ -208,9 +346,14 @@ static int svc_pool_map_get_node(unsigned int pidx)
 {
 	const struct svc_pool_map *m = &svc_pool_map;
 
-	return m->pool_to[pidx];
+	if (m->count) {
+		if (m->mode == SVC_POOL_PERCPU)
+			return cpu_to_node(m->pool_to[pidx]);
+		if (m->mode == SVC_POOL_PERNODE)
+			return m->pool_to[pidx];
+	}
+	return NUMA_NO_NODE;
 }
-
 /*
  * Set the given thread's cpus_allowed mask so that it
  * will only run on cpus in the given pool.
@@ -222,52 +365,57 @@ svc_pool_map_set_cpumask(struct task_struct *task, unsigned int pidx)
 	unsigned int node = m->pool_to[pidx];
 
 	/*
-	 * The caller checks for more than one pool, which
+	 * The caller checks for sv_nrpools > 1, which
 	 * implies that we've been initialized.
 	 */
 	WARN_ON_ONCE(m->count == 0);
 	if (m->count == 0)
 		return;
 
-	set_cpus_allowed_ptr(task, cpumask_of_node(node));
+	switch (m->mode) {
+	case SVC_POOL_PERCPU:
+	{
+		set_cpus_allowed_ptr(task, cpumask_of(node));
+		break;
+	}
+	case SVC_POOL_PERNODE:
+	{
+		set_cpus_allowed_ptr(task, cpumask_of_node(node));
+		break;
+	}
+	}
 }
-
-/**
- * svc_serv_nrpools - number of thread pools backing a service
- * @serv: An RPC service
- *
- * Pooled services all share the global svc_pool_map, so their pool count
- * is svc_pool_map.npools. Unpooled services have a single pool. Reading
- * npools without svc_pool_map_mutex is safe: a pooled service holds a map
- * reference for its whole lifetime, so npools is stable once set.
- *
- * Return value:
- *   The number of pools in @serv
- */
-unsigned int svc_serv_nrpools(const struct svc_serv *serv)
-{
-	return serv->sv_is_pooled ? svc_pool_map.npools : 1;
-}
-EXPORT_SYMBOL_GPL(svc_serv_nrpools);
 
 /**
  * svc_pool_for_cpu - Select pool to run a thread on this cpu
  * @serv: An RPC service
  *
- * Use the active CPU and the svc_pool_map to select the svc thread
- * pool to use. Once initialized, the svc_pool_map does not change.
+ * Use the active CPU and the svc_pool_map's mode setting to
+ * select the svc thread pool to use. Once initialized, the
+ * svc_pool_map does not change.
  *
  * Return value:
  *   A pointer to an svc_pool
  */
 struct svc_pool *svc_pool_for_cpu(struct svc_serv *serv)
 {
-	unsigned int nrpools = svc_serv_nrpools(serv);
 	struct svc_pool_map *m = &svc_pool_map;
-	unsigned int pidx, i;
+	int cpu = raw_smp_processor_id();
+	unsigned int pidx = 0;
+	unsigned int i;
 
-	if (nrpools <= 1)
+	if (serv->sv_nrpools <= 1)
 		return serv->sv_pools;
+
+	switch (m->mode) {
+	case SVC_POOL_PERCPU:
+		pidx = m->to_pool[cpu];
+		break;
+	case SVC_POOL_PERNODE:
+		pidx = m->to_pool[cpu_to_node(cpu)];
+		break;
+	}
+	pidx %= serv->sv_nrpools;
 
 	/*
 	 * It's possible to have a pool with no threads. Userland can just set
@@ -280,8 +428,7 @@ struct svc_pool *svc_pool_for_cpu(struct svc_serv *serv)
 	 * populated pool, trading NUMA locality for a guarantee that the
 	 * transport is serviced.
 	 */
-	pidx = m->to_pool[cpu_to_node(raw_smp_processor_id())];
-	for (i = 0; i < nrpools; i++) {
+	for (i = 0; i < serv->sv_nrpools; i++) {
 		struct svc_pool *pool = &serv->sv_pools[pidx];
 
 		/* This is set under the service mutex and rarely ever
@@ -290,7 +437,7 @@ struct svc_pool *svc_pool_for_cpu(struct svc_serv *serv)
 		if (data_race(pool->sp_nrthreads))
 			return pool;
 
-		if (++pidx >= nrpools)
+		if (++pidx >= serv->sv_nrpools)
 			pidx = 0;
 	}
 
@@ -337,8 +484,6 @@ static int svc_uses_rpcbind(struct svc_serv *serv)
 
 int svc_bind(struct svc_serv *serv, struct net *net)
 {
-	if (serv->sv_no_rpcbind)
-		return 0;
 	if (!svc_uses_rpcbind(serv))
 		return 0;
 	return svc_rpcb_setup(serv, net);
@@ -432,13 +577,15 @@ __svc_create(struct svc_program *prog, int nprogs, struct svc_stat *stats,
 
 	__svc_init_bc(serv);
 
-	serv->sv_pools = kzalloc_objs(struct svc_pool, npools);
+	serv->sv_nrpools = npools;
+	serv->sv_pools =
+		kzalloc_objs(struct svc_pool, serv->sv_nrpools);
 	if (!serv->sv_pools) {
 		kfree(serv);
 		return NULL;
 	}
 
-	for (i = 0; i < npools; i++) {
+	for (i = 0; i < serv->sv_nrpools; i++) {
 		struct svc_pool *pool = &serv->sv_pools[i];
 
 		dprintk("svc: initialising pool %u for %s\n",
@@ -497,9 +644,6 @@ struct svc_serv *svc_create_pooled(struct svc_program *prog,
 	struct svc_serv *serv;
 	unsigned int npools = svc_pool_map_get();
 
-	if (!npools)
-		return NULL;
-
 	serv = __svc_create(prog, nprogs, stats, bufsize, npools, threadfn);
 	if (!serv)
 		goto out_err;
@@ -536,15 +680,14 @@ svc_destroy(struct svc_serv **servp)
 
 	cache_clean_deferred(serv);
 
-	for (i = 0; i < svc_serv_nrpools(serv); i++) {
+	if (serv->sv_is_pooled)
+		svc_pool_map_put();
+
+	for (i = 0; i < serv->sv_nrpools; i++) {
 		struct svc_pool *pool = &serv->sv_pools[i];
 
 		svc_pool_destroy_counters(pool);
 	}
-
-	if (serv->sv_is_pooled)
-		svc_pool_map_put();
-
 	kfree(serv->sv_pools);
 	kfree(serv);
 }
@@ -726,15 +869,7 @@ int svc_new_thread(struct svc_serv *serv, struct svc_pool *pool)
 	int node;
 	int err = 0;
 
-	/*
-	 * Only pooled services hold a reference to the pool map, so only they
-	 * may consult it. Unpooled services (e.g. lockd, the NFS callback)
-	 * leave placement to the allocator.
-	 */
-	if (serv->sv_is_pooled)
-		node = svc_pool_map_get_node(pool->sp_id);
-	else
-		node = NUMA_NO_NODE;
+	node = svc_pool_map_get_node(pool->sp_id);
 
 	rqstp = svc_prepare_thread(serv, pool, node);
 	if (!rqstp)
@@ -747,7 +882,7 @@ int svc_new_thread(struct svc_serv *serv, struct svc_pool *pool)
 	}
 
 	rqstp->rq_task = task;
-	if (svc_serv_nrpools(serv) > 1)
+	if (serv->sv_nrpools > 1)
 		svc_pool_map_set_cpumask(task, pool->sp_id);
 
 	svc_sock_update_bufs(serv);
@@ -856,12 +991,6 @@ EXPORT_SYMBOL_GPL(svc_set_pool_threads);
  * are multiple pools then the new threads or victims will be distributed
  * evenly among them.
  *
- * When @nrservs is non-zero but smaller than the number of pools, even
- * distribution would leave some pools empty. Since each pool maps to a
- * NUMA node and only services transports steered to that node, every
- * pool is instead guaranteed at least one thread. The resulting total
- * may therefore exceed @nrservs.
- *
  * Caller must ensure mutual exclusion between this and server startup or
  * shutdown.
  *
@@ -873,22 +1002,11 @@ int
 svc_set_num_threads(struct svc_serv *serv, unsigned int min_threads,
 		    unsigned int nrservs)
 {
-	unsigned int nrpools = svc_serv_nrpools(serv);
-	unsigned int base = nrservs / nrpools;
-	unsigned int remain = nrservs % nrpools;
+	unsigned int base = nrservs / serv->sv_nrpools;
+	unsigned int remain = nrservs % serv->sv_nrpools;
 	int i, err = 0;
 
-	/*
-	 * Don't let a pool sit empty while threads are being
-	 * auto-distributed: a transport steered to its node would have
-	 * nothing to service it. Every pool maps to a CPU-bearing node,
-	 * so hand each one a thread. This may push the total above
-	 * @nrservs.
-	 */
-	if (base == 0 && nrservs != 0)
-		remain = nrpools;
-
-	for (i = 0; i < nrpools; ++i) {
+	for (i = 0; i < serv->sv_nrpools; ++i) {
 		struct svc_pool *pool = &serv->sv_pools[i];
 		int threads = base;
 
@@ -904,29 +1022,6 @@ svc_set_num_threads(struct svc_serv *serv, unsigned int min_threads,
 	return err;
 }
 EXPORT_SYMBOL_GPL(svc_set_num_threads);
-
-/**
- * svc_serv_maxthreads - report a service's configured thread ceiling
- * @serv: RPC service to query
- *
- * A pooled service sizes its threads dynamically, so the number of
- * threads running at any moment tracks recent load rather than the
- * service's capacity. The per-pool maximum is the stable figure a
- * consumer should size against.
- *
- * The caller must keep @serv valid for the duration of the call.
- *
- * Return: the sum of every pool's maximum thread count.
- */
-unsigned int svc_serv_maxthreads(const struct svc_serv *serv)
-{
-	unsigned int i, max = 0;
-
-	for (i = 0; i < svc_serv_nrpools(serv); i++)
-		max += data_race(serv->sv_pools[i].sp_nrthrmax);
-	return max;
-}
-EXPORT_SYMBOL_GPL(svc_serv_maxthreads);
 
 /**
  * svc_rqst_replace_page - Replace one page in rq_respages[]
@@ -1181,39 +1276,9 @@ int svc_generic_rpcbind_set(struct net *net,
 	error = svc_rpcbind_set_version(net, progp, version,
 					family, proto, port);
 
-	/* -EIO means no answer, not a refusal, so vs_rpcb_optnl must keep it. */
-	if (error == -EIO)
-		return error;
-
 	return (vers->vs_rpcb_optnl) ? 0 : error;
 }
 EXPORT_SYMBOL_GPL(svc_generic_rpcbind_set);
-
-/**
- * svc_rpcb_failure_count - local rpcbind calls for @serv that got no answer
- * @serv: RPC service to query
- *
- * svc_register() adds one for each of its calls that got no answer. A reply
- * that refuses one entry does not count, because rpcbind answered and the
- * next entry may still succeed.
- *
- * The count is kept per serv rather than per net. The local rpcbind client
- * is per-net and lockd shares it, but a count that another service can move
- * says nothing about this serv's own calls.
- *
- * This is for callers that cannot see the svc_register() return, because a
- * transport class sits in between. Such a caller reads the count before it
- * starts and compares as it goes, so there is no state to reset between
- * operations. The count never resets, and callers must not attach meaning
- * to the value itself.
- *
- * Return: the number of unanswered calls since this serv was created.
- */
-unsigned int svc_rpcb_failure_count(struct svc_serv *serv)
-{
-	return atomic_read(&serv->sv_rpcb_failures);
-}
-EXPORT_SYMBOL_GPL(svc_rpcb_failure_count);
 
 /**
  * svc_register - register an RPC service with the local portmapper
@@ -1225,11 +1290,10 @@ EXPORT_SYMBOL_GPL(svc_rpcb_failure_count);
  *
  * Service is registered for any address in the passed-in protocol family
  */
-int svc_register(struct svc_serv *serv, struct net *net,
+int svc_register(const struct svc_serv *serv, struct net *net,
 		 const int family, const unsigned short proto,
 		 const unsigned short port)
 {
-	bool			noanswer = false;
 	unsigned int		p, i;
 	int			error = 0;
 
@@ -1237,42 +1301,21 @@ int svc_register(struct svc_serv *serv, struct net *net,
 	if (proto == 0 && port == 0)
 		return -EINVAL;
 
-	if (serv->sv_no_rpcbind)
-		return 0;
-
 	for (p = 0; p < serv->sv_nprogs; p++) {
 		struct svc_program *progp = &serv->sv_programs[p];
 
 		for (i = 0; i < progp->pg_nvers; i++) {
-			const struct svc_version *vers = progp->pg_vers[i];
-			int ret;
 
-			ret = progp->pg_rpcbind_set(net, progp, i,
+			error = progp->pg_rpcbind_set(net, progp, i,
 					family, proto, port);
-			if (ret == -EIO) {
-				noanswer = true;
-				if (vers && vers->vs_rpcb_optnl)
-					ret = 0;
-			}
-			if (ret < 0) {
+			if (error < 0) {
 				printk(KERN_WARNING "svc: failed to register "
 					"%sv%u RPC service (errno %d).\n",
-					progp->pg_name, i, -ret);
-				if (!error)
-					error = ret;
+					progp->pg_name, i, -error);
 				break;
 			}
-			if (noanswer)
-				break;
 		}
-
-		/* Give up on trying to register anything if it didn't respond */
-		if (noanswer)
-			break;
 	}
-
-	if (noanswer)
-		atomic_inc(&serv->sv_rpcb_failures);
 
 	return error;
 }
@@ -1284,8 +1327,8 @@ int svc_register(struct svc_serv *serv, struct net *net,
  * any "inet6" entries anyway.  So a PMAP_UNSET should be sufficient
  * in this case to clear all existing entries for [program, version].
  */
-static int __svc_unregister(struct net *net, const u32 program, const u32 version,
-			    const char *progname)
+static void __svc_unregister(struct net *net, const u32 program, const u32 version,
+			     const char *progname)
 {
 	int error;
 
@@ -1299,7 +1342,6 @@ static int __svc_unregister(struct net *net, const u32 program, const u32 versio
 		error = rpcb_register(net, program, version, 0, 0);
 
 	trace_svc_unregister(progname, version, error);
-	return error;
 }
 
 /*
@@ -1326,13 +1368,10 @@ static void svc_unregister(const struct svc_serv *serv, struct net *net)
 				continue;
 			if (progp->pg_vers[i]->vs_hidden)
 				continue;
-			if (__svc_unregister(net, progp->pg_prog, i,
-					     progp->pg_name) == -EIO)
-				goto out;
+			__svc_unregister(net, progp->pg_prog, i, progp->pg_name);
 		}
 	}
 
-out:
 	rcu_read_lock();
 	sighand = rcu_dereference(current->sighand);
 	spin_lock_irqsave(&sighand->siglock, flags);
@@ -1402,13 +1441,8 @@ svc_generic_init_request(struct svc_rqst *rqstp,
 	memset(rqstp->rq_argp, 0, procp->pc_argzero);
 	memset(rqstp->rq_resp, 0, procp->pc_ressize);
 
-	/* Bump per-net per-procedure stats counter */
-	if (rqstp->rq_server->sv_stats &&
-	    rqstp->rq_server->sv_stats->program == progp &&
-	    rqstp->rq_server->sv_stats->vs_count &&
-	    rqstp->rq_server->sv_stats->vs_count[rqstp->rq_vers])
-		this_cpu_inc(rqstp->rq_server->sv_stats->vs_count
-				[rqstp->rq_vers][rqstp->rq_proc]);
+	/* Bump per-procedure stats counter */
+	this_cpu_inc(versp->vs_count[rqstp->rq_proc]);
 
 	ret->dispatch = versp->vs_dispatch;
 	return rpc_success;
@@ -1420,60 +1454,6 @@ err_bad_proc:
 	return rpc_proc_unavail;
 }
 EXPORT_SYMBOL_GPL(svc_generic_init_request);
-
-/**
- * svc_stat_alloc_counts - allocate per-netns per-version call count arrays
- * @statp: svc_stat whose vs_count arrays should be allocated
- *
- * statp->program must be set before calling this.
- *
- * Returns zero on success, or a negative errno otherwise.
- */
-int svc_stat_alloc_counts(struct svc_stat *statp)
-{
-	struct svc_program *prog = statp->program;
-	unsigned int i;
-
-	statp->vs_count = kcalloc(prog->pg_nvers,
-				  sizeof(unsigned long __percpu *),
-				  GFP_KERNEL);
-	if (!statp->vs_count)
-		return -ENOMEM;
-
-	for (i = 0; i < prog->pg_nvers; i++) {
-		if (!prog->pg_vers[i])
-			continue;
-		statp->vs_count[i] = __alloc_percpu(prog->pg_vers[i]->vs_nproc *
-					    sizeof(unsigned long),
-					    sizeof(unsigned long));
-		if (!statp->vs_count[i])
-			goto err;
-	}
-	return 0;
-err:
-	svc_stat_free_counts(statp);
-	return -ENOMEM;
-}
-EXPORT_SYMBOL_GPL(svc_stat_alloc_counts);
-
-/**
- * svc_stat_free_counts - free per-netns per-version call count arrays
- * @statp: svc_stat whose vs_count arrays should be freed
- */
-void svc_stat_free_counts(struct svc_stat *statp)
-{
-	struct svc_program *prog = statp->program;
-	unsigned int i;
-
-	if (!statp->vs_count)
-		return;
-
-	for (i = 0; i < prog->pg_nvers; i++)
-		free_percpu(statp->vs_count[i]);
-	kfree(statp->vs_count);
-	statp->vs_count = NULL;
-}
-EXPORT_SYMBOL_GPL(svc_stat_free_counts);
 
 /*
  * Common routine for processing the RPC request.

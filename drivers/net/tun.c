@@ -98,8 +98,7 @@ static void tun_default_link_ksettings(struct net_device *dev,
 #define TUN_FASYNC	IFF_ATTACH_QUEUE
 
 #define TUN_FEATURES (IFF_NO_PI | IFF_ONE_QUEUE | IFF_VNET_HDR | \
-		      IFF_MULTI_QUEUE | IFF_NAPI | IFF_NAPI_FRAGS | \
-		      IFF_BACKPRESSURE)
+		      IFF_MULTI_QUEUE | IFF_NAPI | IFF_NAPI_FRAGS)
 
 #define GOODCOPY_LEN 128
 
@@ -146,8 +145,6 @@ struct tun_file {
 	struct list_head next;
 	struct tun_struct *detached;
 	struct ptr_ring tx_ring;
-	/* Protected by tx_ring.consumer_lock */
-	int cons_cnt;
 	struct xdp_rxq_info xdp_rxq;
 };
 
@@ -513,18 +510,14 @@ static u16 tun_select_queue(struct net_device *dev, struct sk_buff *skb,
 	return ret;
 }
 
-static inline bool tun_permitted(struct tun_struct *tun)
+static inline bool tun_not_capable(struct tun_struct *tun)
 {
 	const struct cred *cred = current_cred();
 	struct net *net = dev_net(tun->dev);
 
-	/* If both uid and gid are set, *both* must match */
-	if ((uid_valid(tun->owner) || gid_valid(tun->group)) &&
-	    (!uid_valid(tun->owner) || uid_eq(cred->euid, tun->owner)) &&
-	    (!gid_valid(tun->group) || in_egroup_p(tun->group)))
-		return true;
-
-	return ns_capable(net->user_ns, CAP_NET_ADMIN);
+	return ((uid_valid(tun->owner) && !uid_eq(cred->euid, tun->owner)) ||
+		(gid_valid(tun->group) && !in_egroup_p(tun->group))) &&
+		!ns_capable(net->user_ns, CAP_NET_ADMIN);
 }
 
 static void tun_set_real_num_queues(struct tun_struct *tun)
@@ -537,7 +530,7 @@ static void tun_disable_queue(struct tun_struct *tun, struct tun_file *tfile)
 {
 	tfile->detached = tun;
 	list_add_tail(&tfile->next, &tun->disabled);
-	WRITE_ONCE(tun->numdisabled, tun->numdisabled + 1);
+	++tun->numdisabled;
 }
 
 static struct tun_struct *tun_enable_queue(struct tun_file *tfile)
@@ -546,7 +539,7 @@ static struct tun_struct *tun_enable_queue(struct tun_file *tfile)
 
 	tfile->detached = NULL;
 	list_del_init(&tfile->next);
-	WRITE_ONCE(tun->numdisabled, tun->numdisabled - 1);
+	--tun->numdisabled;
 	return tun;
 }
 
@@ -592,20 +585,15 @@ static void __tun_detach(struct tun_file *tfile, bool clean)
 		u16 index = tfile->queue_index;
 		BUG_ON(index >= tun->numqueues);
 
-		spin_lock(&tfile->tx_ring.consumer_lock);
 		rcu_assign_pointer(tun->tfiles[index],
 				   tun->tfiles[tun->numqueues - 1]);
-		spin_unlock(&tfile->tx_ring.consumer_lock);
 		ntfile = rtnl_dereference(tun->tfiles[index]);
-		spin_lock(&ntfile->tx_ring.consumer_lock);
 		ntfile->queue_index = index;
 		ntfile->xdp_rxq.queue_index = index;
-		ntfile->cons_cnt = 0;
-		spin_unlock(&ntfile->tx_ring.consumer_lock);
 		rcu_assign_pointer(tun->tfiles[tun->numqueues - 1],
 				   NULL);
 
-		WRITE_ONCE(tun->numqueues, tun->numqueues - 1);
+		--tun->numqueues;
 		if (clean) {
 			RCU_INIT_POINTER(tfile->tun, NULL);
 			sock_put(&tfile->sk);
@@ -615,17 +603,9 @@ static void __tun_detach(struct tun_file *tfile, bool clean)
 		}
 
 		synchronize_net();
-		tun_flow_delete_by_queue(tun, tun->numqueues);
+		tun_flow_delete_by_queue(tun, tun->numqueues + 1);
 		/* Drop read queue */
 		tun_queue_purge(tfile);
-		spin_lock_bh(&ntfile->tx_ring.consumer_lock);
-		spin_lock(&ntfile->tx_ring.producer_lock);
-		ntfile->cons_cnt = 0;
-		if (netif_running(tun->dev) &&
-		    __ptr_ring_empty(&ntfile->tx_ring))
-			netif_wake_subqueue(tun->dev, index);
-		spin_unlock(&ntfile->tx_ring.producer_lock);
-		spin_unlock_bh(&ntfile->tx_ring.consumer_lock);
 		tun_set_real_num_queues(tun);
 	} else if (tfile->detached && clean) {
 		tun = tun_enable_queue(tfile);
@@ -676,7 +656,7 @@ static void tun_detach_all(struct net_device *dev)
 		tfile->socket.sk->sk_shutdown = RCV_SHUTDOWN;
 		tfile->socket.sk->sk_data_ready(tfile->socket.sk);
 		RCU_INIT_POINTER(tfile->tun, NULL);
-		WRITE_ONCE(tun->numqueues, tun->numqueues - 1);
+		--tun->numqueues;
 	}
 	list_for_each_entry(tfile, &tun->disabled, next) {
 		tfile->socket.sk->sk_shutdown = RCV_SHUTDOWN;
@@ -688,18 +668,14 @@ static void tun_detach_all(struct net_device *dev)
 	synchronize_net();
 	for (i = 0; i < n; i++) {
 		tfile = rtnl_dereference(tun->tfiles[i]);
-		mutex_lock(&tfile->napi_mutex);
 		tun_napi_del(tfile);
-		mutex_unlock(&tfile->napi_mutex);
 		/* Drop read queue */
 		tun_queue_purge(tfile);
 		xdp_rxq_info_unreg(&tfile->xdp_rxq);
 		sock_put(&tfile->sk);
 	}
 	list_for_each_entry_safe(tfile, tmp, &tun->disabled, next) {
-		mutex_lock(&tfile->napi_mutex);
 		tun_napi_del(tfile);
-		mutex_unlock(&tfile->napi_mutex);
 		tun_enable_queue(tfile);
 		tun_queue_purge(tfile);
 		xdp_rxq_info_unreg(&tfile->xdp_rxq);
@@ -709,25 +685,6 @@ static void tun_detach_all(struct net_device *dev)
 
 	if (tun->flags & IFF_PERSIST)
 		module_put(THIS_MODULE);
-}
-
-static void tun_force_wake_queue(struct tun_struct *tun,
-				 struct tun_file *tfile)
-{
-	/* Ensure that the producer can not stop the
-	 * queue concurrently by taking locks.
-	 */
-	spin_lock_bh(&tfile->tx_ring.consumer_lock);
-	spin_lock(&tfile->tx_ring.producer_lock);
-	tfile->cons_cnt = 0;
-	/* Tested under the locks that tun_net_close() takes, so this can not
-	 * undo its stop. tun_net_open() wakes the queues of a device that
-	 * comes back up.
-	 */
-	if (netif_running(tun->dev))
-		netif_wake_subqueue(tun->dev, tfile->queue_index);
-	spin_unlock(&tfile->tx_ring.producer_lock);
-	spin_unlock_bh(&tfile->tx_ring.consumer_lock);
 }
 
 static int tun_attach(struct tun_struct *tun, struct file *file,
@@ -773,11 +730,8 @@ static int tun_attach(struct tun_struct *tun, struct file *file,
 		goto out;
 	}
 
-	spin_lock(&tfile->tx_ring.consumer_lock);
 	tfile->queue_index = tun->numqueues;
-	spin_unlock(&tfile->tx_ring.consumer_lock);
 	tfile->socket.sk->sk_shutdown &= ~RCV_SHUTDOWN;
-	tun_force_wake_queue(tun, tfile);
 
 	if (tfile->detached) {
 		/* Re-attach detached tfile, updating XDP queue_index */
@@ -822,7 +776,7 @@ static int tun_attach(struct tun_struct *tun, struct file *file,
 	if (publish_tun)
 		rcu_assign_pointer(tfile->tun, tun);
 	rcu_assign_pointer(tun->tfiles[tun->numqueues], tfile);
-	WRITE_ONCE(tun->numqueues, tun->numqueues + 1);
+	tun->numqueues++;
 	tun_set_real_num_queues(tun);
 out:
 	return err;
@@ -1010,24 +964,6 @@ static int tun_net_open(struct net_device *dev)
 /* Net device close. */
 static int tun_net_close(struct net_device *dev)
 {
-	struct tun_struct *tun = netdev_priv(dev);
-	struct tun_file *tfile;
-	int i;
-
-	/* netif_running() is already false: take both ring locks to keep the
-	 * wake sites out, so the stop below is the last write to
-	 * __QUEUE_STATE_DRV_XOFF.
-	 */
-	for (i = 0; i < tun->numqueues; i++) {
-		tfile = rtnl_dereference(tun->tfiles[i]);
-
-		spin_lock_bh(&tfile->tx_ring.consumer_lock);
-		spin_lock(&tfile->tx_ring.producer_lock);
-		tfile->cons_cnt = 0;
-		spin_unlock(&tfile->tx_ring.producer_lock);
-		spin_unlock_bh(&tfile->tx_ring.consumer_lock);
-	}
-
 	netif_tx_stop_all_queues(dev);
 	return 0;
 }
@@ -1072,7 +1008,6 @@ static netdev_tx_t tun_net_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct netdev_queue *queue;
 	struct tun_file *tfile;
 	int len = skb->len;
-	int ret;
 
 	rcu_read_lock();
 	tfile = rcu_dereference(tun->tfiles[txq]);
@@ -1127,35 +1062,13 @@ static netdev_tx_t tun_net_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	nf_reset_ct(skb);
 
-	queue = netdev_get_tx_queue(dev, txq);
-
-	spin_lock(&tfile->tx_ring.producer_lock);
-	ret = __ptr_ring_produce(&tfile->tx_ring, skb);
-	/* Do not touch the queue state of a device that is going down. */
-	if ((tun->flags & IFF_BACKPRESSURE) && netif_running(dev) &&
-	    !qdisc_txq_has_no_queue(queue) &&
-	    __ptr_ring_check_produce(&tfile->tx_ring) == -ENOSPC) {
-		netif_tx_stop_queue(queue);
-		/* Paired with smp_mb() in __tun_wake_queue() */
-		smp_mb__after_atomic();
-		if (!__ptr_ring_check_produce(&tfile->tx_ring))
-			netif_tx_wake_queue(queue);
-	}
-	spin_unlock(&tfile->tx_ring.producer_lock);
-
-	if (ret) {
-		/* This should be a rare case if IFF_BACKPRESSURE is enabled and
-		 * a qdisc is present, but can happen due to lltx.
-		 * Since skb_tx_timestamp(), skb_orphan(),
-		 * run_ebpf_filter() and pskb_trim() could have tinkered
-		 * with the SKB, returning NETDEV_TX_BUSY is unsafe and
-		 * we must drop instead.
-		 */
+	if (ptr_ring_produce(&tfile->tx_ring, skb)) {
 		drop_reason = SKB_DROP_REASON_FULL_RING;
 		goto drop;
 	}
 
 	/* dev->lltx requires to do our own update of trans_start */
+	queue = netdev_get_tx_queue(dev, txq);
 	txq_trans_cond_update(queue);
 
 	/* Notify and wake up reader process */
@@ -1499,12 +1412,6 @@ static struct sk_buff *tun_napi_alloc_frags(struct tun_file *tfile,
 	local_bh_enable();
 	if (!skb)
 		return ERR_PTR(-ENOMEM);
-
-	/* An skb recycled by napi_reuse_skb() keeps the protocol of a
-	 * previous frame. eth_type_trans() sets it after the virtio
-	 * header checks, which must not see a stale one.
-	 */
-	skb->protocol = 0;
 
 	linear = iov_iter_single_seg_count(it);
 	err = __skb_grow(skb, linear);
@@ -1917,8 +1824,7 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 		if (tun->flags & IFF_NO_PI) {
 			u8 ip_version;
 
-			drop_reason = pskb_may_pull_reason(skb, 1);
-			if (drop_reason) {
+			if (!pskb_may_pull(skb, 1)) {
 				err = -EINVAL;
 				goto drop;
 			}
@@ -1941,17 +1847,16 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 		skb->protocol = pi.proto;
 		break;
 	case IFF_TAP:
-		drop_reason = pskb_may_pull_reason(skb, ETH_HLEN);
-		if (drop_reason) {
+		if (!pskb_may_pull(skb, ETH_HLEN)) {
 			err = -ENOMEM;
+			drop_reason = SKB_DROP_REASON_HDR_TRUNC;
 			goto drop;
 		}
 		skb_set_network_header(skb, ETH_HLEN);
 		break;
 	}
 
-	if (tun_vnet_hdr_tnl_to_skb(tun->flags, features, skb, &hdr,
-				    (tun->flags & TUN_TYPE_MASK) == IFF_TAP)) {
+	if (tun_vnet_hdr_tnl_to_skb(tun->flags, features, skb, &hdr)) {
 		atomic_long_inc(&tun->rx_frame_errors);
 		err = -EINVAL;
 		goto free_skb;
@@ -2081,7 +1986,6 @@ drop:
 		dev_core_stats_rx_dropped_inc(tun->dev);
 
 free_skb:
-	drop_reason = drop_reason ?: SKB_DROP_REASON_NOT_SPECIFIED;
 	if (!IS_ERR_OR_NULL(skb))
 		kfree_skb_reason(skb, drop_reason);
 
@@ -2226,61 +2130,13 @@ done:
 	return total;
 }
 
-/* Callers must hold ring.consumer_lock */
-static void __tun_wake_queue(struct tun_struct *tun,
-			     struct tun_file *tfile, int consumed)
-{
-	u16 queue_index = tfile->queue_index;
-	struct netdev_queue *txq;
-
-	lockdep_assert_held(&tfile->tx_ring.consumer_lock);
-
-	if (!(tun->flags & IFF_BACKPRESSURE))
-		return;
-
-	/* A stop from tun_net_close() is not backpressure, leave it alone. */
-	if (unlikely(!netif_running(tun->dev)))
-		return;
-
-	/* Only the current owner of the slot may wake its subqueue. */
-	if (unlikely(rcu_access_pointer(tun->tfiles[queue_index]) != tfile))
-		return;
-
-	txq = netdev_get_tx_queue(tun->dev, queue_index);
-
-	/* Paired with smp_mb__after_atomic() in tun_net_xmit() */
-	smp_mb();
-	if (netif_tx_queue_stopped(txq)) {
-		tfile->cons_cnt += consumed;
-		if (tfile->cons_cnt >= tfile->tx_ring.size / 2 ||
-		    __ptr_ring_empty(&tfile->tx_ring)) {
-			netif_tx_wake_queue(txq);
-			tfile->cons_cnt = 0;
-		}
-	}
-}
-
-static void *tun_ring_consume(struct tun_struct *tun, struct tun_file *tfile)
-{
-	void *ptr;
-
-	spin_lock(&tfile->tx_ring.consumer_lock);
-	ptr = __ptr_ring_consume(&tfile->tx_ring);
-	if (ptr)
-		__tun_wake_queue(tun, tfile, 1);
-
-	spin_unlock(&tfile->tx_ring.consumer_lock);
-	return ptr;
-}
-
-static void *tun_ring_recv(struct tun_struct *tun, struct tun_file *tfile,
-			   int noblock, int *err)
+static void *tun_ring_recv(struct tun_file *tfile, int noblock, int *err)
 {
 	DECLARE_WAITQUEUE(wait, current);
 	void *ptr = NULL;
 	int error = 0;
 
-	ptr = tun_ring_consume(tun, tfile);
+	ptr = ptr_ring_consume(&tfile->tx_ring);
 	if (ptr)
 		goto out;
 	if (noblock) {
@@ -2292,7 +2148,7 @@ static void *tun_ring_recv(struct tun_struct *tun, struct tun_file *tfile,
 
 	while (1) {
 		set_current_state(TASK_INTERRUPTIBLE);
-		ptr = tun_ring_consume(tun, tfile);
+		ptr = ptr_ring_consume(&tfile->tx_ring);
 		if (ptr)
 			break;
 		if (signal_pending(current)) {
@@ -2329,7 +2185,7 @@ static ssize_t tun_do_read(struct tun_struct *tun, struct tun_file *tfile,
 
 	if (!ptr) {
 		/* Read frames from ring */
-		ptr = tun_ring_recv(tun, tfile, noblock, &err);
+		ptr = tun_ring_recv(tfile, noblock, &err);
 		if (!ptr)
 			return err;
 	}
@@ -2464,36 +2320,32 @@ static size_t tun_get_size(const struct net_device *dev)
 
 static int tun_fill_info(struct sk_buff *skb, const struct net_device *dev)
 {
-	const struct tun_struct *tun = netdev_priv(dev);
-	unsigned int flags = READ_ONCE(tun->flags);
-	kuid_t owner = READ_ONCE(tun->owner);
-	kgid_t group = READ_ONCE(tun->group);
+	struct tun_struct *tun = netdev_priv(dev);
 
-	if (nla_put_u8(skb, IFLA_TUN_TYPE, flags & TUN_TYPE_MASK))
+	if (nla_put_u8(skb, IFLA_TUN_TYPE, tun->flags & TUN_TYPE_MASK))
 		goto nla_put_failure;
-	if (uid_valid(owner) &&
+	if (uid_valid(tun->owner) &&
 	    nla_put_u32(skb, IFLA_TUN_OWNER,
-			from_kuid_munged(current_user_ns(), owner)))
+			from_kuid_munged(current_user_ns(), tun->owner)))
 		goto nla_put_failure;
-	if (gid_valid(group) &&
+	if (gid_valid(tun->group) &&
 	    nla_put_u32(skb, IFLA_TUN_GROUP,
-			from_kgid_munged(current_user_ns(), group)))
+			from_kgid_munged(current_user_ns(), tun->group)))
 		goto nla_put_failure;
-	if (nla_put_u8(skb, IFLA_TUN_PI, !(flags & IFF_NO_PI)))
+	if (nla_put_u8(skb, IFLA_TUN_PI, !(tun->flags & IFF_NO_PI)))
 		goto nla_put_failure;
-	if (nla_put_u8(skb, IFLA_TUN_VNET_HDR, !!(flags & IFF_VNET_HDR)))
+	if (nla_put_u8(skb, IFLA_TUN_VNET_HDR, !!(tun->flags & IFF_VNET_HDR)))
 		goto nla_put_failure;
-	if (nla_put_u8(skb, IFLA_TUN_PERSIST, !!(flags & IFF_PERSIST)))
+	if (nla_put_u8(skb, IFLA_TUN_PERSIST, !!(tun->flags & IFF_PERSIST)))
 		goto nla_put_failure;
 	if (nla_put_u8(skb, IFLA_TUN_MULTI_QUEUE,
-		       !!(flags & IFF_MULTI_QUEUE)))
+		       !!(tun->flags & IFF_MULTI_QUEUE)))
 		goto nla_put_failure;
-	if (flags & IFF_MULTI_QUEUE) {
-		if (nla_put_u32(skb, IFLA_TUN_NUM_QUEUES,
-				READ_ONCE(tun->numqueues)))
+	if (tun->flags & IFF_MULTI_QUEUE) {
+		if (nla_put_u32(skb, IFLA_TUN_NUM_QUEUES, tun->numqueues))
 			goto nla_put_failure;
 		if (nla_put_u32(skb, IFLA_TUN_NUM_DISABLED_QUEUES,
-				READ_ONCE(tun->numdisabled)))
+				tun->numdisabled))
 			goto nla_put_failure;
 	}
 
@@ -2562,12 +2414,6 @@ static int tun_xdp_one(struct tun_struct *tun,
 		return -EINVAL;
 	}
 
-	if (unlikely(!(READ_ONCE(tun->dev->flags) & IFF_UP))) {
-		put_page(virt_to_head_page(xdp->data));
-		dev_core_stats_rx_dropped_inc(tun->dev);
-		return -EIO;
-	}
-
 	xdp_prog = rcu_dereference(tun->xdp_prog);
 	if (xdp_prog) {
 		if (gso->gso_type) {
@@ -2628,11 +2474,7 @@ build:
 	tnl_hdr = (struct virtio_net_hdr_v1_hash_tunnel *)gso;
 	skb->dev = tun->dev;
 	skb_set_network_header(skb, ETH_HLEN);
-	/* Frames always start with an Ethernet header here, as the
-	 * eth_type_trans() call below expects.
-	 */
-	if (tun_vnet_hdr_tnl_to_skb(tun->flags, features, skb, tnl_hdr,
-				    true)) {
+	if (tun_vnet_hdr_tnl_to_skb(tun->flags, features, skb, tnl_hdr)) {
 		atomic_long_inc(&tun->rx_frame_errors);
 		kfree_skb(skb);
 		ret = -EINVAL;
@@ -2873,9 +2715,8 @@ static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr)
 {
 	struct tun_struct *tun;
 	struct tun_file *tfile = file->private_data;
-	struct tun_file *ntfile;
 	struct net_device *dev;
-	int err, i;
+	int err;
 
 	if (tfile->detached)
 		return -EINVAL;
@@ -2904,7 +2745,7 @@ static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr)
 		    !!(tun->flags & IFF_MULTI_QUEUE))
 			return -EINVAL;
 
-		if (!tun_permitted(tun))
+		if (tun_not_capable(tun))
 			return -EPERM;
 		err = security_tun_dev_open(tun->security);
 		if (err < 0)
@@ -2925,8 +2766,8 @@ static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr)
 			return 0;
 		}
 
-		WRITE_ONCE(tun->flags, (tun->flags & ~TUN_FEATURES) |
-				       (ifr->ifr_flags & TUN_FEATURES));
+		tun->flags = (tun->flags & ~TUN_FEATURES) |
+			      (ifr->ifr_flags & TUN_FEATURES);
 
 		netdev_state_change(dev);
 	} else {
@@ -3004,10 +2845,8 @@ static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr)
 	/* Make sure persistent devices do not get stuck in
 	 * xoff state.
 	 */
-	for (i = 0; i < tun->numqueues; i++) {
-		ntfile = rtnl_dereference(tun->tfiles[i]);
-		tun_force_wake_queue(tun, ntfile);
-	}
+	if (netif_running(tun->dev))
+		netif_tx_wake_all_queues(tun->dev);
 
 	strscpy(ifr->ifr_name, tun->dev->name);
 	return 0;
@@ -3326,13 +3165,13 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 		/* Disable/Enable persist mode. Keep an extra reference to the
 		 * module to prevent the module being unprobed.
 		 */
-		if (arg && !(READ_ONCE(tun->flags) & IFF_PERSIST)) {
-			WRITE_ONCE(tun->flags, READ_ONCE(tun->flags) | IFF_PERSIST);
+		if (arg && !(tun->flags & IFF_PERSIST)) {
+			tun->flags |= IFF_PERSIST;
 			__module_get(THIS_MODULE);
 			do_notify = true;
 		}
-		if (!arg && (READ_ONCE(tun->flags) & IFF_PERSIST)) {
-			WRITE_ONCE(tun->flags, READ_ONCE(tun->flags) & ~IFF_PERSIST);
+		if (!arg && (tun->flags & IFF_PERSIST)) {
+			tun->flags &= ~IFF_PERSIST;
 			module_put(THIS_MODULE);
 			do_notify = true;
 		}
@@ -3348,10 +3187,10 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 			ret = -EINVAL;
 			break;
 		}
-		WRITE_ONCE(tun->owner, owner);
+		tun->owner = owner;
 		do_notify = true;
 		netif_info(tun, drv, tun->dev, "owner set to %u\n",
-			   from_kuid(&init_user_ns, owner));
+			   from_kuid(&init_user_ns, tun->owner));
 		break;
 
 	case TUNSETGROUP:
@@ -3361,10 +3200,10 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 			ret = -EINVAL;
 			break;
 		}
-		WRITE_ONCE(tun->group, group);
+		tun->group = group;
 		do_notify = true;
 		netif_info(tun, drv, tun->dev, "group set to %u\n",
-			   from_kgid(&init_user_ns, group));
+			   from_kgid(&init_user_ns, tun->group));
 		break;
 
 	case TUNSETLINK:
@@ -3373,11 +3212,6 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 			netif_info(tun, drv, tun->dev,
 				   "Linktype set failed because interface is up\n");
 			ret = -EBUSY;
-		} else if ((unsigned short)arg == ARPHRD_IEEE802154 ||
-			   (unsigned short)arg == ARPHRD_IEEE802154_MONITOR ||
-			   (unsigned short)arg == ARPHRD_6LOWPAN ||
-			   (unsigned short)arg == ARPHRD_MCTP) {
-			ret = -EINVAL;
 		} else {
 			ret = call_netdevice_notifiers(NETDEV_PRE_TYPE_CHANGE,
 						       tun->dev);
@@ -3808,13 +3642,6 @@ static int tun_queue_resize(struct tun_struct *tun)
 					  dev->tx_queue_len, GFP_KERNEL,
 					  tun_ptr_free);
 
-	if (!ret) {
-		for (i = 0; i < tun->numqueues; i++) {
-			tfile = rtnl_dereference(tun->tfiles[i]);
-			tun_force_wake_queue(tun, tfile);
-		}
-	}
-
 	kfree(rings);
 	return ret;
 }
@@ -3892,7 +3719,6 @@ static void __exit tun_cleanup(void)
 	misc_deregister(&tun_miscdev);
 	rtnl_link_unregister(&tun_link_ops);
 	unregister_netdevice_notifier(&tun_notifier_block);
-	rcu_barrier();
 }
 
 /* Get an underlying socket object from tun file.  Returns error unless file is
@@ -3923,31 +3749,6 @@ struct ptr_ring *tun_get_tx_ring(struct file *file)
 	return &tfile->tx_ring;
 }
 EXPORT_SYMBOL_GPL(tun_get_tx_ring);
-
-/* Callers must hold ring.consumer_lock */
-void tun_wake_queue(struct file *file, int consumed)
-{
-	struct tun_file *tfile;
-	struct tun_struct *tun;
-
-	if (file->f_op != &tun_fops)
-		return;
-
-	tfile = file->private_data;
-	if (!tfile)
-		return;
-
-	lockdep_assert_held(&tfile->tx_ring.consumer_lock);
-
-	rcu_read_lock();
-
-	tun = rcu_dereference(tfile->tun);
-	if (tun)
-		__tun_wake_queue(tun, tfile, consumed);
-
-	rcu_read_unlock();
-}
-EXPORT_SYMBOL_GPL(tun_wake_queue);
 
 module_init(tun_init);
 module_exit(tun_cleanup);

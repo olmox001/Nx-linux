@@ -81,11 +81,8 @@ static int renesas_gmac_pcs_init(struct stmmac_priv *priv)
 
 static void renesas_gmac_pcs_exit(struct stmmac_priv *priv)
 {
-	if (!priv->hw->phylink_pcs)
-		return;
-
-	miic_destroy(priv->hw->phylink_pcs);
-	priv->hw->phylink_pcs = NULL;
+	if (priv->hw->phylink_pcs)
+		miic_destroy(priv->hw->phylink_pcs);
 }
 
 static struct phylink_pcs *renesas_gmac_select_pcs(struct stmmac_priv *priv,
@@ -151,7 +148,7 @@ static int renesas_gbeth_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(plat_dat),
 				     "dt configuration failed\n");
 
-	gbeth = devm_kzalloc_obj(dev, *gbeth);
+	gbeth = devm_kzalloc(dev, sizeof(*gbeth), GFP_KERNEL);
 	if (!gbeth)
 		return -ENOMEM;
 
@@ -159,8 +156,8 @@ static int renesas_gbeth_probe(struct platform_device *pdev)
 	gbeth->of_data = of_data;
 
 	plat_dat->num_clks = of_data->num_clks;
-	plat_dat->clks = devm_kzalloc_objs(dev, *plat_dat->clks,
-					   plat_dat->num_clks);
+	plat_dat->clks = devm_kcalloc(dev, plat_dat->num_clks,
+				      sizeof(*plat_dat->clks), GFP_KERNEL);
 	if (!plat_dat->clks)
 		return -ENOMEM;
 

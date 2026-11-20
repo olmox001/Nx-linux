@@ -573,7 +573,6 @@ static int __sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp,
 	INIT_LIST_HEAD(&sev->regions_list);
 	INIT_LIST_HEAD(&sev->mirror_vms);
 	sev->need_init = false;
-	kvm->arch.has_protected_page_tables = true;
 
 	kvm_set_apicv_inhibit(kvm, APICV_INHIBIT_REASON_SEV);
 
@@ -1138,6 +1137,9 @@ static int sev_launch_update_vmsa(struct kvm *kvm, struct kvm_sev_cmd *argp)
 
 	if (!sev_es_guest(kvm))
 		return -ENOTTY;
+
+	if (kvm_is_vcpu_creation_in_progress(kvm))
+		return -EBUSY;
 
 	ret = kvm_lock_all_vcpus(kvm);
 	if (ret)
@@ -2059,14 +2061,12 @@ static void sev_migrate_from(struct kvm *dst_kvm, struct kvm *src_kvm)
 	dst->pages_locked = src->pages_locked;
 	dst->es_active = src->es_active;
 	dst->vmsa_features = src->vmsa_features;
-	dst_kvm->arch.has_protected_page_tables = true;
 
 	src->asid = 0;
 	src->active = false;
 	src->handle = 0;
 	src->pages_locked = 0;
 	src->es_active = false;
-	src_kvm->arch.has_protected_page_tables = false;
 
 	list_cut_before(&dst->regions_list, &src->regions_list, &src->regions_list);
 
@@ -2135,6 +2135,10 @@ static int sev_check_source_vcpus(struct kvm *dst, struct kvm *src)
 	struct kvm_vcpu *src_vcpu;
 	unsigned long i;
 
+	if (kvm_is_vcpu_creation_in_progress(src) ||
+	    kvm_is_vcpu_creation_in_progress(dst))
+		return -EBUSY;
+
 	if (!sev_es_guest(src))
 		return 0;
 
@@ -2161,10 +2165,10 @@ int sev_vm_move_enc_context_from(struct kvm *kvm, unsigned int source_fd)
 	if (fd_empty(f))
 		return -EBADF;
 
-	source_kvm = file_to_kvm_x86(fd_file(f));
-	if (!source_kvm)
+	if (!file_is_kvm(fd_file(f)))
 		return -EBADF;
 
+	source_kvm = fd_file(f)->private_data;
 	ret = sev_lock_two_vms(kvm, source_kvm);
 	if (ret)
 		return ret;
@@ -2375,6 +2379,9 @@ static int sev_gmem_post_populate(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn,
 	int level;
 	int ret;
 
+	if (WARN_ON_ONCE(sev_populate_args->type != KVM_SEV_SNP_PAGE_TYPE_ZERO && !src_page))
+		return -EINVAL;
+
 	ret = snp_lookup_rmpentry((u64)pfn, &assigned, &level);
 	if (ret || assigned) {
 		pr_debug("%s: Failed to ensure GFN 0x%llx RMP entry is initial shared state, ret: %d assigned: %d\n",
@@ -2419,7 +2426,7 @@ static int sev_gmem_post_populate(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn,
 	 */
 	if (ret && !snp_page_reclaim(kvm, pfn) &&
 	    sev_populate_args->type == KVM_SEV_SNP_PAGE_TYPE_CPUID &&
-	    sev_populate_args->fw_error == SEV_RET_INVALID_PARAM && src_page) {
+	    sev_populate_args->fw_error == SEV_RET_INVALID_PARAM) {
 		void *src_vaddr = kmap_local_page(src_page);
 		void *dst_vaddr = kmap_local_pfn(pfn);
 
@@ -2452,8 +2459,8 @@ static int snp_launch_update(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	if (copy_from_user(&params, u64_to_user_ptr(argp->data), sizeof(params)))
 		return -EFAULT;
 
-	pr_debug("%s: GFN start 0x%llx length 0x%llx type %d flags %d src %llx\n", __func__,
-		 params.gfn_start, params.len, params.type, params.flags, params.uaddr);
+	pr_debug("%s: GFN start 0x%llx length 0x%llx type %d flags %d\n", __func__,
+		 params.gfn_start, params.len, params.type, params.flags);
 
 	if (!params.len || !PAGE_ALIGNED(params.len) || params.flags ||
 	    (params.type != KVM_SEV_SNP_PAGE_TYPE_NORMAL &&
@@ -2463,13 +2470,10 @@ static int snp_launch_update(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	     params.type != KVM_SEV_SNP_PAGE_TYPE_CPUID))
 		return -EINVAL;
 
-	if (params.type == KVM_SEV_SNP_PAGE_TYPE_ZERO)
-		src = NULL;
-	else if ((!gmem_in_place_conversion && !params.uaddr) ||
-		 !PAGE_ALIGNED(params.uaddr))
+	src = params.type == KVM_SEV_SNP_PAGE_TYPE_ZERO ? NULL : u64_to_user_ptr(params.uaddr);
+
+	if (!PAGE_ALIGNED(src))
 		return -EINVAL;
-	else
-		src = u64_to_user_ptr(params.uaddr);
 
 	npages = params.len / PAGE_SIZE;
 
@@ -2513,7 +2517,7 @@ static int snp_launch_update(struct kvm *kvm, struct kvm_sev_cmd *argp)
 
 	params.gfn_start += count;
 	params.len -= count * PAGE_SIZE;
-	if (src && params.type != KVM_SEV_SNP_PAGE_TYPE_ZERO)
+	if (params.type != KVM_SEV_SNP_PAGE_TYPE_ZERO)
 		params.uaddr += count * PAGE_SIZE;
 
 	if (copy_to_user(u64_to_user_ptr(argp->data), &params, sizeof(params)))
@@ -2529,6 +2533,9 @@ static int snp_launch_update_vmsa(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	struct kvm_vcpu *vcpu;
 	unsigned long i;
 	int ret;
+
+	if (kvm_is_vcpu_creation_in_progress(kvm))
+		return -EBUSY;
 
 	ret = kvm_lock_all_vcpus(kvm);
 	if (ret)
@@ -2883,10 +2890,10 @@ int sev_vm_copy_enc_context_from(struct kvm *kvm, unsigned int source_fd)
 	if (fd_empty(f))
 		return -EBADF;
 
-	source_kvm = file_to_kvm_x86(fd_file(f));
-	if (!source_kvm)
+	if (!file_is_kvm(fd_file(f)))
 		return -EBADF;
 
+	source_kvm = fd_file(f)->private_data;
 	ret = sev_lock_two_vms(kvm, source_kvm);
 	if (ret)
 		return ret;
@@ -2923,7 +2930,6 @@ int sev_vm_copy_enc_context_from(struct kvm *kvm, unsigned int source_fd)
 	mutex_unlock(&sev_mirror_lock);
 
 	mirror_sev->active = true;
-	kvm->arch.has_protected_page_tables = true;
 	mirror_sev->asid = source_sev->asid;
 	mirror_sev->fd = source_sev->fd;
 	mirror_sev->es_active = source_sev->es_active;
@@ -2982,7 +2988,6 @@ void sev_vm_init(struct kvm *kvm)
 		kvm->arch.has_protected_state = true;
 		fallthrough;
 	case KVM_X86_SEV_VM:
-		kvm->arch.has_protected_page_tables = true;
 		kvm->arch.pre_fault_allowed = !kvm->arch.has_private_mem;
 		to_kvm_sev_info(kvm)->need_init = true;
 		break;
@@ -3054,8 +3059,6 @@ void sev_vm_destroy(struct kvm *kvm)
 		 */
 		if (snp_decommission_context(kvm))
 			return;
-
-		snp_enable_rmpopt();
 	} else {
 		sev_unbind_asid(kvm, sev->handle);
 	}
@@ -3596,11 +3599,6 @@ skip_vmsa_free:
 	__sev_es_unmap_ghcb(svm);
 }
 
-bool sev_vcpu_needs_initialization(struct kvm_vcpu *vcpu)
-{
-	return to_kvm_sev_info(vcpu->kvm)->need_init;
-}
-
 int pre_sev_run(struct vcpu_svm *svm, int cpu)
 {
 	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, cpu);
@@ -3640,6 +3638,7 @@ int pre_sev_run(struct vcpu_svm *svm, int cpu)
 
 	sd->sev_vmcbs[asid] = svm->vmcb;
 	svm->vmcb->control.tlb_ctl = TLB_CONTROL_FLUSH_ASID;
+	vmcb_mark_dirty(svm->vmcb, VMCB_ASID);
 	return 0;
 }
 
@@ -4055,6 +4054,7 @@ static void __sev_snp_reload_vmsa(struct kvm_vcpu *vcpu, gpa_t gpa)
 	struct kvm *kvm = vcpu->kvm;
 	gfn_t gfn = gpa_to_gfn(gpa);
 	unsigned long mmu_seq;
+	struct page *page;
 	kvm_pfn_t pfn;
 
 	lockdep_assert_held(&svm->sev_es.snp_vmsa_mutex);
@@ -4073,17 +4073,6 @@ static void __sev_snp_reload_vmsa(struct kvm_vcpu *vcpu, gpa_t gpa)
 	 */
 	vmcb_mark_all_dirty(svm->vmcb);
 
-	/*
-	 * From this point forward, the VMSA will always be a guest-mapped page
-	 * rather than the initial one allocated by KVM in svm->sev_es.vmsa. In
-	 * theory, svm->sev_es.vmsa could be free'd and cleaned up here, but
-	 * that involves cleanups like flushing caches, which would ideally be
-	 * handled during teardown rather than guest boot.  Deferring that also
-	 * allows the existing logic for SEV-ES VMSAs to be re-used with
-	 * minimal SNP-specific changes.
-	 */
-	svm->sev_es.snp_has_guest_vmsa = true;
-
 	if (!VALID_PAGE(gpa))
 		return;
 
@@ -4098,8 +4087,19 @@ static void __sev_snp_reload_vmsa(struct kvm_vcpu *vcpu, gpa_t gpa)
 	 * The new VMSA will be private memory guest memory, so retrieve the
 	 * PFN from the gmem backend.
 	 */
-	if (kvm_gmem_get_pfn(vcpu->kvm, slot, gfn, &pfn, NULL))
+	if (kvm_gmem_get_pfn(vcpu->kvm, slot, gfn, &pfn, &page, NULL))
 		return;
+
+	/*
+	 * From this point forward, the VMSA will always be a guest-mapped page
+	 * rather than the initial one allocated by KVM in svm->sev_es.vmsa. In
+	 * theory, svm->sev_es.vmsa could be free'd and cleaned up here, but
+	 * that involves cleanups like flushing caches, which would ideally be
+	 * handled during teardown rather than guest boot.  Deferring that also
+	 * allows the existing logic for SEV-ES VMSAs to be re-used with
+	 * minimal SNP-specific changes.
+	 */
+	svm->sev_es.snp_has_guest_vmsa = true;
 
 	read_lock(&kvm->mmu_lock);
 	/*
@@ -4114,6 +4114,8 @@ static void __sev_snp_reload_vmsa(struct kvm_vcpu *vcpu, gpa_t gpa)
 	else
 		svm->vmcb->control.vmsa_pa = pfn_to_hpa(pfn);
 	read_unlock(&kvm->mmu_lock);
+
+	kvm_release_page_clean(page);
 }
 
 /*
@@ -4241,7 +4243,6 @@ static int snp_handle_guest_req(struct vcpu_svm *svm, gpa_t req_gpa, gpa_t resp_
 	struct kvm *kvm = svm->vcpu.kvm;
 	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
 	sev_ret_code fw_err = 0;
-	u8 tickle = 0;
 	int ret;
 
 	if (!is_sev_snp_guest(&svm->vcpu))
@@ -4249,21 +4250,8 @@ static int snp_handle_guest_req(struct vcpu_svm *svm, gpa_t req_gpa, gpa_t resp_
 
 	guard(mutex)(&sev->guest_req_mutex);
 
-	if (kvm_read_guest(kvm, req_gpa, sev->guest_req_buf, PAGE_SIZE)) {
-		svm_vmgexit_bad_input(svm, GHCB_ERR_INVALID_INPUT);
-		return 1;
-	}
-
-	/*
-	 * "Tickle" the response buffer to verify it's writable before sending
-	 * the request to firmware, which will modify the VMPCK sequence number.
-	 * Note, this is a best effort check and doesn't guard against TOCTOU
-	 * issues.  See below for more information.
-	 */
-	if (kvm_write_guest(kvm, resp_gpa, &tickle, sizeof(tickle))) {
-		svm_vmgexit_bad_input(svm, GHCB_ERR_INVALID_INPUT);
-		return 1;
-	}
+	if (kvm_read_guest(kvm, req_gpa, sev->guest_req_buf, PAGE_SIZE))
+		return -EIO;
 
 	data.gctx_paddr = __psp_pa(sev->snp_context);
 	data.req_paddr = __psp_pa(sev->guest_req_buf);
@@ -4278,13 +4266,6 @@ static int snp_handle_guest_req(struct vcpu_svm *svm, gpa_t req_gpa, gpa_t resp_
 	if (ret && !fw_err)
 		return ret;
 
-	/*
-	 * Exit to userspace if writing the response fails, e.g. if the mapping
-	 * changed between the initial tickle and the actual write, to avoid
-	 * creating an ambiguous failure ABI with the guest.  Don't return an
-	 * error to the guest because firmware already incremented the VMPCK
-	 * sequence number, but there's no way to communicate that to the guest.
-	 */
 	if (kvm_write_guest(kvm, resp_gpa, sev->guest_resp_buf, PAGE_SIZE))
 		return -EIO;
 
@@ -4336,10 +4317,8 @@ static int snp_handle_ext_guest_req(struct vcpu_svm *svm, gpa_t req_gpa, gpa_t r
 		return -EINVAL;
 
 	if (kvm_read_guest(kvm, req_gpa + offsetof(struct snp_guest_msg_hdr, msg_type),
-			   &msg_type, 1)) {
-		svm_vmgexit_bad_input(svm, GHCB_ERR_INVALID_INPUT);
-		return 1;
-	}
+			   &msg_type, 1))
+		return -EIO;
 
 	/*
 	 * As per GHCB spec, requests of type MSG_REPORT_REQ also allow for
@@ -4378,10 +4357,8 @@ static int snp_handle_ext_guest_req(struct vcpu_svm *svm, gpa_t req_gpa, gpa_t r
 		 * As per GHCB spec (see "SNP Extended Guest Request"), the
 		 * certificate table is terminated by 24-bytes of zeroes.
 		 */
-		if (data_npages && kvm_clear_guest(kvm, data_gpa, 24)) {
-			svm_vmgexit_bad_input(svm, GHCB_ERR_INVALID_INPUT);
-			return 1;
-		}
+		if (data_npages && kvm_clear_guest(kvm, data_gpa, 24))
+			return -EIO;
 	}
 
 	return snp_handle_guest_req(svm, req_gpa, resp_gpa);
@@ -5039,7 +5016,7 @@ struct page *snp_safe_alloc_page_node(int node, gfp_t gfp)
 	 * Allocate an SNP-safe page to workaround the SNP erratum where
 	 * the CPU will incorrectly signal an RMP violation #PF if a
 	 * hugepage (2MB or 1GB) collides with the RMP entry of a
-	 * 2MB-aligned VMCB, VMSA, PML or AVIC backing page.
+	 * 2MB-aligned VMCB, VMSA, or AVIC backing page.
 	 *
 	 * Allocate one extra page, choose a page which is not
 	 * 2MB-aligned, and free the other.
@@ -5064,7 +5041,7 @@ void sev_handle_rmp_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code)
 	struct kvm_memory_slot *slot;
 	struct kvm *kvm = vcpu->kvm;
 	int order, rmp_level, ret;
-	unsigned long mmu_seq;
+	struct page *page;
 	bool assigned;
 	kvm_pfn_t pfn;
 	gfn_t gfn;
@@ -5078,7 +5055,7 @@ void sev_handle_rmp_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code)
 	 * userspace via KVM_EXIT_MEMORY_FAULT events, however, so RMP faults
 	 * for shared pages should not end up here.
 	 */
-	if (!kvm_is_private_gfn(kvm, gfn)) {
+	if (!kvm_mem_is_private(kvm, gfn)) {
 		pr_warn_ratelimited("SEV: Unexpected RMP fault for non-private GPA 0x%llx\n",
 				    gpa);
 		return;
@@ -5091,10 +5068,7 @@ void sev_handle_rmp_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code)
 		return;
 	}
 
-	mmu_seq = kvm->mmu_invalidate_seq;
-	smp_rmb();
-
-	ret = kvm_gmem_get_pfn(kvm, slot, gfn, &pfn, &order);
+	ret = kvm_gmem_get_pfn(kvm, slot, gfn, &pfn, &page, &order);
 	if (ret) {
 		pr_warn_ratelimited("SEV: Unexpected RMP fault, no backing page for private GPA 0x%llx\n",
 				    gpa);
@@ -5103,13 +5077,9 @@ void sev_handle_rmp_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code)
 
 	ret = snp_lookup_rmpentry(pfn, &assigned, &rmp_level);
 	if (ret || !assigned) {
-		guard(read_lock)(&kvm->mmu_lock);
-
-		if (!mmu_invalidate_retry_gfn(kvm, mmu_seq, gfn))
-			pr_warn_ratelimited("SEV: Unexpected RMP fault, no assigned RMP entry found for GPA 0x%llx PFN 0x%llx error %d\n",
-					    gpa, pfn, ret);
-
-		return;
+		pr_warn_ratelimited("SEV: Unexpected RMP fault, no assigned RMP entry found for GPA 0x%llx PFN 0x%llx error %d\n",
+				    gpa, pfn, ret);
+		goto out_no_trace;
 	}
 
 	/*
@@ -5137,31 +5107,26 @@ void sev_handle_rmp_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code)
 	if (rmp_level == PG_LEVEL_4K)
 		goto out;
 
-	scoped_guard(read_lock, &kvm->mmu_lock) {
-		if (mmu_invalidate_retry_gfn(kvm, mmu_seq, gfn))
+	ret = snp_rmptable_psmash(pfn);
+	if (ret) {
+		/*
+		 * Look it up again. If it's 4K now then the PSMASH may have
+		 * raced with another process and the issue has already resolved
+		 * itself.
+		 */
+		if (!snp_lookup_rmpentry(pfn, &assigned, &rmp_level) &&
+		    assigned && rmp_level == PG_LEVEL_4K)
 			goto out;
 
-		ret = snp_rmptable_psmash(pfn);
-		if (ret) {
-			/*
-			 * Look it up again. If it's 4K now then the PSMASH may
-			 * have raced with another process and the issue has
-			 * already resolved itself. If it's not assigned, then
-			 * this must have raced with another process that made
-			 * this page shared.
-			 */
-			if (!snp_lookup_rmpentry(pfn, &assigned, &rmp_level) &&
-			    ((assigned && rmp_level == PG_LEVEL_4K) || !assigned))
-				goto out;
-
-			pr_warn_ratelimited("SEV: Unable to split RMP entry for GPA 0x%llx PFN 0x%llx ret %d\n",
-					    gpa, pfn, ret);
-		}
+		pr_warn_ratelimited("SEV: Unable to split RMP entry for GPA 0x%llx PFN 0x%llx ret %d\n",
+				    gpa, pfn, ret);
 	}
 
 	kvm_zap_gfn_range(kvm, gfn, gfn + PTRS_PER_PMD);
 out:
 	trace_kvm_rmp_fault(vcpu, gpa, pfn, error_code, rmp_level, ret);
+out_no_trace:
+	kvm_release_page_unused(page);
 }
 
 static bool is_pfn_range_shared(kvm_pfn_t start, kvm_pfn_t end)
@@ -5191,7 +5156,15 @@ static bool is_pfn_range_shared(kvm_pfn_t start, kvm_pfn_t end)
 	return true;
 }
 
-static bool is_large_rmp_possible(kvm_pfn_t pfn, kvm_pfn_t nr_pages)
+static u8 max_level_for_order(int order)
+{
+	if (order >= KVM_HPAGE_GFN_SHIFT(PG_LEVEL_2M))
+		return PG_LEVEL_2M;
+
+	return PG_LEVEL_4K;
+}
+
+static bool is_large_rmp_possible(struct kvm *kvm, kvm_pfn_t pfn, int order)
 {
 	kvm_pfn_t pfn_aligned = ALIGN_DOWN(pfn, PTRS_PER_PMD);
 
@@ -5200,14 +5173,14 @@ static bool is_large_rmp_possible(kvm_pfn_t pfn, kvm_pfn_t nr_pages)
 	 * PFN is currently shared, then the entire 2M-aligned range can be
 	 * set to private via a single 2M RMP entry.
 	 */
-	if (nr_pages >= KVM_PAGES_PER_HPAGE(PG_LEVEL_2M) &&
+	if (max_level_for_order(order) > PG_LEVEL_4K &&
 	    is_pfn_range_shared(pfn_aligned, pfn_aligned + PTRS_PER_PMD))
 		return true;
 
 	return false;
 }
 
-int sev_gmem_make_private(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn, kvm_pfn_t nr_pages)
+int sev_gmem_prepare(struct kvm *kvm, kvm_pfn_t pfn, gfn_t gfn, int max_order)
 {
 	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
 	kvm_pfn_t pfn_aligned;
@@ -5218,9 +5191,6 @@ int sev_gmem_make_private(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn, kvm_pfn_t n
 	if (!sev_snp_guest(kvm))
 		return 0;
 
-	if (WARN_ON_ONCE(nr_pages != 1))
-		return -EIO;
-
 	rc = snp_lookup_rmpentry(pfn, &assigned, &level);
 	if (rc) {
 		pr_err_ratelimited("SEV: Failed to look up RMP entry: GFN %llx PFN %llx error %d\n",
@@ -5229,12 +5199,12 @@ int sev_gmem_make_private(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn, kvm_pfn_t n
 	}
 
 	if (assigned) {
-		pr_debug("%s: already assigned: gfn %llx pfn %llx nr_pages %llx level %d\n",
-			 __func__, gfn, pfn, nr_pages, level);
+		pr_debug("%s: already assigned: gfn %llx pfn %llx max_order %d level %d\n",
+			 __func__, gfn, pfn, max_order, level);
 		return 0;
 	}
 
-	if (is_large_rmp_possible(pfn, nr_pages)) {
+	if (is_large_rmp_possible(kvm, pfn, max_order)) {
 		level = PG_LEVEL_2M;
 		pfn_aligned = ALIGN_DOWN(pfn, PTRS_PER_PMD);
 		gfn_aligned = ALIGN_DOWN(gfn, PTRS_PER_PMD);
@@ -5251,22 +5221,22 @@ int sev_gmem_make_private(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn, kvm_pfn_t n
 		return -EINVAL;
 	}
 
-	pr_debug("%s: updated: gfn %llx pfn %llx pfn_aligned %llx nr_pages %llx level %d\n",
-		 __func__, gfn, pfn, pfn_aligned, nr_pages, level);
+	pr_debug("%s: updated: gfn %llx pfn %llx pfn_aligned %llx max_order %d level %d\n",
+		 __func__, gfn, pfn, pfn_aligned, max_order, level);
 
 	return 0;
 }
 
-void sev_gmem_make_shared(kvm_pfn_t pfn, kvm_pfn_t nr_pages)
+void sev_gmem_invalidate(kvm_pfn_t start, kvm_pfn_t end)
 {
-	kvm_pfn_t end = pfn + nr_pages;
+	kvm_pfn_t pfn;
 
 	if (!cc_platform_has(CC_ATTR_HOST_SEV_SNP))
 		return;
 
-	pr_debug("%s: PFN start 0x%llx PFN end 0x%llx\n", __func__, pfn, end);
+	pr_debug("%s: PFN start 0x%llx PFN end 0x%llx\n", __func__, start, end);
 
-	while (pfn < end) {
+	for (pfn = start; pfn < end;) {
 		bool use_2m_update = false;
 		int rc, rmp_level;
 		bool assigned;

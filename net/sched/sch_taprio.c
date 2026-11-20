@@ -49,13 +49,6 @@ static struct static_key_false taprio_have_working_mqprio;
  */
 #define TAPRIO_PICOS_PER_BYTE_MIN 17
 
-/* Each entry is a separate 368-byte sched_entry and, in full offload, is
- * also composed into a per-entry offload array. The u16 nla_len admits
- * roughly 5460 minimal 12-byte entries, pinning ~2 MiB; 1024 matches the
- * SJA1105 schedule-table capacity (SJA1110 provides 4096) and the act_gate cap.
- */
-#define TAPRIO_ENTRIES_MAX	1024U
-
 struct sched_entry {
 	/* Durations between this GCL entry and the GCL entry where the
 	 * respective traffic class gate closes
@@ -639,11 +632,6 @@ static int taprio_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	int queue;
 
 	queue = skb_get_queue_mapping(skb);
-	if (unlikely(queue >= qdisc_dev(sch)->real_num_tx_queues)) {
-		/* A tc BPF program may have stored an out-of-range mapping. */
-		queue = netdev_cap_txqueue(qdisc_dev(sch), queue);
-		skb_set_queue_mapping(skb, queue);
-	}
 
 	child = q->qdiscs[queue];
 	if (unlikely(child == &noop_qdisc))
@@ -1117,13 +1105,6 @@ static int parse_sched_list(struct taprio_sched *q, struct nlattr *list,
 			continue;
 		}
 
-		if (i >= TAPRIO_ENTRIES_MAX) {
-			NL_SET_ERR_MSG_FMT(extack,
-					   "Too many schedule entries, at most %u are supported",
-					   TAPRIO_ENTRIES_MAX);
-			return -E2BIG;
-		}
-
 		entry = kzalloc_obj(*entry);
 		if (!entry) {
 			NL_SET_ERR_MSG(extack, "Not enough memory for entry");
@@ -1204,7 +1185,7 @@ static int taprio_parse_mqprio_opt(struct net_device *dev,
 	bool allow_overlapping_txqs = TXTIME_ASSIST_IS_ENABLED(taprio_flags);
 
 	if (!qopt) {
-		if (!netdev_get_num_tc(dev)) {
+		if (!dev->num_tc) {
 			NL_SET_ERR_MSG(extack, "'mqprio' configuration is necessary");
 			return -EINVAL;
 		}
@@ -1458,10 +1439,9 @@ static void taprio_offload_config_changed(struct taprio_sched *q)
 
 static u32 tc_map_to_queue_mask(struct net_device *dev, u32 tc_mask)
 {
-	int num_tc = netdev_get_num_tc(dev);
 	u32 i, queue_mask = 0;
 
-	for (i = 0; i < num_tc; i++) {
+	for (i = 0; i < dev->num_tc; i++) {
 		struct netdev_tc_txq res;
 
 		if (!(tc_mask & BIT(i)))
@@ -1819,7 +1799,7 @@ static int taprio_mqprio_cmp(const struct net_device *dev,
 {
 	int i;
 
-	if (!mqprio || mqprio->num_tc != netdev_get_num_tc(dev))
+	if (!mqprio || mqprio->num_tc != dev->num_tc)
 		return -1;
 
 	for (i = 0; i < mqprio->num_tc; i++) {
@@ -1832,7 +1812,7 @@ static int taprio_mqprio_cmp(const struct net_device *dev,
 	}
 
 	for (i = 0; i <= TC_BITMASK; i++)
-		if (netdev_get_prio_tc_map(dev, i) != mqprio->prio_tc_map[i])
+		if (dev->prio_tc_map[i] != mqprio->prio_tc_map[i])
 			return -1;
 
 	return 0;
@@ -2591,11 +2571,7 @@ static int __init taprio_module_init(void)
 	if (err)
 		return err;
 
-	err = register_qdisc(&taprio_qdisc_ops);
-	if (err)
-		unregister_netdevice_notifier(&taprio_device_notifier);
-
-	return err;
+	return register_qdisc(&taprio_qdisc_ops);
 }
 
 static void __exit taprio_module_exit(void)

@@ -502,7 +502,6 @@ struct pl330_dmac {
 	struct dma_pl330_chan *peripherals; /* keep at end */
 	int quirks;
 
-	struct dentry		*dbgfs;
 	struct reset_control	*rstc;
 	struct reset_control	*rstc_ocp;
 };
@@ -2953,22 +2952,12 @@ DEFINE_SHOW_ATTRIBUTE(pl330_debugfs);
 
 static inline void init_pl330_debugfs(struct pl330_dmac *pl330)
 {
-	pl330->dbgfs = debugfs_create_file("stats", 0444,
-					   pl330->ddma.dbg_dev_root, pl330,
-					   &pl330_debugfs_fops);
-}
-
-static inline void deinit_pl330_debugfs(struct pl330_dmac *pl330)
-{
-	debugfs_remove(pl330->dbgfs);
-	pl330->dbgfs = NULL;
+	debugfs_create_file(dev_name(pl330->ddma.dev),
+			    S_IFREG | 0444, NULL, pl330,
+			    &pl330_debugfs_fops);
 }
 #else
 static inline void init_pl330_debugfs(struct pl330_dmac *pl330)
-{
-}
-
-static inline void deinit_pl330_debugfs(struct pl330_dmac *pl330)
 {
 }
 #endif
@@ -3024,7 +3013,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 		return ret;
 
 	/* Allocate a new DMAC and its Channels */
-	pl330 = devm_kzalloc_obj(&adev->dev, *pl330);
+	pl330 = devm_kzalloc(&adev->dev, sizeof(*pl330), GFP_KERNEL);
 	if (!pl330)
 		return -ENOMEM;
 
@@ -3214,8 +3203,6 @@ static void pl330_remove(struct amba_device *adev)
 	struct pl330_dmac *pl330 = amba_get_drvdata(adev);
 	struct dma_pl330_chan *pch, *_p;
 	int i, irq;
-
-	deinit_pl330_debugfs(pl330);
 
 	pm_runtime_get_noresume(pl330->ddma.dev);
 

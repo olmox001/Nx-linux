@@ -289,10 +289,9 @@ static struct sk_buff *cdc_mbim_tx_fixup(struct usbnet *dev, struct sk_buff *skb
 		}
 	}
 
-	/* BHs or IRQs are always off here, see cdc_ncm_tx_fixup() */
-	spin_lock(&ctx->mtx);
+	spin_lock_bh(&ctx->mtx);
 	skb_out = cdc_ncm_fill_tx_frame(dev, skb, sign);
-	spin_unlock(&ctx->mtx);
+	spin_unlock_bh(&ctx->mtx);
 	return skb_out;
 
 error:

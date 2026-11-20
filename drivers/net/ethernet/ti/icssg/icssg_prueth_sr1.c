@@ -900,7 +900,7 @@ static int prueth_probe(struct platform_device *pdev)
 
 	np = dev->of_node;
 
-	prueth = devm_kzalloc_obj(dev, *prueth);
+	prueth = devm_kzalloc(dev, sizeof(*prueth), GFP_KERNEL);
 	if (!prueth)
 		return -ENOMEM;
 

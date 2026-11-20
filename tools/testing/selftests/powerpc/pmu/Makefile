@@ -37,7 +37,7 @@ override define RUN_TESTS
 	done;
 endef
 
-override define EMIT_TESTS
+emit_tests:
 	for TEST in $(TEST_GEN_PROGS); do \
 		BASENAME_TEST=`basename $$TEST`;	\
 		echo "$(COLLECTION):$$BASENAME_TEST";	\
@@ -46,7 +46,6 @@ override define EMIT_TESTS
 		BUILD_TARGET=$(OUTPUT)/$$TARGET; \
 		$(MAKE) OUTPUT=$$BUILD_TARGET COLLECTION=$(COLLECTION)/$$TARGET -s -C $$TARGET emit_tests; \
 	done;
-endef
 
 DEFAULT_INSTALL_RULE := $(INSTALL_RULE)
 override define INSTALL_RULE

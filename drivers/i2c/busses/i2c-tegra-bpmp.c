@@ -286,7 +286,7 @@ static int tegra_bpmp_i2c_probe(struct platform_device *pdev)
 	u32 value;
 	int err;
 
-	i2c = devm_kzalloc_obj(&pdev->dev, *i2c);
+	i2c = devm_kzalloc(&pdev->dev, sizeof(*i2c), GFP_KERNEL);
 	if (!i2c)
 		return -ENOMEM;
 

@@ -545,8 +545,8 @@ bool slow_pci_heuristic(struct mlx5_core_dev *mdev)
 
 	mlx5_port_max_linkspeed(mdev, &link_speed);
 	pci_bw = pcie_bandwidth_available(mdev->pdev, NULL, NULL, NULL);
-	mlx5_core_dbg(mdev, "Max link speed = %d, PCI BW = %d\n", link_speed,
-		      pci_bw);
+	mlx5_core_dbg_once(mdev, "Max link speed = %d, PCI BW = %d\n",
+			   link_speed, pci_bw);
 
 #define MLX5E_SLOW_PCI_RATIO (2)
 
@@ -911,11 +911,10 @@ static void mlx5e_build_rx_cq_param(struct mlx5_core_dev *mdev,
 
 static u8 rq_end_pad_mode(struct mlx5_core_dev *mdev, struct mlx5e_params *params)
 {
-	bool no_pad = params->packet_merge.type == MLX5E_PACKET_MERGE_LRO ||
-		      params->packet_merge.type == MLX5E_PACKET_MERGE_SHAMPO;
+	bool lro_en = params->packet_merge.type == MLX5E_PACKET_MERGE_LRO;
 	bool ro = MLX5_CAP_GEN(mdev, relaxed_ordering_write);
 
-	return ro && no_pad ?
+	return ro && lro_en ?
 		MLX5_WQ_END_PAD_MODE_NONE : MLX5_WQ_END_PAD_MODE_ALIGN;
 }
 

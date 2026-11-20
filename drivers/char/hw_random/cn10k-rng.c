@@ -179,7 +179,7 @@ static int cn10k_rng_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct	cn10k_rng *rng;
 	int	err;
 
-	rng = devm_kzalloc_obj(&pdev->dev, *rng);
+	rng = devm_kzalloc(&pdev->dev, sizeof(*rng), GFP_KERNEL);
 	if (!rng)
 		return -ENOMEM;
 

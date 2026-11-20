@@ -323,7 +323,7 @@ struct fs_error_report {
 struct file_range {
 	const struct path *path;
 	loff_t pos;
-	u64 count;
+	size_t count;
 };
 
 static inline const struct path *file_range_path(const struct file_range *range)
@@ -946,12 +946,12 @@ static inline void fsnotify_init_event(struct fsnotify_event *event)
 	INIT_LIST_HEAD(&event->list);
 }
 int fsnotify_pre_content(const struct path *path, const loff_t *ppos,
-			 u64 count);
+			 size_t count);
 
 #else
 
 static inline int fsnotify_pre_content(const struct path *path,
-				       const loff_t *ppos, u64 count)
+				       const loff_t *ppos, size_t count)
 {
 	return 0;
 }

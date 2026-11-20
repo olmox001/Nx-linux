@@ -19,7 +19,6 @@
 #include <net/gro_cells.h>
 #include <net/macsec.h>
 #include <net/dst_metadata.h>
-#include <net/rtnetlink.h>
 #include <net/netdev_lock.h>
 #include <linux/phy.h>
 #include <linux/byteorder/generic.h>
@@ -408,10 +407,8 @@ static bool macsec_validate_skb(struct sk_buff *skb, u16 icv_len, bool xpn)
 	int len = skb->len - 2 * ETH_ALEN;
 	int extra_len = macsec_extra_len(!!(h->tci_an & MACSEC_TCI_SC)) + icv_len;
 
-	/* a) It comprises at least 17 octets. The SecTAG and ICV must
-	 * also leave a complete Ethernet header.
-	 */
-	if (skb->len < ETH_HLEN + extra_len)
+	/* a) It comprises at least 17 octets */
+	if (skb->len <= 16)
 		return false;
 
 	/* b) MACsec EtherType: already checked */
@@ -489,9 +486,6 @@ static pn_t tx_sa_update_pn(struct macsec_tx_sa *tx_sa,
 	spin_lock_bh(&tx_sa->lock);
 
 	pn = tx_sa->next_pn_halves;
-	if (unlikely(pn.full64 == 0))
-		goto out;
-
 	if (secy->xpn)
 		tx_sa->next_pn++;
 	else
@@ -499,8 +493,6 @@ static pn_t tx_sa_update_pn(struct macsec_tx_sa *tx_sa,
 
 	if (tx_sa->next_pn == 0)
 		__macsec_pn_wrapped(secy, tx_sa);
-
-out:
 	spin_unlock_bh(&tx_sa->lock);
 
 	return pn;
@@ -646,7 +638,7 @@ static struct sk_buff *macsec_encrypt(struct sk_buff *skb,
 			return ERR_PTR(-ENOMEM);
 		}
 	} else {
-		skb = skb_unclone_full(skb, GFP_ATOMIC);
+		skb = skb_unshare(skb, GFP_ATOMIC);
 		if (!skb) {
 			macsec_txsa_put(tx_sa);
 			return ERR_PTR(-ENOMEM);
@@ -955,7 +947,7 @@ static struct sk_buff *macsec_decrypt(struct sk_buff *skb,
 
 		aead_request_set_crypt(req, sg, sg, len, iv);
 		aead_request_set_ad(req, macsec_hdr_len(macsec_skb_cb(skb)->has_sci));
-		skb = skb_unclone_full(skb, GFP_ATOMIC);
+		skb = skb_unshare(skb, GFP_ATOMIC);
 		if (!skb) {
 			aead_request_free(req);
 			return ERR_PTR(-ENOMEM);
@@ -1161,7 +1153,7 @@ static rx_handler_result_t macsec_handle_frame(struct sk_buff **pskb)
 	if (hdr->eth.h_proto != htons(ETH_P_MACSEC))
 		return handle_not_macsec(skb);
 
-	skb = skb_unclone_full(skb, GFP_ATOMIC);
+	skb = skb_unshare(skb, GFP_ATOMIC);
 	*pskb = skb;
 	if (!skb)
 		return RX_HANDLER_CONSUMED;
@@ -1333,12 +1325,9 @@ drop_direct:
 nosci:
 	/* 10.6.1 if the SC is not found */
 	cbit = !!(hdr->tci_an & MACSEC_TCI_C);
-	if (!cbit) {
-		len = macsec_extra_len(macsec_skb_cb(skb)->has_sci);
-		if (skb->len < ETH_HLEN + len + MACSEC_DEFAULT_ICV_LEN)
-			goto drop_nosc;
-		macsec_finalize_skb(skb, MACSEC_DEFAULT_ICV_LEN, len);
-	}
+	if (!cbit)
+		macsec_finalize_skb(skb, MACSEC_DEFAULT_ICV_LEN,
+				    macsec_extra_len(macsec_skb_cb(skb)->has_sci));
 
 	list_for_each_entry_rcu(macsec, &rxd->secys, secys) {
 		struct sk_buff *nskb;
@@ -2647,7 +2636,7 @@ static int macsec_update_offload(struct net_device *dev,
 		vlan_drop_rx_ctag_filter_info(dev);
 		vlan_drop_rx_stag_filter_info(dev);
 	}
-	WRITE_ONCE(macsec->offload, offload);
+	macsec->offload = offload;
 	/* Add VLAN filters when enabling offload. */
 	if (prev_offload == MACSEC_OFFLOAD_OFF) {
 		ret = vlan_get_rx_ctag_filter_info(dev);
@@ -2677,7 +2666,7 @@ static int macsec_update_offload(struct net_device *dev,
 	return 0;
 
 rollback_offload:
-	WRITE_ONCE(macsec->offload, prev_offload);
+	macsec->offload = prev_offload;
 	macsec_offload(ops->mdo_del_secy, &ctx);
 
 	return ret;
@@ -3911,53 +3900,52 @@ static int macsec_changelink_common(struct net_device *dev,
 
 	if (data[IFLA_MACSEC_ENCODING_SA]) {
 		struct macsec_tx_sa *tx_sa;
-		u8 encoding_sa = nla_get_u8(data[IFLA_MACSEC_ENCODING_SA]);
 
-		WRITE_ONCE(tx_sc->encoding_sa, encoding_sa);
-		tx_sa = rtnl_dereference(tx_sc->sa[encoding_sa]);
+		tx_sc->encoding_sa = nla_get_u8(data[IFLA_MACSEC_ENCODING_SA]);
+		tx_sa = rtnl_dereference(tx_sc->sa[tx_sc->encoding_sa]);
 
 		secy->operational = tx_sa && tx_sa->active;
 	}
 
 	if (data[IFLA_MACSEC_ENCRYPT])
-		WRITE_ONCE(tx_sc->encrypt, !!nla_get_u8(data[IFLA_MACSEC_ENCRYPT]));
+		tx_sc->encrypt = !!nla_get_u8(data[IFLA_MACSEC_ENCRYPT]);
 
 	if (data[IFLA_MACSEC_PROTECT])
-		WRITE_ONCE(secy->protect_frames, !!nla_get_u8(data[IFLA_MACSEC_PROTECT]));
+		secy->protect_frames = !!nla_get_u8(data[IFLA_MACSEC_PROTECT]);
 
 	if (data[IFLA_MACSEC_INC_SCI])
-		WRITE_ONCE(tx_sc->send_sci, !!nla_get_u8(data[IFLA_MACSEC_INC_SCI]));
+		tx_sc->send_sci = !!nla_get_u8(data[IFLA_MACSEC_INC_SCI]);
 
 	if (data[IFLA_MACSEC_ES])
-		WRITE_ONCE(tx_sc->end_station, !!nla_get_u8(data[IFLA_MACSEC_ES]));
+		tx_sc->end_station = !!nla_get_u8(data[IFLA_MACSEC_ES]);
 
 	if (data[IFLA_MACSEC_SCB])
-		WRITE_ONCE(tx_sc->scb, !!nla_get_u8(data[IFLA_MACSEC_SCB]));
+		tx_sc->scb = !!nla_get_u8(data[IFLA_MACSEC_SCB]);
 
 	if (data[IFLA_MACSEC_REPLAY_PROTECT])
-		WRITE_ONCE(secy->replay_protect, !!nla_get_u8(data[IFLA_MACSEC_REPLAY_PROTECT]));
+		secy->replay_protect = !!nla_get_u8(data[IFLA_MACSEC_REPLAY_PROTECT]);
 
 	if (data[IFLA_MACSEC_VALIDATION])
-		WRITE_ONCE(secy->validate_frames, nla_get_u8(data[IFLA_MACSEC_VALIDATION]));
+		secy->validate_frames = nla_get_u8(data[IFLA_MACSEC_VALIDATION]);
 
 	if (data[IFLA_MACSEC_CIPHER_SUITE]) {
 		switch (nla_get_u64(data[IFLA_MACSEC_CIPHER_SUITE])) {
 		case MACSEC_CIPHER_ID_GCM_AES_128:
 		case MACSEC_DEFAULT_CIPHER_ID:
-			WRITE_ONCE(secy->key_len, MACSEC_GCM_AES_128_SAK_LEN);
-			WRITE_ONCE(secy->xpn, false);
+			secy->key_len = MACSEC_GCM_AES_128_SAK_LEN;
+			secy->xpn = false;
 			break;
 		case MACSEC_CIPHER_ID_GCM_AES_256:
-			WRITE_ONCE(secy->key_len, MACSEC_GCM_AES_256_SAK_LEN);
-			WRITE_ONCE(secy->xpn, false);
+			secy->key_len = MACSEC_GCM_AES_256_SAK_LEN;
+			secy->xpn = false;
 			break;
 		case MACSEC_CIPHER_ID_GCM_AES_XPN_128:
-			WRITE_ONCE(secy->key_len, MACSEC_GCM_AES_128_SAK_LEN);
-			WRITE_ONCE(secy->xpn, true);
+			secy->key_len = MACSEC_GCM_AES_128_SAK_LEN;
+			secy->xpn = true;
 			break;
 		case MACSEC_CIPHER_ID_GCM_AES_XPN_256:
-			WRITE_ONCE(secy->key_len, MACSEC_GCM_AES_256_SAK_LEN);
-			WRITE_ONCE(secy->xpn, true);
+			secy->key_len = MACSEC_GCM_AES_256_SAK_LEN;
+			secy->xpn = true;
 			break;
 		default:
 			return -EINVAL;
@@ -3965,44 +3953,16 @@ static int macsec_changelink_common(struct net_device *dev,
 	}
 
 	if (data[IFLA_MACSEC_WINDOW]) {
-		u32 replay_window = nla_get_u32(data[IFLA_MACSEC_WINDOW]);
+		secy->replay_window = nla_get_u32(data[IFLA_MACSEC_WINDOW]);
 
 		/* IEEE 802.1AEbw-2013 10.7.8 - maximum replay window
 		 * for XPN cipher suites */
 		if (secy->xpn &&
-		    replay_window > MACSEC_XPN_MAX_REPLAY_WINDOW)
+		    secy->replay_window > MACSEC_XPN_MAX_REPLAY_WINDOW)
 			return -EINVAL;
-		WRITE_ONCE(secy->replay_window, replay_window);
 	}
 
 	return 0;
-}
-
-/* Both a change of the offload state (mdo_add_secy()/mdo_del_secy()) and
- * any request against an already offloaded device (mdo_upd_secy()) reach
- * the driver of real_dev, which may live in a different network namespace
- * from the macsec device. Require CAP_NET_ADMIN over real_dev's namespace
- * for those; local attributes of a non-offloaded device are unaffected.
- */
-static int macsec_changelink_check_netns(struct net_device *dev,
-					 struct nlattr *data[],
-					 struct netlink_ext_ack *extack)
-{
-	struct macsec_dev *macsec = macsec_priv(dev);
-	bool reaches_real_dev;
-
-	reaches_real_dev = macsec_is_offloaded(macsec);
-	if (data[IFLA_MACSEC_OFFLOAD] &&
-	    nla_get_u8(data[IFLA_MACSEC_OFFLOAD]) != macsec->offload)
-		reaches_real_dev = true;
-
-	if (!reaches_real_dev ||
-	    rtnl_dev_link_net_capable(dev, dev_net(macsec->real_dev)))
-		return 0;
-
-	NL_SET_ERR_MSG(extack,
-		       "Changing a MACsec device whose real device is in another network namespace requires CAP_NET_ADMIN in that namespace");
-	return -EPERM;
 }
 
 static int macsec_changelink(struct net_device *dev, struct nlattr *tb[],
@@ -4018,10 +3978,6 @@ static int macsec_changelink(struct net_device *dev, struct nlattr *tb[],
 
 	if (!data)
 		return 0;
-
-	ret = macsec_changelink_check_netns(dev, data, extack);
-	if (ret)
-		return ret;
 
 	if (data[IFLA_MACSEC_CIPHER_SUITE] ||
 	    data[IFLA_MACSEC_ICV_LEN] ||
@@ -4185,6 +4141,9 @@ static void macsec_init_secy(struct net_device *dev, sci_t sci, u8 icv_len)
 	struct macsec_dev *macsec = macsec_priv(dev);
 	struct macsec_secy *secy = &macsec->secy;
 
+	if (sci == MACSEC_UNDEF_SCI)
+		sci = dev_to_sci(dev, MACSEC_PORT_ES);
+
 	secy->netdev = dev;
 	secy->operational = true;
 	secy->key_len = DEFAULT_SAK_LEN;
@@ -4217,7 +4176,7 @@ static int macsec_newlink(struct net_device *dev,
 	u8 icv_len = MACSEC_DEFAULT_ICV_LEN;
 	struct net_device *real_dev;
 	int err, mtu;
-	sci_t sci = MACSEC_UNDEF_SCI;
+	sci_t sci;
 
 	if (!tb[IFLA_LINK])
 		return -EINVAL;
@@ -4270,12 +4229,8 @@ static int macsec_newlink(struct net_device *dev,
 		sci = nla_get_sci(data[IFLA_MACSEC_SCI]);
 	else if (data && data[IFLA_MACSEC_PORT])
 		sci = dev_to_sci(dev, nla_get_be16(data[IFLA_MACSEC_PORT]));
-
-	if (sci == MACSEC_UNDEF_SCI)
+	else
 		sci = dev_to_sci(dev, MACSEC_PORT_ES);
-
-	if (rx_handler && sci_exists(real_dev, sci))
-		return -EBUSY;
 
 	/* Registration can notify listeners before returning. */
 	macsec_init_secy(dev, sci, icv_len);
@@ -4296,6 +4251,11 @@ static int macsec_newlink(struct net_device *dev,
 	err = netdev_upper_dev_link(real_dev, dev, extack);
 	if (err < 0)
 		goto unregister;
+
+	if (rx_handler && sci_exists(real_dev, sci)) {
+		err = -EBUSY;
+		goto unlink;
+	}
 
 	/* If h/w offloading is available, propagate to the device */
 	if (macsec_is_offloaded(macsec)) {
@@ -4328,6 +4288,7 @@ static int macsec_newlink(struct net_device *dev,
 
 del_dev:
 	macsec_del_dev(macsec);
+unlink:
 	netdev_upper_dev_unlink(real_dev, dev);
 unregister:
 	unregister_netdevice(dev);
@@ -4426,21 +4387,21 @@ static size_t macsec_get_size(const struct net_device *dev)
 static int macsec_fill_info(struct sk_buff *skb,
 			    const struct net_device *dev)
 {
-	const struct macsec_tx_sc *tx_sc;
-	const struct macsec_dev *macsec;
-	const struct macsec_secy *secy;
+	struct macsec_tx_sc *tx_sc;
+	struct macsec_dev *macsec;
+	struct macsec_secy *secy;
 	u64 csid;
 
 	macsec = macsec_priv(dev);
 	secy = &macsec->secy;
 	tx_sc = &secy->tx_sc;
 
-	switch (READ_ONCE(secy->key_len)) {
+	switch (secy->key_len) {
 	case MACSEC_GCM_AES_128_SAK_LEN:
-		csid = READ_ONCE(secy->xpn) ? MACSEC_CIPHER_ID_GCM_AES_XPN_128 : MACSEC_DEFAULT_CIPHER_ID;
+		csid = secy->xpn ? MACSEC_CIPHER_ID_GCM_AES_XPN_128 : MACSEC_DEFAULT_CIPHER_ID;
 		break;
 	case MACSEC_GCM_AES_256_SAK_LEN:
-		csid = READ_ONCE(secy->xpn) ? MACSEC_CIPHER_ID_GCM_AES_XPN_256 : MACSEC_CIPHER_ID_GCM_AES_256;
+		csid = secy->xpn ? MACSEC_CIPHER_ID_GCM_AES_XPN_256 : MACSEC_CIPHER_ID_GCM_AES_256;
 		break;
 	default:
 		goto nla_put_failure;
@@ -4451,20 +4412,20 @@ static int macsec_fill_info(struct sk_buff *skb,
 	    nla_put_u8(skb, IFLA_MACSEC_ICV_LEN, secy->icv_len) ||
 	    nla_put_u64_64bit(skb, IFLA_MACSEC_CIPHER_SUITE,
 			      csid, IFLA_MACSEC_PAD) ||
-	    nla_put_u8(skb, IFLA_MACSEC_ENCODING_SA, READ_ONCE(tx_sc->encoding_sa)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_ENCRYPT, READ_ONCE(tx_sc->encrypt)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_PROTECT, READ_ONCE(secy->protect_frames)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_INC_SCI, READ_ONCE(tx_sc->send_sci)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_ES, READ_ONCE(tx_sc->end_station)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_SCB, READ_ONCE(tx_sc->scb)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_REPLAY_PROTECT, READ_ONCE(secy->replay_protect)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_VALIDATION, READ_ONCE(secy->validate_frames)) ||
-	    nla_put_u8(skb, IFLA_MACSEC_OFFLOAD, READ_ONCE(macsec->offload)) ||
+	    nla_put_u8(skb, IFLA_MACSEC_ENCODING_SA, tx_sc->encoding_sa) ||
+	    nla_put_u8(skb, IFLA_MACSEC_ENCRYPT, tx_sc->encrypt) ||
+	    nla_put_u8(skb, IFLA_MACSEC_PROTECT, secy->protect_frames) ||
+	    nla_put_u8(skb, IFLA_MACSEC_INC_SCI, tx_sc->send_sci) ||
+	    nla_put_u8(skb, IFLA_MACSEC_ES, tx_sc->end_station) ||
+	    nla_put_u8(skb, IFLA_MACSEC_SCB, tx_sc->scb) ||
+	    nla_put_u8(skb, IFLA_MACSEC_REPLAY_PROTECT, secy->replay_protect) ||
+	    nla_put_u8(skb, IFLA_MACSEC_VALIDATION, secy->validate_frames) ||
+	    nla_put_u8(skb, IFLA_MACSEC_OFFLOAD, macsec->offload) ||
 	    0)
 		goto nla_put_failure;
 
-	if (READ_ONCE(secy->replay_protect)) {
-		if (nla_put_u32(skb, IFLA_MACSEC_WINDOW, READ_ONCE(secy->replay_window)))
+	if (secy->replay_protect) {
+		if (nla_put_u32(skb, IFLA_MACSEC_WINDOW, secy->replay_window))
 			goto nla_put_failure;
 	}
 

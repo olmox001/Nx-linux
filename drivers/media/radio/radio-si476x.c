@@ -1381,7 +1381,7 @@ static int si476x_radio_probe(struct platform_device *pdev)
 
 	static atomic_t instance = ATOMIC_INIT(0);
 
-	radio = devm_kzalloc_obj(&pdev->dev, *radio);
+	radio = devm_kzalloc(&pdev->dev, sizeof(*radio), GFP_KERNEL);
 	if (!radio)
 		return -ENOMEM;
 

@@ -25,6 +25,7 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/overflow.h>
 #include <linux/pagemap.h>
@@ -32,7 +33,6 @@
 #include <linux/dma-buf.h>
 #include <linux/dma-fence-unwrap.h>
 #include <linux/uaccess.h>
-#include <linux/pm_runtime.h>
 
 #include <drm/amdgpu_drm.h>
 #include <drm/drm_drv.h>
@@ -40,7 +40,6 @@
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/ttm/ttm_tt.h>
 #include <drm/drm_syncobj.h>
-#include <drm/drm_timeout.h>
 
 #include "amdgpu.h"
 #include "amdgpu_display.h"
@@ -129,8 +128,6 @@ static vm_fault_t amdgpu_gem_fault(struct vm_fault *vmf)
 		return ret;
 
 	if (drm_dev_enter(ddev, &idx)) {
-		pm_runtime_get_noresume(ddev->dev);
-
 		ret = amdgpu_bo_fault_reserve_notify(bo);
 		if (ret) {
 			drm_dev_exit(idx);
@@ -140,7 +137,6 @@ static vm_fault_t amdgpu_gem_fault(struct vm_fault *vmf)
 		ret = ttm_bo_vm_fault_reserved(vmf, vmf->vma->vm_page_prot,
 					       TTM_BO_VM_NUM_PREFAULT);
 
-		pm_runtime_put_noidle(ddev->dev);
 		drm_dev_exit(idx);
 	} else {
 		ret = ttm_bo_vm_dummy_page(vmf, vmf->vma->vm_page_prot);
@@ -241,7 +237,7 @@ static int amdgpu_gem_object_open(struct drm_gem_object *obj,
 	struct amdgpu_bo_va *bo_va;
 	struct mm_struct *mm;
 	struct drm_exec exec;
-	int r = 0;
+	int r;
 
 	mm = amdgpu_ttm_tt_get_usermm(abo->tbo.ttm);
 	if (mm && mm != current->mm)
@@ -250,42 +246,6 @@ static int amdgpu_gem_object_open(struct drm_gem_object *obj,
 	if (abo->flags & AMDGPU_GEM_CREATE_VM_ALWAYS_VALID &&
 	    !amdgpu_vm_is_bo_always_valid(vm, abo))
 		return -EPERM;
-
-	/* Validate and add eviction fence to DMABuf imports with dynamic
-	 * attachment in compute VMs. Re-validation will be done by
-	 * amdgpu_vm_validate. Fences are on the reservation shared with the
-	 * export, which is currently required to be validated and fenced
-	 * already by amdgpu_amdkfd_gpuvm_restore_process_bos.
-	 *
-	 * This runs before the BO is added to the VM: drm_gem_handle_create_tail()
-	 * does not call the close() callback when open() fails, so nothing that
-	 * would need unwinding may exist yet.
-	 *
-	 * Nested locking below for the case that a GEM object is opened in
-	 * kfd_mem_export_dmabuf. Since the lock below is only taken for imports,
-	 * but not for export, this is a different lock class that cannot lead to
-	 * circular lock dependencies.
-	 */
-	if (vm->is_compute_context && vm->process_info &&
-	    drm_gem_is_imported(obj) &&
-	    dma_buf_is_dynamic(obj->import_attach->dmabuf)) {
-		mutex_lock_nested(&vm->process_info->lock, 1);
-		if (!WARN_ON(!vm->process_info->eviction_fence))
-			r = amdgpu_amdkfd_bo_validate_and_fence(abo,
-					AMDGPU_GEM_DOMAIN_GTT,
-					&vm->process_info->eviction_fence->base);
-		mutex_unlock(&vm->process_info->lock);
-		if (r) {
-			struct amdgpu_task_info *ti = amdgpu_vm_get_task_info_vm(vm);
-
-			dev_warn(adev->dev, "validate_and_fence failed: %d\n", r);
-			if (ti) {
-				dev_warn(adev->dev, "pid %d\n", ti->task.pid);
-				amdgpu_vm_put_task_info(ti);
-			}
-			return r;
-		}
-	}
 
 	drm_exec_init(&exec, DRM_EXEC_IGNORE_DUPLICATES, 0);
 	drm_exec_until_all_locked(&exec) {
@@ -304,21 +264,47 @@ static int amdgpu_gem_object_open(struct drm_gem_object *obj,
 	bo_va = amdgpu_vm_bo_find(vm, abo);
 	if (!bo_va) {
 		bo_va = amdgpu_vm_bo_add(adev, vm, abo);
-		if (!bo_va) {
-			r = -ENOMEM;
-			goto out_unlock;
-		}
 		r = amdgpu_evf_mgr_attach_fence(&fpriv->evf_mgr, abo);
-		if (r) {
-			amdgpu_vm_bo_del(adev, bo_va);
+		if (r)
 			goto out_unlock;
-		}
 	} else {
 		++bo_va->ref_count;
 	}
 
 	drm_exec_fini(&exec);
-	return 0;
+
+	/* Validate and add eviction fence to DMABuf imports with dynamic
+	 * attachment in compute VMs. Re-validation will be done by
+	 * amdgpu_vm_validate. Fences are on the reservation shared with the
+	 * export, which is currently required to be validated and fenced
+	 * already by amdgpu_amdkfd_gpuvm_restore_process_bos.
+	 *
+	 * Nested locking below for the case that a GEM object is opened in
+	 * kfd_mem_export_dmabuf. Since the lock below is only taken for imports,
+	 * but not for export, this is a different lock class that cannot lead to
+	 * circular lock dependencies.
+	 */
+	if (!vm->is_compute_context || !vm->process_info)
+		return 0;
+	if (!drm_gem_is_imported(obj) ||
+	    !dma_buf_is_dynamic(obj->import_attach->dmabuf))
+		return 0;
+	mutex_lock_nested(&vm->process_info->lock, 1);
+	if (!WARN_ON(!vm->process_info->eviction_fence)) {
+		r = amdgpu_amdkfd_bo_validate_and_fence(abo, AMDGPU_GEM_DOMAIN_GTT,
+							&vm->process_info->eviction_fence->base);
+		if (r) {
+			struct amdgpu_task_info *ti = amdgpu_vm_get_task_info_vm(vm);
+
+			dev_warn(adev->dev, "validate_and_fence failed: %d\n", r);
+			if (ti) {
+				dev_warn(adev->dev, "pid %d\n", ti->task.pid);
+				amdgpu_vm_put_task_info(ti);
+			}
+		}
+	}
+	mutex_unlock(&vm->process_info->lock);
+	return r;
 
 out_unlock:
 	drm_exec_fini(&exec);
@@ -394,21 +380,13 @@ static int amdgpu_gem_object_mmap(struct drm_gem_object *obj, struct vm_area_str
 	/* Workaround for Thunk bug creating PROT_NONE,MAP_PRIVATE mappings
 	 * for debugger access to invisible VRAM. Should have used MAP_SHARED
 	 * instead. Clearing VM_MAYWRITE prevents the mapping from ever
-	 * becoming writable and makes vma_is_cow_mapping(vma) false.
+	 * becoming writable and makes is_cow_mapping(vm_flags) false.
 	 */
-	if (vma_is_cow_mapping(vma) &&
+	if (is_cow_mapping(vma->vm_flags) &&
 	    !(vma->vm_flags & VM_ACCESS_FLAGS))
 		vm_flags_clear(vma, VM_MAYWRITE);
 
 	return drm_gem_ttm_mmap(obj, vma);
-}
-
-static void amdgpu_gem_object_handle_free(struct drm_gem_object *gobj)
-{
-	struct amdgpu_bo *aobj = gem_to_amdgpu_bo(gobj);
-
-	amdgpu_ualink_revoke_exported_memory(aobj);
-
 }
 
 const struct drm_gem_object_funcs amdgpu_gem_object_funcs = {
@@ -420,7 +398,6 @@ const struct drm_gem_object_funcs amdgpu_gem_object_funcs = {
 	.vunmap = drm_gem_ttm_vunmap,
 	.mmap = amdgpu_gem_object_mmap,
 	.vm_ops = &amdgpu_gem_vm_ops,
-	.handle_free = amdgpu_gem_object_handle_free
 };
 
 static bool amdgpu_gem_are_domains_valid(u32 domains)
@@ -458,12 +435,6 @@ int amdgpu_gem_create_ioctl(struct drm_device *dev, void *data,
 	struct drm_gem_object *gobj;
 	uint32_t handle, initial_domain;
 	int r;
-
-	PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND(dev->dev, lock);
-
-	r = PM_RUNTIME_ACQUIRE_ERR(&lock);
-	if (r)
-		return r;
 
 	/* reject invalid gem flags */
 	if (flags & ~AMDGPU_GEM_CREATE_SETTABLE_MASK)
@@ -608,11 +579,6 @@ int amdgpu_gem_userptr_ioctl(struct drm_device *dev, void *data,
 			amdgpu_hmm_range_free(range);
 			goto release_object;
 		}
-
-		r = pm_runtime_resume_and_get(adev->dev);
-		if (r < 0)
-			goto user_pages_done;
-
 		r = amdgpu_bo_reserve(bo, true);
 		if (r)
 			goto user_pages_done;
@@ -622,9 +588,6 @@ int amdgpu_gem_userptr_ioctl(struct drm_device *dev, void *data,
 		amdgpu_bo_placement_from_domain(bo, AMDGPU_GEM_DOMAIN_GTT);
 		r = ttm_bo_validate(&bo->tbo, &bo->placement, &ctx);
 		amdgpu_bo_unreserve(bo);
-
-		pm_runtime_put_autosuspend(adev->dev);
-
 		if (r)
 			goto user_pages_done;
 	}
@@ -685,11 +648,23 @@ int amdgpu_gem_mmap_ioctl(struct drm_device *dev, void *data,
  */
 unsigned long amdgpu_gem_timeout(uint64_t timeout_ns)
 {
-	/* Map anything that doesn't fit in a s64 to an infinite wait */
-	if (timeout_ns > S64_MAX)
+	unsigned long timeout_jiffies;
+	ktime_t timeout;
+
+	/* clamp timeout if it's to large */
+	if (((int64_t)timeout_ns) < 0)
 		return MAX_SCHEDULE_TIMEOUT;
 
-	return drm_timeout_abs_to_jiffies(timeout_ns);
+	timeout = ktime_sub(ns_to_ktime(timeout_ns), ktime_get());
+	if (ktime_to_ns(timeout) < 0)
+		return 0;
+
+	timeout_jiffies = nsecs_to_jiffies(ktime_to_ns(timeout));
+	/*  clamp timeout to avoid unsigned-> signed overflow */
+	if (timeout_jiffies > MAX_SCHEDULE_TIMEOUT)
+		return MAX_SCHEDULE_TIMEOUT - 1;
+
+	return timeout_jiffies;
 }
 
 int amdgpu_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
@@ -826,10 +801,8 @@ amdgpu_gem_va_update_vm(struct amdgpu_device *adev,
 
 	/* Always update PDEs after we touched the mappings. */
 	r = amdgpu_vm_update_pdes(adev, vm, false);
-
-error:
-	if (r && r != -ERESTARTSYS)
-		DRM_ERROR("Couldn't update BO_VA (%d)\n", r);
+	if (r)
+		goto error;
 
 	if ((operation == AMDGPU_VA_OP_MAP ||
 	     operation == AMDGPU_VA_OP_REPLACE) &&
@@ -838,27 +811,27 @@ error:
 		/*
 		 * For MAP/REPLACE of non per-VM BOs we need to sync to both the
 		 * bo_va->last_pt_update and vm->last_update or otherwise we
-		 * potentially miss the PDE updates or TLB invalidation.
+		 * potentially miss the PDE updates.
 		 */
 		fence = dma_fence_unwrap_merge(vm->last_update,
-					       vm->last_tlb_inv,
 					       bo_va->last_pt_update);
-		if (!fence)
+		if (!fence) {
+			/* As fallback in OOM situations */
+			dma_fence_wait(vm->last_update, false);
 			dma_fence_wait(bo_va->last_pt_update, false);
-
+			fence = dma_fence_get_stub();
+		}
 	} else {
-		fence = dma_fence_unwrap_merge(vm->last_update,
-					       vm->last_tlb_inv);
-	}
-
-	if (!fence) {
-		/* As fallback in OOM situations */
-		dma_fence_wait(vm->last_update, false);
-		dma_fence_wait(vm->last_tlb_inv, false);
-		fence = dma_fence_get_stub();
+		fence = dma_fence_get(vm->last_update);
 	}
 
 	return fence;
+
+error:
+	if (r && r != -ERESTARTSYS)
+		DRM_ERROR("Couldn't update BO_VA (%d)\n", r);
+
+	return dma_fence_get(vm->last_update);
 }
 
 int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
@@ -944,12 +917,6 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 		gobj = NULL;
 		abo = NULL;
 	}
-
-	PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND(dev->dev, lock);
-
-	r = PM_RUNTIME_ACQUIRE_ERR(&lock);
-	if (r)
-		goto error_put_gobj;
 
 	/* Add input syncobj fences (if any) for synchronization. */
 	r = amdgpu_gem_add_input_fence(filp,
@@ -1066,7 +1033,6 @@ error_put_gobj:
 int amdgpu_gem_op_ioctl(struct drm_device *dev, void *data,
 			struct drm_file *filp)
 {
-	struct amdgpu_device *adev = drm_to_adev(dev);
 	struct drm_amdgpu_gem_op *args = data;
 	struct drm_gem_object *gobj;
 	struct amdgpu_vm_bo_base *base;
@@ -1165,7 +1131,7 @@ int amdgpu_gem_op_ioctl(struct drm_device *dev, void *data,
 			goto out_exec;
 		}
 
-		vm_entries = kvzalloc_objs(*vm_entries, args->num_entries);
+		vm_entries = kvcalloc(args->num_entries, sizeof(*vm_entries), GFP_KERNEL);
 		if (!vm_entries) {
 			r = -ENOMEM;
 			goto out_exec;
@@ -1173,8 +1139,7 @@ int amdgpu_gem_op_ioctl(struct drm_device *dev, void *data,
 
 		amdgpu_vm_bo_va_for_each_valid_mapping(bo_va, mapping) {
 			if (num_mappings < args->num_entries) {
-				vm_entries[num_mappings].addr =
-					amdgpu_gmc_sign_extend(mapping->start * AMDGPU_GPU_PAGE_SIZE);
+				vm_entries[num_mappings].addr = mapping->start * AMDGPU_GPU_PAGE_SIZE;
 				vm_entries[num_mappings].size = (mapping->last - mapping->start + 1) * AMDGPU_GPU_PAGE_SIZE;
 				vm_entries[num_mappings].offset = mapping->offset;
 				vm_entries[num_mappings].flags = mapping->flags;
@@ -1184,8 +1149,7 @@ int amdgpu_gem_op_ioctl(struct drm_device *dev, void *data,
 
 		amdgpu_vm_bo_va_for_each_invalid_mapping(bo_va, mapping) {
 			if (num_mappings < args->num_entries) {
-				vm_entries[num_mappings].addr =
-					amdgpu_gmc_sign_extend(mapping->start * AMDGPU_GPU_PAGE_SIZE);
+				vm_entries[num_mappings].addr = mapping->start * AMDGPU_GPU_PAGE_SIZE;
 				vm_entries[num_mappings].size = (mapping->last - mapping->start + 1) * AMDGPU_GPU_PAGE_SIZE;
 				vm_entries[num_mappings].offset = mapping->offset;
 				vm_entries[num_mappings].flags = mapping->flags;

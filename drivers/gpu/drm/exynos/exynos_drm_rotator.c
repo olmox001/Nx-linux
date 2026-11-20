@@ -283,7 +283,7 @@ static int rotator_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	rot = devm_kzalloc_obj(dev, *rot);
+	rot = devm_kzalloc(dev, sizeof(*rot), GFP_KERNEL);
 	if (!rot)
 		return -ENOMEM;
 

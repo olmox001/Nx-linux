@@ -343,7 +343,7 @@ static int cgbc_probe(struct platform_device *pdev)
 	struct cgbc_device_data *cgbc;
 	int ret;
 
-	cgbc = devm_kzalloc_obj(dev, *cgbc);
+	cgbc = devm_kzalloc(dev, sizeof(*cgbc), GFP_KERNEL);
 	if (!cgbc)
 		return -ENOMEM;
 

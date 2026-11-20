@@ -1048,7 +1048,7 @@ static int init_chip_info(void)
 	cpumask_t *chip_cpu_mask;
 	int ret = 0;
 
-	chip = kzalloc_objs(*chip, num_possible_cpus());
+	chip = kcalloc(num_possible_cpus(), sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

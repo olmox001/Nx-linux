@@ -2,7 +2,7 @@
 #include "cgroup-internal.h"
 
 #include <linux/ctype.h>
-#include <linux/umh.h>
+#include <linux/kmod.h>
 #include <linux/sort.h>
 #include <linux/delay.h>
 #include <linux/mm.h>
@@ -506,8 +506,8 @@ static ssize_t __cgroup1_procs_write(struct kernfs_open_file *of,
 	enum cgroup_attach_lock_mode lock_mode;
 
 	cgrp = cgroup_kn_lock_live(of->kn, false);
-	if (IS_ERR(cgrp))
-		return PTR_ERR(cgrp);
+	if (!cgrp)
+		return -ENODEV;
 
 	task = cgroup_procs_write_start(buf, threadgroup, &lock_mode);
 	ret = PTR_ERR_OR_ZERO(task);
@@ -569,8 +569,8 @@ static ssize_t cgroup_release_agent_write(struct kernfs_open_file *of,
 		return -EPERM;
 
 	cgrp = cgroup_kn_lock_live(of->kn, false);
-	if (IS_ERR(cgrp))
-		return PTR_ERR(cgrp);
+	if (!cgrp)
+		return -ENODEV;
 	spin_lock(&release_agent_path_lock);
 	strscpy(cgrp->root->release_agent_path, strstrip(buf),
 		sizeof(cgrp->root->release_agent_path));
@@ -605,7 +605,10 @@ static u64 cgroup_read_notify_on_release(struct cgroup_subsys_state *css,
 static int cgroup_write_notify_on_release(struct cgroup_subsys_state *css,
 					  struct cftype *cft, u64 val)
 {
-	assign_bit(CGRP_NOTIFY_ON_RELEASE, &css->cgroup->flags, val);
+	if (val)
+		set_bit(CGRP_NOTIFY_ON_RELEASE, &css->cgroup->flags);
+	else
+		clear_bit(CGRP_NOTIFY_ON_RELEASE, &css->cgroup->flags);
 	return 0;
 }
 
@@ -618,7 +621,10 @@ static u64 cgroup_clone_children_read(struct cgroup_subsys_state *css,
 static int cgroup_clone_children_write(struct cgroup_subsys_state *css,
 				       struct cftype *cft, u64 val)
 {
-	assign_bit(CGRP_CPUSET_CLONE_CHILDREN, &css->cgroup->flags, val);
+	if (val)
+		set_bit(CGRP_CPUSET_CLONE_CHILDREN, &css->cgroup->flags);
+	else
+		clear_bit(CGRP_CPUSET_CLONE_CHILDREN, &css->cgroup->flags);
 	return 0;
 }
 
@@ -1091,9 +1097,7 @@ int cgroup1_reconfigure(struct fs_context *fc)
 	int ret = 0;
 	u32 added_mask, removed_mask;
 
-	ret = cgroup_lock_and_drain_offline(&cgrp_dfl_root.cgrp);
-	if (unlikely(ret))
-		return ret;
+	cgroup_lock_and_drain_offline(&cgrp_dfl_root.cgrp);
 
 	/* See what subsystems are wanted */
 	ret = check_cgroupfs_options(fc);
@@ -1258,9 +1262,7 @@ int cgroup1_get_tree(struct fs_context *fc)
 	if (!ns_capable(ctx->ns->user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
 
-	ret = cgroup_lock_and_drain_offline(&cgrp_dfl_root.cgrp);
-	if (unlikely(ret))
-		return ret;
+	cgroup_lock_and_drain_offline(&cgrp_dfl_root.cgrp);
 
 	ret = cgroup1_root_to_use(fc);
 	if (!ret && !percpu_ref_tryget_live(&ctx->root->cgrp.self.refcnt))

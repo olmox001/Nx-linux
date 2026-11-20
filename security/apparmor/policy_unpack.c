@@ -25,7 +25,6 @@
 #include "include/crypto.h"
 #include "include/file.h"
 #include "include/match.h"
-#include "include/net.h"
 #include "include/path.h"
 #include "include/policy.h"
 #include "include/policy_unpack.h"
@@ -558,9 +557,6 @@ static int unpack_strs_table(struct aa_ext *e, const char *name, bool multi,
 			/* aa_unpack_strdup verifies that the last character is
 			 * null termination byte.
 			 */
-			/* publish before validating; the error path frees it */
-			table[i].strs = str;
-			table[i].size = size2;
 			c = process_strs_entry(str, size2, multi);
 			if (c <= 0) {
 				AA_DEBUG(DEBUG_UNPACK, "process_strs %d i %d pos %ld",
@@ -573,7 +569,9 @@ static int unpack_strs_table(struct aa_ext *e, const char *name, bool multi,
 				/* fail - all other cases with embedded \0 */
 				goto fail;
 			}
+			table[i].strs = str;
 			table[i].count = c;
+			table[i].size = size2;
 		}
 		if (!aa_unpack_nameX(e, AA_ARRAYEND, NULL))
 			goto fail;
@@ -785,7 +783,7 @@ static int unpack_tagsets(struct aa_ext *e, struct aa_tags_struct *tags)
 
 	if (!aa_unpack_array(e, "sets", &size))
 		goto fail_reset;
-	sets = kzalloc_objs(u32, size);
+	sets = kcalloc(size, sizeof(u32), GFP_KERNEL);
 	if (!sets) {
 		error = -ENOMEM;
 		goto fail_reset;
@@ -1053,11 +1051,6 @@ static int unpack_pdb(struct aa_ext *e, struct aa_policydb **policy,
 		u16 tdflags = pdb->dfa->tables[YYTD_ID_ACCEPT]->td_flags;
 		size_t tsize = table_size(noents, tdflags);
 
-		if (!tsize) {
-			*info = "invalid dfa flags table size";
-			error = -EPROTO;
-			goto fail;
-		}
 		pdb->dfa->tables[YYTD_ID_ACCEPT2] = kvzalloc(tsize, GFP_KERNEL);
 		if (!pdb->dfa->tables[YYTD_ID_ACCEPT2]) {
 			*info = "failed to alloc dfa flags table";
@@ -1489,26 +1482,17 @@ static int verify_header(struct aa_ext *e, int required, const char **ns)
  * @dfa: the dfa to check accept indexes are in range
  * @table_size: the permission table size the indexes should be within
  */
-static bool verify_dfa_accept_index(const struct aa_dfa *dfa, int table_size)
+static bool verify_dfa_accept_index(struct aa_dfa *dfa, int table_size)
 {
 	int i;
 	for (i = 0; i < dfa->tables[YYTD_ID_ACCEPT]->td_lolen; i++) {
 		if (ACCEPT_TABLE(dfa)[i] >= table_size)
 			return false;
-		/*
-		 * Accept indexes for owner-conditional permissions come in
-		 * pairs, so the non-owner entry at index + 1 must also be
-		 * in bounds.
-		 */
-		if (dfa->tables[YYTD_ID_ACCEPT2] &&
-		    (ACCEPT_TABLE2(dfa)[i] & ACCEPT_FLAG_OWNER) &&
-		    ACCEPT_TABLE(dfa)[i] + 1 >= table_size)
-			return false;
 	}
 	return true;
 }
 
-static bool verify_perm(const struct aa_perms *perm)
+static bool verify_perm(struct aa_perms *perm)
 {
 	/* TODO: allow option to just force the perms into a valid state */
 	if (perm->allow & perm->deny)
@@ -1733,8 +1717,6 @@ static int compress_loaddata(struct aa_loaddata *data)
  * @udata: user data copied to kmem  (NOT NULL)
  * @lh: list to place unpacked profiles in a aa_repl_ws
  * @ns: Returns namespace profile is in if specified else NULL (NOT NULL)
- * @compressed_data: The userspace-provided compressed data. May be NULL
- * @compressed_size: If compressed_data is not NULL, the compressed data size
  *
  * Unpack user data and return refcounted allocated profile(s) stored in
  * @lh in order of discovery, with the list chain stored in base.list
@@ -1743,12 +1725,12 @@ static int compress_loaddata(struct aa_loaddata *data)
  * Returns: profile(s) on @lh else error pointer if fails to unpack
  */
 int aa_unpack(struct aa_loaddata *udata, struct list_head *lh,
-	      const char **ns, char *compressed_data, size_t compressed_size)
+	      const char **ns)
 {
 	struct aa_load_ent *tmp, *ent;
 	struct aa_profile *profile = NULL;
 	char *ns_name = NULL;
-	int error = 0;
+	int error;
 	struct aa_ext e = {
 		.start = udata->data,
 		.end = udata->data + udata->size,
@@ -1801,36 +1783,19 @@ int aa_unpack(struct aa_loaddata *udata, struct list_head *lh,
 	}
 
 	if (aa_g_export_binary) {
-		/* Do we have userspace-compressed data? */
-		if (compressed_data) {
-			kvfree(udata->data);
-			udata->data = compressed_data;
-			udata->compressed_size = compressed_size;
-			compressed_data = NULL; /* consumed */
-
-		} else
-			error = compress_loaddata(udata);
-
+		error = compress_loaddata(udata);
 		if (error)
 			goto fail;
-	} else if (compressed_data) {
-		kvfree(compressed_data);
-		compressed_data = NULL;
 	}
-
 	return 0;
 
 fail_profile:
 	kfree(ns_name);
-	aa_put_unpublished_profile(profile);
+	aa_put_profile(profile);
 
 fail:
-	if (compressed_data)
-		kvfree(compressed_data);
 	list_for_each_entry_safe(ent, tmp, lh, list) {
 		list_del_init(&ent->list);
-		aa_put_unpublished_profile(ent->new);
-		ent->new = NULL;
 		aa_load_ent_free(ent);
 	}
 

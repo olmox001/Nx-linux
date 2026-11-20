@@ -220,39 +220,33 @@ static int apll1_mux_setting(struct mtk_base_afe *afe, bool enable)
 		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG1],
 					      MT8196_AUD_ENG1_CLK);
 		if (ret)
-			goto err_disable_eng1;
+			return ret;
 
 		ret = mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
 		if (ret)
-			goto err_restore_eng1;
+			return ret;
 
 		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H],
 					      apll_rate);
 		if (ret)
-			goto err_disable_audio_h;
+			return ret;
 	} else {
-		mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG1],
-					MT8196_AFE_26M);
+		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG1],
+					      MT8196_AFE_26M);
+		if (ret)
+			return ret;
 
 		mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG1]);
 
-		mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H],
-					MT8196_AFE_26M);
+		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H],
+					      MT8196_AFE_26M);
+		if (ret)
+			return ret;
 
 		mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
 	}
 
 	return 0;
-
-err_disable_audio_h:
-	mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
-err_restore_eng1:
-	mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG1],
-				MT8196_AFE_26M);
-err_disable_eng1:
-	mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG1]);
-
-	return ret;
 }
 
 static int apll2_mux_setting(struct mtk_base_afe *afe, bool enable)
@@ -274,39 +268,33 @@ static int apll2_mux_setting(struct mtk_base_afe *afe, bool enable)
 		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG2],
 					      MT8196_AUD_ENG2_CLK);
 		if (ret)
-			goto err_disable_eng2;
+			return ret;
 
 		ret = mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
 		if (ret)
-			goto err_restore_eng2;
+			return ret;
 
 		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H],
 					      apll_rate);
 		if (ret)
-			goto err_disable_audio_h;
+			return ret;
 	} else {
-		mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG2],
-					MT8196_AFE_26M);
+		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG2],
+					      MT8196_AFE_26M);
+		if (ret)
+			return ret;
 
 		mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG2]);
 
-		mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H],
-					MT8196_AFE_26M);
+		ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H],
+					      MT8196_AFE_26M);
+		if (ret)
+			return ret;
 
 		mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
 	}
 
 	return 0;
-
-err_disable_audio_h:
-	mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
-err_restore_eng2:
-	mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG2],
-				MT8196_AFE_26M);
-err_disable_eng2:
-	mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUD_ENG2]);
-
-	return ret;
 }
 
 int mt8196_apll1_enable(struct mtk_base_afe *afe)
@@ -314,17 +302,15 @@ int mt8196_apll1_enable(struct mtk_base_afe *afe)
 	int ret;
 
 	/* setting for APLL */
-	ret = apll1_mux_setting(afe, true);
-	if (ret)
-		return ret;
+	apll1_mux_setting(afe, true);
 
 	ret = mt8196_afe_enable_top_cg(afe, MT8196_CG_APLL1_CK);
 	if (ret)
-		goto err_disable_mux;
+		goto err_clk_apll1;
 
 	ret = mt8196_afe_enable_top_cg(afe, MT8196_PDN_APLL_TUNER1);
 	if (ret)
-		goto err_disable_apll1_ck;
+		goto err_clk_apll1_tuner;
 
 	/* sel 44.1kHz:1, apll_div:7, upper bound:3 */
 	regmap_update_bits(afe->regmap, AFE_APLL1_TUNER_CFG,
@@ -338,22 +324,14 @@ int mt8196_apll1_enable(struct mtk_base_afe *afe)
 			   0x1 << FREQ_TUNER_EN_SFT);
 
 	/* audio apll1 on */
-	ret = mt8196_afe_enable_top_cg(afe, MT8196_AUDIO_APLL1_EN_ON);
-	if (ret)
-		goto err_disable_tuner;
+	mt8196_afe_enable_top_cg(afe, MT8196_AUDIO_APLL1_EN_ON);
 
 	return 0;
 
-err_disable_tuner:
-	regmap_update_bits(afe->regmap, AFE_APLL1_TUNER_CFG,
-			   FREQ_TUNER_EN_MASK_SFT,
-			   0x0);
+err_clk_apll1_tuner:
 	mt8196_afe_disable_top_cg(afe, MT8196_PDN_APLL_TUNER1);
-err_disable_apll1_ck:
+err_clk_apll1:
 	mt8196_afe_disable_top_cg(afe, MT8196_CG_APLL1_CK);
-err_disable_mux:
-	apll1_mux_setting(afe, false);
-
 	return ret;
 }
 
@@ -377,17 +355,15 @@ int mt8196_apll2_enable(struct mtk_base_afe *afe)
 	int ret;
 
 	/* setting for APLL */
-	ret = apll2_mux_setting(afe, true);
-	if (ret)
-		return ret;
+	apll2_mux_setting(afe, true);
 
 	ret = mt8196_afe_enable_top_cg(afe, MT8196_CG_APLL2_CK);
 	if (ret)
-		goto err_disable_mux;
+		goto err_clk_apll2;
 
 	ret = mt8196_afe_enable_top_cg(afe, MT8196_PDN_APLL_TUNER2);
 	if (ret)
-		goto err_disable_apll2_ck;
+		goto err_clk_apll2_tuner;
 
 	/* sel 48kHz: 2, apll_div: 7, upper bound: 3*/
 	regmap_update_bits(afe->regmap, AFE_APLL2_TUNER_CFG,
@@ -401,23 +377,14 @@ int mt8196_apll2_enable(struct mtk_base_afe *afe)
 			   0x1 << FREQ_TUNER_EN_SFT);
 
 	/* audio apll2 on */
-	ret = mt8196_afe_enable_top_cg(afe, MT8196_AUDIO_APLL2_EN_ON);
-	if (ret)
-		goto err_disable_tuner2;
-
+	mt8196_afe_enable_top_cg(afe, MT8196_AUDIO_APLL2_EN_ON);
 	return 0;
 
-err_disable_tuner2:
-	regmap_update_bits(afe->regmap, AFE_APLL2_TUNER_CFG,
-			   FREQ_TUNER_EN_MASK_SFT,
-			   0x0);
+err_clk_apll2_tuner:
 	mt8196_afe_disable_top_cg(afe, MT8196_PDN_APLL_TUNER2);
-err_disable_apll2_ck:
+err_clk_apll2:
 	mt8196_afe_disable_top_cg(afe, MT8196_CG_APLL2_CK);
-err_disable_mux:
-	apll2_mux_setting(afe, false);
-
-	return ret;
+	return 0;
 }
 
 void mt8196_apll2_disable(struct mtk_base_afe *afe)
@@ -502,10 +469,8 @@ int mt8196_mck_enable(struct mtk_base_afe *afe, int mck_id, int rate)
 		return ret;
 
 	ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[div_clk_id], rate);
-	if (ret) {
-		mt8196_afe_disable_clk(afe, afe_priv->clk[div_clk_id]);
+	if (ret)
 		return ret;
-	}
 
 	return 0;
 }
@@ -546,41 +511,26 @@ int mt8196_afe_enable_reg_rw_clk(struct mtk_base_afe *afe)
 	int ret;
 
 	/* bus clock for AFE external access, like DRAM */
-	ret = mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_TOP_ADSP_SEL]);
-	if (ret)
-		return ret;
+	mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_TOP_ADSP_SEL]);
 
 	/* bus clock for AFE internal access, like AFE SRAM */
-	ret = mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIOINTBUS]);
-	if (ret)
-		goto err_disable_adsp_sel;
+	mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIOINTBUS]);
 	ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIOINTBUS],
 				      MT8196_AFE_26M);
 	if (ret)
-		goto err_disable_audiointbus;
+		return ret;
 
 	/* enable audio h clock */
-	ret = mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
-	if (ret)
-		goto err_disable_audiointbus;
+	mt8196_afe_enable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
 	ret = mt8196_afe_set_clk_rate(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H],
 				      MT8196_AFE_26M);
 	if (ret)
-		goto err_disable_audio_h;
+		return ret;
 
 	/* AFE hw clock */
 	/* IPM2.0: USE HOPPING & 26M */
 	/* set in the regmap_register_patch */
 	return 0;
-
-err_disable_audio_h:
-	mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIO_H]);
-err_disable_audiointbus:
-	mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_VLP_MUX_AUDIOINTBUS]);
-err_disable_adsp_sel:
-	mt8196_afe_disable_clk(afe, afe_priv->clk[MT8196_CLK_TOP_ADSP_SEL]);
-
-	return ret;
 }
 
 int mt8196_afe_disable_reg_rw_clk(struct mtk_base_afe *afe)
@@ -598,12 +548,14 @@ int mt8196_afe_disable_reg_rw_clk(struct mtk_base_afe *afe)
 
 int mt8196_afe_enable_main_clock(struct mtk_base_afe *afe)
 {
-	return mt8196_afe_enable_top_cg(afe, MT8196_AUDIO_26M_EN_ON);
+	mt8196_afe_enable_top_cg(afe, MT8196_AUDIO_26M_EN_ON);
+	return 0;
 }
 
 int mt8196_afe_disable_main_clock(struct mtk_base_afe *afe)
 {
-	return mt8196_afe_disable_top_cg(afe, MT8196_AUDIO_26M_EN_ON);
+	mt8196_afe_disable_top_cg(afe, MT8196_AUDIO_26M_EN_ON);
+	return 0;
 }
 
 int mt8196_init_clock(struct mtk_base_afe *afe)
@@ -611,16 +563,17 @@ int mt8196_init_clock(struct mtk_base_afe *afe)
 	struct mt8196_afe_private *afe_priv = afe->platform_priv;
 	int i;
 
-	afe_priv->clk = devm_kzalloc_objs(afe->dev, *afe_priv->clk,
-					  MT8196_CLK_NUM);
+	afe_priv->clk = devm_kcalloc(afe->dev, MT8196_CLK_NUM, sizeof(*afe_priv->clk),
+				     GFP_KERNEL);
 	if (!afe_priv->clk)
 		return -ENOMEM;
 
 	for (i = 0; i < MT8196_CLK_NUM; i++) {
 		afe_priv->clk[i] = devm_clk_get(afe->dev, aud_clks[i]);
-		if (IS_ERR(afe_priv->clk[i]))
-			return dev_err_probe(afe->dev, PTR_ERR(afe_priv->clk[i]),
-					     "failed to get clock %s\n", aud_clks[i]);
+		if (IS_ERR(afe_priv->clk[i])) {
+			dev_err(afe->dev, "devm_clk_get %s fail\n", aud_clks[i]);
+			return PTR_ERR(afe_priv->clk[i]);
+		}
 	}
 
 	return 0;

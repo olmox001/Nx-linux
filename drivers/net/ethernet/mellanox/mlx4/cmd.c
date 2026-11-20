@@ -42,6 +42,9 @@
 #include <linux/mlx4/device.h>
 #include <linux/semaphore.h>
 #include <rdma/ib_smi.h>
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#include <rdma/ib_pma.h>
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
 
@@ -371,8 +374,13 @@ static int mlx4_comm_cmd_wait(struct mlx4_dev *dev, u8 vhcr_cmd,
 
 	err = context->result;
 	if (err && context->fw_status != CMD_STAT_MULTI_FUNC_REQ) {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		mlx4_err(dev, "command 0x%x failed: fw status = 0x%x\n",
 			 vhcr_cmd, context->fw_status);
+#else
+		mlx4_err(dev, "%s: command 0x%x failed: fw status = 0x%x\n",
+			 __func__, vhcr_cmd, context->fw_status);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 		if (mlx4_closing_cmd_fatal_error(op, context->fw_status))
 			goto out_reset;
 	}
@@ -429,6 +437,21 @@ static int cmd_pending(struct mlx4_dev *dev)
 		 !!(status & swab32(1 << HCR_T_BIT)));
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static int get_status(struct mlx4_dev *dev, u32 *status, int *go_bit,
+		      int *t_bit)
+{
+	if (pci_channel_offline(dev->persist->pdev))
+		return -EIO;
+
+	*status = readl(mlx4_priv(dev)->cmd.hcr + HCR_STATUS_OFFSET);
+	*t_bit = !!(*status & swab32(1 << HCR_T_BIT));
+	*go_bit = !!(*status & swab32(1 << HCR_GO_BIT));
+
+	return 0;
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static int mlx4_cmd_post(struct mlx4_dev *dev, u64 in_param, u64 out_param,
 			 u32 in_modifier, u8 op_modifier, u16 op, u16 token,
 			 int event)
@@ -437,6 +460,10 @@ static int mlx4_cmd_post(struct mlx4_dev *dev, u64 in_param, u64 out_param,
 	u32 __iomem *hcr = cmd->hcr;
 	int ret = -EIO;
 	unsigned long end;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	int err, go_bit = 0, t_bit = 0;
+	u32 status = 0;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	mutex_lock(&dev->persist->device_state_mutex);
 	/* To avoid writing to unknown addresses after the device state was
@@ -500,9 +527,18 @@ static int mlx4_cmd_post(struct mlx4_dev *dev, u64 in_param, u64 out_param,
 	ret = 0;
 
 out:
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	if (ret)
 		mlx4_warn(dev, "Could not post command 0x%x: ret=%d, in_param=0x%llx, in_mod=0x%x, op_mod=0x%x\n",
 			  op, ret, in_param, in_modifier, op_modifier);
+#else
+	if (ret) {
+		err = get_status(dev, &status, &go_bit, &t_bit);
+		mlx4_warn(dev, "Could not post command 0x%x: ret=%d, in_param=0x%llx, in_mod=0x%x, op_mod=0x%x, get_status err=%d, status_reg=0x%x, go_bit=%d, t_bit=%d, toggle=0x%x\n",
+			  op, ret, in_param, in_modifier, op_modifier, err,
+			  status, go_bit, t_bit, cmd->toggle);
+	}
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	mutex_unlock(&dev->persist->device_state_mutex);
 
 	return ret;
@@ -642,8 +678,13 @@ static int mlx4_cmd_poll(struct mlx4_dev *dev, u64 in_param, u64 *out_param,
 			   __raw_readl(hcr + HCR_STATUS_OFFSET)) >> 24;
 	err = mlx4_status_to_errno(stat);
 	if (err) {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		mlx4_err(dev, "command 0x%x failed: fw status = 0x%x\n",
 			 op, stat);
+#else
+		mlx4_err(dev, "%s: command 0x%x failed: fw status = 0x%x\n",
+			 __func__, op, stat);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 		if (mlx4_closing_cmd_fatal_error(op, stat))
 			goto out_reset;
 		goto out;
@@ -682,6 +723,10 @@ static int mlx4_cmd_wait(struct mlx4_dev *dev, u64 in_param, u64 *out_param,
 	struct mlx4_cmd_context *context;
 	long ret_wait;
 	int err = 0;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	int go_bit = 0, t_bit = 0, stat_err;
+	u32 status = 0;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	down(&cmd->event_sem);
 
@@ -720,8 +765,15 @@ static int mlx4_cmd_wait(struct mlx4_dev *dev, u64 in_param, u64 *out_param,
 							     msecs_to_jiffies(timeout));
 	}
 	if (!ret_wait) {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		mlx4_warn(dev, "command 0x%x timed out (go bit not cleared)\n",
 			  op);
+#else
+		stat_err = get_status(dev, &status, &go_bit, &t_bit);
+		mlx4_warn(dev, "command 0x%x timed out: in_param=0x%llx, in_mod=0x%x, op_mod=0x%x, get_status err=%d, status_reg=0x%x, go_bit=%d, t_bit=%d, toggle=0x%x\n",
+			  op, in_param, in_modifier, op_modifier, stat_err,
+			  status, go_bit, t_bit, mlx4_priv(dev)->cmd.toggle);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 		if (op == MLX4_CMD_NOP) {
 			err = -EBUSY;
 			goto out;
@@ -742,11 +794,21 @@ static int mlx4_cmd_wait(struct mlx4_dev *dev, u64 in_param, u64 *out_param,
 		    (in_modifier == 1 || in_modifier == 2) &&
 		    op_modifier == MLX4_SET_PORT_IB_OPCODE &&
 		    context->fw_status == CMD_STAT_BAD_SIZE)
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 			mlx4_dbg(dev, "command 0x%x failed: fw status = 0x%x\n",
 				 op, context->fw_status);
+#else
+			mlx4_dbg(dev, "%s(%d): command 0x%x failed: fw status = 0x%x\n",
+				 __func__, __LINE__, op, context->fw_status);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 		else
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 			mlx4_err(dev, "command 0x%x failed: fw status = 0x%x\n",
 				 op, context->fw_status);
+#else
+			mlx4_err(dev, "%s(%d): command 0x%x failed: fw status = 0x%x\n",
+				 __func__, __LINE__, op, context->fw_status);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 		if (dev->persist->state & MLX4_DEVICE_STATE_INTERNAL_ERROR)
 			err = mlx4_internal_err_ret_value(dev, op, op_modifier);
 		else if (mlx4_closing_cmd_fatal_error(op, context->fw_status))
@@ -1002,6 +1064,7 @@ static int mlx4_MAD_IFC_wrapper(struct mlx4_dev *dev, int slave,
 		}
 	}
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	/* Non-privileged VFs are only allowed "host" view LID-routed 'Get' MADs.
 	 * These are the MADs used by ib verbs (such as ib_query_gids).
 	 */
@@ -1010,11 +1073,37 @@ static int mlx4_MAD_IFC_wrapper(struct mlx4_dev *dev, int slave,
 		if (!(smp->mgmt_class == IB_MGMT_CLASS_SUBN_LID_ROUTED &&
 		      smp->method == IB_MGMT_METHOD_GET) || network_view) {
 			mlx4_err(dev, "Unprivileged slave %d is trying to execute a Subnet MGMT MAD, class 0x%x, method 0x%x, view=%s for attr 0x%x. Rejecting\n",
+#else
+	/* Non-privileged VFs are only allowed certain MADs
+	 * for the following exception cases
+	 *
+	 * (a) "host" view LID-routed 'Get' MADs.
+	 *    These are the MADs used by ib verbs (such as ib_query_gid).
+	 * (b) 'Get' MADs used for performance monitoring.
+	 *     (comaptibility for older GuestOS VFs)
+	 */
+	if ((slave != mlx4_master_func_num(dev)) &&
+	    (!mlx4_vf_smi_enabled(dev, slave, port))) {
+		if ((!(smp->mgmt_class == IB_MGMT_CLASS_SUBN_LID_ROUTED &&
+		       smp->method == IB_MGMT_METHOD_GET) || network_view) &&
+		    !(smp->mgmt_class == IB_MGMT_CLASS_PERF_MGMT &&
+		      smp->method == IB_MGMT_METHOD_GET &&
+		      (smp->attr_id == IB_PMA_PORT_COUNTERS ||
+		       smp->attr_id == IB_PMA_PORT_COUNTERS_EXT))) {
+			mlx4_err(dev,
+				 "Unprivileged slave %d is trying to execute a Subnet MGMT MAD, class 0x%x, method 0x%x, view=%s for attr 0x%x. Rejecting\n",
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 				 slave, smp->mgmt_class, smp->method,
 				 network_view ? "Network" : "Host",
 				 be16_to_cpu(smp->attr_id));
 			return -EPERM;
 		}
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		/* We get here when we are (a) or (b) exception
+		 * case for unprivileged VF described above
+		 * => fallthru and process this MAD
+		 */
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	}
 
 	return mlx4_cmd_box(dev, inbox->dma, outbox->dma,

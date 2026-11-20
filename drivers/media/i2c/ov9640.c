@@ -519,7 +519,6 @@ static int ov9640_s_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov9640_set_fmt(struct v4l2_subdev *sd,
-		const struct v4l2_subdev_client_info *ci,
 		struct v4l2_subdev_state *sd_state,
 		struct v4l2_subdev_format *format)
 {
@@ -564,7 +563,6 @@ static int ov9640_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov9640_get_selection(struct v4l2_subdev *sd,
-		const struct v4l2_subdev_client_info *ci,
 		struct v4l2_subdev_state *sd_state,
 		struct v4l2_subdev_selection *sel)
 {
@@ -687,7 +685,7 @@ static int ov9640_probe(struct i2c_client *client)
 	struct ov9640_priv *priv;
 	int ret;
 
-	priv = devm_kzalloc_obj(&client->dev, *priv);
+	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

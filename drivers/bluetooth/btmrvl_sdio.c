@@ -81,7 +81,8 @@ static int btmrvl_sdio_probe_of(struct device *dev,
 
 	card->plt_of_node = dev->of_node;
 
-	card->plt_wake_cfg = devm_kzalloc_obj(dev, *card->plt_wake_cfg);
+	card->plt_wake_cfg = devm_kzalloc(dev, sizeof(*card->plt_wake_cfg),
+					  GFP_KERNEL);
 	cfg = card->plt_wake_cfg;
 	if (cfg && card->plt_of_node) {
 		cfg->irq_bt = irq_of_parse_and_map(card->plt_of_node, 0);
@@ -798,7 +799,7 @@ static int btmrvl_sdio_card_to_host(struct btmrvl_private *priv)
 		skb_pull(skb, SDIO_HEADER_LEN);
 
 		if (btmrvl_process_event(priv, skb))
-			kfree_skb(skb);
+			hci_recv_frame(hdev, skb);
 
 		hdev->stat.byte_rx += buf_len;
 		break;
@@ -1516,7 +1517,7 @@ static int btmrvl_sdio_probe(struct sdio_func *func,
 	BT_INFO("vendor=0x%x, device=0x%x, class=%d, fn=%d",
 			id->vendor, id->device, id->class, func->num);
 
-	card = devm_kzalloc_obj(&func->dev, *card);
+	card = devm_kzalloc(&func->dev, sizeof(*card), GFP_KERNEL);
 	if (!card)
 		return -ENOMEM;
 

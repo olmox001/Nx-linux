@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2020 Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -31,22 +31,21 @@
  *
  */
 #include <linux/kernel.h>
-#include <linux/gfp.h>
 #include <linux/in.h>
 #include <net/tcp.h>
-#include <trace/events/sock.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
+
+#include "trace.h"
 
 #include "rds.h"
 #include "tcp.h"
 
-void rds_tcp_keepalive(struct socket *sock)
+int rds_tcp_keepalive(struct socket *sock)
 {
 	/* values below based on xs_udp_default_timeout */
 	int keepidle = 5; /* send a probe 'keepidle' secs after last data */
 	int keepcnt = 5; /* number of unack'ed probes before declaring dead */
-
 	sock_set_keepalive(sock->sk);
 	tcp_sock_set_keepcnt(sock->sk, keepcnt);
 	tcp_sock_set_keepidle(sock->sk, keepidle);
@@ -54,22 +53,46 @@ void rds_tcp_keepalive(struct socket *sock)
 	 * the model in xs_tcp_finish_connecting() and re-use keepidle.
 	 */
 	tcp_sock_set_keepintvl(sock->sk, keepidle);
+
+	return 0;
 }
 
 static int
 rds_tcp_get_peer_sport(struct socket *sock)
 {
-	struct sock *sk = sock->sk;
+	union {
+		struct sockaddr_storage storage;
+		struct sockaddr addr;
+		struct sockaddr_in sin;
+		struct sockaddr_in6 sin6;
+	} saddr;
+	int sport;
 
-	if (!sk)
-		return -1;
+	/* Call the socket's getname() function (inet_getname() in this case)
+	 * with a final argument greater than 1 to get the peer's port
+	 * regardless of whether the socket is currently connected.
+	 */
+	if (sock->ops->getname(sock, &saddr.addr, 2) >= 0) {
+		switch (saddr.addr.sa_family) {
+		case AF_INET:
+			sport = ntohs(saddr.sin.sin_port);
+			break;
+		case AF_INET6:
+			sport = ntohs(saddr.sin6.sin6_port);
+			break;
+		default:
+			sport = -1;
+		}
+	} else {
+		sport = -1;
+	}
 
-	return ntohs(READ_ONCE(inet_sk(sk)->inet_dport));
+	return sport;
 }
 
 /* rds_tcp_accept_one_path(): if accepting on cp_index > 0, make sure the
  * client's ipaddr < server's ipaddr. Otherwise, close the accepted
- * socket and force a reconnect from smaller -> larger ip addr. The reason
+ * socket and force a reconneect from smaller -> larger ip addr. The reason
  * we special case cp_index 0 is to allow the rds probe ping itself to itself
  * get through efficiently.
  */
@@ -87,8 +110,7 @@ rds_tcp_accept_one_path(struct rds_connection *conn, struct socket *sock)
 	npaths = max_t(int, 1, conn->c_npaths);
 
 	if (sport >= 0) {
-		i_min = sport % npaths;
-		i_max = i_min;
+		i_min = i_max = sport % npaths;
 	} else {
 		i_min = 0;
 		i_max = npaths - 1;
@@ -98,41 +120,39 @@ rds_tcp_accept_one_path(struct rds_connection *conn, struct socket *sock)
 		struct rds_conn_path *cp = &conn->c_path[i];
 
 		if (rds_conn_path_transition(cp, RDS_CONN_DOWN,
-					     RDS_CONN_CONNECTING))
+					     RDS_CONN_CONNECTING, DR_DEFAULT))
 			return cp->cp_transport_data;
 	}
 
 	return NULL;
 }
 
-void rds_tcp_conn_slots_available(struct rds_connection *conn, bool fan_out)
+void rds_tcp_set_linger(struct socket *sock)
 {
-	struct rds_tcp_connection *tc;
-	struct rds_tcp_net *rtn;
-	struct socket *sock;
+	sock_no_linger(sock->sk);
+}
+
+void rds_tcp_fan_out_w(struct work_struct *work)
+{
+        struct rds_tcp_connection *tc = container_of(work,
+						     struct rds_tcp_connection,
+						     t_fan_out_w);
+	struct rds_connection *conn = tc->t_cpath->cp_conn;
+	struct rds_tcp_net *rtn = tc->t_rtn;
+	struct socket *sock = tc->t_sock;
 	int sport, npaths;
-
-	if (rds_destroy_pending(conn))
-		return;
-
-	tc = conn->c_path->cp_transport_data;
-	rtn = tc->t_rtn;
-	if (!rtn)
-		return;
-
-	sock = tc->t_sock;
 
 	/* During fan-out, check that the connection we already
 	 * accepted in slot#0 carried the proper source port modulo.
 	 */
-	if (fan_out && conn->c_with_sport_idx && sock &&
+	if (conn->c_with_sport_idx && sock &&
 	    rds_addr_cmp(&conn->c_laddr, &conn->c_faddr) > 0) {
 		/* cp->cp_index is encoded in lowest bits of source-port */
 		sport = rds_tcp_get_peer_sport(sock);
 		npaths = max_t(int, 1, conn->c_npaths);
 		if (sport >= 0 && sport % npaths != 0)
 			/* peer initiated with a non-#0 lane first */
-			rds_conn_path_drop(conn->c_path, 0);
+			rds_conn_path_drop(conn->c_path, DR_TCP_INVALID_SLOT0, 0);
 	}
 
 	/* As soon as a connection went down,
@@ -143,63 +163,125 @@ void rds_tcp_conn_slots_available(struct rds_connection *conn, bool fan_out)
 	 *
 	 * Doing so is necessary to address the case where an
 	 * incoming connection on "rds_tcp_listen_sock" is ready
-	 * to be accepted prior to a free slot being available:
+	 * to be acccepted prior to a free slot being available:
 	 * the -ENOBUFS case in "rds_tcp_accept_one".
 	 */
 	rds_tcp_accept_work(rtn);
+}
+
+void rds_tcp_conn_slots_available(struct rds_connection *conn, bool fan_out)
+{
+	struct rds_conn_path *cp0;
+	struct rds_tcp_connection *tc;
+	struct rds_tcp_net *rtn;
+
+	smp_rmb(); /* Pairs with smp_mb() in rds_conn_destroy() */
+	if (conn->c_destroy_in_prog)
+		return;
+
+	cp0 = conn->c_path;
+	tc = cp0->cp_transport_data;
+	rtn = tc->t_rtn;
+	if (!rtn)
+		return;
+
+	if (fan_out)
+		/* Delegate fan-out to a background worker in order
+		 * to allow "kernel_getpeername" to acquire a lock
+		 * on the socket.
+		 * The socket is already locked in this context
+		 * by either "rds_tcp_recv_path" or "tcp_v{4,6}_rcv",
+		 * depending on the origin of the dequeue-request.
+		 */
+		queue_work(cp0->cp_wq, &tc->t_fan_out_w);
+	else
+		/* Fan-out either already happened or is unnecessary.
+		 * Just go ahead and attempt to accept more connections
+		 */
+		rds_tcp_accept_work(rtn);
 }
 
 int rds_tcp_accept_one(struct rds_tcp_net *rtn)
 {
 	struct socket *listen_sock = rtn->rds_tcp_listen_sock;
 	struct socket *new_sock = NULL;
-	struct rds_connection *conn;
+	struct rds_connection *conn = NULL;
 	int ret;
-	struct inet_sock *inet;
 	struct rds_tcp_connection *rs_tcp = NULL;
 	int conn_state;
-	struct rds_conn_path *cp;
-	struct sock *sk;
+	struct rds_conn_path *cp = NULL;
 	struct in6_addr *my_addr, *peer_addr;
+	struct proto_accept_arg accept_arg = {
+		.flags = O_NONBLOCK,
+		.kern = true,
+	};
 #if !IS_ENABLED(CONFIG_IPV6)
+	struct inet_sock *inet;
 	struct in6_addr saddr, daddr;
 #endif
 	int dev_if = 0;
-
-	if (!listen_sock) /* module unload or netns delete in progress */
-		return -ENETUNREACH;
+	char *reason = NULL;
 
 	mutex_lock(&rtn->rds_tcp_accept_lock);
+
+	if (!listen_sock) {
+		reason = "module unload/netns delete in progress";
+		ret = -ENETUNREACH;
+		goto out;
+	}
+
 	new_sock = rtn->rds_tcp_accepted_sock;
 	rtn->rds_tcp_accepted_sock = NULL;
 
 	if (!new_sock) {
-		ret = kernel_accept(listen_sock, &new_sock, O_NONBLOCK);
-		if (ret)
+		ret = sock_create_lite(listen_sock->sk->sk_family,
+				       listen_sock->sk->sk_type,
+				       listen_sock->sk->sk_protocol,
+				       &new_sock);
+		if (ret) {
+			reason = "socket creation failed";
 			goto out;
+		}
+		/* Function "rds_tcp_conn_slots_available" depends on O_NONBLOCK */
+		ret = listen_sock->ops->accept(listen_sock, new_sock, &accept_arg);
+		if (ret < 0) {
+			reason = "accept sock op failed";
+			goto out;
+		}
 
-		rds_tcp_keepalive(new_sock);
+		/* sock_create_lite() does not get a hold on the owner module so we
+		 * need to do it here.  Note that sock_release() uses sock->ops to
+		 * determine if it needs to decrement the reference count.  So set
+		 * sock->ops after calling accept() in case that fails.  And there's
+		 * no need to do try_module_get() as the listener should have a hold
+		 * already.
+		 */
+		new_sock->ops = listen_sock->ops;
+		__module_get(new_sock->ops->owner);
+
+		ret = rds_tcp_keepalive(new_sock);
+		if (ret < 0) {
+			reason = "keepalive setting failed";
+			goto out;
+		}
+
 		if (!rds_tcp_tune(new_sock)) {
 			ret = -EINVAL;
 			goto out;
 		}
 	}
 
-	inet = inet_sk(new_sock->sk);
 
 #if IS_ENABLED(CONFIG_IPV6)
 	my_addr = &new_sock->sk->sk_v6_rcv_saddr;
 	peer_addr = &new_sock->sk->sk_v6_daddr;
 #else
+	inet = inet_sk(new_sock->sk);
 	ipv6_addr_set_v4mapped(inet->inet_saddr, &saddr);
 	ipv6_addr_set_v4mapped(inet->inet_daddr, &daddr);
 	my_addr = &saddr;
 	peer_addr = &daddr;
 #endif
-	rdsdebug("accepted family %d tcp %pI6c:%u -> %pI6c:%u\n",
-		 listen_sock->sk->sk_family,
-		 my_addr, ntohs(inet->inet_sport),
-		 peer_addr, ntohs(inet->inet_dport));
 
 #if IS_ENABLED(CONFIG_IPV6)
 	/* sk_bound_dev_if is not set if the peer address is not link local
@@ -211,7 +293,7 @@ int rds_tcp_accept_one(struct rds_tcp_net *rtn)
 		struct ipv6_pinfo *inet6;
 
 		inet6 = inet6_sk(new_sock->sk);
-		dev_if = READ_ONCE(inet6->mcast_oif);
+		dev_if = inet6->mcast_oif;
 	} else {
 		dev_if = new_sock->sk->sk_bound_dev_if;
 	}
@@ -226,11 +308,13 @@ int rds_tcp_accept_one(struct rds_tcp_net *rtn)
 	conn = rds_conn_create(sock_net(listen_sock->sk),
 			       my_addr, peer_addr,
 			       &rds_tcp_transport, 0, GFP_KERNEL, dev_if);
-
 	if (IS_ERR(conn)) {
+		reason = "conn creation failed";
 		ret = PTR_ERR(conn);
+		conn = NULL;
 		goto out;
 	}
+
 	/* An incoming SYN request came in, and TCP just accepted it.
 	 *
 	 * If the client reboots, this conn will need to be cleaned up.
@@ -247,12 +331,13 @@ int rds_tcp_accept_one(struct rds_tcp_net *rtn)
 		rs_tcp = rds_tcp_accept_one_path(conn, new_sock);
 		if (!rs_tcp) {
 			/* It's okay to stash "new_sock", since
-			 * "rds_tcp_conn_slots_available" triggers
-			 * "rds_tcp_accept_one" again as soon as one of the
-			 * connection slots becomes available again
+			 * "rds_tcp_conn_slots_available" triggers "rds_tcp_accept_one"
+			 * again as soon as one of the connection slots
+			 * becomes available again
 			 */
 			rtn->rds_tcp_accepted_sock = new_sock;
 			new_sock = NULL;
+			reason = "no connection slot available right now";
 			ret = -ENOBUFS;
 			goto out;
 		}
@@ -270,63 +355,53 @@ int rds_tcp_accept_one(struct rds_tcp_net *rtn)
 		if (conn->c_npaths <= 1)
 			rds_conn_path_connect_if_down(&conn->c_path[0]);
 		rs_tcp = NULL;
+		reason = "force reconnect from smaller IP";
 		goto rst_nsk;
 	}
 
 	mutex_lock(&rs_tcp->t_conn_path_lock);
 	cp = rs_tcp->t_cpath;
 	conn_state = rds_conn_path_state(cp);
-	WARN_ON(conn_state == RDS_CONN_UP);
+	BUG_ON(conn_state == RDS_CONN_UP);
 	if (conn_state != RDS_CONN_CONNECTING && conn_state != RDS_CONN_ERROR) {
-		rds_conn_path_drop(cp, 0);
+		rds_conn_path_drop(cp, DR_INV_CONN_STATE, 0);
+		reason = "unexpected conn state";
 		goto rst_nsk;
 	}
-	/* Save a local pointer to sk and hold a reference before setting
-	 * callbacks. Once callbacks are set, a concurrent
-	 * rds_tcp_conn_path_shutdown() may call sock_release(), which
-	 * sets new_sock->sk to NULL and drops a reference on sk.
-	 * The local pointer lets us safely access sk_state below even
-	 * if new_sock->sk has been nulled, and sock_hold() keeps sk
-	 * itself valid until we are done.
-	 */
-	sk = new_sock->sk;
-	sock_hold(sk);
-
 	if (rs_tcp->t_sock) {
-		/* Duelling SYN has been handled in rds_tcp_accept_one() */
-		rds_tcp_reset_callbacks(new_sock, cp);
-		/* rds_connect_path_complete() marks RDS_CONN_UP, or,
-		 * if a concurrent shutdown won the duel, drops the
-		 * path again and the pass that drop queues reaps the
-		 * socket installed above.
+		/* Duelling SYN resolution has already been done in
+		 * rds_tcp_accept_one_path.
 		 */
+		rds_tcp_reset_callbacks(new_sock, cp, rtn);
+		/* rds_connect_path_complete() marks RDS_CONN_UP */
 		rds_connect_path_complete(cp, RDS_CONN_RESETTING);
+		reason = "conn resetting";
 	} else {
-		rds_tcp_set_callbacks(new_sock, cp);
+		rds_tcp_set_callbacks(new_sock, cp, rtn);
 		rds_connect_path_complete(cp, RDS_CONN_CONNECTING);
+		wake_up(&cp->cp_up_waitq);
+		reason = "conn connecting";
 	}
 
 	/* Since "rds_tcp_set_callbacks" happens this late
 	 * the connection may already have been closed without
-	 * "rds_tcp_state_change" doing its due diligence.
+	 * "rds_tcp_state_change" doing its due dilligence.
 	 *
 	 * If that's the case, we simply drop the path,
 	 * knowing that "rds_tcp_conn_path_shutdown" will
 	 * dequeue pending messages.
 	 */
-	if (READ_ONCE(sk->sk_state) == TCP_CLOSE_WAIT ||
-	    READ_ONCE(sk->sk_state) == TCP_LAST_ACK ||
-	    READ_ONCE(sk->sk_state) == TCP_CLOSE)
-		rds_conn_path_drop(cp, 0);
+	if (new_sock->sk->sk_state == TCP_CLOSE_WAIT ||
+	    new_sock->sk->sk_state == TCP_LAST_ACK ||
+	    new_sock->sk->sk_state == TCP_CLOSE)
+		rds_conn_path_drop(cp, DR_TCP_STATE_ACCEPT_CLOSED, 0);
 	else
-		queue_delayed_work(cp->cp_wq, &cp->cp_recv_w, 0);
-
-	sock_put(sk);
+		rds_cond_queue_recv_work(cp, 0);
 
 	new_sock = NULL;
 	ret = 0;
 	if (conn->c_npaths == 0)
-		rds_send_ping(cp->cp_conn, cp->cp_index);
+		rds_send_hs_ping(cp->cp_conn, cp->cp_index);
 	goto out;
 rst_nsk:
 	/* reset the newly returned accept sock and bail.
@@ -335,16 +410,25 @@ rst_nsk:
 	 * be pending on it. By setting linger, we achieve the side-effect
 	 * of avoiding TIME_WAIT state on new_sock.
 	 */
-	sock_no_linger(new_sock->sk);
+	rds_tcp_set_linger(new_sock);
 	kernel_sock_shutdown(new_sock, SHUT_RDWR);
 	ret = 0;
 out:
+	if (ret)
+		trace_rds_tcp_accept_err(conn, cp, rs_tcp,
+					 listen_sock ? listen_sock->sk : NULL,
+					 reason, ret);
+	else
+		trace_rds_tcp_accept(conn, cp, rs_tcp, listen_sock->sk, "accept", ret);
 	if (rs_tcp)
 		mutex_unlock(&rs_tcp->t_conn_path_lock);
 	if (new_sock)
 		sock_release(new_sock);
 
 	mutex_unlock(&rtn->rds_tcp_accept_lock);
+
+	if (conn)
+		rds_conn_put(conn); /* for rds_conn_create */
 
 	return ret;
 }
@@ -353,7 +437,6 @@ void rds_tcp_listen_data_ready(struct sock *sk)
 {
 	void (*ready)(struct sock *sk);
 
-	trace_sk_data_ready(sk);
 	rdsdebug("listen data ready sk %p\n", sk);
 
 	read_lock_bh(&sk->sk_callback_lock);
@@ -389,18 +472,18 @@ struct socket *rds_tcp_listen_init(struct net *net, bool isv6)
 	struct sockaddr_storage ss;
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
+	char *reason = NULL;
 	int addr_len;
 	int ret;
 
 	ret = sock_create_kern(net, isv6 ? PF_INET6 : PF_INET, SOCK_STREAM,
 			       IPPROTO_TCP, &sock);
 	if (ret < 0) {
-		rdsdebug("could not create %s listener socket: %d\n",
-			 isv6 ? "IPv6" : "IPv4", ret);
+		reason = "could not create kernel socket";
 		goto out;
 	}
 
-	sock->sk->sk_reuse = SK_CAN_REUSE;
+	sock->sk->sk_reuse = 1;
 	tcp_sock_set_nodelay(sock->sk);
 
 	write_lock_bh(&sock->sk->sk_callback_lock);
@@ -424,19 +507,25 @@ struct socket *rds_tcp_listen_init(struct net *net, bool isv6)
 		addr_len = sizeof(*sin);
 	}
 
-	ret = kernel_bind(sock, (struct sockaddr_unsized *)&ss, addr_len);
+	ret = sock->ops->bind(sock, (struct sockaddr_unsized *)&ss, addr_len);
 	if (ret < 0) {
-		rdsdebug("could not bind %s listener socket: %d\n",
-			 isv6 ? "IPv6" : "IPv4", ret);
+		reason = "could not bind listener socket";
 		goto out;
 	}
 
 	ret = sock->ops->listen(sock, 64);
-	if (ret < 0)
+	if (ret < 0) {
+		reason = "listen op failed";
 		goto out;
+	}
+
+	trace_rds_tcp_listen(NULL, NULL, NULL, sock->sk, "listen", 0);
 
 	return sock;
 out:
+	trace_rds_tcp_listen_err(NULL, NULL, NULL, sock ? sock->sk : NULL,
+				 reason, ret);
+
 	if (sock)
 		sock_release(sock);
 	return NULL;
@@ -462,7 +551,6 @@ void rds_tcp_listen_stop(struct socket *sock, struct work_struct *acceptor)
 	release_sock(sk);
 
 	/* wait for accepts to stop and close the socket */
-	flush_workqueue(rds_wq);
-	flush_work(acceptor);
+	rds_queue_flush_work(NULL, acceptor, "tcp listen stopping");
 	sock_release(sock);
 }

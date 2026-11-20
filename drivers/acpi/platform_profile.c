@@ -8,25 +8,15 @@
 #include <linux/bits.h>
 #include <linux/cleanup.h>
 #include <linux/init.h>
-#include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/platform_profile.h>
 #include <linux/sysfs.h>
 
 #define to_pprof_handler(d)	(container_of(d, struct platform_profile_handler, dev))
 
-/*
- * Protects profile_handlers membership and serializes profile operations
- * against each other and handler removal. Never held across sysfs teardown,
- * which can wait for callbacks that acquire this lock.
- */
 static DEFINE_MUTEX(profile_lock);
-/* Serialize registration and sysfs updates without blocking sysfs callbacks. */
-static DEFINE_MUTEX(profile_registration_lock);
-static LIST_HEAD(profile_handlers);
 
 struct platform_profile_handler {
-	struct list_head node;
 	const char *name;
 	struct device dev;
 	int minor;
@@ -53,23 +43,6 @@ static const char * const profile_names[] = {
 static_assert(ARRAY_SIZE(profile_names) == PLATFORM_PROFILE_LAST);
 
 static DEFINE_IDA(platform_profile_ida);
-
-static int profile_for_each_handler(void *data,
-				    int (*fn)(struct device *dev, void *data))
-{
-	struct platform_profile_handler *handler;
-	int ret;
-
-	lockdep_assert_held(&profile_lock);
-
-	list_for_each_entry(handler, &profile_handlers, node) {
-		ret = fn(&handler->dev, data);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
 
 /**
  * _commmon_choices_show - Show the available profile choices
@@ -333,18 +306,20 @@ static ssize_t platform_profile_choices_show(struct kobject *kobj,
 	int err;
 
 	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-		err = profile_for_each_handler(&data, _aggregate_choices);
+		err = class_for_each_device(&platform_profile_class, NULL,
+					    &data, _aggregate_choices);
 		if (err)
 			return err;
 		if (data.count == 1) {
-			err = profile_for_each_handler(&data, _remove_hidden_choices);
+			err = class_for_each_device(&platform_profile_class, NULL,
+						    &data, _remove_hidden_choices);
 			if (err)
 				return err;
 		}
 	}
 
 	/* no profile handler registered any more */
-	if (!data.count || bitmap_empty(data.aggregate, PLATFORM_PROFILE_LAST))
+	if (bitmap_empty(data.aggregate, PLATFORM_PROFILE_LAST))
 		return -EINVAL;
 
 	return _commmon_choices_show(data.aggregate, buf);
@@ -409,7 +384,8 @@ static ssize_t platform_profile_show(struct kobject *kobj,
 	int err;
 
 	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-		err = profile_for_each_handler(&profile, _aggregate_profiles);
+		err = class_for_each_device(&platform_profile_class, NULL,
+					    &profile, _aggregate_profiles);
 		if (err)
 			return err;
 	}
@@ -447,13 +423,15 @@ static ssize_t platform_profile_store(struct kobject *kobj,
 		return -EINVAL;
 
 	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-		ret = profile_for_each_handler(&data, _aggregate_choices);
+		ret = class_for_each_device(&platform_profile_class, NULL,
+					    &data, _aggregate_choices);
 		if (ret)
 			return ret;
-		if (!data.count || !test_bit(i, data.aggregate))
+		if (!test_bit(i, data.aggregate))
 			return -EOPNOTSUPP;
 
-		ret = profile_for_each_handler(&i, _store_and_notify);
+		ret = class_for_each_device(&platform_profile_class, NULL, &i,
+					    _store_and_notify);
 		if (ret)
 			return ret;
 	}
@@ -472,11 +450,22 @@ static struct attribute *platform_profile_attrs[] = {
 	NULL
 };
 
+static int profile_class_registered(struct device *dev, const void *data)
+{
+	return 1;
+}
+
 static umode_t profile_class_is_visible(struct kobject *kobj, struct attribute *attr, int idx)
 {
-	guard(mutex)(&profile_lock);
+	struct device *dev;
 
-	return list_empty(&profile_handlers) ? 0 : attr->mode;
+	dev = class_find_device(&platform_profile_class, NULL, NULL, profile_class_registered);
+	if (!dev)
+		return 0;
+
+	put_device(dev);
+
+	return attr->mode;
 }
 
 static const struct attribute_group platform_profile_group = {
@@ -513,7 +502,8 @@ int platform_profile_cycle(void)
 	int err;
 
 	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-		err = profile_for_each_handler(&profile, _aggregate_profiles);
+		err = class_for_each_device(&platform_profile_class, NULL,
+					    &profile, _aggregate_profiles);
 		if (err)
 			return err;
 
@@ -522,7 +512,8 @@ int platform_profile_cycle(void)
 		    profile == PLATFORM_PROFILE_LAST)
 			return -EINVAL;
 
-		err = profile_for_each_handler(&data, _aggregate_choices);
+		err = class_for_each_device(&platform_profile_class, NULL,
+					    &data, _aggregate_choices);
 		if (err)
 			return err;
 
@@ -534,7 +525,8 @@ int platform_profile_cycle(void)
 					  PLATFORM_PROFILE_LAST,
 					  profile + 1);
 
-		err = profile_for_each_handler(&next, _store_and_notify);
+		err = class_for_each_device(&platform_profile_class, NULL, &next,
+					    _store_and_notify);
 
 		if (err)
 			return err;
@@ -591,7 +583,7 @@ struct device *platform_profile_register(struct device *dev, const char *name,
 		}
 	}
 
-	guard(mutex)(&profile_registration_lock);
+	guard(mutex)(&profile_lock);
 
 	/* create class interface for individual handler */
 	minor = ida_alloc(&platform_profile_ida, GFP_KERNEL);
@@ -612,8 +604,6 @@ struct device *platform_profile_register(struct device *dev, const char *name,
 		put_device(ppdev);
 		goto cleanup_ida;
 	}
-	scoped_guard(mutex, &profile_lock)
-		list_add_tail(&to_pprof_handler(ppdev)->node, &profile_handlers);
 
 	sysfs_notify(acpi_kobj, NULL, "platform_profile");
 
@@ -624,9 +614,6 @@ struct device *platform_profile_register(struct device *dev, const char *name,
 	return ppdev;
 
 cleanup_cur:
-	scoped_guard(mutex, &profile_lock)
-		list_del(&to_pprof_handler(ppdev)->node);
-
 	device_unregister(ppdev);
 
 cleanup_ida:
@@ -649,10 +636,7 @@ void platform_profile_remove(struct device *dev)
 
 	pprof = to_pprof_handler(dev);
 
-	guard(mutex)(&profile_registration_lock);
-
-	scoped_guard(mutex, &profile_lock)
-		list_del(&pprof->node);
+	guard(mutex)(&profile_lock);
 
 	ida_free(&platform_profile_ida, pprof->minor);
 	device_unregister(&pprof->dev);

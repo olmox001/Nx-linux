@@ -243,8 +243,7 @@ static int bgmac_probe(struct platform_device *pdev)
 		bgmac->phy_connect = platform_phy_connect;
 	} else {
 		bgmac->phy_connect = bgmac_phy_connect_direct;
-		if (of_machine_is_compatible("brcm,nsp"))
-			bgmac->feature_flags |= BGMAC_FEAT_FORCE_SPEED_2500;
+		bgmac->feature_flags |= BGMAC_FEAT_FORCE_SPEED_2500;
 	}
 
 	return bgmac_enet_probe(bgmac);

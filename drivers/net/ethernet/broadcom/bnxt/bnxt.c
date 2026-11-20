@@ -1215,15 +1215,7 @@ static struct sk_buff *bnxt_rx_multi_page_skb(struct bnxt *bp,
 				bp->rx_dir);
 	skb = napi_build_skb(frag_start, rxr->rx_page_size);
 	if (!skb) {
-		struct page *new_page;
-
-		new_page = rxr->rx_buf_ring[RING_RX(bp, prod)].data;
-		/* The caller may still need the XDP frags from shinfo at the
-		 * end of the head page. Release the new buffer instead and
-		 * put the head back on the ring.
-		 */
-		page_pool_recycle_direct(rxr->page_pool, new_page);
-		bnxt_reuse_rx_data(rxr, cons, data);
+		page_pool_recycle_direct(rxr->page_pool, page);
 		return NULL;
 	}
 	skb_mark_for_recycle(skb);
@@ -1427,19 +1419,16 @@ static u32 bnxt_rx_agg_netmems_xdp(struct bnxt *bp,
 	struct skb_shared_info *shinfo = xdp_get_shared_info_from_buff(xdp);
 	u32 total_frag_len = 0;
 
-	if (!xdp_buff_has_frags(xdp)) {
-		xdp_buff_set_frags_flag(xdp);
+	if (!xdp_buff_has_frags(xdp))
 		shinfo->nr_frags = 0;
-	}
 
 	total_frag_len = __bnxt_rx_agg_netmems(bp, cpr, idx, agg_bufs, tpa,
 					       NULL, xdp);
-	if (!total_frag_len) {
-		bnxt_xdp_buff_frags_free(cpr->bnapi->rx_ring, xdp);
-		return 0;
+	if (total_frag_len) {
+		xdp_buff_set_frags_flag(xdp);
+		shinfo->nr_frags = agg_bufs;
+		shinfo->xdp_frags_size = total_frag_len;
 	}
-	shinfo->nr_frags = agg_bufs;
-	shinfo->xdp_frags_size = total_frag_len;
 	return total_frag_len;
 }
 
@@ -1509,14 +1498,6 @@ static struct sk_buff *bnxt_copy_xdp(struct bnxt_napi *bnapi,
 	if (metasize) {
 		skb_metadata_set(skb, metasize);
 		__skb_pull(skb, metasize);
-	}
-
-	if (unlikely(xdp_buff_has_frags(xdp))) {
-		struct skb_shared_info *sinfo;
-
-		sinfo = xdp_get_shared_info_from_buff(xdp);
-		memcpy(skb_shinfo(skb)->frags, sinfo->frags,
-		       sinfo->nr_frags * sizeof(skb_frag_t));
 	}
 
 	return skb;
@@ -2304,10 +2285,8 @@ static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 							       cp_cons,
 							       agg_bufs,
 							       false);
-			if (!frag_len) {
-				bnxt_reuse_rx_data(rxr, cons, data);
+			if (!frag_len)
 				goto oom_next_rx;
-			}
 
 		}
 		xdp_active = true;
@@ -2334,8 +2313,17 @@ static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 			skb = bnxt_copy_xdp(bnapi, &bnxt_xdp.xdp, len,
 					    dma_addr);
 		bnxt_reuse_rx_data(rxr, cons, data);
-		if (!skb)
-			goto oom_next_rx_agg;
+		if (!skb) {
+			if (agg_bufs) {
+				if (!xdp_active)
+					bnxt_reuse_rx_agg_bufs(cpr, cp_cons, 0,
+							       agg_bufs, false);
+				else
+					bnxt_xdp_buff_frags_free(rxr,
+								 &bnxt_xdp.xdp);
+			}
+			goto oom_next_rx;
+		}
 	} else {
 		u32 payload;
 
@@ -2346,7 +2334,7 @@ static int bnxt_rx_pkt(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 		skb = bp->rx_skb_func(bp, rxr, cons, data, data_ptr, dma_addr,
 				      payload | len);
 		if (!skb)
-			goto oom_next_rx_agg;
+			goto oom_next_rx;
 	}
 
 	if (agg_bufs) {
@@ -2436,14 +2424,6 @@ next_rx_no_prod_no_len:
 
 	return rc;
 
-oom_next_rx_agg:
-	if (agg_bufs) {
-		if (!xdp_active)
-			bnxt_reuse_rx_agg_bufs(cpr, cp_cons, 0, agg_bufs,
-					       false);
-		else
-			bnxt_xdp_buff_frags_free(rxr, &bnxt_xdp.xdp);
-	}
 oom_next_rx:
 	cpr->sw_stats->rx.rx_oom_discards += 1;
 	rc = -ENOMEM;
@@ -5140,7 +5120,7 @@ static int bnxt_alloc_vnic_attributes(struct bnxt *bp)
 		else
 			max_rings = 1;
 
-		vnic->fw_grp_ids = kzalloc_objs(u16, max_rings);
+		vnic->fw_grp_ids = kcalloc(max_rings, sizeof(u16), GFP_KERNEL);
 		if (!vnic->fw_grp_ids) {
 			rc = -ENOMEM;
 			goto out;
@@ -5690,7 +5670,8 @@ static int bnxt_alloc_mem(struct bnxt *bp, bool irq_re_init)
 		if (!bp->tx_ring)
 			return -ENOMEM;
 
-		bp->tx_ring_map = kzalloc_objs(u16, bp->tx_nr_rings);
+		bp->tx_ring_map = kcalloc(bp->tx_nr_rings, sizeof(u16),
+					  GFP_KERNEL);
 
 		if (!bp->tx_ring_map)
 			return -ENOMEM;
@@ -6691,7 +6672,7 @@ static int bnxt_alloc_rss_indir_tbl(struct bnxt *bp)
 
 	bp->rss_indir_tbl_entries = entries;
 	bp->rss_indir_tbl =
-		kmalloc_objs(*bp->rss_indir_tbl, entries);
+		kmalloc_array(entries, sizeof(*bp->rss_indir_tbl), GFP_KERNEL);
 	if (!bp->rss_indir_tbl)
 		return -ENOMEM;
 
@@ -11318,7 +11299,7 @@ static int bnxt_init_chip(struct bnxt *bp, bool irq_re_init)
 	/* Filter for default vnic 0 */
 	rc = bnxt_hwrm_set_vnic_filter(bp, 0, 0, bp->dev->dev_addr);
 	if (rc) {
-		if (rc == -ECOMM)
+		if (BNXT_VF(bp) && rc == -ENODEV)
 			netdev_err(bp->dev, "Cannot configure L2 filter while PF is unavailable\n");
 		else
 			netdev_err(bp->dev, "HWRM vnic filter failure rc: %x\n", rc);
@@ -11543,7 +11524,6 @@ static int bnxt_change_msix(struct bnxt *bp, int total)
 		map.index = i - 1;
 		map.virq = bp->irq_tbl[i - 1].vector;
 		pci_msix_free_irq(bp->pdev, map);
-		bp->irq_tbl[i - 1].vector = 0;
 		bp->total_irqs--;
 	}
 	return bp->total_irqs;
@@ -11649,7 +11629,7 @@ static int bnxt_get_num_msix(struct bnxt *bp)
 
 static int bnxt_init_int_mode(struct bnxt *bp)
 {
-	int i, total_vecs, max, rc, min = 1, ulp_msix, tx_cp, tbl_size;
+	int i, total_vecs, max, rc = 0, min = 1, ulp_msix, tx_cp, tbl_size;
 
 	total_vecs = bnxt_get_num_msix(bp);
 	max = bnxt_get_max_func_irqs(bp);
@@ -11674,26 +11654,26 @@ static int bnxt_init_int_mode(struct bnxt *bp)
 	if (pci_msix_can_alloc_dyn(bp->pdev))
 		tbl_size = max;
 	bp->irq_tbl = kzalloc_objs(*bp->irq_tbl, tbl_size);
-	if (!bp->irq_tbl) {
+	if (bp->irq_tbl) {
+		for (i = 0; i < total_vecs; i++)
+			bp->irq_tbl[i].vector = pci_irq_vector(bp->pdev, i);
+
+		bp->total_irqs = total_vecs;
+		/* Trim rings based upon num of vectors allocated */
+		rc = bnxt_trim_rings(bp, &bp->rx_nr_rings, &bp->tx_nr_rings,
+				     total_vecs - ulp_msix, min == 1);
+		if (rc)
+			goto msix_setup_exit;
+
+		tx_cp = bnxt_num_tx_to_cp(bp, bp->tx_nr_rings);
+		bp->cp_nr_rings = (min == 1) ?
+				  max_t(int, tx_cp, bp->rx_nr_rings) :
+				  tx_cp + bp->rx_nr_rings;
+
+	} else {
 		rc = -ENOMEM;
 		goto msix_setup_exit;
 	}
-
-	for (i = 0; i < total_vecs; i++)
-		bp->irq_tbl[i].vector = pci_irq_vector(bp->pdev, i);
-
-	bp->total_irqs = total_vecs;
-	/* Trim rings based upon num of vectors allocated */
-	rc = bnxt_trim_rings(bp, &bp->rx_nr_rings, &bp->tx_nr_rings,
-			     total_vecs - ulp_msix, min == 1);
-	if (rc)
-		goto msix_setup_exit;
-
-	tx_cp = bnxt_num_tx_to_cp(bp, bp->tx_nr_rings);
-	bp->cp_nr_rings = (min == 1) ?
-			  max_t(int, tx_cp, bp->rx_nr_rings) :
-			  tx_cp + bp->rx_nr_rings;
-
 	return 0;
 
 msix_setup_exit:
@@ -11721,23 +11701,8 @@ int bnxt_reserve_rings(struct bnxt *bp, bool irq_re_init)
 	int irqs_required;
 	int rc;
 
-	if (!bnxt_need_reserve_rings(bp)) {
-		/* FW may already hold the reservation from an earlier
-		 * reservation that was not followed by growing the dynamic
-		 * MSI-X vectors, e.g. because the allocation failed.
-		 */
-		if (irq_re_init && BNXT_NEW_RM(bp) && bp->irq_tbl &&
-		    pci_msix_can_alloc_dyn(bp->pdev)) {
-			irqs_required = bnxt_get_num_msix(bp);
-			if (irqs_required > bp->total_irqs &&
-			    bnxt_change_msix(bp, irqs_required) != irqs_required) {
-				netdev_err(bp->dev, "Unable to allocate %d MSIX vectors, maximum available %d\n",
-					   irqs_required, bp->total_irqs);
-				return -ENOSPC;
-			}
-		}
+	if (!bnxt_need_reserve_rings(bp))
 		return 0;
-	}
 
 	if (BNXT_NEW_RM(bp) && !bnxt_ulp_registered(edev)) {
 		int ulp_msix = bnxt_get_avail_msix(bp, bp->ulp_num_msix_want);
@@ -11763,10 +11728,6 @@ int bnxt_reserve_rings(struct bnxt *bp, bool irq_re_init)
 			rc = bnxt_init_int_mode(bp);
 		bnxt_ulp_irq_restart(bp, rc);
 	} else if (irq_change && !rc) {
-		/* Size the vectors from what FW actually reserved, which
-		 * can be less than what was requested.
-		 */
-		irqs_required = bnxt_get_num_msix(bp);
 		if (bnxt_change_msix(bp, irqs_required) != irqs_required)
 			rc = -ENOSPC;
 	}
@@ -11870,9 +11831,6 @@ static void bnxt_irq_affinity_notify(struct irq_affinity_notify *notify,
 
 	irq = container_of(notify, struct bnxt_irq, affinity_notify);
 
-	cpumask_copy(irq->bp->ring_cpu_mask[irq->ring_nr], mask);
-	set_bit(irq->ring_nr, irq->bp->ring_affinity_set);
-
 #ifdef CONFIG_RFS_ACCEL
 	if (irq->bp->dev->rx_cpu_rmap && irq->ring_nr < irq->bp->rx_nr_rings) {
 		int err;
@@ -11887,6 +11845,8 @@ static void bnxt_irq_affinity_notify(struct irq_affinity_notify *notify,
 
 	if (!irq->bp->tph_mode)
 		return;
+
+	cpumask_copy(irq->cpu_mask, mask);
 
 	if (irq->ring_nr >= irq->bp->rx_nr_rings)
 		return;
@@ -11929,6 +11889,10 @@ static void bnxt_register_irq_notifier(struct bnxt *bp, struct bnxt_irq *irq)
 
 	irq->bp = bp;
 
+	/* Nothing to do if TPH is not enabled */
+	if (!bp->tph_mode)
+		return;
+
 	/* Register IRQ affinity notifier */
 	notify = &irq->affinity_notify;
 	notify->irq = irq->vector;
@@ -11936,41 +11900,6 @@ static void bnxt_register_irq_notifier(struct bnxt *bp, struct bnxt_irq *irq)
 	notify->release = bnxt_irq_affinity_release;
 
 	irq_set_affinity_notifier(irq->vector, notify);
-}
-
-static int bnxt_alloc_ring_cpu_masks(struct bnxt *bp)
-{
-	int i;
-
-	bp->ring_cpu_mask = kzalloc_objs(*bp->ring_cpu_mask, bp->max_irqs);
-	if (!bp->ring_cpu_mask)
-		return -ENOMEM;
-
-	bp->ring_affinity_set = bitmap_zalloc(bp->max_irqs, GFP_KERNEL);
-	if (!bp->ring_affinity_set)
-		return -ENOMEM;
-
-	for (i = 0; i < bp->max_irqs; i++)
-		if (!zalloc_cpumask_var(&bp->ring_cpu_mask[i], GFP_KERNEL))
-			return -ENOMEM;
-
-	return 0;
-}
-
-static void bnxt_free_ring_cpu_masks(struct bnxt *bp)
-{
-	int i;
-
-	if (!bp->ring_cpu_mask)
-		return;
-
-	for (i = 0; i < bp->max_irqs; i++)
-		free_cpumask_var(bp->ring_cpu_mask[i]);
-
-	bitmap_free(bp->ring_affinity_set);
-	bp->ring_affinity_set = NULL;
-	kfree(bp->ring_cpu_mask);
-	bp->ring_cpu_mask = NULL;
 }
 
 static void bnxt_free_irq(struct bnxt *bp)
@@ -11987,7 +11916,13 @@ static void bnxt_free_irq(struct bnxt *bp)
 		irq = &bp->irq_tbl[map_idx];
 		if (irq->requested) {
 			bnxt_release_irq_notifier(irq);
-			irq_update_affinity_hint(irq->vector, NULL);
+
+			if (irq->have_cpumask) {
+				irq_update_affinity_hint(irq->vector, NULL);
+				free_cpumask_var(irq->cpu_mask);
+				irq->have_cpumask = 0;
+			}
+
 			free_irq(irq->vector, bp->bnapi[i]);
 		}
 
@@ -12031,9 +11966,9 @@ static int bnxt_request_irq(struct bnxt *bp)
 	}
 
 	for (i = 0, j = 0; i < bp->cp_nr_rings; i++) {
-		struct cpumask *cpu_mask = bp->ring_cpu_mask[i];
 		int map_idx = bnxt_cp_num_to_irq_num(bp, i);
 		struct bnxt_irq *irq = &bp->irq_tbl[map_idx];
+		unsigned int cpu_num;
 		u16 tag;
 
 		if (IS_ENABLED(CONFIG_RFS_ACCEL) &&
@@ -12052,24 +11987,19 @@ static int bnxt_request_irq(struct bnxt *bp)
 
 		netif_napi_set_irq_locked(&bp->bnapi[i]->napi, irq->vector);
 		irq->requested = 1;
+
+		if (!zalloc_cpumask_var(&irq->cpu_mask, GFP_KERNEL))
+			continue;
+
+		irq->have_cpumask = 1;
 		irq->msix_nr = map_idx;
 		irq->ring_nr = i;
-
-		/* Reuse the mask recorded before the IRQs were freed. Nothing
-		 * was recorded yet on the very first request, and the mask
-		 * may have gone stale if the CPUs went offline in between.
-		 */
-		if (!test_bit(i, bp->ring_affinity_set) ||
-		    !cpumask_intersects(cpu_mask, cpu_online_mask)) {
-			clear_bit(i, bp->ring_affinity_set);
-			cpumask_clear(cpu_mask);
-			cpumask_set_cpu(cpumask_local_spread(i, numa_node),
-					cpu_mask);
-		}
+		cpu_num = cpumask_local_spread(i, numa_node);
+		cpumask_set_cpu(cpu_num, irq->cpu_mask);
 
 		/* Init ST table entry if we can get the mapping */
 		if (!pcie_tph_get_cpu_st(bp->pdev, TPH_MEM_TYPE_VM,
-					 cpumask_first(cpu_mask), &tag)) {
+					 cpu_num, &tag)) {
 			pcie_tph_set_st_entry(bp->pdev, irq->msix_nr, tag);
 			irq->tag = tag;
 			irq->new_tag = tag;
@@ -12077,19 +12007,10 @@ static int bnxt_request_irq(struct bnxt *bp)
 
 		bnxt_register_irq_notifier(bp, irq);
 
-		/* Only put the IRQ back where it was configured to be, our own
-		 * placement is just a hint, the core spreads within
-		 * irq_default_affinity which we know nothing about.
-		 * Set after installing the notifier, if we race with the user
-		 * it's better to overwrite than miss the notification.
-		 */
-		if (test_bit(i, bp->ring_affinity_set))
-			rc = irq_set_affinity_and_hint(irq->vector, cpu_mask);
-		else
-			rc = irq_update_affinity_hint(irq->vector, cpu_mask);
+		rc = irq_update_affinity_hint(irq->vector, irq->cpu_mask);
 		if (rc) {
 			netdev_warn(bp->dev,
-				    "Setting IRQ affinity failed, IRQ = %d\n",
+				    "Update affinity hint failed, IRQ = %d\n",
 				    irq->vector);
 			break;
 		}
@@ -12476,7 +12397,7 @@ int bnxt_update_link(struct bnxt *bp, bool chng_link_state)
 	rc = hwrm_req_send(bp, req);
 	if (rc) {
 		hwrm_req_drop(bp, req);
-		if (rc == -ECOMM) {
+		if (BNXT_VF(bp) && rc == -ENODEV) {
 			netdev_warn(bp->dev, "Cannot obtain link state while PF unavailable.\n");
 			rc = 0;
 		}
@@ -13953,7 +13874,7 @@ static int bnxt_cfg_rx_mode(struct bnxt *bp, struct netdev_hw_addr_list *uc,
 	for (i = 1, off = 0; i < vnic->uc_filter_count; i++, off += ETH_ALEN) {
 		rc = bnxt_hwrm_set_vnic_filter(bp, 0, i, vnic->uc_list + off);
 		if (rc) {
-			if (rc == -ECOMM) {
+			if (BNXT_VF(bp) && rc == -ENODEV) {
 				netdev_warn(bp->dev, "Cannot configure L2 filters while PF is unavailable, will retry\n");
 				rc = -EAGAIN;
 			} else if (rc == -EAGAIN) {
@@ -14307,18 +14228,6 @@ static netdev_features_t bnxt_features_check(struct sk_buff *skb,
 	u8 *l4_proto;
 
 	features = vlan_features_check(skb, features);
-
-	/* SW USO pads at most the last segment; let the stack segment skbs
-	 * where every segment would be shorter than BNXT_MIN_PKT_SIZE.
-	 */
-	if (skb_is_gso(skb) &&
-	    (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_L4) &&
-	    !(bp->flags & BNXT_FLAG_UDP_GSO_CAP) &&
-	    bnxt_sw_gso_pad_len(skb_transport_offset(skb) +
-				sizeof(struct udphdr),
-				skb_shinfo(skb)->gso_size))
-		features &= ~NETIF_F_GSO_MASK;
-
 	switch (vlan_get_protocol(skb)) {
 	case htons(ETH_P_IP):
 		if (!skb->encapsulation)
@@ -14837,10 +14746,7 @@ static int bnxt_get_registered_vfs(struct bnxt *bp)
 void bnxt_fw_reset(struct bnxt *bp)
 {
 	bnxt_ulp_stop(bp);
-	if (BNXT_PF(bp))
-		bnxt_rtnl_lock_sp(bp);
-	else
-		bnxt_lock_sp(bp);
+	bnxt_lock_sp(bp);
 	if (test_bit(BNXT_STATE_OPEN, &bp->state) &&
 	    !test_bit(BNXT_STATE_IN_FW_RESET, &bp->state)) {
 		struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
@@ -14886,10 +14792,7 @@ void bnxt_fw_reset(struct bnxt *bp)
 		bnxt_queue_fw_reset_work(bp, tmo);
 	}
 fw_reset_exit:
-	if (BNXT_PF(bp))
-		bnxt_rtnl_unlock_sp(bp);
-	else
-		bnxt_unlock_sp(bp);
+	bnxt_unlock_sp(bp);
 }
 
 static void bnxt_chk_missed_irq(struct bnxt *bp)
@@ -15138,7 +15041,6 @@ int bnxt_check_rings(struct bnxt *bp, int tx, int rx, bool sh, int tcs,
 			hwr.cp = min_t(int, hwr.cp, bnxt_get_max_func_irqs(bp));
 		}
 		if (hwr.cp > bp->total_irqs) {
-			int old_total = bp->total_irqs;
 			int total_msix = bnxt_change_msix(bp, hwr.cp);
 
 			if (total_msix < hwr.cp) {
@@ -15146,17 +15048,6 @@ int bnxt_check_rings(struct bnxt *bp, int tx, int rx, bool sh, int tcs,
 					    hwr.cp, total_msix);
 				rc = -ENOSPC;
 			}
-			/* FW has not reserved the new vectors yet, and writes to
-			 * MSI-X table entries beyond the reserved IRQs don't
-			 * stick (seen on BCM57508).  Free them again;
-			 * bnxt_reserve_rings() allocates them after
-			 * __bnxt_reserve_rings().  Without the new resource
-			 * manager there is no IRQ reservation and
-			 * bnxt_reserve_rings() does not grow the vectors, so
-			 * keep them.
-			 */
-			if (BNXT_NEW_RM(bp))
-				bnxt_change_msix(bp, old_total);
 		}
 	}
 	return rc;
@@ -15182,7 +15073,6 @@ static void bnxt_unmap_bars(struct bnxt *bp, struct pci_dev *pdev)
 
 static void bnxt_cleanup_pci(struct bnxt *bp)
 {
-	pci_disable_ptm(bp->pdev);
 	bnxt_unmap_bars(bp, bp->pdev);
 	pci_release_regions(bp->pdev);
 	if (pci_is_enabled(bp->pdev))
@@ -15552,8 +15442,9 @@ static void bnxt_fw_reset_task(struct work_struct *work)
 		bp->fw_reset_timestamp = jiffies;
 		netdev_lock(bp->dev);
 		if (test_bit(BNXT_STATE_ABORT_ERR, &bp->state)) {
+			bnxt_fw_reset_abort(bp, rc);
 			netdev_unlock(bp->dev);
-			goto fw_reset_abort;
+			goto ulp_start;
 		}
 		bnxt_fw_reset_close(bp);
 		if (bp->fw_cap & BNXT_FW_CAP_ERR_RECOVER_RELOAD) {
@@ -15686,11 +15577,9 @@ fw_reset_abort_status:
 		netdev_err(bp->dev, "fw_health_status 0x%x\n", sts);
 	}
 fw_reset_abort:
-	rtnl_lock();
 	netdev_lock(bp->dev);
 	bnxt_fw_reset_abort(bp, rc);
 	netdev_unlock(bp->dev);
-	rtnl_unlock();
 ulp_start:
 	if (!rc)
 		bnxt_ulp_start(bp);
@@ -15723,8 +15612,8 @@ static int bnxt_init_board(struct pci_dev *pdev, struct net_device *dev)
 		goto init_err_disable;
 	}
 
-	rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
-	if (rc) {
+	if (dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64)) != 0 &&
+	    dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32)) != 0) {
 		dev_err(&pdev->dev, "System does not support DMA, aborting\n");
 		rc = -EIO;
 		goto init_err_release;
@@ -15751,8 +15640,6 @@ static int bnxt_init_board(struct pci_dev *pdev, struct net_device *dev)
 		rc = -ENOMEM;
 		goto init_err_release;
 	}
-
-	pci_enable_ptm(pdev);
 
 	INIT_WORK(&bp->sp_task, bnxt_sp_task);
 	INIT_DELAYED_WORK(&bp->fw_reset_task, bnxt_fw_reset_task);
@@ -16775,7 +16662,6 @@ static void bnxt_remove_one(struct pci_dev *pdev)
 	bnxt_shutdown_tc(bp);
 
 	bnxt_clear_int_mode(bp);
-	bnxt_free_ring_cpu_masks(bp);
 	bnxt_hwrm_func_drv_unrgtr(bp);
 	bnxt_free_hwrm_resources(bp);
 	bnxt_hwmon_uninit(bp);
@@ -17003,7 +16889,7 @@ static int bnxt_set_dflt_rings(struct bnxt *bp, bool sh)
 	}
 
 	rc = __bnxt_reserve_rings(bp);
-	if (rc && rc != -ECOMM)
+	if (rc && rc != -ENODEV)
 		netdev_warn(bp->dev, "Unable to reserve tx rings\n");
 
 	bnxt_adj_tx_rings(bp);
@@ -17013,7 +16899,7 @@ static int bnxt_set_dflt_rings(struct bnxt *bp, bool sh)
 	/* Rings may have been trimmed, re-reserve the trimmed rings. */
 	if (bnxt_need_reserve_rings(bp)) {
 		rc = __bnxt_reserve_rings(bp);
-		if (rc && rc != -ECOMM)
+		if (rc && rc != -ENODEV)
 			netdev_warn(bp->dev, "2nd rings reservation failed.\n");
 		bnxt_adj_tx_rings(bp);
 	}
@@ -17039,7 +16925,7 @@ static int bnxt_init_dflt_ring_mode(struct bnxt *bp)
 	bnxt_clear_int_mode(bp);
 	rc = bnxt_set_dflt_rings(bp, true);
 	if (rc) {
-		if (rc == -ECOMM)
+		if (BNXT_VF(bp) && rc == -ENODEV)
 			netdev_err(bp->dev, "Cannot configure VF rings while PF is unavailable.\n");
 		else
 			netdev_err(bp->dev, "Not enough rings available.\n");
@@ -17257,11 +17143,6 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	bp->msg_enable = BNXT_DEF_MSG_ENABLE;
 	bnxt_set_max_func_irqs(bp, max_irqs);
 
-	bp->max_irqs = max_irqs;
-	rc = bnxt_alloc_ring_cpu_masks(bp);
-	if (rc)
-		goto init_err_free;
-
 	if (bnxt_vf_pciid(bp->board_idx))
 		bp->flags |= BNXT_FLAG_VF;
 
@@ -17316,7 +17197,7 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	dev->hw_features = NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | NETIF_F_SG |
-			   NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_TSO_ECN |
+			   NETIF_F_TSO | NETIF_F_TSO6 |
 			   NETIF_F_GSO_UDP_TUNNEL | NETIF_F_GSO_GRE |
 			   NETIF_F_GSO_IPXIP4 |
 			   NETIF_F_GSO_UDP_TUNNEL_CSUM | NETIF_F_GSO_GRE_CSUM |
@@ -17329,7 +17210,7 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	dev->hw_enc_features =
 			NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | NETIF_F_SG |
-			NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_TSO_ECN |
+			NETIF_F_TSO | NETIF_F_TSO6 |
 			NETIF_F_GSO_UDP_TUNNEL | NETIF_F_GSO_GRE |
 			NETIF_F_GSO_UDP_TUNNEL_CSUM | NETIF_F_GSO_GRE_CSUM |
 			NETIF_F_GSO_IPXIP4 | NETIF_F_GSO_PARTIAL;
@@ -17417,7 +17298,7 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		bnxt_aux_devices_init(bp);
 	rc = bnxt_set_dflt_rings(bp, true);
 	if (rc) {
-		if (rc == -ECOMM) {
+		if (BNXT_VF(bp) && rc == -ENODEV) {
 			netdev_err(bp->dev, "Cannot configure VF rings while PF is unavailable.\n");
 		} else {
 			netdev_err(bp->dev, "Not enough rings available.\n");
@@ -17511,7 +17392,6 @@ init_err_pci_clean:
 	bp->rss_indir_tbl = NULL;
 
 init_err_free:
-	bnxt_free_ring_cpu_masks(bp);
 	free_netdev(dev);
 	return rc;
 }
@@ -17573,50 +17453,21 @@ static int bnxt_suspend(struct device *device)
 	return rc;
 }
 
-#define BNXT_RESUME_MAX_RETRY	10
-
 static int bnxt_resume(struct device *device)
 {
 	struct net_device *dev = dev_get_drvdata(device);
 	struct bnxt *bp = netdev_priv(dev);
-	int i, rc;
+	int rc = 0;
 
+	rtnl_lock();
+	netdev_lock(dev);
 	rc = pci_enable_device(bp->pdev);
 	if (rc) {
 		netdev_err(dev, "Cannot re-enable PCI device during resume, err = %d\n",
 			   rc);
-		return rc;
+		goto resume_exit;
 	}
 	pci_set_master(bp->pdev);
-	if (BNXT_VF(bp)) {
-		for (i = 0; i < BNXT_RESUME_MAX_RETRY; i++) {
-			rc = bnxt_hwrm_poll(bp);
-			if (rc != -EAGAIN && rc != -EBUSY && rc != -ECOMM)
-				break;
-
-			/* Wait briefly for -EAGAIN (FW busy), a bit longer for
-			 * -ECOMM (PF down) to allow the PF to fully initialize.
-			 * For -EBUSY, the message typically has timed out, so
-			 * try again immediately.
-			 */
-			if (i < BNXT_RESUME_MAX_RETRY - 1) {
-				if (rc == -EAGAIN)
-					msleep(250);
-				else if (rc == -ECOMM)
-					msleep(750);
-			}
-		}
-		if (rc) {
-			netdev_err(dev,
-				   "Firmware not responding during resume, rc = %d\n",
-				   rc);
-			return -ENODEV;
-		}
-	}
-
-	rtnl_lock();
-	netdev_lock(dev);
-
 	if (bnxt_hwrm_ver_get(bp)) {
 		rc = -ENODEV;
 		goto resume_exit;

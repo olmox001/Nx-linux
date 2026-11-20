@@ -7,9 +7,6 @@
 #  Written by Masami Hiramatsu <masami.hiramatsu.pt@hitachi.com>
 #
 
-# Keep command output parsing stable regardless of the user's locale.
-export LC_ALL=C
-
 usage() { # errno [message]
 [ ! -z "$2" ] && echo $2
 echo "Usage: ftracetest [options] [testcase(s)] [testcase-directory(s)]"
@@ -243,7 +240,7 @@ else
   mkdir -p $LOG_DIR || errexit "Failed to make a log directory: $LOG_DIR"
   date > $LOG_FILE
   if [ "x-$LINK_PTR" != "x-" ]; then
-    rm -f $LINK_PTR
+    unlink $LINK_PTR
     ln -fs $LOG_DATE $LINK_PTR
   fi
 fi

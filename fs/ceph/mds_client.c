@@ -15,7 +15,6 @@
 #include <linux/ktime.h>
 #include <linux/bitmap.h>
 #include <linux/mnt_idmapping.h>
-#include <linux/overflow.h>
 
 #include "super.h"
 #include "mds_client.h"
@@ -115,39 +114,12 @@ bad:
 	return -EIO;
 }
 
-/*
- * Decode the inline_version + inline_data fields the MDS puts into
- * reply inodes.  With inline data support disabled we still have to
- * consume them, we just don't keep the data around.
- */
-static int parse_reply_info_inline_data(void **p, void *end,
-					struct ceph_mds_reply_info_in *info)
-{
-#ifdef CONFIG_CEPH_FS_INLINE_DATA
-	ceph_decode_64_safe(p, end, info->inline_version, bad);
-	ceph_decode_32_safe(p, end, info->inline_len, bad);
-	ceph_decode_need(p, end, info->inline_len, bad);
-	info->inline_data = *p;
-	*p += info->inline_len;
-#else
-	u32 len;
-
-	ceph_decode_skip_64(p, end, bad);
-	ceph_decode_32_safe(p, end, len, bad);
-	ceph_decode_skip_n(p, end, len, bad);
-#endif
-	return 0;
-bad:
-	return -EIO;
-}
-
 static int parse_reply_info_in(void **p, void *end,
 			       struct ceph_mds_reply_info_in *info,
 			       u64 features,
 			       struct ceph_mds_client *mdsc)
 {
 	int err = 0;
-	size_t splits_len;
 	u8 struct_v = 0;
 	u8 struct_compat = 0;
 	u32 struct_len = 0;
@@ -168,11 +140,9 @@ static int parse_reply_info_in(void **p, void *end,
 
 	ceph_decode_need(p, end, sizeof(struct ceph_mds_reply_inode), bad);
 	info->in = *p;
-	splits_len = size_mul(sizeof(*info->in->fragtree.splits),
-			      le32_to_cpu(info->in->fragtree.nsplits));
-	*p += sizeof(struct ceph_mds_reply_inode);
-	ceph_decode_need(p, end, splits_len, bad);
-	*p += splits_len;
+	*p += sizeof(struct ceph_mds_reply_inode) +
+		sizeof(*info->in->fragtree.splits) *
+		le32_to_cpu(info->in->fragtree.nsplits);
 
 	ceph_decode_32_safe(p, end, info->symlink_len, bad);
 	ceph_decode_need(p, end, info->symlink_len, bad);
@@ -188,9 +158,11 @@ static int parse_reply_info_in(void **p, void *end,
 
 	if (features == (u64)-1) {
 		/* inline data */
-		err = parse_reply_info_inline_data(p, end, info);
-		if (err < 0)
-			goto out_bad;
+		ceph_decode_64_safe(p, end, info->inline_version, bad);
+		ceph_decode_32_safe(p, end, info->inline_len, bad);
+		ceph_decode_need(p, end, info->inline_len, bad);
+		info->inline_data = *p;
+		*p += info->inline_len;
 		/* quota */
 		err = parse_reply_info_quota(p, end, info);
 		if (err < 0)
@@ -306,12 +278,13 @@ static int parse_reply_info_in(void **p, void *end,
 	} else {
 		/* legacy (unversioned) struct */
 		if (features & CEPH_FEATURE_MDS_INLINE_DATA) {
-			err = parse_reply_info_inline_data(p, end, info);
-			if (err < 0)
-				goto out_bad;
-		} else {
+			ceph_decode_64_safe(p, end, info->inline_version, bad);
+			ceph_decode_32_safe(p, end, info->inline_len, bad);
+			ceph_decode_need(p, end, info->inline_len, bad);
+			info->inline_data = *p;
+			*p += info->inline_len;
+		} else
 			info->inline_version = CEPH_INLINE_NONE;
-		}
 
 		if (features & CEPH_FEATURE_MDS_QUOTA) {
 			err = parse_reply_info_quota(p, end, info);
@@ -407,8 +380,6 @@ static int parse_reply_info_lease(void **p, void *end,
 
 	lend = *p + struct_len;
 	ceph_decode_need(p, end, struct_len, bad);
-	if (struct_len < sizeof(**lease))
-		goto bad;
 	*lease = *p;
 	*p += sizeof(**lease);
 
@@ -508,8 +479,10 @@ static int parse_reply_info_readdir(void **p, void *end,
 		goto done;
 
 	BUG_ON(!info->dir_entries);
-	if (num > info->dir_buf_size / sizeof(*info->dir_entries)) {
+	if ((unsigned long)(info->dir_entries + num) >
+	    (unsigned long)info->dir_entries + info->dir_buf_size) {
 		pr_err_client(cl, "dir contents are larger than expected\n");
+		WARN_ON(1);
 		goto bad;
 	}
 
@@ -518,11 +491,11 @@ static int parse_reply_info_readdir(void **p, void *end,
 		struct inode *inode = d_inode(req->r_dentry);
 		struct ceph_inode_info *ci = ceph_inode(inode);
 		struct ceph_mds_reply_dir_entry *rde = info->dir_entries + i;
+		struct fscrypt_str tname = FSTR_INIT(NULL, 0);
 		struct fscrypt_str oname = FSTR_INIT(NULL, 0);
 		struct ceph_fname fname;
 		u32 altname_len, _name_len;
 		u8 *altname, *_name;
-		u8 *tname = NULL;
 
 		/* dentry */
 		ceph_decode_32_safe(p, end, _name_len, bad);
@@ -574,7 +547,7 @@ static int parse_reply_info_readdir(void **p, void *end,
 			 * suitable temporary working space instead.
 			 */
 			if (likely(!is_vmalloc_addr(_name)))
-				tname = _name;
+				tname.name = _name;
 
 			/*
 			 * Set oname to _name too, and this will be
@@ -591,7 +564,7 @@ static int parse_reply_info_readdir(void **p, void *end,
 			oname.len = altname_len;
 		}
 		rde->is_nokey = false;
-		err = ceph_fname_to_usr(&fname, tname, &oname, &rde->is_nokey);
+		err = ceph_fname_to_usr(&fname, &tname, &oname, &rde->is_nokey);
 		if (err) {
 			pr_err_client(cl, "unable to decode %.*s, got %d\n",
 				      _name_len, _name, err);
@@ -1388,7 +1361,7 @@ static struct inode *get_nonsnap_parent(struct dentry *dentry)
 
 	while (dentry && !IS_ROOT(dentry)) {
 		inode = d_inode_rcu(dentry);
-		if (!inode || !ceph_in_snap(inode))
+		if (!inode || ceph_snap(inode) == CEPH_NOSNAP)
 			break;
 		dentry = dentry->d_parent;
 	}
@@ -1462,7 +1435,7 @@ static int __choose_mds(struct ceph_mds_client *mdsc,
 			inode = d_inode(req->r_dentry);
 			if (inode)
 				ihold(inode);
-		} else if (ceph_in_snap(dir)) {
+		} else if (ceph_snap(dir) != CEPH_NOSNAP) {
 			/* direct snapped/virtual snapdir requests
 			 * based on parent dir inode */
 			inode = get_nonsnap_parent(parent);
@@ -1830,10 +1803,8 @@ __open_export_target_session(struct ceph_mds_client *mdsc, int target)
 	if (session->s_state == CEPH_MDS_SESSION_NEW ||
 	    session->s_state == CEPH_MDS_SESSION_CLOSING) {
 		ret = __open_session(mdsc, session);
-		if (ret) {
-			ceph_put_mds_session(session);
+		if (ret)
 			return ERR_PTR(ret);
-		}
 	}
 
 	return session;
@@ -1879,19 +1850,16 @@ static void __open_export_target_sessions(struct ceph_mds_client *mdsc,
  * session caps
  */
 
-static int detach_cap_releases(struct ceph_mds_session *session,
-			       struct list_head *target)
+static void detach_cap_releases(struct ceph_mds_session *session,
+				struct list_head *target)
 {
 	struct ceph_client *cl = session->s_mdsc->fsc->client;
-	const int num_cap_releases = session->s_num_cap_releases;
 
 	lockdep_assert_held(&session->s_cap_lock);
 
 	list_splice_init(&session->s_cap_releases, target);
 	session->s_num_cap_releases = 0;
 	doutc(cl, "mds%d\n", session->s_mds);
-
-	return num_cap_releases;
 }
 
 static void dispose_cap_releases(struct ceph_mds_client *mdsc,
@@ -1985,7 +1953,7 @@ int ceph_iterate_session_caps(struct ceph_mds_session *session,
 
 		spin_lock(&session->s_cap_lock);
 		p = p->next;
-		if (ceph_cap_is_removed(cap)) {
+		if (!cap->ci) {
 			doutc(cl, "finishing cap %p removal\n", cap);
 			BUG_ON(cap->session != session);
 			cap->session = NULL;
@@ -2071,7 +2039,7 @@ static void remove_session_caps(struct ceph_mds_session *session)
 			if (cap == prev)
 				break;
 			prev = cap;
-			vino = ceph_vino(&cap->ci->netfs.inode);
+			vino = cap->ci->i_vino;
 			spin_unlock(&session->s_cap_lock);
 
 			inode = ceph_find_inode(sb, vino);
@@ -2283,9 +2251,8 @@ out:
  * Trim old(er) caps.
  *
  * Because we can't cache an inode without one or more caps, we do
- * this indirectly: if a cap is unused, we prune its aliases and mark
- * the inode for eviction, at which point the inode will hopefully get
- * dropped too, releasing the cap with it.
+ * this indirectly: if a cap is unused, we prune its aliases, at which
+ * point the inode will hopefully get dropped to.
  *
  * Yes, this is a bit sloppy.  Our only real goal here is to respond to
  * memory pressure from the MDS, though, so it needn't be perfect.
@@ -2342,48 +2309,24 @@ static int trim_caps_cb(struct inode *inode, int mds, void *arg)
 
 	if (oissued) {
 		/* we aren't the only cap.. just remove us */
-		ceph_remove_cap(mdsc, cap, ci, true);
+		ceph_remove_cap(mdsc, cap, true);
 		(*remaining)--;
 	} else {
 		struct dentry *dentry;
-		bool pruned = false;
-
 		/* try dropping referring dentries */
 		spin_unlock(&ci->i_ceph_lock);
 		dentry = d_find_any_alias(inode);
-		if (!dentry) {
-			/* nothing refers to it in the first place */
-			pruned = true;
-		} else if (drop_negative_children(dentry)) {
+		if (dentry && drop_negative_children(dentry)) {
+			int count;
 			dput(dentry);
 			d_prune_aliases(inode);
-			pruned = true;
-		} else {
-			dput(dentry);
-		}
-
-		if (pruned) {
-			int count;
-
-			/*
-			 * ceph_drop_inode() keeps a regular file's inode
-			 * alive while it still has cached pages, so pruning
-			 * the aliases is no longer enough on its own to get
-			 * this cap back.  Mirror that condition here and ask
-			 * for a one-shot eviction: the iput() that
-			 * ceph_iterate_session_caps() still owes this inode
-			 * then runs ceph_evict_inode(), which is what hands
-			 * the cap back.
-			 */
-			if (S_ISREG(inode->i_mode) && inode->i_data.nrpages)
-				set_bit(CEPH_I_EVICT_ON_FINAL_IPUT_BIT,
-					&ci->i_ceph_flags);
-
 			count = icount_read_once(inode);
 			if (count == 1)
 				(*remaining)--;
 			doutc(cl, "%p %llx.%llx cap %p pruned, count now %d\n",
 			      inode, ceph_vinop(inode), cap, count);
+		} else {
+			dput(dentry);
 		}
 		return 0;
 	}
@@ -2572,7 +2515,9 @@ static void ceph_send_cap_releases(struct ceph_mds_client *mdsc,
 
 	spin_lock(&session->s_cap_lock);
 again:
-	num_cap_releases = detach_cap_releases(session, &tmp_list);
+	list_splice_init(&session->s_cap_releases, &tmp_list);
+	num_cap_releases = session->s_num_cap_releases;
+	session->s_num_cap_releases = 0;
 	spin_unlock(&session->s_cap_lock);
 
 	while (!list_empty(&tmp_list)) {
@@ -2983,7 +2928,7 @@ retry:
 			spin_unlock(&cur->d_lock);
 			parent = dget_parent(cur);
 		} else if (for_wire && inode && dentry != cur &&
-			   !ceph_in_snap(inode)) {
+			   ceph_snap(inode) == CEPH_NOSNAP) {
 			spin_unlock(&cur->d_lock);
 			pos++; /* get rid of any prepended '/' */
 			break;
@@ -3092,7 +3037,7 @@ static int build_dentry_path(struct ceph_mds_client *mdsc, struct dentry *dentry
 	rcu_read_lock();
 	if (!dir)
 		dir = d_inode_rcu(dentry->d_parent);
-	if (dir && parent_locked && !ceph_in_snap(dir) &&
+	if (dir && parent_locked && ceph_snap(dir) == CEPH_NOSNAP &&
 	    !IS_ENCRYPTED(dir)) {
 		path_info->vino.ino = ceph_ino(dir);
 		path_info->vino.snap = ceph_snap(dir);
@@ -3118,7 +3063,7 @@ static int build_inode_path(struct inode *inode, struct ceph_path_info *path_inf
 	struct dentry *dentry;
 	char *path;
 
-	if (!ceph_in_snap(inode)) {
+	if (ceph_snap(inode) == CEPH_NOSNAP) {
 		path_info->vino.ino = ceph_ino(inode);
 		path_info->vino.snap = ceph_snap(inode);
 		path_info->pathlen = 0;
@@ -4039,14 +3984,6 @@ int ceph_mdsc_wait_request(struct ceph_mds_client *mdsc,
 	/* only abort if we didn't race with a real reply */
 	if (test_bit(CEPH_MDS_R_GOT_RESULT, &req->r_req_flags)) {
 		err = le32_to_cpu(req->r_reply_info.head->result);
-		if (err > 0 || err < -MAX_ERRNO) {
-			/*
-			 * The result is server-controlled.  Values outside
-			 * the errno range are turned into bogus pointers by
-			 * the ERR_PTR() users among the callers.
-			 */
-			err = -EIO;
-		}
 	} else if (err < 0) {
 		doutc(cl, "aborted request %lld with %d\n", req->r_tid, err);
 
@@ -4204,19 +4141,13 @@ static void handle_reply(struct ceph_mds_session *session, struct ceph_msg *msg)
 		list_add_tail(&req->r_unsafe_item, &req->r_session->s_unsafe);
 	}
 
-	/*
-	 * Now that all mutex-protected state has been updated above
-	 * (the request has been unregistered or added to the
-	 * session's unsafe list), we can unlock it.
-	 */
-	mutex_unlock(&mdsc->mutex);
-
 	doutc(cl, "tid %lld result %d\n", tid, result);
 	if (test_bit(CEPHFS_FEATURE_REPLY_ENCODING, &session->s_features))
 		err = parse_reply_info(session, msg, req, (u64)-1);
 	else
 		err = parse_reply_info(session, msg, req,
 				       session->s_con.peer_features);
+	mutex_unlock(&mdsc->mutex);
 
 	/* Must find target inode outside of mutexes to avoid deadlocks */
 	rinfo = &req->r_reply_info;
@@ -4538,8 +4469,8 @@ static void handle_session(struct ceph_mds_session *session,
 			ceph_decode_64_safe(&p, end, cap_auths[i].match.uid, bad);
 			ceph_decode_32_safe(&p, end, _len, bad);
 			if (_len) {
-				cap_auths[i].match.gids = kzalloc_objs(u32,
-								       _len);
+				cap_auths[i].match.gids = kcalloc(_len, sizeof(u32),
+								  GFP_KERNEL);
 				if (!cap_auths[i].match.gids) {
 					pr_err_client(cl, "No memory for gids\n");
 					goto fail;
@@ -5554,7 +5485,7 @@ static void ceph_mdsc_reset_workfn(struct work_struct *work)
 		goto out_complete;
 	}
 
-	sessions = kzalloc_objs(*sessions, max_sessions);
+	sessions = kcalloc(max_sessions, sizeof(*sessions), GFP_KERNEL);
 	if (!sessions) {
 		mutex_unlock(&mdsc->mutex);
 		ret = -ENOMEM;
@@ -5877,7 +5808,7 @@ int ceph_mdsc_schedule_reset(struct ceph_mds_client *mdsc,
 	strscpy(st->last_reason, msg, sizeof(st->last_reason));
 	spin_unlock(&st->lock);
 
-	if (WARN_ON_ONCE(!queue_work(system_dfl_wq, &mdsc->reset_work))) {
+	if (WARN_ON_ONCE(!queue_work(system_unbound_wq, &mdsc->reset_work))) {
 		spin_lock(&st->lock);
 		st->phase = CEPH_CLIENT_RESET_IDLE;
 		st->last_errno = -EALREADY;
@@ -6418,7 +6349,6 @@ int ceph_mdsc_init(struct ceph_fs_client *fsc)
 	INIT_DELAYED_WORK(&mdsc->delayed_work, delayed_work);
 	mdsc->last_renew_caps = jiffies;
 	INIT_LIST_HEAD(&mdsc->cap_delay_list);
-	INIT_LIST_HEAD(&mdsc->cap_idle_delay_list);
 #ifdef CONFIG_DEBUG_FS
 	INIT_LIST_HEAD(&mdsc->cap_wait_list);
 #endif
@@ -6892,7 +6822,6 @@ void ceph_mdsc_close_sessions(struct ceph_mds_client *mdsc)
 		}
 	}
 	WARN_ON(!list_empty(&mdsc->cap_delay_list));
-	WARN_ON(!list_empty(&mdsc->cap_idle_delay_list));
 	mutex_unlock(&mdsc->mutex);
 
 	ceph_cleanup_snapid_map(mdsc);

@@ -588,7 +588,9 @@ static int ieee80211_ifa_changed(struct notifier_block *nb,
 	if (sdata->vif.type != NL80211_IFTYPE_STATION)
 		return NOTIFY_DONE;
 
-	idev = ifa->ifa_dev;
+	idev = __in_dev_get_rtnl(sdata->dev);
+	if (!idev)
+		return NOTIFY_DONE;
 
 	ifmgd = &sdata->u.mgd;
 
@@ -745,13 +747,8 @@ ieee80211_default_mgmt_stypes[NUM_NL80211_IFTYPES] = {
 	},
 	[NL80211_IFTYPE_NAN] = {
 		.tx = 0xffff,
-		/*
-		 * Beacon Rx registration is needed to let user space handle
-		 * service discovery when Instant Communication is enabled.
-		 */
 		.rx = BIT(IEEE80211_STYPE_ACTION >> 4) |
-			BIT(IEEE80211_STYPE_AUTH >> 4) |
-			BIT(IEEE80211_STYPE_BEACON >> 4),
+			BIT(IEEE80211_STYPE_AUTH >> 4),
 	},
 	[NL80211_IFTYPE_NAN_DATA] = {
 		.tx = 0xffff,
@@ -1327,13 +1324,12 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G;
 
 			/* currently no support for HE client where HT has 40 MHz but not HT */
-			if (WARN_ON(iftd->he_cap.has_he &&
-				    iftd->types_mask & (BIT(NL80211_IFTYPE_STATION) |
-							BIT(NL80211_IFTYPE_P2P_CLIENT)) &&
-				    sband->ht_cap.ht_supported &&
-				    sband->ht_cap.cap & IEEE80211_HT_CAP_SUP_WIDTH_20_40 &&
-				    !(iftd->he_cap.he_cap_elem.phy_cap_info[0] &
-				      he_40_mhz_cap)))
+			if (iftd->he_cap.has_he &&
+			    iftd->types_mask & (BIT(NL80211_IFTYPE_STATION) |
+						BIT(NL80211_IFTYPE_P2P_CLIENT)) &&
+			    sband->ht_cap.ht_supported &&
+			    sband->ht_cap.cap & IEEE80211_HT_CAP_SUP_WIDTH_20_40 &&
+			    !(iftd->he_cap.he_cap_elem.phy_cap_info[0] & he_40_mhz_cap))
 				return -EINVAL;
 
 			/* no support for per-band vendor elems with MLO */
@@ -1567,8 +1563,10 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	if (result)
 		goto fail_flows;
 
+	rtnl_lock();
 	result = ieee80211_init_rate_ctrl_alg(local,
 					      hw->rate_control_algorithm);
+	rtnl_unlock();
 	if (result < 0) {
 		wiphy_debug(local->hw.wiphy,
 			    "Failed to initialize rate control algorithm\n");
@@ -1683,13 +1681,13 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 #if defined(CONFIG_INET) || defined(CONFIG_IPV6)
  fail_ifa:
 #endif
-	rtnl_lock();
-	ieee80211_remove_interfaces(local);
-	rtnl_unlock();
 	wiphy_unregister(local->hw.wiphy);
  fail_wiphy_register:
  fail_band:
+	rtnl_lock();
 	rate_control_deinitialize(local);
+	ieee80211_remove_interfaces(local);
+	rtnl_unlock();
  fail_rate:
 	ieee80211_txq_teardown_flows(local);
  fail_flows:
@@ -1735,8 +1733,6 @@ void ieee80211_unregister_hw(struct ieee80211_hw *hw)
 	rtnl_unlock();
 
 	cancel_work_sync(&local->restart_work);
-
-	tasklet_kill(&local->wake_txqs_tasklet);
 
 	ieee80211_clear_tx_pending(local);
 	rate_control_deinitialize(local);

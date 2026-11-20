@@ -13,7 +13,6 @@ from xdr_ast import _XdrFixedLengthOpaque, _XdrVariableLengthOpaque
 from xdr_ast import _XdrFixedLengthArray, _XdrVariableLengthArray
 from xdr_ast import _XdrOptionalData, _XdrPointer, _XdrDeclaration
 from xdr_ast import public_apis, get_header_name
-from xdr_ast import pages_members, pages_member_maxsize, pages_member_is_decoded
 
 
 def emit_pointer_declaration(environment: Environment, node: _XdrPointer) -> None:
@@ -24,13 +23,9 @@ def emit_pointer_declaration(environment: Environment, node: _XdrPointer) -> Non
 
 
 def emit_pointer_member_definition(
-    environment: Environment, field: _XdrDeclaration, struct_name: str, peer: str
+    environment: Environment, field: _XdrDeclaration
 ) -> None:
     """Emit a definition for one field in an XDR struct"""
-    if peer == "server" and pages_member_is_decoded(struct_name, field.name):
-        template = get_jinja2_template(environment, "definition", "pages_opaque")
-        print(template.render(name=field.name))
-        return
     if isinstance(field, _XdrBasic):
         template = get_jinja2_template(environment, "definition", field.template)
         print(
@@ -83,36 +78,22 @@ def emit_pointer_member_definition(
         )
 
 
-def emit_pointer_definition(
-    environment: Environment, node: _XdrPointer, peer: str
-) -> None:
+def emit_pointer_definition(environment: Environment, node: _XdrPointer) -> None:
     """Emit a definition for an XDR pointer type"""
     template = get_jinja2_template(environment, "definition", "open")
     print(template.render(name=node.name))
 
     for field in node.fields[0:-1]:
-        emit_pointer_member_definition(environment, field, node.name, peer)
+        emit_pointer_member_definition(environment, field)
 
     template = get_jinja2_template(environment, "definition", "close")
     print(template.render(name=node.name))
 
 
 def emit_pointer_member_decoder(
-    environment: Environment,
-    field: _XdrDeclaration,
-    struct_name: str,
-    peer: str,
+    environment: Environment, field: _XdrDeclaration
 ) -> None:
     """Emit a decoder for one field in an XDR pointer"""
-    if peer == "server" and pages_member_is_decoded(struct_name, field.name):
-        template = get_jinja2_template(environment, "decoder", "pages_opaque")
-        print(
-            template.render(
-                name=field.name,
-                maxsize=pages_member_maxsize(field),
-            )
-        )
-        return
     if isinstance(field, _XdrBasic):
         template = get_jinja2_template(environment, "decoder", field.template)
         print(
@@ -177,45 +158,22 @@ def emit_pointer_member_decoder(
         )
 
 
-def emit_pointer_decoder(
-    environment: Environment, node: _XdrPointer, peer: str
-) -> None:
+def emit_pointer_decoder(environment: Environment, node: _XdrPointer) -> None:
     """Emit one decoder function for an XDR pointer type"""
     template = get_jinja2_template(environment, "decoder", "open")
     print(template.render(name=node.name))
 
     for field in node.fields[0:-1]:
-        emit_pointer_member_decoder(environment, field, node.name, peer)
+        emit_pointer_member_decoder(environment, field)
 
     template = get_jinja2_template(environment, "decoder", "close")
     print(template.render())
 
 
 def emit_pointer_member_encoder(
-    environment: Environment,
-    field: _XdrDeclaration,
-    struct_name: str,
-    peer: str,
+    environment: Environment, field: _XdrDeclaration
 ) -> None:
     """Emit an encoder for one field in a XDR pointer"""
-    if (struct_name, field.name) in pages_members:
-        if peer != "server":
-            raise NotImplementedError(
-                "pragma pages is server-side only; "
-                + peer
-                + " generation is not yet supported"
-            )
-        # Both representations carry the length field, which is all the
-        # pages encoder reads, so pages_member_is_decoded() does not
-        # gate this site.
-        template = get_jinja2_template(environment, "encoder", "pages_opaque")
-        print(
-            template.render(
-                name=field.name,
-                maxsize=pages_member_maxsize(field),
-            )
-        )
-        return
     if isinstance(field, _XdrBasic):
         template = get_jinja2_template(environment, "encoder", field.template)
         print(
@@ -277,15 +235,13 @@ def emit_pointer_member_encoder(
         )
 
 
-def emit_pointer_encoder(
-    environment: Environment, node: _XdrPointer, peer: str
-) -> None:
+def emit_pointer_encoder(environment: Environment, node: _XdrPointer) -> None:
     """Emit one encoder function for an XDR pointer type"""
     template = get_jinja2_template(environment, "encoder", "open")
     print(template.render(name=node.name))
 
     for field in node.fields[0:-1]:
-        emit_pointer_member_encoder(environment, field, node.name, peer)
+        emit_pointer_member_encoder(environment, field)
 
     template = get_jinja2_template(environment, "encoder", "close")
     print(template.render())
@@ -317,15 +273,15 @@ class XdrPointerGenerator(SourceGenerator):
 
     def emit_definition(self, node: _XdrPointer) -> None:
         """Emit one declaration for an XDR pointer type"""
-        emit_pointer_definition(self.environment, node, self.peer)
+        emit_pointer_definition(self.environment, node)
 
     def emit_decoder(self, node: _XdrPointer) -> None:
         """Emit one decoder function for an XDR pointer type"""
-        emit_pointer_decoder(self.environment, node, self.peer)
+        emit_pointer_decoder(self.environment, node)
 
     def emit_encoder(self, node: _XdrPointer) -> None:
         """Emit one encoder function for an XDR pointer type"""
-        emit_pointer_encoder(self.environment, node, self.peer)
+        emit_pointer_encoder(self.environment, node)
 
     def emit_maxsize(self, node: _XdrPointer) -> None:
         """Emit one maxsize macro for an XDR pointer type"""

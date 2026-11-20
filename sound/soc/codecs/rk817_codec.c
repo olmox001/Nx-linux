@@ -475,7 +475,9 @@ static int rk817_platform_probe(struct platform_device *pdev)
 	struct rk817_codec_priv *rk817_codec_data;
 	int ret;
 
-	rk817_codec_data = devm_kzalloc_obj(&pdev->dev, struct rk817_codec_priv);
+	rk817_codec_data = devm_kzalloc(&pdev->dev,
+					sizeof(struct rk817_codec_priv),
+					GFP_KERNEL);
 	if (!rk817_codec_data)
 		return -ENOMEM;
 

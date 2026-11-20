@@ -1002,7 +1002,7 @@ static int mvebu_comphy_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -1050,7 +1050,7 @@ static int mvebu_comphy_probe(struct platform_device *pdev)
 			continue;
 		}
 
-		lane = devm_kzalloc_obj(&pdev->dev, *lane);
+		lane = devm_kzalloc(&pdev->dev, sizeof(*lane), GFP_KERNEL);
 		if (!lane) {
 			of_node_put(child);
 			ret = -ENOMEM;

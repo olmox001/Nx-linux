@@ -190,7 +190,7 @@ static int usbio_gpio_probe(struct auxiliary_device *adev,
 	if (!bank_desc)
 		return -EINVAL;
 
-	gpio = devm_kzalloc_obj(dev, *gpio);
+	gpio = devm_kzalloc(dev, sizeof(*gpio), GFP_KERNEL);
 	if (!gpio)
 		return -ENOMEM;
 

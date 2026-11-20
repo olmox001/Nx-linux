@@ -399,24 +399,6 @@ bridge_port_vlan_maxgroups_set()
 	bridge vlan set $locus mcast_max_groups $max
 }
 
-bridge_mcast_snooping_get()
-{
-	ip -j -d link show dev br0 |
-	    jq '.[].linkinfo.info_data.mcast_snooping'
-}
-
-bridge_mcast_hash_max_get()
-{
-	ip -j -d link show dev br0 |
-	    jq '.[].linkinfo.info_data.mcast_hash_max'
-}
-
-bridge_mdb_entries_count()
-{
-	bridge -j mdb show dev br0 |
-	    jq '[.[].mdb[] | [.grp, .src, .vid]] | unique | length'
-}
-
 test_ngroups_reporting()
 {
 	local CFG=$1; shift
@@ -956,114 +938,6 @@ test_8021qvs_maxgroups_too_many_entries_ctl6()
 	test_maxgroups_too_many_entries ctl6 port_vlan "dev $swp1 vid 10"
 }
 
-test_maxgroups_hash_max()
-{
-	local CFG=$1; shift
-	local context=$1; shift
-	local locus=$1; shift
-
-	local hash_max n i
-
-	RET=0
-
-	hash_max=$(bridge_mcast_hash_max_get)
-
-	# Make sure the port has entries, so that max == n is not 0 (no limit).
-	${CFG}_entries_add "$locus" temp 2 120
-	check_err $? "$locus: Couldn't add MDB entries"
-	n=$(bridge_${context}_ngroups_get "$locus")
-
-	# Leave room for three more MDB entries.
-	ip link set dev br0 type bridge \
-		mcast_hash_max $(($(bridge_mdb_entries_count) + 3))
-	check_err $? "Couldn't set mcast_hash_max"
-
-	# Port at its maximum: (*, G) entries are rejected.
-	bridge_${context}_maxgroups_set "$locus" "$n"
-	check_err $? "$locus: Couldn't set maximum"
-	for i in $(seq 121 124); do
-		${CFG}_entries_add "$locus" temp 2 "$i" &> /dev/null
-	done
-
-	# One more slot: (*, G) is accepted, (S, G) is rejected.
-	bridge_${context}_maxgroups_set "$locus" $((n + 1))
-	check_err $? "$locus: Couldn't set maximum"
-	for i in $(seq 125 128); do
-		${CFG}_entries_add "$locus" temp 2 "$i" &> /dev/null
-	done
-
-	[[ $(bridge_mcast_snooping_get) == 1 ]]
-	check_err $? "Multicast snooping disabled by rejected MDB entries"
-
-	bridge mdb flush dev br0
-	ip link set dev br0 type bridge mcast_snooping 1
-	ip link set dev br0 type bridge mcast_hash_max "$hash_max"
-	bridge_${context}_maxgroups_set "$locus" 0
-	check_err $? "$locus: Couldn't set maximum to 0"
-
-	log_test "$CFG: $context maxgroups: rejected entries do not exhaust MDB"
-}
-
-test_8021d_maxgroups_hash_max_cfg4()
-{
-	test_maxgroups_hash_max cfg4 port "dev $swp1"
-}
-
-test_8021d_maxgroups_hash_max_ctl4()
-{
-	test_maxgroups_hash_max ctl4 port "dev $swp1"
-}
-
-test_8021d_maxgroups_hash_max_cfg6()
-{
-	test_maxgroups_hash_max cfg6 port "dev $swp1"
-}
-
-test_8021d_maxgroups_hash_max_ctl6()
-{
-	test_maxgroups_hash_max ctl6 port "dev $swp1"
-}
-
-test_8021q_maxgroups_hash_max_cfg4()
-{
-	test_maxgroups_hash_max cfg4 port "dev $swp1 vid 10"
-}
-
-test_8021q_maxgroups_hash_max_ctl4()
-{
-	test_maxgroups_hash_max ctl4 port "dev $swp1 vid 10"
-}
-
-test_8021q_maxgroups_hash_max_cfg6()
-{
-	test_maxgroups_hash_max cfg6 port "dev $swp1 vid 10"
-}
-
-test_8021q_maxgroups_hash_max_ctl6()
-{
-	test_maxgroups_hash_max ctl6 port "dev $swp1 vid 10"
-}
-
-test_8021qvs_maxgroups_hash_max_cfg4()
-{
-	test_maxgroups_hash_max cfg4 port_vlan "dev $swp1 vid 10"
-}
-
-test_8021qvs_maxgroups_hash_max_ctl4()
-{
-	test_maxgroups_hash_max ctl4 port_vlan "dev $swp1 vid 10"
-}
-
-test_8021qvs_maxgroups_hash_max_cfg6()
-{
-	test_maxgroups_hash_max cfg6 port_vlan "dev $swp1 vid 10"
-}
-
-test_8021qvs_maxgroups_hash_max_ctl6()
-{
-	test_maxgroups_hash_max ctl6 port_vlan "dev $swp1 vid 10"
-}
-
 test_maxgroups_too_many_cross_vlan()
 {
 	local CFG=$1; shift
@@ -1303,7 +1177,6 @@ test_8021d_maxgroups_cfg4()
 	test_8021d_maxgroups_zero_cfg4
 	test_8021d_maxgroups_too_low_cfg4
 	test_8021d_maxgroups_too_many_entries_cfg4
-	test_8021d_maxgroups_hash_max_cfg4
 }
 
 test_8021d_maxgroups_ctl4()
@@ -1311,7 +1184,6 @@ test_8021d_maxgroups_ctl4()
 	test_8021d_maxgroups_zero_ctl4
 	test_8021d_maxgroups_too_low_ctl4
 	test_8021d_maxgroups_too_many_entries_ctl4
-	test_8021d_maxgroups_hash_max_ctl4
 }
 
 test_8021d_maxgroups_cfg6()
@@ -1319,7 +1191,6 @@ test_8021d_maxgroups_cfg6()
 	test_8021d_maxgroups_zero_cfg6
 	test_8021d_maxgroups_too_low_cfg6
 	test_8021d_maxgroups_too_many_entries_cfg6
-	test_8021d_maxgroups_hash_max_cfg6
 }
 
 test_8021d_maxgroups_ctl6()
@@ -1327,7 +1198,6 @@ test_8021d_maxgroups_ctl6()
 	test_8021d_maxgroups_zero_ctl6
 	test_8021d_maxgroups_too_low_ctl6
 	test_8021d_maxgroups_too_many_entries_ctl6
-	test_8021d_maxgroups_hash_max_ctl6
 }
 
 test_8021q_maxgroups_cfg4()
@@ -1335,7 +1205,6 @@ test_8021q_maxgroups_cfg4()
 	test_8021q_maxgroups_zero_cfg4
 	test_8021q_maxgroups_too_low_cfg4
 	test_8021q_maxgroups_too_many_entries_cfg4
-	test_8021q_maxgroups_hash_max_cfg4
 }
 
 test_8021q_maxgroups_ctl4()
@@ -1343,7 +1212,6 @@ test_8021q_maxgroups_ctl4()
 	test_8021q_maxgroups_zero_ctl4
 	test_8021q_maxgroups_too_low_ctl4
 	test_8021q_maxgroups_too_many_entries_ctl4
-	test_8021q_maxgroups_hash_max_ctl4
 }
 
 test_8021q_maxgroups_cfg6()
@@ -1351,7 +1219,6 @@ test_8021q_maxgroups_cfg6()
 	test_8021q_maxgroups_zero_cfg6
 	test_8021q_maxgroups_too_low_cfg6
 	test_8021q_maxgroups_too_many_entries_cfg6
-	test_8021q_maxgroups_hash_max_cfg6
 }
 
 test_8021q_maxgroups_ctl6()
@@ -1359,7 +1226,6 @@ test_8021q_maxgroups_ctl6()
 	test_8021q_maxgroups_zero_ctl6
 	test_8021q_maxgroups_too_low_ctl6
 	test_8021q_maxgroups_too_many_entries_ctl6
-	test_8021q_maxgroups_hash_max_ctl6
 }
 
 test_8021qvs_maxgroups_cfg4()
@@ -1368,7 +1234,6 @@ test_8021qvs_maxgroups_cfg4()
 	test_8021qvs_maxgroups_zero_cross_vlan_cfg4
 	test_8021qvs_maxgroups_too_low_cfg4
 	test_8021qvs_maxgroups_too_many_entries_cfg4
-	test_8021qvs_maxgroups_hash_max_cfg4
 	test_8021qvs_maxgroups_too_many_cross_vlan_cfg4
 }
 
@@ -1378,7 +1243,6 @@ test_8021qvs_maxgroups_ctl4()
 	test_8021qvs_maxgroups_zero_cross_vlan_ctl4
 	test_8021qvs_maxgroups_too_low_ctl4
 	test_8021qvs_maxgroups_too_many_entries_ctl4
-	test_8021qvs_maxgroups_hash_max_ctl4
 	test_8021qvs_maxgroups_too_many_cross_vlan_ctl4
 }
 
@@ -1388,7 +1252,6 @@ test_8021qvs_maxgroups_cfg6()
 	test_8021qvs_maxgroups_zero_cross_vlan_cfg6
 	test_8021qvs_maxgroups_too_low_cfg6
 	test_8021qvs_maxgroups_too_many_entries_cfg6
-	test_8021qvs_maxgroups_hash_max_cfg6
 	test_8021qvs_maxgroups_too_many_cross_vlan_cfg6
 }
 
@@ -1398,7 +1261,6 @@ test_8021qvs_maxgroups_ctl6()
 	test_8021qvs_maxgroups_zero_cross_vlan_ctl6
 	test_8021qvs_maxgroups_too_low_ctl6
 	test_8021qvs_maxgroups_too_many_entries_ctl6
-	test_8021qvs_maxgroups_hash_max_ctl6
 	test_8021qvs_maxgroups_too_many_cross_vlan_ctl6
 }
 

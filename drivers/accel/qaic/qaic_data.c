@@ -15,7 +15,6 @@
 #include <linux/math64.h>
 #include <linux/mm.h>
 #include <linux/moduleparam.h>
-#include <linux/overflow.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock.h>
 #include <linux/srcu.h>
@@ -456,12 +455,7 @@ static int create_sgt(struct qaic_device *qdev, struct sg_table **sgt_out, u64 s
 	int order;
 
 	if (size) {
-		u64 nr_pages_u64 = DIV_ROUND_UP_ULL(size, PAGE_SIZE);
-
-		if (overflows_type(nr_pages_u64, int))
-			return -E2BIG;
-
-		nr_pages = nr_pages_u64;
+		nr_pages = DIV_ROUND_UP(size, PAGE_SIZE);
 		/*
 		 * calculate how much extra we are going to allocate, to remove
 		 * later
@@ -1840,16 +1834,15 @@ int qaic_perf_stats_bo_ioctl(struct drm_device *dev, void *data, struct drm_file
 			goto free_ent;
 		}
 		bo = to_qaic_bo(obj);
-		ret = mutex_lock_interruptible(&bo->lock);
-		if (ret)
-			goto put_obj;
 		if (!bo->sliced) {
+			drm_gem_object_put(obj);
 			ret = -EINVAL;
-			goto unlock_bo;
+			goto free_ent;
 		}
 		if (bo->dbc->id != args->hdr.dbc_id) {
+			drm_gem_object_put(obj);
 			ret = -EINVAL;
-			goto unlock_bo;
+			goto free_ent;
 		}
 		/*
 		 * perf stats ioctl is called before wait ioctl is complete then
@@ -1865,12 +1858,7 @@ int qaic_perf_stats_bo_ioctl(struct drm_device *dev, void *data, struct drm_file
 						    bo->perf_stats.req_received_ts), 1000);
 		ent[i].queue_level_before = bo->perf_stats.queue_level_before;
 		ent[i].num_queue_element = bo->total_slice_nents;
-unlock_bo:
-		mutex_unlock(&bo->lock);
-put_obj:
 		drm_gem_object_put(obj);
-		if (ret)
-			goto free_ent;
 	}
 
 	if (copy_to_user(u64_to_user_ptr(args->data), ent, args->hdr.count * sizeof(*ent)))

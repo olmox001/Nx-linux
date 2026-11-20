@@ -55,9 +55,9 @@ struct gpio_virtuser_line_array_data {
 struct gpio_virtuser_line_data {
 	struct gpio_virtuser_attr_data ad;
 	char consumer[GPIO_VIRTUSER_NAME_BUF_LEN];
-	struct mutex lock;
+	struct mutex consumer_lock;
 	unsigned int debounce;
-	int irq;
+	atomic_t irq;
 	atomic_t irq_count;
 };
 
@@ -607,7 +607,7 @@ static ssize_t gpio_virtuser_consumer_read(struct file *file,
 
 	memset(buf, 0x0, sizeof(buf));
 
-	scoped_guard(mutex, &data->lock)
+	scoped_guard(mutex, &data->consumer_lock)
 		ret = snprintf(buf, sizeof(buf), "%s\n", data->consumer);
 
 	return simple_read_from_buffer(user_buf, size, ppos, buf, ret);
@@ -635,7 +635,7 @@ static ssize_t gpio_virtuser_consumer_write(struct file *file,
 	if (ret)
 		return ret;
 
-	scoped_guard(mutex, &data->lock)
+	scoped_guard(mutex, &data->consumer_lock)
 		strscpy(data->consumer, buf, sizeof(data->consumer));
 
 	return count;
@@ -675,12 +675,7 @@ static int gpio_virtuser_interrupts_set(void *data, u64 val)
 	if (val > 1)
 		return -EINVAL;
 
-	guard(mutex)(&ld->lock);
-
 	if (val) {
-		if (ld->irq >= 0)
-			return -EBUSY;
-
 		irq = gpiod_to_irq(ld->ad.desc);
 		if (irq < 0)
 			return irq;
@@ -694,13 +689,11 @@ static int gpio_virtuser_interrupts_set(void *data, u64 val)
 		if (ret)
 			return ret;
 
-		ld->irq = irq;
+		atomic_set(&ld->irq, irq);
 	} else {
-		if (ld->irq < 0)
-			return -EBUSY;
-
-		free_irq(ld->irq, ld);
-		ld->irq = -1;
+		irq = atomic_xchg(&ld->irq, 0);
+		if (irq)
+			free_irq(irq, ld);
 	}
 
 	return 0;
@@ -780,7 +773,7 @@ static int gpio_virtuser_dbgfs_init_line_array_attrs(struct device *dev,
 	struct gpio_virtuser_line_array_data *data;
 	char *name;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -800,14 +793,6 @@ static int gpio_virtuser_dbgfs_init_line_array_attrs(struct device *dev,
 			data->ad.dbgfs_dir, data);
 }
 
-static void gpio_virtuser_free_irq(void *data)
-{
-	struct gpio_virtuser_line_data *ld = data;
-
-	if (ld->irq >= 0)
-		free_irq(ld->irq, ld);
-}
-
 static int gpio_virtuser_dbgfs_init_line_attrs(struct device *dev,
 					       struct gpio_desc *desc,
 					       const char *id,
@@ -818,24 +803,20 @@ static int gpio_virtuser_dbgfs_init_line_attrs(struct device *dev,
 	char *name;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
 	data->ad.desc = desc;
 	strscpy(data->consumer, id);
-	data->irq = -1;
+	atomic_set(&data->irq, 0);
 	atomic_set(&data->irq_count, 0);
-
-	ret = devm_add_action_or_reset(dev, gpio_virtuser_free_irq, data);
-	if (ret)
-		return ret;
 
 	name = devm_kasprintf(dev, GFP_KERNEL, "gpiod:%s:%u", id, index);
 	if (!name)
 		return -ENOMEM;
 
-	ret = devm_mutex_init(dev, &data->lock);
+	ret = devm_mutex_init(dev, &data->consumer_lock);
 	if (ret)
 		return ret;
 
@@ -936,7 +917,7 @@ static int gpio_virtuser_probe(struct platform_device *pdev)
 	if (num_ids == 0)
 		return dev_err_probe(dev, -EINVAL, "No GPIO IDs specified\n");
 
-	ids = devm_kzalloc_objs(dev, *ids, num_ids);
+	ids = devm_kcalloc(dev, num_ids, sizeof(*ids), GFP_KERNEL);
 	if (!ids)
 		return -ENOMEM;
 
@@ -946,50 +927,38 @@ static int gpio_virtuser_probe(struct platform_device *pdev)
 				     "Failed to get the IDs of GPIOs to request\n");
 
 	dbgfs_entry = debugfs_create_dir(dev_name(dev), gpio_virtuser_dbg_root);
+	ret = devm_add_action_or_reset(dev, gpio_virtuser_debugfs_remove,
+				       dbgfs_entry);
+	if (ret)
+		return ret;
 
 	for (i = 0; i < num_ids; i++) {
 		descs = devm_gpiod_get_array(dev, ids[i], GPIOD_ASIS);
-		if (IS_ERR(descs)) {
-			ret = dev_err_probe(dev, PTR_ERR(descs),
-					    "Failed to request the '%s' GPIOs\n",
-					    ids[i]);
-			goto err_remove_debugfs;
-		}
+		if (IS_ERR(descs))
+			return dev_err_probe(dev, PTR_ERR(descs),
+					     "Failed to request the '%s' GPIOs\n",
+					     ids[i]);
 
 		ret = gpio_virtuser_dbgfs_init_line_array_attrs(dev, descs,
 								ids[i],
 								dbgfs_entry);
-		if (ret) {
-			dev_err_probe(dev, ret,
-				      "Failed to setup the debugfs array interface for the '%s' GPIOs\n",
-				      ids[i]);
-			goto err_remove_debugfs;
-		}
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "Failed to setup the debugfs array interface for the '%s' GPIOs\n",
+					     ids[i]);
 
 		for (j = 0; j < descs->ndescs; j++) {
 			ret = gpio_virtuser_dbgfs_init_line_attrs(dev,
 							descs->desc[j], ids[i],
 							j, dbgfs_entry);
-			if (ret) {
-				dev_err_probe(dev, ret,
-					      "Failed to setup the debugfs line interface for the '%s' GPIOs\n",
-					      ids[i]);
-				goto err_remove_debugfs;
-			}
+			if (ret)
+				return dev_err_probe(dev, ret,
+						     "Failed to setup the debugfs line interface for the '%s' GPIOs\n",
+						     ids[i]);
 		}
 	}
 
-	/*
-	 * The debugfs files point to the devres-managed line data allocated
-	 * above. Register the removal last so that it runs first on unbind,
-	 * before any of that data is released.
-	 */
-	return devm_add_action_or_reset(dev, gpio_virtuser_debugfs_remove,
-					dbgfs_entry);
-
-err_remove_debugfs:
-	debugfs_remove_recursive(dbgfs_entry);
-	return ret;
+	return 0;
 }
 
 static const struct of_device_id gpio_virtuser_of_match[] = {
@@ -1461,7 +1430,8 @@ gpio_virtuser_make_device_swnode(struct gpio_virtuser_device *dev)
 	memset(properties, 0, sizeof(properties));
 
 	num_ids = list_count_nodes(&dev->lookup_list);
-	char **ids __free(kfree) = kzalloc_objs(*ids, num_ids + 1);
+	char **ids __free(kfree) = kcalloc(num_ids + 1, sizeof(*ids),
+					   GFP_KERNEL);
 	if (!ids)
 		return ERR_PTR(-ENOMEM);
 

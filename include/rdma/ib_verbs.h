@@ -407,36 +407,36 @@ struct ib_device_attr {
 	u32			vendor_id;
 	u32			vendor_part_id;
 	u32			hw_ver;
-	u32			max_qp;
-	u32			max_qp_wr;
+	int			max_qp;
+	int			max_qp_wr;
 	u64			device_cap_flags;
 	u64			kernel_cap_flags;
-	u32			max_send_sge;
-	u32			max_recv_sge;
-	u32			max_sge_rd;
-	u32			max_cq;
-	u32			max_cqe;
-	u32			max_mr;
-	u32			max_pd;
-	u32			max_qp_rd_atom;
-	u32			max_ee_rd_atom;
-	u32			max_res_rd_atom;
-	u32			max_qp_init_rd_atom;
-	u32			max_ee_init_rd_atom;
+	int			max_send_sge;
+	int			max_recv_sge;
+	int			max_sge_rd;
+	int			max_cq;
+	int			max_cqe;
+	int			max_mr;
+	int			max_pd;
+	int			max_qp_rd_atom;
+	int			max_ee_rd_atom;
+	int			max_res_rd_atom;
+	int			max_qp_init_rd_atom;
+	int			max_ee_init_rd_atom;
 	enum ib_atomic_cap	atomic_cap;
 	enum ib_atomic_cap	masked_atomic_cap;
-	u32			max_ee;
-	u32			max_rdd;
-	u32			max_mw;
-	u32			max_raw_ipv6_qp;
-	u32			max_raw_ethy_qp;
-	u32			max_mcast_grp;
-	u32			max_mcast_qp_attach;
-	u32			max_total_mcast_qp_attach;
-	u32			max_ah;
-	u32			max_srq;
-	u32			max_srq_wr;
-	u32			max_srq_sge;
+	int			max_ee;
+	int			max_rdd;
+	int			max_mw;
+	int			max_raw_ipv6_qp;
+	int			max_raw_ethy_qp;
+	int			max_mcast_grp;
+	int			max_mcast_qp_attach;
+	int			max_total_mcast_qp_attach;
+	int			max_ah;
+	int			max_srq;
+	int			max_srq_wr;
+	int			max_srq_sge;
 	unsigned int		max_fast_reg_page_list_len;
 	unsigned int		max_pi_fast_reg_page_list_len;
 	u16			max_pkeys;
@@ -1677,6 +1677,9 @@ struct ib_pd {
 	u32			flags;
 	struct ib_device       *device;
 	struct ib_uobject      *uobject;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct ib_shpd         *shpd;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	atomic_t          	usecnt; /* count all resources */
 
 	u32			unsafe_global_rkey;
@@ -1687,6 +1690,17 @@ struct ib_pd {
 	struct ib_mr	       *__internal_mr;
 	struct rdma_restrack_entry res;
 };
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+struct ib_shpd {
+	int			idr_id;
+	struct ib_device       *device;
+	int			ref_count; /* count procs sharing the pd*/
+	u64			share_key;
+	struct user_namespace	*user_ns;
+	kuid_t			owner;
+};
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 struct ib_xrcd {
 	struct ib_device       *device;
@@ -1744,42 +1758,6 @@ struct ib_cq {
 	 * Implementation details of the RDMA core, don't use in drivers:
 	 */
 	struct rdma_restrack_entry res;
-};
-
-enum ib_qp_attach_comp_cntr_op {
-	IB_QP_ATTACH_COMP_CNTR_OP_SEND = IB_UVERBS_QP_ATTACH_COMP_CNTR_OP_SEND,
-	IB_QP_ATTACH_COMP_CNTR_OP_RECV = IB_UVERBS_QP_ATTACH_COMP_CNTR_OP_RECV,
-	IB_QP_ATTACH_COMP_CNTR_OP_RDMA_READ = IB_UVERBS_QP_ATTACH_COMP_CNTR_OP_RDMA_READ,
-	IB_QP_ATTACH_COMP_CNTR_OP_REMOTE_RDMA_READ = IB_UVERBS_QP_ATTACH_COMP_CNTR_OP_REMOTE_RDMA_READ,
-	IB_QP_ATTACH_COMP_CNTR_OP_RDMA_WRITE = IB_UVERBS_QP_ATTACH_COMP_CNTR_OP_RDMA_WRITE,
-	IB_QP_ATTACH_COMP_CNTR_OP_REMOTE_RDMA_WRITE = IB_UVERBS_QP_ATTACH_COMP_CNTR_OP_REMOTE_RDMA_WRITE,
-};
-
-struct ib_comp_cntr_caps {
-	u64 max_value;
-	u32 max_counters;
-	u32 supported_qp_attach_ops; /* Bitmask of enum ib_qp_attach_comp_cntr_op */
-};
-
-struct ib_comp_cntr {
-	struct ib_device *device;
-	struct ib_uobject *uobject;
-	atomic_t usecnt;
-	struct rdma_restrack_entry res;
-};
-
-enum ib_comp_cntr_entry {
-	IB_COMP_CNTR_ENTRY_COMP = IB_UVERBS_COMP_CNTR_ENTRY_COMP,
-	IB_COMP_CNTR_ENTRY_ERR = IB_UVERBS_COMP_CNTR_ENTRY_ERR,
-};
-
-enum ib_comp_cntr_modify_op {
-	IB_COMP_CNTR_MODIFY_OP_SET = IB_UVERBS_COMP_CNTR_MODIFY_OP_SET,
-	IB_COMP_CNTR_MODIFY_OP_INC = IB_UVERBS_COMP_CNTR_MODIFY_OP_INC,
-};
-
-struct ib_qp_attach_comp_cntr_attr {
-	u32 op_mask; /* Bitmask of enum ib_qp_attach_comp_cntr_op */
 };
 
 struct ib_srq {
@@ -1952,8 +1930,6 @@ struct ib_qp {
 	struct completion	srq_completion;
 	struct ib_xrcd	       *xrcd; /* XRC TGT QPs only */
 	struct list_head	xrcd_list;
-	struct xarray		comp_cntrs; /* op_mask -> comp_cntr */
-	u32			comp_cntr_op_mask;
 
 	/* count times opened, mcast attaches, flow attaches */
 	atomic_t		usecnt;
@@ -2073,6 +2049,9 @@ enum ib_flow_attr_type {
 
 /* Supported steering header types */
 enum ib_flow_spec_type {
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	IB_FLOW_SPEC_SNIFFER		= 0,
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	/* L2 headers*/
 	IB_FLOW_SPEC_ETH		= 0x20,
 	IB_FLOW_SPEC_IB			= 0x22,
@@ -2246,6 +2225,15 @@ struct ib_flow_spec_action_handle {
 	struct ib_flow_action	     *act;
 };
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+struct ib_flow_spec_sniffer {
+	enum ib_flow_spec_type        type;
+	u16                           size;
+	u32                           port_num;
+	bool                          is_rx;
+};
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
+
 enum ib_counters_description {
 	IB_COUNTER_PACKETS,
 	IB_COUNTER_BYTES,
@@ -2275,6 +2263,9 @@ union ib_flow_spec {
 	struct ib_flow_spec_action_drop drop;
 	struct ib_flow_spec_action_handle action;
 	struct ib_flow_spec_action_count flow_count;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct ib_flow_spec_sniffer	sniffer;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 };
 
 struct ib_flow_attr {
@@ -2556,6 +2547,9 @@ struct ib_device_ops {
 	int (*modify_device)(struct ib_device *device, int device_modify_mask,
 			     struct ib_device_modify *device_modify);
 	void (*get_dev_fw_str)(struct ib_device *device, char *str);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	int (*get_vector_irqn)(struct ib_device *ibdev, int comp_vector);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	int (*query_port)(struct ib_device *device, u32 port_num,
 			  struct ib_port_attr *port_attr);
 	int (*query_port_speed)(struct ib_device *device, u32 port_num,
@@ -2593,6 +2587,18 @@ struct ib_device_ops {
 		struct ib_device *device, u32 port_num, enum rdma_netdev_t type,
 		const char *name, unsigned char name_assign_type,
 		void (*setup)(struct net_device *));
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct ib_shpd		  *(*alloc_shpd)(struct ib_device *ibdev,
+						 struct ib_pd *pd);
+	struct ib_pd		  *(*share_pd)(struct ib_device *ibdev,
+					       struct ib_ucontext *context,
+					       struct ib_udata *udata,
+					       struct ib_shpd *shpd);
+	int			   (*remove_shpd)(struct ib_device *ibdev,
+						  struct ib_shpd *shpd,
+						  int atinit);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	int (*rdma_netdev_get_params)(struct ib_device *device, u32 port_num,
 				      enum rdma_netdev_t type,
@@ -2667,8 +2673,6 @@ struct ib_device_ops {
 			 struct ib_udata *udata);
 	int (*modify_qp)(struct ib_qp *qp, struct ib_qp_attr *qp_attr,
 			 int qp_attr_mask, struct ib_udata *udata);
-	int (*qp_attach_comp_cntr)(struct ib_qp *qp, struct ib_comp_cntr *cc,
-				   struct ib_qp_attach_comp_cntr_attr *attr);
 	int (*query_qp)(struct ib_qp *qp, struct ib_qp_attr *qp_attr,
 			int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr);
 	int (*destroy_qp)(struct ib_qp *qp, struct ib_udata *udata);
@@ -2690,15 +2694,6 @@ struct ib_device_ops {
 	 * post_destroy_cq - Free all kernel resources
 	 */
 	void (*post_destroy_cq)(struct ib_cq *cq);
-	int (*create_comp_cntr)(struct ib_comp_cntr *cc,
-				struct uverbs_attr_bundle *attrs);
-	int (*destroy_comp_cntr)(struct ib_comp_cntr *cc);
-	int (*modify_comp_cntr)(struct ib_comp_cntr *cc, enum ib_comp_cntr_entry entry,
-				enum ib_comp_cntr_modify_op op, u64 value);
-	int (*read_comp_cntr)(struct ib_comp_cntr *cc, enum ib_comp_cntr_entry entry, u64 *value);
-	int (*query_comp_cntr_caps)(struct ib_device *dev,
-				    struct ib_comp_cntr_caps *caps,
-				    struct uverbs_attr_bundle *attrs);
 	struct ib_mr *(*get_dma_mr)(struct ib_pd *pd, int mr_access_flags);
 	struct ib_mr *(*reg_user_mr)(struct ib_pd *pd, u64 start, u64 length,
 				     u64 virt_addr, int mr_access_flags,
@@ -2932,7 +2927,6 @@ struct ib_device_ops {
 	DECLARE_RDMA_OBJ_SIZE(ib_ah);
 	DECLARE_RDMA_OBJ_SIZE(ib_counters);
 	DECLARE_RDMA_OBJ_SIZE(ib_cq);
-	DECLARE_RDMA_OBJ_SIZE(ib_comp_cntr);
 	DECLARE_RDMA_OBJ_SIZE(ib_dmah);
 	DECLARE_RDMA_OBJ_SIZE(ib_mw);
 	DECLARE_RDMA_OBJ_SIZE(ib_pd);
@@ -2982,6 +2976,9 @@ struct ib_device {
 	struct ib_port_data *port_data;
 
 	int			      num_comp_vectors;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	bool                          can_balance_comp_vectors;
+#endif
 
 	union {
 		struct device		dev;
@@ -3532,7 +3529,7 @@ static inline bool rdma_cap_ib_cm(const struct ib_device *device, u32 port_num)
  * @port_num: Port number to check
  *
  * Similar to above, but specific to iWARP connections which have a different
- * management protocol than InfiniBand.
+ * managment protocol than InfiniBand.
  *
  * Return: true if the port supports an iWARP CM (this does not guarantee that
  * a CM is actually running however).
@@ -3577,7 +3574,7 @@ static inline bool rdma_cap_ib_sa(const struct ib_device *device, u32 port_num)
  * to this group.  And it should leave the group only after all queue pairs
  * attached to the group have been detached.
  *
- * Return: true if the port must undertake the additional administrative
+ * Return: true if the port must undertake the additional adminstrative
  * overhead of registering/unregistering with the SM and tracking of the
  * total number of queue pairs attached to the multicast group.
  */
@@ -5022,6 +5019,18 @@ static inline __be16 ib_lid_be16(u32 lid)
 	WARN_ON_ONCE(lid & 0xFFFF0000);
 	return cpu_to_be16((u16)lid);
 }
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static inline int
+ib_get_vector_irqn(struct ib_device *device, int comp_vector)
+{
+	if (comp_vector < 0 || comp_vector >= device->num_comp_vectors ||
+	    !device->ops.get_vector_irqn)
+		return -1;
+
+	return device->ops.get_vector_irqn(device, comp_vector);
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 /**
  * rdma_roce_rescan_device - Rescan all of the network devices in the system

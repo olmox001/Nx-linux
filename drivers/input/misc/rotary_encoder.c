@@ -185,7 +185,7 @@ static int rotary_encoder_probe(struct platform_device *pdev)
 	unsigned int i;
 	int err;
 
-	encoder = devm_kzalloc_obj(dev, struct rotary_encoder);
+	encoder = devm_kzalloc(dev, sizeof(struct rotary_encoder), GFP_KERNEL);
 	if (!encoder)
 		return -ENOMEM;
 
@@ -270,7 +270,9 @@ static int rotary_encoder_probe(struct platform_device *pdev)
 	}
 
 	encoder->irq =
-		devm_kzalloc_objs(dev, *encoder->irq, encoder->gpios->ndescs);
+		devm_kcalloc(dev,
+			     encoder->gpios->ndescs, sizeof(*encoder->irq),
+			     GFP_KERNEL);
 	if (!encoder->irq)
 		return -ENOMEM;
 

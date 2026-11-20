@@ -234,6 +234,14 @@ static int tg3_debug = -1;	/* -1 == use TG3_DEF_MSG_ENABLE as value */
 module_param(tg3_debug, int, 0);
 MODULE_PARM_DESC(tg3_debug, "Tigon3 bitmapped debugging message enable value");
 
+static int short_preamble = 0;
+module_param(short_preamble, int, 0);
+MODULE_PARM_DESC(short_preamble, "Enable short preamble.");
+
+static int bcm5718s_reset = 0;
+module_param(bcm5718s_reset, int, 0);
+MODULE_PARM_DESC(bcm5718s_reset, "Enable BCM5718S reset support.");
+
 #define TG3_DRV_DATA_FLAG_10_100_ONLY	0x0001
 #define TG3_DRV_DATA_FLAG_5705_10_100	0x0002
 
@@ -1008,6 +1016,7 @@ static void tg3_disable_ints(struct tg3 *tp)
 static void tg3_enable_ints(struct tg3 *tp)
 {
 	int i;
+	static int first_called = 1;
 
 	tp->irq_sync = 0;
 	wmb();
@@ -1020,6 +1029,22 @@ static void tg3_enable_ints(struct tg3 *tp)
 		struct tg3_napi *tnapi = &tp->napi[i];
 
 		tw32_mailbox_f(tnapi->int_mbox, tnapi->last_tag << 24);
+
+		/* Because Aboot with unpatched kernel accesses
+		 * registers the old way, if Aboot shell uses the
+		 * network at all and then boots a system, somehow the new
+		 * way of accessing registers will fail to enable the
+		 * interrupt, effectively disabling the interface.
+		 *
+		 * To enable the interrupt, redo the above write
+		 * through mapped memory when this function is _first
+		 * called_, otherwise kernel lockups may occur again.
+		 */
+		if (first_called && tg3_flag(tp, ICH_WORKAROUND)) {
+			first_called = 0;
+			tg3_write32(tp, tnapi->int_mbox, tnapi->last_tag << 24);
+		}
+
 		if (tg3_flag(tp, 1SHOT_MSI))
 			tw32_mailbox_f(tnapi->int_mbox, tnapi->last_tag << 24);
 
@@ -1494,6 +1519,11 @@ static void tg3_mdio_config_5785(struct tg3 *tp)
 static void tg3_mdio_start(struct tg3 *tp)
 {
 	tp->mi_mode &= ~MAC_MI_MODE_AUTO_POLL;
+
+	if(short_preamble) {
+	    tp->mi_mode |= MAC_MI_MODE_SHORT_PREAMBLE;
+	}
+
 	tw32_f(MAC_MI_MODE, tp->mi_mode);
 	udelay(80);
 
@@ -2684,6 +2714,11 @@ static int tg3_phy_reset(struct tg3 *tp)
 			udelay(40);
 			tw32_f(TG3_CPMU_LSPD_1000MB_CLK, val);
 		}
+	}
+
+	if (bcm5718s_reset && tp->phy_id == TG3_PHY_ID_BCM5718S) {
+	    __tg3_writephy(tp, 0x8, 0x10, 0x1d0); /* set internal phy 0x8 to make linkup */
+	    __tg3_writephy(tp, 0x1f, 0x4, 0x5e1); /* enable 10/100 cability of external phy */
 	}
 
 	if (tg3_flag(tp, 5717_PLUS) &&
@@ -9462,6 +9497,15 @@ static int tg3_halt(struct tg3 *tp, int kind, bool silent)
 	}
 
 	return err;
+}
+
+static inline int is_valid_bcm_ether_addr(const u8 *addr)
+{
+	if (!is_valid_ether_addr(addr))
+		return 0;
+	/* Disallow Broadcom default MAC 00:10:18:00:00:00 to avoid conflicts */
+	return (addr[0] || addr[1] != 0x10 || addr[2] != 0x18 ||
+		addr[3] || addr[4] || addr[5]);
 }
 
 static int tg3_set_mac_addr(struct net_device *dev, void *p)
@@ -16248,65 +16292,6 @@ static bool tg3_10_100_only_device(struct tg3 *tp,
 	return false;
 }
 
-static int tg3_fw_byteorder(struct tg3 *tp, u32 *misc_ctrl_reg)
-{
-	struct pci_dev *pdev = tp->pdev;
-	u32 prodid, expected_prodid, normalized, readback;
-	int reg, err;
-
-	/* Prefer the normal revision marker before testing the swapped state. */
-	if (pdev->device != TG3PCI_DEVICE_TIGON3_5718 ||
-	    (*misc_ctrl_reg >> 28) == ASIC_REV_USE_PROD_ID_REG ||
-	    (swab32(*misc_ctrl_reg) >> 28) != ASIC_REV_USE_PROD_ID_REG ||
-	    !(swab32(*misc_ctrl_reg) & MISC_HOST_CTRL_BYTE_SWAP))
-		return 0;
-
-	/* Standard PCI fields are normal; verify the swapped vendor registers. */
-	reg = TG3PCI_GEN2_PRODID_ASICREV;
-	err = pci_read_config_dword(pdev, reg, &prodid);
-	if (err)
-		goto config_error;
-	expected_prodid = swab32(prodid);
-	if ((expected_prodid >> 12) != ASIC_REV_5717) {
-		dev_err(&pdev->dev, "unexpected swapped BCM5718 product ID %08x\n",
-			prodid);
-		return -ENODEV;
-	}
-
-	normalized = (swab32(*misc_ctrl_reg) & MISC_HOST_CTRL_CHIPREV) |
-		     tp->misc_host_ctrl;
-	reg = TG3PCI_MISC_HOST_CTRL;
-	err = pci_write_config_dword(pdev, reg, swab32(normalized));
-	if (err)
-		goto config_error;
-	err = pci_read_config_dword(pdev, reg, &readback);
-	if (err)
-		goto config_error;
-	if (readback != normalized) {
-		dev_err(&pdev->dev, "BCM5718 host-control readback mismatch %08x\n",
-			readback);
-		return -EIO;
-	}
-
-	reg = TG3PCI_GEN2_PRODID_ASICREV;
-	err = pci_read_config_dword(pdev, reg, &prodid);
-	if (err)
-		goto config_error;
-	if (prodid != expected_prodid) {
-		dev_err(&pdev->dev, "BCM5718 product-ID readback mismatch %08x\n",
-			prodid);
-		return -EIO;
-	}
-	*misc_ctrl_reg = readback;
-	dev_dbg(&pdev->dev, "normalized firmware register byte order\n");
-	return 0;
-
-config_error:
-	dev_err(&pdev->dev, "BCM5718 PCI config access at %#x failed (%d)\n",
-		reg, err);
-	return pcibios_err_to_errno(err);
-}
-
 static int tg3_get_invariants(struct tg3 *tp, const struct pci_device_id *ent)
 {
 	u32 misc_ctrl_reg;
@@ -16331,17 +16316,8 @@ static int tg3_get_invariants(struct tg3 *tp, const struct pci_device_id *ent)
 	 * sure that indirect register accesses are enabled before
 	 * the first operation.
 	 */
-	err = pci_read_config_dword(tp->pdev, TG3PCI_MISC_HOST_CTRL,
-				    &misc_ctrl_reg);
-	if (err && tp->pdev->device == TG3PCI_DEVICE_TIGON3_5718) {
-		dev_err(&tp->pdev->dev, "PCI host-control read failed (%d)\n",
-			err);
-		return pcibios_err_to_errno(err);
-	}
-	err = tg3_fw_byteorder(tp, &misc_ctrl_reg);
-	if (err)
-		return err;
-
+	pci_read_config_dword(tp->pdev, TG3PCI_MISC_HOST_CTRL,
+			      &misc_ctrl_reg);
 	tp->misc_host_ctrl |= (misc_ctrl_reg &
 			       MISC_HOST_CTRL_CHIPREV);
 	pci_write_config_dword(tp->pdev, TG3PCI_MISC_HOST_CTRL,
@@ -16465,6 +16441,17 @@ static int tg3_get_invariants(struct tg3 *tp, const struct pci_device_id *ent)
 				break;
 			}
 		} while (bridge);
+	}
+
+	/* The embedded nic in ATI's SB800 can only dma to 32bit
+	 * addresses.  partno(noe) rev 5785041
+	 */
+	if (tg3_asic_rev(tp) == ASIC_REV_5785) {
+		if ((tp->pdev->bus->number == 0) &&
+		    (tp->pdev->devfn == PCI_DEVFN(0x14, 0x6))) {
+			tg3_flag_set(tp, 4G_DMA_ONLY);
+			tg3_flag_set(tp, ICH_WORKAROUND);
+		}
 	}
 
 	if (tg3_asic_rev(tp) == ASIC_REV_5704 ||
@@ -16723,13 +16710,6 @@ static int tg3_get_invariants(struct tg3 *tp, const struct pci_device_id *ent)
 		tp->write32_mbox = tg3_write_indirect_mbox;
 		tp->write32_tx_mbox = tg3_write_indirect_mbox;
 		tp->write32_rx_mbox = tg3_write_indirect_mbox;
-
-		iounmap(tp->regs);
-		tp->regs = NULL;
-
-		pci_read_config_word(tp->pdev, PCI_COMMAND, &pci_cmd);
-		pci_cmd &= ~PCI_COMMAND_MEMORY;
-		pci_write_config_word(tp->pdev, PCI_COMMAND, pci_cmd);
 	}
 	if (tg3_asic_rev(tp) == ASIC_REV_5906) {
 		tp->read32_mbox = tg3_read32_mbox_5906;
@@ -16994,8 +16974,9 @@ static int tg3_get_invariants(struct tg3 *tp, const struct pci_device_id *ent)
 
 	if (tg3_asic_rev(tp) == ASIC_REV_5705 &&
 	    (grc_misc_cfg == GRC_MISC_CFG_BOARD_ID_5788 ||
-	     grc_misc_cfg == GRC_MISC_CFG_BOARD_ID_5788M))
-		tg3_flag_set(tp, IS_5788);
+	     grc_misc_cfg == GRC_MISC_CFG_BOARD_ID_5788M)) {
+		tg3_flag_set(tp, 4G_DMA_ONLY);
+	}
 
 	if (!tg3_flag(tp, IS_5788) &&
 	    tg3_asic_rev(tp) != ASIC_REV_5700)
@@ -17149,30 +17130,18 @@ static int tg3_get_device_address(struct tg3 *tp, u8 *addr)
 		addr[5] = (lo >>  0) & 0xff;
 
 		/* Some old bootcode may report a 0 MAC address in SRAM */
-		addr_ok = is_valid_ether_addr(addr);
+		addr_ok = is_valid_bcm_ether_addr(addr);
 	}
 	if (!addr_ok) {
-		__be32 be_hi, be_lo;
+		hi = tr32(MAC_ADDR_0_HIGH);
+		lo = tr32(MAC_ADDR_0_LOW);
 
-		/* Next, try NVRAM. */
-		if (!tg3_flag(tp, NO_NVRAM) &&
-		    !tg3_nvram_read_be32(tp, mac_offset + 0, &be_hi) &&
-		    !tg3_nvram_read_be32(tp, mac_offset + 4, &be_lo)) {
-			memcpy(&addr[0], ((char *)&be_hi) + 2, 2);
-			memcpy(&addr[2], (char *)&be_lo, sizeof(be_lo));
-		}
-		/* Finally just fetch it out of the MAC control regs. */
-		else {
-			hi = tr32(MAC_ADDR_0_HIGH);
-			lo = tr32(MAC_ADDR_0_LOW);
-
-			addr[5] = lo & 0xff;
-			addr[4] = (lo >> 8) & 0xff;
-			addr[3] = (lo >> 16) & 0xff;
-			addr[2] = (lo >> 24) & 0xff;
-			addr[1] = hi & 0xff;
-			addr[0] = (hi >> 8) & 0xff;
-		}
+		addr[5] = lo & 0xff;
+		addr[4] = (lo >> 8) & 0xff;
+		addr[3] = (lo >> 16) & 0xff;
+		addr[2] = (lo >> 24) & 0xff;
+		addr[1] = hi & 0xff;
+		addr[0] = (hi >> 8) & 0xff;
 	}
 
 	if (!is_valid_ether_addr(addr))
@@ -17884,7 +17853,7 @@ static int tg3_init_one(struct pci_dev *pdev,
 	 * On 64-bit systems without IOMMU, use 64-bit dma_mask and
 	 * do DMA address check in __tg3_start_xmit().
 	 */
-	if (tg3_flag(tp, IS_5788))
+	if (tg3_flag(tp, 4G_DMA_ONLY) || (tg3_asic_rev(tp) == ASIC_REV_57766))
 		persist_dma_mask = dma_mask = DMA_BIT_MASK(32);
 	else if (tg3_flag(tp, 40BIT_DMA_BUG)) {
 		persist_dma_mask = dma_mask = DMA_BIT_MASK(40);
@@ -17917,6 +17886,16 @@ static int tg3_init_one(struct pci_dev *pdev,
 			dev_err(&pdev->dev,
 				"No usable DMA configuration, aborting\n");
 			goto err_out_apeunmap;
+		}
+
+		if (tg3_asic_rev(tp) == ASIC_REV_57766) {
+			err = dma_set_coherent_mask(&pdev->dev,
+						    DMA_BIT_MASK(31));
+			if (err < 0) {
+				dev_err(&pdev->dev,
+					"Unable to obtain 31 bit DMA for consistent allocations\n");
+				goto err_out_apeunmap;
+			}
 		}
 	}
 
@@ -17986,10 +17965,10 @@ static int tg3_init_one(struct pci_dev *pdev,
 		dev_warn_probe(&pdev->dev, err,
 			       "Could not obtain a valid ethernet address\n");
 		if (err == -EPROBE_DEFER)
-			goto err_out_apeunmap;
+		goto err_out_apeunmap;
 		eth_hw_addr_random(dev);
 	} else {
-		eth_hw_addr_set(dev, addr);
+	eth_hw_addr_set(dev, addr);
 	}
 
 	intmbx = MAILBOX_INTERRUPT_0 + TG3_64BIT_REG_LOW;
@@ -18256,15 +18235,39 @@ unlock:
 
 static SIMPLE_DEV_PM_OPS(tg3_pm_ops, tg3_suspend, tg3_resume);
 
-/* Systems where powering down a tg3 device on restarts triggers
- * NMIs and fatal hangs during reboot if the network adapters were
- * initialized under SNP.
+/* Systems where ACPI _PTS (Prepare To Sleep) S5 will result in a fatal
+ * PCIe AER event on the tg3 device if the tg3 device is not, or cannot
+ * be, powered down.
  */
-static const struct dmi_system_id tg3_restart_snp_quirk_table[] = {
+static const struct dmi_system_id tg3_restart_aer_quirk_table[] = {
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "PowerEdge R440"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "PowerEdge R540"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "PowerEdge R640"),
+		},
+	},
 	{
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "PowerEdge R650"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "PowerEdge R740"),
 		},
 	},
 	{
@@ -18290,18 +18293,14 @@ static void tg3_shutdown(struct pci_dev *pdev)
 	if (netif_running(dev))
 		dev_close(dev);
 
-	if (!dmi_first_match(tg3_restart_snp_quirk_table) ||
-	    system_state == SYSTEM_POWER_OFF) {
+	if (system_state == SYSTEM_POWER_OFF)
 		tg3_power_down(tp);
-	} else if (system_state == SYSTEM_RESTART &&
+	else if (system_state == SYSTEM_RESTART &&
+		 dmi_first_match(tg3_restart_aer_quirk_table) &&
 		 pdev->current_state != PCI_D3cold &&
 		 pdev->current_state != PCI_UNKNOWN) {
 		/* Disable PCIe AER on the tg3 to avoid a fatal
 		 * error during this system restart.
-		 * Needed since on restarts for systems in
-		 * tg3_restart_snp_quirk_table skipping on powering down the
-		 * tg3 device causes a fatal AER error during ACPI _PTS
-		 * (Prepare To Sleep).
 		 */
 		pcie_capability_clear_word(pdev, PCI_EXP_DEVCTL,
 					   PCI_EXP_DEVCTL_CERE |

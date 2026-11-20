@@ -37,7 +37,8 @@ bool topdown_sys_has_perf_metrics(void)
 bool arch_is_topdown_slots(const struct evsel *evsel)
 {
 	return evsel->core.attr.type == PERF_TYPE_RAW &&
-	       evsel->core.attr.config == TOPDOWN_SLOTS;
+	       evsel->core.attr.config == TOPDOWN_SLOTS &&
+	       evsel->core.attr.config1 == 0;
 }
 
 bool arch_is_topdown_metrics(const struct evsel *evsel)

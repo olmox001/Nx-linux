@@ -9,7 +9,6 @@
 #include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 /* WATCHDOG CONTROL REGISTER bit */
@@ -26,7 +25,7 @@
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-		 __stringify(WATCHDOG_NOWAYOUT) ")");
+		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 struct stpmic1_wdt {
 	struct stpmic1 *pmic;
@@ -94,7 +93,7 @@ static int pmic_wdt_probe(struct platform_device *pdev)
 	if (!pmic)
 		return -EINVAL;
 
-	wdt = devm_kzalloc_obj(dev, struct stpmic1_wdt);
+	wdt = devm_kzalloc(dev, sizeof(struct stpmic1_wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
 

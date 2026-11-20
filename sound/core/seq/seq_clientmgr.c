@@ -59,7 +59,7 @@ static DEFINE_MUTEX(register_mutex);
  * client table
  */
 static char clienttablock[SNDRV_SEQ_MAX_CLIENTS];
-static struct snd_seq_client __rcu *clienttab[SNDRV_SEQ_MAX_CLIENTS];
+static struct snd_seq_client *clienttab[SNDRV_SEQ_MAX_CLIENTS];
 static struct snd_seq_usage client_usage;
 
 /*
@@ -95,10 +95,7 @@ static inline int snd_seq_write_pool_allocated(struct snd_seq_client *client)
 	return snd_seq_total_cells(client->pool) > 0;
 }
 
-/* return pointer to client structure for specified id;
- * the caller must guarantee the client's lifetime by itself, as neither RCU
- * nor a use_lock reference is taken here.
- */
+/* return pointer to client structure for specified id */
 static struct snd_seq_client *clientptr(int clientid)
 {
 	if (clientid < 0 || clientid >= SNDRV_SEQ_MAX_CLIENTS) {
@@ -106,7 +103,7 @@ static struct snd_seq_client *clientptr(int clientid)
 			   clientid);
 		return NULL;
 	}
-	return rcu_dereference_protected(clienttab[clientid], true);
+	return clienttab[clientid];
 }
 
 static struct snd_seq_client *client_use_ptr(int clientid, bool load_module)
@@ -118,8 +115,8 @@ static struct snd_seq_client *client_use_ptr(int clientid, bool load_module)
 			   clientid);
 		return NULL;
 	}
-	scoped_guard(rcu) {
-		client = rcu_dereference(clienttab[clientid]);
+	scoped_guard(spinlock_irqsave, &clients_lock) {
+		client = clientptr(clientid);
 		if (client)
 			return snd_seq_client_ref(client);
 		if (clienttablock[clientid])
@@ -153,8 +150,8 @@ static struct snd_seq_client *client_use_ptr(int clientid, bool load_module)
 				snd_seq_device_load_drivers();
 			}
 		}
-		scoped_guard(rcu) {
-			client = rcu_dereference(clienttab[clientid]);
+		scoped_guard(spinlock_irqsave, &clients_lock) {
+			client = clientptr(clientid);
 			if (client)
 				return snd_seq_client_ref(client);
 		}
@@ -205,7 +202,7 @@ static struct snd_seq_client *seq_create_client1(int client_index, int poolsize)
 	struct snd_seq_client *client;
 
 	/* init client data */
-	client = kzalloc_obj(*client);
+	client = kzalloc(sizeof(*client), GFP_KERNEL);
 	if (client == NULL)
 		return NULL;
 	client->pool = snd_seq_pool_new(poolsize);
@@ -215,6 +212,7 @@ static struct snd_seq_client *seq_create_client1(int client_index, int poolsize)
 	}
 	client->type = NO_CLIENT;
 	snd_use_lock_init(&client->use_lock);
+	rwlock_init(&client->ports_lock);
 	mutex_init(&client->ports_mutex);
 	INIT_LIST_HEAD(&client->ports_list_head);
 	mutex_init(&client->ioctl_mutex);
@@ -226,17 +224,14 @@ static struct snd_seq_client *seq_create_client1(int client_index, int poolsize)
 			for (c = SNDRV_SEQ_DYNAMIC_CLIENTS_BEGIN;
 			     c < SNDRV_SEQ_MAX_CLIENTS;
 			     c++) {
-				if (rcu_access_pointer(clienttab[c]) || clienttablock[c])
+				if (clienttab[c] || clienttablock[c])
 					continue;
-				client->number = c;
-				rcu_assign_pointer(clienttab[c], client);
+				clienttab[client->number = c] = client;
 				return client;
 			}
 		} else {
-			if (rcu_access_pointer(clienttab[client_index]) == NULL &&
-			    !clienttablock[client_index]) {
-				client->number = client_index;
-				rcu_assign_pointer(clienttab[client_index], client);
+			if (clienttab[client_index] == NULL && !clienttablock[client_index]) {
+				clienttab[client->number = client_index] = client;
 				return client;
 			}
 		}
@@ -254,16 +249,10 @@ static int seq_free_client1(struct snd_seq_client *client)
 		return 0;
 	scoped_guard(spinlock_irq, &clients_lock) {
 		clienttablock[client->number] = 1;
-		rcu_assign_pointer(clienttab[client->number], NULL);
+		clienttab[client->number] = NULL;
 	}
 	snd_seq_delete_all_ports(client);
 	snd_seq_queue_client_leave(client->number);
-	/* the client has been unpublished from the table; wait for a grace
-	 * period so that lockless readers (snd_seq_client_use_ptr()) that
-	 * observed the old pointer can no longer take a new use_lock
-	 * reference, then drain the outstanding references before freeing
-	 */
-	synchronize_rcu();
 	snd_use_lock_sync(&client->use_lock);
 	if (client->pool)
 		snd_seq_pool_delete(&client->pool);
@@ -307,8 +296,11 @@ static int snd_seq_open(struct inode *inode, struct file *file)
 	int c, mode;			/* client id */
 	struct snd_seq_client *client;
 	struct snd_seq_user_client *user;
+	int err;
 
-	stream_open(inode, file);
+	err = stream_open(inode, file);
+	if (err < 0)
+		return err;
 
 	scoped_guard(mutex, &register_mutex) {
 		client = seq_create_client1(-1, SNDRV_SEQ_DEFAULT_EVENTS);
@@ -480,11 +472,11 @@ static ssize_t snd_seq_read(struct file *file, char __user *buf, size_t count,
 	if (err < 0) {
 		if (cell)
 			snd_seq_fifo_cell_putback(fifo, cell);
+		if (err == -EAGAIN && result > 0)
+			err = 0;
 	}
 
-	if (result > 0)
-		return result;
-	return err < 0 ? err : 0;
+	return (err < 0) ? err : result;
 }
 
 
@@ -525,8 +517,9 @@ static struct snd_seq_client *get_event_dest_client(struct snd_seq_event *event)
  * Return the error event.
  *
  * If the receiver client is a user client, the original event is
- * encapsulated in SNDRV_SEQ_EVENT_BOUNCE as variable length event.  The
- * external data of a variable length event is not copied along.
+ * encapsulated in SNDRV_SEQ_EVENT_BOUNCE as variable length event.  If
+ * the original event is also variable length, the external data is
+ * copied after the event record. 
  * If the receiver client is a kernel client, the original event is
  * quoted in SNDRV_SEQ_EVENT_KERNEL_ERROR, since this requires no extra
  * kmalloc.
@@ -731,11 +724,10 @@ static int __deliver_to_subscribers(struct snd_seq_client *client,
 	
 	/* lock list */
 	if (atomic)
-		rcu_read_lock();
+		read_lock(&grp->list_lock);
 	else
 		down_read_nested(&grp->list_mutex, hop);
-	hlist_for_each_entry_rcu(subs, &grp->list_head, src_list,
-				 lockdep_is_held(&grp->list_mutex)) {
+	list_for_each_entry(subs, &grp->list_head, src_list) {
 		/* both ports ready? */
 		if (atomic_read(&subs->ref_count) != 2)
 			continue;
@@ -756,7 +748,7 @@ static int __deliver_to_subscribers(struct snd_seq_client *client,
 		memcpy(event, &event_saved, saved_size);
 	}
 	if (atomic)
-		rcu_read_unlock();
+		read_unlock(&grp->list_lock);
 	else
 		up_read(&grp->list_mutex);
 	memcpy(event, &event_saved, saved_size);
@@ -1953,7 +1945,7 @@ static int snd_seq_ioctl_query_subs(struct snd_seq_client *client, void *arg)
 {
 	struct snd_seq_query_subs *subs = arg;
 	struct snd_seq_port_subs_info *group;
-	struct hlist_node *p;
+	struct list_head *p;
 	int i;
 
 	struct snd_seq_client *cptr __free(snd_seq_client) =
@@ -1980,15 +1972,15 @@ static int snd_seq_ioctl_query_subs(struct snd_seq_client *client, void *arg)
 	/* search for the subscriber */
 	subs->num_subs = group->count;
 	i = 0;
-	hlist_for_each(p, &group->list_head) {
+	list_for_each(p, &group->list_head) {
 		if (i++ == subs->index) {
 			/* found! */
 			struct snd_seq_subscribers *s;
 			if (subs->type == SNDRV_SEQ_QUERY_SUBS_READ) {
-				s = hlist_entry(p, struct snd_seq_subscribers, src_list);
+				s = list_entry(p, struct snd_seq_subscribers, src_list);
 				subs->addr = s->info.dest;
 			} else {
-				s = hlist_entry(p, struct snd_seq_subscribers, dest_list);
+				s = list_entry(p, struct snd_seq_subscribers, dest_list);
 				subs->addr = s->info.sender;
 			}
 			subs->flags = s->info.flags;
@@ -2544,19 +2536,19 @@ static void snd_seq_info_dump_subscribers(struct snd_info_buffer *buffer,
 					  struct snd_seq_port_subs_info *group,
 					  int is_src, char *msg)
 {
-	struct hlist_node *p;
+	struct list_head *p;
 	struct snd_seq_subscribers *s;
 	int count = 0;
 
 	guard(rwsem_read)(&group->list_mutex);
-	if (hlist_empty(&group->list_head))
+	if (list_empty(&group->list_head))
 		return;
 	snd_iprintf(buffer, msg);
-	hlist_for_each(p, &group->list_head) {
+	list_for_each(p, &group->list_head) {
 		if (is_src)
-			s = hlist_entry(p, struct snd_seq_subscribers, src_list);
+			s = list_entry(p, struct snd_seq_subscribers, src_list);
 		else
-			s = hlist_entry(p, struct snd_seq_subscribers, dest_list);
+			s = list_entry(p, struct snd_seq_subscribers, dest_list);
 		if (count++)
 			snd_iprintf(buffer, ", ");
 		snd_iprintf(buffer, "%d:%d",
@@ -2678,15 +2670,16 @@ void snd_seq_info_clients_read(struct snd_info_entry *entry,
  *  REGISTRATION PART
  */
 
-static const struct file_operations snd_seq_f_ops = {
-	.owner		=	THIS_MODULE,
-	.read		=	snd_seq_read,
-	.write		=	snd_seq_write,
-	.open		=	snd_seq_open,
-	.release	=	snd_seq_release,
-	.poll		=	snd_seq_poll,
-	.unlocked_ioctl	=	snd_seq_ioctl,
-	.compat_ioctl	=	snd_seq_ioctl_compat,
+static const struct file_operations snd_seq_f_ops =
+{
+	.owner =	THIS_MODULE,
+	.read =		snd_seq_read,
+	.write =	snd_seq_write,
+	.open =		snd_seq_open,
+	.release =	snd_seq_release,
+	.poll =		snd_seq_poll,
+	.unlocked_ioctl =	snd_seq_ioctl,
+	.compat_ioctl =	snd_seq_ioctl_compat,
 };
 
 static struct device *seq_dev;

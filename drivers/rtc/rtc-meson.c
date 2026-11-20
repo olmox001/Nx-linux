@@ -295,7 +295,7 @@ static int meson_rtc_probe(struct platform_device *pdev)
 	int ret;
 	u32 tm;
 
-	rtc = devm_kzalloc_obj(dev, struct meson_rtc);
+	rtc = devm_kzalloc(dev, sizeof(struct meson_rtc), GFP_KERNEL);
 	if (!rtc)
 		return -ENOMEM;
 

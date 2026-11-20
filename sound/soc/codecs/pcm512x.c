@@ -6,7 +6,7 @@
  *		Copyright 2014 Linaro Ltd
  */
 
-#include <linux/cleanup.h>
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/clk.h>
@@ -399,9 +399,10 @@ static int pcm512x_digital_playback_switch_get(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct pcm512x_priv *pcm512x = snd_soc_component_get_drvdata(component);
 
-	guard(mutex)(&pcm512x->mutex);
+	mutex_lock(&pcm512x->mutex);
 	ucontrol->value.integer.value[0] = !(pcm512x->mute & 0x4);
 	ucontrol->value.integer.value[1] = !(pcm512x->mute & 0x2);
+	mutex_unlock(&pcm512x->mutex);
 
 	return 0;
 }
@@ -413,7 +414,7 @@ static int pcm512x_digital_playback_switch_put(struct snd_kcontrol *kcontrol,
 	struct pcm512x_priv *pcm512x = snd_soc_component_get_drvdata(component);
 	int ret, changed = 0;
 
-	guard(mutex)(&pcm512x->mutex);
+	mutex_lock(&pcm512x->mutex);
 
 	if ((pcm512x->mute & 0x4) == (ucontrol->value.integer.value[0] << 2)) {
 		pcm512x->mute ^= 0x4;
@@ -429,9 +430,12 @@ static int pcm512x_digital_playback_switch_put(struct snd_kcontrol *kcontrol,
 		if (ret != 0) {
 			dev_err(component->dev,
 				"Failed to update digital mute: %d\n", ret);
+			mutex_unlock(&pcm512x->mutex);
 			return ret;
 		}
 	}
+
+	mutex_unlock(&pcm512x->mutex);
 
 	return changed;
 }
@@ -601,11 +605,12 @@ static int pcm512x_dai_startup_master(struct snd_pcm_substream *substream,
 					   SNDRV_PCM_HW_PARAM_FRAME_BITS,
 					   SNDRV_PCM_HW_PARAM_CHANNELS, -1);
 
-	constraints_no_pll = devm_kzalloc_obj(dev, *constraints_no_pll);
+	constraints_no_pll = devm_kzalloc(dev, sizeof(*constraints_no_pll),
+					  GFP_KERNEL);
 	if (!constraints_no_pll)
 		return -ENOMEM;
 	constraints_no_pll->nrats = 1;
-	rats_no_pll = devm_kzalloc_obj(dev, *rats_no_pll);
+	rats_no_pll = devm_kzalloc(dev, sizeof(*rats_no_pll), GFP_KERNEL);
 	if (!rats_no_pll)
 		return -ENOMEM;
 	constraints_no_pll->rats = rats_no_pll;
@@ -1460,7 +1465,7 @@ static int pcm512x_mute(struct snd_soc_dai *dai, int mute, int direction)
 	int ret;
 	unsigned int mute_det;
 
-	guard(mutex)(&pcm512x->mutex);
+	mutex_lock(&pcm512x->mutex);
 
 	if (mute) {
 		pcm512x->mute |= 0x1;
@@ -1470,7 +1475,7 @@ static int pcm512x_mute(struct snd_soc_dai *dai, int mute, int direction)
 		if (ret != 0) {
 			dev_err(component->dev,
 				"Failed to set digital mute: %d\n", ret);
-			return ret;
+			goto unlock;
 		}
 
 		regmap_read_poll_timeout(pcm512x->regmap,
@@ -1483,7 +1488,7 @@ static int pcm512x_mute(struct snd_soc_dai *dai, int mute, int direction)
 		if (ret != 0) {
 			dev_err(component->dev,
 				"Failed to update digital mute: %d\n", ret);
-			return ret;
+			goto unlock;
 		}
 
 		regmap_read_poll_timeout(pcm512x->regmap,
@@ -1494,15 +1499,11 @@ static int pcm512x_mute(struct snd_soc_dai *dai, int mute, int direction)
 					 200, 10000);
 	}
 
+unlock:
+	mutex_unlock(&pcm512x->mutex);
+
 	return ret;
 }
-
-static const u64 pcm512x_selectable_formats =
-	SND_SOC_POSSIBLE_DAIFMT_I2S	|
-	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
-	SND_SOC_POSSIBLE_DAIFMT_DSP_B;
 
 static const struct snd_soc_dai_ops pcm512x_dai_ops = {
 	.startup = pcm512x_dai_startup,
@@ -1510,8 +1511,6 @@ static const struct snd_soc_dai_ops pcm512x_dai_ops = {
 	.set_fmt = pcm512x_set_fmt,
 	.mute_stream = pcm512x_mute,
 	.set_bclk_ratio = pcm512x_set_bclk_ratio,
-	.auto_selectable_formats = &pcm512x_selectable_formats,
-	.num_auto_selectable_formats = 1,
 	.no_capture_mute = 1,
 };
 
@@ -1573,7 +1572,7 @@ int pcm512x_probe(struct device *dev, struct regmap *regmap)
 	struct pcm512x_priv *pcm512x;
 	int i, ret;
 
-	pcm512x = devm_kzalloc_obj(dev, struct pcm512x_priv);
+	pcm512x = devm_kzalloc(dev, sizeof(struct pcm512x_priv), GFP_KERNEL);
 	if (!pcm512x)
 		return -ENOMEM;
 

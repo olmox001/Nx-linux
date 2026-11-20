@@ -50,9 +50,7 @@ static void kvm_vm_init_features(struct kvm *kvm)
 
 	/* Enable all PV features by default */
 	kvm->arch.pv_features |= BIT(KVM_FEATURE_IPI);
-	kvm->arch.pv_features |= BIT(KVM_FEATURE_CRASH);
 	kvm->arch.kvm_features |= BIT(KVM_LOONGARCH_VM_FEAT_PV_IPI);
-	kvm->arch.kvm_features |= BIT(KVM_LOONGARCH_VM_FEAT_CRASH);
 	if (kvm_pvtime_supported()) {
 		kvm->arch.pv_features |= BIT(KVM_FEATURE_PREEMPT);
 		kvm->arch.pv_features |= BIT(KVM_FEATURE_STEAL_TIME);
@@ -125,7 +123,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_IOEVENTFD:
 	case KVM_CAP_MP_STATE:
 	case KVM_CAP_SET_GUEST_DEBUG:
-	case KVM_CAP_VCPU_ATTRIBUTES:
 		r = 1;
 		break;
 	case KVM_CAP_NR_VCPUS:
@@ -139,9 +136,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		break;
 	case KVM_CAP_NR_MEMSLOTS:
 		r = KVM_USER_MEM_SLOTS;
-		break;
-	case KVM_CAP_STEAL_TIME:
-		r = kvm_pvtime_supported();
 		break;
 	default:
 		r = 0;

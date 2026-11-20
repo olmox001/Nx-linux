@@ -1327,7 +1327,7 @@ static int img_i2c_probe(struct platform_device *pdev)
 	int irq, ret;
 	u32 val;
 
-	i2c = devm_kzalloc_obj(&pdev->dev, struct img_i2c);
+	i2c = devm_kzalloc(&pdev->dev, sizeof(struct img_i2c), GFP_KERNEL);
 	if (!i2c)
 		return -ENOMEM;
 

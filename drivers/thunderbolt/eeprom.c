@@ -324,7 +324,7 @@ int tb_drom_read_uid_only(struct tb_switch *sw, u64 *uid)
 }
 
 static int tb_drom_parse_entry_generic(struct tb_switch *sw,
-		const struct tb_drom_entry_header *header)
+		struct tb_drom_entry_header *header)
 {
 	const struct tb_drom_entry_generic *entry =
 		(const struct tb_drom_entry_generic *)header;
@@ -360,7 +360,7 @@ static int tb_drom_parse_entry_generic(struct tb_switch *sw,
 }
 
 static int tb_drom_parse_entry_port(struct tb_switch *sw,
-				    const struct tb_drom_entry_header *header)
+				    struct tb_drom_entry_header *header)
 {
 	struct tb_port *port;
 	int res;
@@ -386,13 +386,11 @@ static int tb_drom_parse_entry_port(struct tb_switch *sw,
 	type &= 0xffffff;
 
 	if (type == TB_TYPE_PORT) {
-		const struct tb_drom_entry_port *entry =
-			(const struct tb_drom_entry_port *)header;
-
+		struct tb_drom_entry_port *entry = (void *) header;
 		if (header->len != sizeof(*entry)) {
 			tb_sw_warn(sw,
 				"port entry has size %#x (expected %#zx)\n",
-				header->len, sizeof(*entry));
+				header->len, sizeof(struct tb_drom_entry_port));
 			return -EIO;
 		}
 		port->link_nr = entry->link_nr;
@@ -423,16 +421,9 @@ static int tb_drom_parse_entries(struct tb_switch *sw, size_t header_size)
 	int res;
 
 	while (pos < drom_size) {
-		const struct tb_drom_entry_header *entry;
-
-		if (drom_size - pos < sizeof(*entry)) {
-			tb_sw_warn(sw, "DROM buffer overrun\n");
-			return -EIO;
-		}
-
-		entry = (const struct tb_drom_entry_header *)(sw->drom + pos);
-		if (entry->len < sizeof(*entry) ||
-		    entry->len > drom_size - pos) {
+		struct tb_drom_entry_header *entry = (void *) (sw->drom + pos);
+		if (pos + 1 == drom_size || pos + entry->len > drom_size
+				|| !entry->len) {
 			tb_sw_warn(sw, "DROM buffer overrun\n");
 			return -EIO;
 		}

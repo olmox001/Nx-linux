@@ -532,7 +532,7 @@ static int stc3117_probe(struct i2c_client *client)
 	struct power_supply_battery_info *info;
 	int ret;
 
-	data = devm_kzalloc_obj(&client->dev, *data);
+	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

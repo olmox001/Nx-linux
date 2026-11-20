@@ -123,7 +123,8 @@ static int mp5926_probe(struct i2c_client *client)
 	struct pmbus_driver_info *info;
 	int ret;
 
-	data = devm_kzalloc_obj(&client->dev, struct mp5926_data);
+	data = devm_kzalloc(&client->dev, sizeof(struct mp5926_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

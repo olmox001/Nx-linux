@@ -128,7 +128,7 @@ static int eswin_pcie_parse_port(struct eswin_pcie *pcie,
 	struct device *dev = pcie->pci.dev;
 	struct eswin_pcie_port *port;
 
-	port = devm_kzalloc_obj(dev, *port);
+	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
 	if (!port)
 		return -ENOMEM;
 
@@ -307,7 +307,7 @@ static int eswin_pcie_probe(struct platform_device *pdev)
 	if (!data)
 		return dev_err_probe(dev, -ENODATA, "No platform data\n");
 
-	pcie = devm_kzalloc_obj(dev, *pcie);
+	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 
@@ -388,7 +388,6 @@ static const struct of_device_id eswin_pcie_of_match[] = {
 	{ .compatible = "eswin,eic7700-pcie", .data = &eswin_eic7700_data },
 	{}
 };
-MODULE_DEVICE_TABLE(of, eswin_pcie_of_match);
 
 static struct platform_driver eswin_pcie_driver = {
 	.probe = eswin_pcie_probe,

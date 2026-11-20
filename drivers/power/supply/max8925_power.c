@@ -471,7 +471,9 @@ max8925_power_dt_init(struct platform_device *pdev)
 		return NULL;
 	}
 
-	pdata = devm_kzalloc_obj(&pdev->dev, struct max8925_power_pdata);
+	pdata = devm_kzalloc(&pdev->dev,
+			sizeof(struct max8925_power_pdata),
+			GFP_KERNEL);
 	if (!pdata)
 		goto ret;
 
@@ -513,7 +515,8 @@ static int max8925_power_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	info = devm_kzalloc_obj(&pdev->dev, struct max8925_power_info);
+	info = devm_kzalloc(&pdev->dev, sizeof(struct max8925_power_info),
+				GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 	info->chip = chip;

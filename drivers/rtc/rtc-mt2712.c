@@ -313,7 +313,8 @@ static int mt2712_rtc_probe(struct platform_device *pdev)
 	struct mt2712_rtc *mt2712_rtc;
 	int ret;
 
-	mt2712_rtc = devm_kzalloc_obj(&pdev->dev, struct mt2712_rtc);
+	mt2712_rtc = devm_kzalloc(&pdev->dev,
+				  sizeof(struct mt2712_rtc), GFP_KERNEL);
 	if (!mt2712_rtc)
 		return -ENOMEM;
 

@@ -70,7 +70,6 @@
 #include <linux/irq-entry-common.h>
 
 #include <asm/kprobes.h>
-#include <asm/mmu.h>
 #include <asm/runlatch.h>
 
 #ifdef CONFIG_PPC_IRQ_SOFT_MASK_DEBUG
@@ -291,7 +290,7 @@ interrupt_handler long func(struct pt_regs *regs)			\
 		state = irqentry_nmi_enter(regs);			\
 	} else if (IS_ENABLED(CONFIG_PPC_BOOK3S_64) &&			\
 		   firmware_has_feature(FW_FEATURE_LPAR) &&		\
-		   !early_radix_enabled()) {				\
+		   !radix_enabled()) {					\
 		/* no nmi_entry for a pseries hash guest		\
 		 * taking a real mode exception */			\
 	} else if (IS_ENABLED(CONFIG_KASAN)) {				\
@@ -302,12 +301,13 @@ interrupt_handler long func(struct pt_regs *regs)			\
 		state = irqentry_nmi_enter(regs);			\
 	}								\
 	ret = ____##func (regs);					\
+	arch_interrupt_nmi_exit_prepare(regs, &nmi_state);		\
 	if (mfmsr() & MSR_DR) {						\
 		/* nmi_exit if relocations are on */			\
 		irqentry_nmi_exit(regs, state);				\
 	} else if (IS_ENABLED(CONFIG_PPC_BOOK3S_64) &&			\
 		   firmware_has_feature(FW_FEATURE_LPAR) &&		\
-		   !early_radix_enabled()) {				\
+		   !radix_enabled()) {					\
 		/* no nmi_exit for a pseries hash guest			\
 		 * taking a real mode exception */			\
 	} else if (IS_ENABLED(CONFIG_KASAN)) {				\
@@ -317,7 +317,6 @@ interrupt_handler long func(struct pt_regs *regs)			\
 	} else {							\
 		irqentry_nmi_exit(regs, state);				\
 	}								\
-	arch_interrupt_nmi_exit_prepare(regs, &nmi_state);		\
 									\
 	return ret;							\
 }									\

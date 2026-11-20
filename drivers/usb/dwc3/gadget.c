@@ -906,54 +906,6 @@ static int dwc3_gadget_resize_tx_fifos(struct dwc3_ep *dep)
 	return 0;
 }
 
-static int dwc3_gadget_ep_start_noop_transfer(struct dwc3_ep *dep)
-{
-	struct dwc3_gadget_ep_cmd_params params;
-	struct dwc3		*dwc = dep->dwc;
-	struct dwc3_trb		*trb;
-	dma_addr_t		trb_dma;
-	u32			cmd;
-	int			ret;
-
-	memset(&params, 0, sizeof(params));
-	trb = &dep->trb_pool[0];
-	trb_dma = dwc3_trb_dma_offset(dep, trb);
-
-	params.param0 = upper_32_bits(trb_dma);
-	params.param1 = lower_32_bits(trb_dma);
-
-	cmd = DWC3_DEPCMD_STARTTRANSFER;
-
-	ret = dwc3_send_gadget_ep_cmd(dep, cmd, &params);
-	if (ret < 0)
-		return ret;
-
-	/*
-	 * For streams, at start, there maybe a race where the host primes the
-	 * endpoint before the function driver queues a request to initiate a
-	 * stream. In that case, the controller will not see the prime to
-	 * generate the ERDY and start stream. To workaround this, issue a
-	 * no-op TRB as normal, but end it immediately. As a result, when the
-	 * function driver queues the request, the next START_TRANSFER command
-	 * will cause the controller to generate an ERDY to initiate the
-	 * stream.
-	 */
-	dwc3_stop_active_transfer(dep, false, true);
-
-	/*
-	 * All stream eps will reinitiate stream on NoStream rejection.
-	 *
-	 * However, if the controller is capable of TXF_FLUSH_BYPASS, then IN
-	 * direction endpoints will automatically restart the stream without
-	 * the driver initiation.
-	 */
-	if (!dep->direction ||
-	    !(dwc->hwparams.hwparams9 & DWC3_GHWPARAMS9_DEV_TXF_FLUSH_BYPASS))
-		dep->flags |= DWC3_EP_FORCE_RESTART_STREAM;
-
-	return 0;
-}
-
 /**
  * __dwc3_gadget_ep_enable - initializes a hw endpoint
  * @dep: endpoint to be initialized
@@ -1019,14 +971,54 @@ static int __dwc3_gadget_ep_enable(struct dwc3_ep *dep, unsigned int action)
 	 * Issue StartTransfer here with no-op TRB so we can always rely on No
 	 * Response Update Transfer command.
 	 */
-	if (dep->stream_capable) {
-		if (dep->flags & (DWC3_EP_END_TRANSFER_PENDING |
-				  DWC3_EP_DELAY_STOP)) {
-			dep->flags |= DWC3_EP_PENDING_NOOP_START;
-		} else {
-			ret = dwc3_gadget_ep_start_noop_transfer(dep);
-			if (ret < 0)
-				return ret;
+	if (usb_endpoint_xfer_bulk(desc) ||
+			usb_endpoint_xfer_int(desc)) {
+		struct dwc3_gadget_ep_cmd_params params;
+		struct dwc3_trb	*trb;
+		dma_addr_t trb_dma;
+		u32 cmd;
+
+		memset(&params, 0, sizeof(params));
+		trb = &dep->trb_pool[0];
+		trb_dma = dwc3_trb_dma_offset(dep, trb);
+
+		params.param0 = upper_32_bits(trb_dma);
+		params.param1 = lower_32_bits(trb_dma);
+
+		cmd = DWC3_DEPCMD_STARTTRANSFER;
+
+		ret = dwc3_send_gadget_ep_cmd(dep, cmd, &params);
+		if (ret < 0)
+			return ret;
+
+		if (dep->stream_capable) {
+			/*
+			 * For streams, at start, there maybe a race where the
+			 * host primes the endpoint before the function driver
+			 * queues a request to initiate a stream. In that case,
+			 * the controller will not see the prime to generate the
+			 * ERDY and start stream. To workaround this, issue a
+			 * no-op TRB as normal, but end it immediately. As a
+			 * result, when the function driver queues the request,
+			 * the next START_TRANSFER command will cause the
+			 * controller to generate an ERDY to initiate the
+			 * stream.
+			 */
+			dwc3_stop_active_transfer(dep, false, true);
+
+			/*
+			 * All stream eps will reinitiate stream on NoStream
+			 * rejection.
+			 *
+			 * However, if the controller is capable of
+			 * TXF_FLUSH_BYPASS, then IN direction endpoints will
+			 * automatically restart the stream without the driver
+			 * initiation.
+			 */
+			if (!dep->direction ||
+			    !(dwc->hwparams.hwparams9 &
+			      DWC3_GHWPARAMS9_DEV_TXF_FLUSH_BYPASS))
+				dep->flags |= DWC3_EP_FORCE_RESTART_STREAM;
 		}
 	}
 
@@ -1036,20 +1028,15 @@ out:
 	return 0;
 }
 
-void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep, int status,
-			  bool interrupt)
+void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep, int status)
 {
 	struct dwc3_request		*req;
 
-	dwc3_stop_active_transfer(dep, false, interrupt);
+	dwc3_stop_active_transfer(dep, false, false);
 
 	/* If endxfer is delayed, avoid unmapping requests */
 	if (dep->flags & DWC3_EP_DELAY_STOP)
 		return;
-
-	/* Give the controller time to stop accessing the request buffers */
-	if (dep->flags & DWC3_EP_END_TRANSFER_PENDING)
-		mdelay(1);
 
 	/* - giveback all requests to gadget driver */
 	while (!list_empty(&dep->started_list)) {
@@ -1097,9 +1084,7 @@ static int __dwc3_gadget_ep_disable(struct dwc3_ep *dep)
 	reg &= ~DWC3_DALEPENA_EP(dep->number);
 	dwc3_writel(dwc, DWC3_DALEPENA, reg);
 
-	dep->flags &= ~DWC3_EP_ENABLED;
-
-	dwc3_remove_requests(dwc, dep, -ESHUTDOWN, true);
+	dwc3_remove_requests(dwc, dep, -ESHUTDOWN);
 
 	dep->stream_capable = false;
 	dep->type = 0;
@@ -1111,15 +1096,6 @@ static int __dwc3_gadget_ep_disable(struct dwc3_ep *dep)
 	 */
 	if (dep->flags & DWC3_EP_DELAY_STOP)
 		mask |= (DWC3_EP_DELAY_STOP | DWC3_EP_TRANSFER_STARTED);
-
-	/*
-	 * The End Transfer command is still in progress.  Do not clear the
-	 * flags, so that the ep is only rearmed once the command completes.
-	 */
-	if (dep->flags & DWC3_EP_END_TRANSFER_PENDING)
-		mask |= (DWC3_EP_END_TRANSFER_PENDING |
-			 DWC3_EP_TRANSFER_STARTED);
-
 	dep->flags &= mask;
 
 	/* Clear out the ep descriptors for non-ep0 */
@@ -1775,8 +1751,6 @@ static int __dwc3_gadget_get_frame(struct dwc3 *dwc)
 	return DWC3_DSTS_SOFFN(reg);
 }
 
-static void dwc3_schedule_err_recovery(struct dwc3 *dwc);
-
 /**
  * __dwc3_stop_active_transfer - stop the current active transfer
  * @dep: isoc endpoint
@@ -1820,14 +1794,11 @@ static int __dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force, bool int
 		dev_err_ratelimited(dep->dwc->dev,
 				"end transfer failed: %d\n", ret);
 
-	if (ret == -ETIMEDOUT && dep->dwc->err_state == DWC3_ERR_NONE)
-		dwc3_schedule_err_recovery(dep->dwc);
-
 	dep->resource_index = 0;
 
-	if (!interrupt || (ret && ret != -ETIMEDOUT))
+	if (!interrupt)
 		dep->flags &= ~DWC3_EP_TRANSFER_STARTED;
-	else
+	else if (!ret)
 		dep->flags |= DWC3_EP_END_TRANSFER_PENDING;
 
 	dep->flags &= ~DWC3_EP_DELAY_STOP;
@@ -2019,8 +1990,7 @@ static int __dwc3_gadget_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
 {
 	struct dwc3		*dwc = dep->dwc;
 
-	if (!(dep->flags & DWC3_EP_ENABLED) || !dep->endpoint.desc ||
-	    !dwc->pullups_connected || !dwc->connected) {
+	if (!dep->endpoint.desc || !dwc->pullups_connected || !dwc->connected) {
 		dev_dbg(dwc->dev, "%s: can't queue to disabled endpoint\n",
 				dep->name);
 		return -ESHUTDOWN;
@@ -2577,7 +2547,7 @@ static void dwc3_stop_active_transfers(struct dwc3 *dwc)
 		if (!dep)
 			continue;
 
-		dwc3_remove_requests(dwc, dep, -ESHUTDOWN, false);
+		dwc3_remove_requests(dwc, dep, -ESHUTDOWN);
 	}
 }
 
@@ -2977,7 +2947,6 @@ static int __dwc3_gadget_start(struct dwc3 *dwc)
 {
 	struct dwc3_ep		*dep;
 	int			ret = 0;
-	u32			epnum;
 	u32			reg;
 
 	/*
@@ -3033,15 +3002,6 @@ static int __dwc3_gadget_start(struct dwc3 *dwc)
 	if (ret) {
 		dev_err(dwc->dev, "failed to config endpoints\n");
 		return ret;
-	}
-
-	for (epnum = 2; epnum < dwc->num_eps; epnum++) {
-		dep = dwc->eps[epnum];
-		if (!dep)
-			continue;
-
-		dep->flags &= (DWC3_EP_TXFIFO_RESIZED |
-			       DWC3_EP_RESOURCE_ALLOCATED);
 	}
 
 	dep = dwc->eps[0];
@@ -3196,26 +3156,15 @@ static void dwc3_gadget_set_ssp_rate(struct usb_gadget *g,
 static int dwc3_gadget_vbus_draw(struct usb_gadget *g, unsigned int mA)
 {
 	struct dwc3		*dwc = gadget_to_dwc(g);
-	unsigned long		flags;
 
 	if (dwc->usb2_phy)
 		return usb_phy_set_power(dwc->usb2_phy, mA);
 
-	spin_lock_irqsave(&dwc->lock, flags);
-	if (!dwc->usb_psy) {
-		if (!dwc->psy_nb.notifier_call) {
-			spin_unlock_irqrestore(&dwc->lock, flags);
-			return -EOPNOTSUPP;
-		}
-		dwc->current_limit = mA;
-		spin_unlock_irqrestore(&dwc->lock, flags);
-		dev_dbg(dwc->dev, "Stored VBUS draw: %u mA (power supply not ready)\n", mA);
-		return 0;
-	}
+	if (!dwc->usb_psy)
+		return -EOPNOTSUPP;
 
 	dwc->current_limit = mA;
 	schedule_work(&dwc->vbus_draw_work);
-	spin_unlock_irqrestore(&dwc->lock, flags);
 
 	return 0;
 }
@@ -3912,7 +3861,6 @@ static void dwc3_gadget_endpoint_command_complete(struct dwc3_ep *dep,
 	if (dep->stream_capable)
 		dep->flags |= DWC3_EP_IGNORE_NEXT_NOSTREAM;
 
-	dep->flags &= ~DWC3_EP_DELAY_STOP;
 	dep->flags &= ~DWC3_EP_END_TRANSFER_PENDING;
 	dep->flags &= ~DWC3_EP_TRANSFER_STARTED;
 	dwc3_gadget_ep_cleanup_cancelled_requests(dep);
@@ -3935,16 +3883,7 @@ static void dwc3_gadget_endpoint_command_complete(struct dwc3_ep *dep,
 			dwc3_ep0_send_delayed_status(dwc);
 	}
 
-	if (dep->flags & DWC3_EP_PENDING_NOOP_START) {
-		dep->flags &= ~DWC3_EP_PENDING_NOOP_START;
-
-		if (!(dep->flags & DWC3_EP_DELAY_START) &&
-		    (dep->flags & DWC3_EP_ENABLED))
-			dwc3_gadget_ep_start_noop_transfer(dep);
-	}
-
 	if ((dep->flags & DWC3_EP_DELAY_START) &&
-	    (dep->flags & DWC3_EP_ENABLED) &&
 	    !usb_endpoint_xfer_isoc(dep->endpoint.desc))
 		__dwc3_gadget_kick_transfer(dep);
 

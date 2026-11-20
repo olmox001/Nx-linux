@@ -814,7 +814,7 @@ enum sctp_disposition sctp_sf_do_5_1D_ce(struct net *net,
 	 * effects--it is safe to run them here.
 	 */
 	if (!sctp_process_init(new_asoc, chunk,
-			       &new_asoc->c.peer_addr,
+			       &chunk->subh.cookie_hdr->c.peer_addr,
 			       peer_init, GFP_ATOMIC))
 		goto nomem_init;
 
@@ -1122,11 +1122,9 @@ enum sctp_disposition sctp_sf_send_reconf(struct net *net,
 		return SCTP_DISPOSITION_DELETE_TCB;
 	}
 
-	if (!sctp_chunk_pending(asoc->strreset_chunk)) {
-		sctp_chunk_hold(asoc->strreset_chunk);
-		sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
-				SCTP_CHUNK(asoc->strreset_chunk));
-	}
+	sctp_chunk_hold(asoc->strreset_chunk);
+	sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
+			SCTP_CHUNK(asoc->strreset_chunk));
 	sctp_add_cmd_sf(commands, SCTP_CMD_STRIKE, SCTP_TRANSPORT(transport));
 
 	return SCTP_DISPOSITION_CONSUME;
@@ -4459,12 +4457,9 @@ static enum sctp_ierror sctp_sf_authenticate(
 
 	memset(digest, 0, sig_len);
 
-	if (sctp_auth_calculate_hmac(asoc, chunk->skb,
-				     (struct sctp_auth_chunk *)chunk->chunk_hdr,
-				     sh_key, GFP_ATOMIC)) {
-		kfree(save_digest);
-		return SCTP_IERROR_NOMEM;
-	}
+	sctp_auth_calculate_hmac(asoc, chunk->skb,
+				 (struct sctp_auth_chunk *)chunk->chunk_hdr,
+				 sh_key, GFP_ATOMIC);
 
 	/* Discard the packet if the digests do not match */
 	if (crypto_memneq(save_digest, digest, sig_len)) {
@@ -6199,11 +6194,9 @@ enum sctp_disposition sctp_sf_t4_timer_expire(
 	 * chunk, it MUST be the same (including its serial number) as the last
 	 * ASCONF sent.
 	 */
-	if (!sctp_chunk_pending(asoc->addip_last_asconf)) {
-		sctp_chunk_hold(asoc->addip_last_asconf);
-		sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
-				SCTP_CHUNK(asoc->addip_last_asconf));
-	}
+	sctp_chunk_hold(asoc->addip_last_asconf);
+	sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
+			SCTP_CHUNK(asoc->addip_last_asconf));
 
 	/* ADDIP 4.1 B5) Restart the T-4 RTO timer. Note that if a different
 	 * destination is selected, then the RTO used will be that of the new
@@ -6372,8 +6365,7 @@ static struct sctp_sackhdr *sctp_sm_pull_sack(struct sctp_chunk *chunk)
 	num_dup_tsns = ntohs(sack->num_dup_tsns);
 	len = sizeof(struct sctp_sackhdr);
 	len += (num_blocks + num_dup_tsns) * sizeof(__u32);
-	if (len > ntohs(chunk->chunk_hdr->length) -
-		  sizeof(struct sctp_chunkhdr))
+	if (len > chunk->skb->len)
 		return NULL;
 
 	skb_pull(chunk->skb, len);

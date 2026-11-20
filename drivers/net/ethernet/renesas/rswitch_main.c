@@ -1303,8 +1303,7 @@ static int rswitch_etha_mii_write_c22(struct mii_bus *bus, int phyad,
 /* Call of_node_put(port) after done */
 static struct device_node *rswitch_get_port_node(struct rswitch_device *rdev)
 {
-	struct device_node *port = NULL;
-	struct device_node *ports;
+	struct device_node *ports, *port;
 	int err = 0;
 	u32 index;
 
@@ -1313,16 +1312,17 @@ static struct device_node *rswitch_get_port_node(struct rswitch_device *rdev)
 	if (!ports)
 		return NULL;
 
-	for_each_available_child_of_node_scoped(ports, child) {
-		err = of_property_read_u32(child, "reg", &index);
-		if (err < 0)
-			break;
-		if (index == rdev->etha->index) {
-			port = of_node_get(child);
-			break;
+	for_each_available_child_of_node(ports, port) {
+		err = of_property_read_u32(port, "reg", &index);
+		if (err < 0) {
+			port = NULL;
+			goto out;
 		}
+		if (index == rdev->etha->index)
+			break;
 	}
 
+out:
 	of_node_put(ports);
 
 	return port;
@@ -2136,7 +2136,7 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -2162,14 +2162,17 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(40));
-	if (ret)
-		return ret;
+	if (ret < 0) {
+		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		if (ret < 0)
+			return ret;
+	}
 
 	priv->gwca.index = AGENT_INDEX_GWCA;
 	priv->gwca.num_queues = min(RSWITCH_NUM_PORTS * NUM_QUEUES_PER_NDEV,
 				    RSWITCH_MAX_NUM_QUEUES);
-	priv->gwca.queues = devm_kzalloc_objs(&pdev->dev, *priv->gwca.queues,
-					      priv->gwca.num_queues);
+	priv->gwca.queues = devm_kcalloc(&pdev->dev, priv->gwca.num_queues,
+					 sizeof(*priv->gwca.queues), GFP_KERNEL);
 	if (!priv->gwca.queues)
 		return -ENOMEM;
 

@@ -16,6 +16,7 @@
 #include <linux/cpumask.h>
 #include <linux/err.h>
 #include <linux/cpu.h>
+#include <linux/list_sort.h>
 #include <linux/padata.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
@@ -29,6 +30,10 @@ struct padata_work {
 	struct work_struct	pw_work;
 	struct list_head	pw_list;  /* padata_free_works linkage */
 	void			*pw_data;
+	/* holds job units from padata_mt_job::start to pw_error_start */
+	unsigned long		pw_error_offset;
+	unsigned long		pw_error_start;
+	unsigned long		pw_error_end;
 };
 
 static DEFINE_SPINLOCK(padata_works_lock);
@@ -41,11 +46,18 @@ struct padata_mt_job_state {
 	struct padata_mt_job	*job;
 	int			nworks;
 	int			nworks_fini;
+	int			error; /* first error from thread_fn */
 	unsigned long		chunk_size;
+	unsigned long		position;
+	unsigned long		remaining_size;
+	struct list_head	failed_works;
+#ifdef CONFIG_LOCKDEP
+	struct lockdep_map	lockdep_map;
+#endif
 };
 
 static void padata_free_pd(struct parallel_data *pd);
-static void __init padata_mt_helper(struct work_struct *work);
+static void padata_mt_helper(struct work_struct *work);
 
 static inline void padata_get_pd(struct parallel_data *pd)
 {
@@ -88,15 +100,7 @@ static struct padata_work *padata_work_alloc(void)
 	return pw;
 }
 
-/*
- * This function is marked __ref because this function may be optimized in such
- * a way that it directly refers to work_fn's address, which causes modpost to
- * complain when work_fn is marked __init. This scenario was observed with clang
- * LTO, where padata_work_init() was optimized to refer directly to
- * padata_mt_helper() because the calls to padata_work_init() with other work_fn
- * values were eliminated or inlined.
- */
-static void __ref padata_work_init(struct padata_work *pw, work_func_t work_fn,
+static void padata_work_init(struct padata_work *pw, work_func_t work_fn,
 				   void *data, int flags)
 {
 	if (flags & PADATA_WORK_ONSTACK)
@@ -106,8 +110,7 @@ static void __ref padata_work_init(struct padata_work *pw, work_func_t work_fn,
 	pw->pw_data = data;
 }
 
-static int __init padata_work_alloc_mt(int nworks, void *data,
-				       struct list_head *head)
+static int padata_work_alloc_mt(int nworks, void *data, struct list_head *head)
 {
 	int i;
 
@@ -132,7 +135,7 @@ static void padata_work_free(struct padata_work *pw)
 	list_add(&pw->pw_list, &padata_free_works);
 }
 
-static void __init padata_works_free(struct list_head *works)
+static void padata_works_free(struct list_head *works)
 {
 	struct padata_work *cur, *next;
 
@@ -401,7 +404,7 @@ static int padata_setup_cpumasks(struct padata_instance *pinst)
 	return err;
 }
 
-static void __init padata_mt_helper(struct work_struct *w)
+static void padata_mt_helper(struct work_struct *w)
 {
 	struct padata_work *pw = container_of(w, struct padata_work, pw_work);
 	struct padata_mt_job_state *ps = pw->pw_data;
@@ -410,21 +413,40 @@ static void __init padata_mt_helper(struct work_struct *w)
 
 	spin_lock(&ps->lock);
 
-	while (job->size > 0) {
-		unsigned long start, size, end;
+	while (ps->remaining_size > 0 && ps->error == 0) {
+		unsigned long position, position_offset, size, end;
+		int ret;
 
-		start = job->start;
+		position_offset = job->size - ps->remaining_size;
+		position = ps->position;
 		/* So end is chunk size aligned if enough work remains. */
-		size = roundup(start + 1, ps->chunk_size) - start;
-		size = min(size, job->size);
-		end = start + size;
+		size = roundup(position + 1, ps->chunk_size) - position;
+		size = min(size, ps->remaining_size);
+		end = position + size;
 
-		job->start = end;
-		job->size -= size;
+		ps->position = end;
+		ps->remaining_size -= size;
 
 		spin_unlock(&ps->lock);
-		job->thread_fn(start, end, job->fn_arg);
+		lock_map_acquire(&ps->lockdep_map);
+
+		ret = job->thread_fn(position, end, job->fn_arg);
+
+		lock_map_release(&ps->lockdep_map);
 		spin_lock(&ps->lock);
+
+		if (ret) {
+			/* Save first error code only. */
+			if (ps->error == 0)
+				ps->error = ret;
+			/* Save information about where the job failed. */
+			if (job->undo_fn) {
+				list_move(&pw->pw_list, &ps->failed_works);
+				pw->pw_error_start = position;
+				pw->pw_error_offset = position_offset;
+				pw->pw_error_end = end;
+			}
+		}
 	}
 
 	++ps->nworks_fini;
@@ -435,24 +457,82 @@ static void __init padata_mt_helper(struct work_struct *w)
 		complete(&ps->completion);
 }
 
+static int padata_error_cmp(void *unused, const struct list_head *a,
+			    const struct list_head *b)
+{
+	struct padata_work *work_a = list_entry(a, struct padata_work, pw_list);
+	struct padata_work *work_b = list_entry(b, struct padata_work, pw_list);
+
+	if (work_a->pw_error_offset < work_b->pw_error_offset)
+		return -1;
+	else if (work_a->pw_error_offset > work_b->pw_error_offset)
+		return 1;
+	return 0;
+}
+
+static void padata_undo(struct padata_mt_job_state *ps,
+			struct list_head *works_list,
+			struct padata_work *stack_work)
+{
+	struct list_head *failed_works = &ps->failed_works;
+	struct padata_mt_job *job = ps->job;
+	unsigned long undo_pos = job->start;
+
+	/* Sort so the failed ranges can be checked as we go. */
+	list_sort(NULL, failed_works, padata_error_cmp);
+
+	/* Undo completed work on this node, skipping failed ranges. */
+	while (undo_pos != ps->position) {
+		struct padata_work *failed_work;
+		unsigned long undo_end;
+
+		failed_work = list_first_entry_or_null(failed_works,
+						       struct padata_work,
+						       pw_list);
+		if (failed_work)
+			undo_end = failed_work->pw_error_start;
+		else
+			undo_end = ps->position;
+
+		if (undo_pos != undo_end)
+			job->undo_fn(undo_pos, undo_end, job->fn_arg);
+
+		if (failed_work) {
+			undo_pos = failed_work->pw_error_end;
+			/* main thread's stack_work stays off works_list */
+			if (failed_work == stack_work)
+				list_del(&failed_work->pw_list);
+			else
+				list_move(&failed_work->pw_list, works_list);
+		} else {
+			undo_pos = undo_end;
+		}
+	}
+	WARN_ON(!list_empty(failed_works));
+}
+
 /**
- * padata_do_multithreaded - run a multithreaded job
+ * __padata_do_multithreaded - run a multithreaded job
  * @job: Description of the job.
  *
  * See the definition of struct padata_mt_job for more details.
+ *
+ * Return: 0 for success or a client-specific nonzero error code.
  */
-void __init padata_do_multithreaded(struct padata_mt_job *job)
+int __padata_do_multithreaded(struct padata_mt_job *job,
+			      struct lock_class_key *key,
+			      const char *map_name)
 {
 	/* In case threads finish at different times. */
 	static const unsigned long load_balance_factor = 4;
 	struct padata_work my_work, *pw;
 	struct padata_mt_job_state ps;
 	LIST_HEAD(works);
-	int nworks, nid;
-	static atomic_t last_used_nid __initdata;
+	int nworks, nid, ret;
+	static atomic_t last_used_nid;
 
 	if (job->size == 0)
-		return;
+		return 0;
 
 	/* Ensure at least one thread when size < min_chunk. */
 	nworks = max(job->size / max(job->min_chunk, job->align), 1ul);
@@ -460,15 +540,21 @@ void __init padata_do_multithreaded(struct padata_mt_job *job)
 
 	if (nworks == 1) {
 		/* Single thread, no coordination needed, cut to the chase. */
-		job->thread_fn(job->start, job->start + job->size, job->fn_arg);
-		return;
+		ret = job->thread_fn(job->start, job->start + job->size,
+				     job->fn_arg);
+		return ret;
 	}
 
 	spin_lock_init(&ps.lock);
 	init_completion(&ps.completion);
-	ps.job	       = job;
-	ps.nworks      = padata_work_alloc_mt(nworks, &ps, &works);
-	ps.nworks_fini = 0;
+	INIT_LIST_HEAD(&ps.failed_works);
+	lockdep_init_map(&ps.lockdep_map, map_name, key, 0);
+	ps.job		  = job;
+	ps.nworks	  = padata_work_alloc_mt(nworks, &ps, &works);
+	ps.nworks_fini	  = 0;
+	ps.error	  = 0;
+	ps.position	  = job->start;
+	ps.remaining_size = job->size;
 
 	/*
 	 * Chunk size is the amount of work a helper does per call to the
@@ -482,6 +568,9 @@ void __init padata_do_multithreaded(struct padata_mt_job *job)
 	ps.chunk_size = max(ps.chunk_size, job->min_chunk);
 	ps.chunk_size = max(ps.chunk_size, 1ul);
 	ps.chunk_size = roundup(ps.chunk_size, job->align);
+
+	lock_map_acquire(&ps.lockdep_map);
+	lock_map_release(&ps.lockdep_map);
 
 	list_for_each_entry(pw, &works, pw_list)
 		if (job->numa_aware) {
@@ -497,13 +586,18 @@ void __init padata_do_multithreaded(struct padata_mt_job *job)
 
 	/* Use the current thread, which saves starting a workqueue worker. */
 	padata_work_init(&my_work, padata_mt_helper, &ps, PADATA_WORK_ONSTACK);
+	INIT_LIST_HEAD(&my_work.pw_list);
 	padata_mt_helper(&my_work.pw_work);
 
 	/* Wait for all the helpers to finish. */
 	wait_for_completion(&ps.completion);
 
+	if (ps.error && job->undo_fn)
+		padata_undo(&ps, &works, &my_work);
+
 	destroy_work_on_stack(&my_work.pw_work);
 	padata_works_free(&works);
+	return ps.error;
 }
 
 /* Initialize all percpu queues used by serial workers */
@@ -534,7 +628,7 @@ static void padata_init_reorder_list(struct parallel_data *pd)
 	}
 }
 
-/* Allocate and initialize the internal cpumask dependent resources. */
+/* Allocate and initialize the internal cpumask dependend resources. */
 static struct parallel_data *padata_alloc_pd(struct padata_shell *ps,
 					     int offlining_cpu)
 {

@@ -21,7 +21,6 @@
  * IN THE SOFTWARE.
  */
 
-#include <linux/error-injection.h>
 #include <linux/pm_runtime.h>
 
 #include <drm/drm_managed.h>

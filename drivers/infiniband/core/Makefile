@@ -8,6 +8,7 @@ obj-$(CONFIG_INFINIBAND_USER_MAD) +=	ib_umad.o
 obj-$(CONFIG_INFINIBAND_USER_ACCESS) += ib_uverbs.o \
 					$(user_access-y) \
 					ib_uverbs_support.o
+obj-$(CONFIG_INFINIBAND_RDMAIP_NOTIFY) += rdmaip_notify.o
 
 ib_core-y :=			packer.o ud_header.o verbs.o cq.o rw.o sysfs.o \
 				device.o cache.o netlink.o \
@@ -38,7 +39,6 @@ ib_umad-y :=			user_mad.o
 ib_uverbs-y :=			uverbs_main.o uverbs_cmd.o uverbs_marshall.o \
 				uverbs_std_types.o uverbs_ioctl.o \
 				uverbs_std_types_cq.o \
-				uverbs_std_types_comp_cntr.o \
 				uverbs_std_types_dmabuf.o \
 				uverbs_std_types_dmah.o \
 				uverbs_std_types_flow_action.o uverbs_std_types_dm.o \

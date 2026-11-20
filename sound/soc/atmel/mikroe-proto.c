@@ -81,7 +81,7 @@ static int snd_proto_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	dai = devm_kzalloc_obj(&pdev->dev, *dai);
+	dai = devm_kzalloc(&pdev->dev, sizeof(*dai), GFP_KERNEL);
 	if (!dai)
 		return -ENOMEM;
 

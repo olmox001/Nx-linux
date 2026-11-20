@@ -227,7 +227,7 @@ static int mlx5_lag_mpesw_queue_work(struct mlx5_core_dev *dev,
 	int err = 0;
 
 	if (!ldev)
-		return -EOPNOTSUPP;
+		return 0;
 
 	work = kzalloc_obj(*work);
 	if (!work)

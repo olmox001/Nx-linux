@@ -246,7 +246,7 @@ static int rt712_sdca_dmic_set_gain_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
-	struct rt712_sdca_dmic_priv *rt712 = snd_soc_component_get_drvdata(component);
+	struct rt712_sdca_priv *rt712 = snd_soc_component_get_drvdata(component);
 	struct rt712_sdca_dmic_kctrl_priv *p =
 		(struct rt712_sdca_dmic_kctrl_priv *)kcontrol->private_value;
 	unsigned int regvalue, ctl, i;
@@ -277,7 +277,7 @@ static int rt712_sdca_dmic_set_gain_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct rt712_sdca_dmic_kctrl_priv *p =
 		(struct rt712_sdca_dmic_kctrl_priv *)kcontrol->private_value;
-	struct rt712_sdca_dmic_priv *rt712 = snd_soc_component_get_drvdata(component);
+	struct rt712_sdca_priv *rt712 = snd_soc_component_get_drvdata(component);
 	unsigned int gain_val[4];
 	unsigned int i, adc_vol_flag = 0, changed = 0;
 	unsigned int regvalue[4];
@@ -750,7 +750,7 @@ static int rt712_sdca_dmic_init(struct device *dev, struct regmap *regmap,
 	struct rt712_sdca_dmic_priv *rt712;
 	int ret;
 
-	rt712 = devm_kzalloc_obj(dev, *rt712);
+	rt712 = devm_kzalloc(dev, sizeof(*rt712), GFP_KERNEL);
 	if (!rt712)
 		return -ENOMEM;
 
@@ -837,8 +837,8 @@ static int rt712_sdca_dmic_read_prop(struct sdw_slave *slave)
 	prop->sink_ports = 0;
 
 	nval = hweight32(prop->source_ports);
-	prop->src_dpn_prop = devm_kzalloc_objs(&slave->dev, *prop->src_dpn_prop,
-					       nval);
+	prop->src_dpn_prop = devm_kcalloc(&slave->dev, nval,
+		sizeof(*prop->src_dpn_prop), GFP_KERNEL);
 	if (!prop->src_dpn_prop)
 		return -ENOMEM;
 
@@ -912,23 +912,10 @@ static int rt712_sdca_dmic_dev_resume(struct device *dev)
 	}
 
 	regcache_cache_only(rt712->regmap, false);
-	ret = regcache_sync(rt712->regmap);
-	if (ret)
-		goto err_sync;
-
+	regcache_sync(rt712->regmap);
 	regcache_cache_only(rt712->mbq_regmap, false);
-	ret = regcache_sync(rt712->mbq_regmap);
-	if (ret)
-		goto err_sync;
-
+	regcache_sync(rt712->mbq_regmap);
 	return 0;
-
-err_sync:
-	regcache_cache_only(rt712->regmap, true);
-	regcache_cache_only(rt712->mbq_regmap, true);
-	regcache_mark_dirty(rt712->regmap);
-	regcache_mark_dirty(rt712->mbq_regmap);
-	return ret;
 }
 
 static const struct dev_pm_ops rt712_sdca_dmic_pm = {

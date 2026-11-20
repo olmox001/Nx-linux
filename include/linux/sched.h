@@ -550,11 +550,11 @@ struct sched_statistics {
 	s64				exec_max;
 	u64				slice_max;
 
+	u64				nr_migrations_cold;
 	u64				nr_failed_migrations_affine;
 	u64				nr_failed_migrations_running;
 	u64				nr_failed_migrations_hot;
 	u64				nr_forced_migrations;
-	u64				nr_migrations_cpu_non_preferred;
 
 	u64				nr_wakeups;
 	u64				nr_wakeups_sync;
@@ -563,6 +563,8 @@ struct sched_statistics {
 	u64				nr_wakeups_remote;
 	u64				nr_wakeups_affine;
 	u64				nr_wakeups_affine_attempts;
+	u64				nr_wakeups_passive;
+	u64				nr_wakeups_idle;
 
 #ifdef CONFIG_SCHED_CORE
 	u64				core_forceidle_sum;
@@ -573,7 +575,6 @@ struct sched_statistics {
 struct sched_entity {
 	/* For load-balancing: */
 	struct load_weight		load;
-	struct load_weight		h_load;
 	struct rb_node			run_node;
 	u64				deadline;
 	u64				min_vruntime;
@@ -822,17 +823,6 @@ struct kmap_ctrl {
 #endif
 };
 
-#if defined(CONFIG_SMP) && defined(CONFIG_PREEMPTION)
-struct task_ipi_mask {
-	union {
-		cpumask_t		*ipi_mask_ptr;
-		unsigned long		ipi_mask_val;
-	};
-};
-#else
-struct task_ipi_mask { };
-#endif
-
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -881,8 +871,6 @@ struct task_struct {
 	 */
 	int				recent_used_cpu;
 	int				wake_cpu;
-	/* CPU charged while is_blocked && in_iowait. */
-	int				iowait_cpu;
 
 	int				prio;
 	int				static_prio;
@@ -1175,12 +1163,8 @@ struct task_struct {
 	/* Objective and real subjective task credentials (COW): */
 	const struct cred __rcu		*real_cred;
 
-	/*
-	 * Effective (overridable) subjective task credentials (COW).
-	 * Only accessible for the current task and during task creation/freeing.
-	 * This pointer is not managed by RCU!
-	 */
-	const struct cred		*cred;
+	/* Effective (overridable) subjective task credentials (COW): */
+	const struct cred __rcu		*cred;
 
 #ifdef CONFIG_KEYS
 	/* Cached requested key. */
@@ -1207,7 +1191,6 @@ struct task_struct {
 	unsigned long			last_switch_time;
 #endif
 	/* Filesystem information: */
-	struct fs_struct		*real_fs;
 	struct fs_struct		*fs;
 
 	/* Open file information: */
@@ -1305,7 +1288,6 @@ struct task_struct {
 	u64				curr_chain_key;
 	int				lockdep_depth;
 	unsigned int			lockdep_recursion;
-	unsigned int			lockdep_seq;
 	struct held_lock		held_locks[MAX_LOCK_DEPTH];
 #endif
 
@@ -1377,7 +1359,6 @@ struct task_struct {
 	struct list_head		perf_event_list;
 	struct perf_ctx_data __rcu	*perf_ctx_data;
 #endif
-	struct task_ipi_mask		__private ipi_mask;
 #ifdef CONFIG_DEBUG_PREEMPT
 	unsigned long			preempt_disable_ip;
 #endif
@@ -1389,6 +1370,7 @@ struct task_struct {
 	short				pref_node_fork;
 #endif
 #ifdef CONFIG_NUMA_BALANCING
+	int				numa_preferred_nid_force;
 	int				numa_scan_seq;
 	unsigned int			numa_scan_period;
 	unsigned int			numa_scan_period_max;
@@ -1816,8 +1798,8 @@ extern struct pid __rcu *cad_pid;
 #define PF_USED_MATH		0x00002000	/* If unset the fpu must be initialized before use */
 #define PF_USER_WORKER		0x00004000	/* Kernel thread cloned from userspace thread */
 #define PF_NOFREEZE		0x00008000	/* This thread should not be frozen */
-#define PF__HOLE__00010000	0x00010000
-#define PF__HOLE__00020000	0x00020000
+#define PF_KCOMPACTD		0x00010000	/* I am kcompactd */
+#define PF_KSWAPD		0x00020000	/* I am kswapd */
 #define PF_MEMALLOC_NOFS	0x00040000	/* All allocations inherit GFP_NOFS. See memalloc_nfs_save() */
 #define PF_MEMALLOC_NOIO	0x00080000	/* All allocations inherit GFP_NOIO. See memalloc_noio_save() */
 #define PF_LOCAL_THROTTLE	0x00100000	/* Throttle writes only against the bdi I write to,
@@ -1877,6 +1859,7 @@ static __always_inline bool is_user_task(struct task_struct *task)
 /* Per-process atomic flags. */
 #define PFA_NO_NEW_PRIVS		0	/* May not gain new privileges. */
 #define PFA_SPREAD_PAGE			1	/* Spread page cache over cpuset */
+#define PFA_SPREAD_SLAB			2	/* Spread some slab caches over cpuset */
 #define PFA_SPEC_SSB_DISABLE		3	/* Speculative Store Bypass disabled */
 #define PFA_SPEC_SSB_FORCE_DISABLE	4	/* Speculative Store Bypass force disabled*/
 #define PFA_SPEC_IB_DISABLE		5	/* Indirect branch speculation restricted */
@@ -1901,6 +1884,10 @@ TASK_PFA_SET(NO_NEW_PRIVS, no_new_privs)
 TASK_PFA_TEST(SPREAD_PAGE, spread_page)
 TASK_PFA_SET(SPREAD_PAGE, spread_page)
 TASK_PFA_CLEAR(SPREAD_PAGE, spread_page)
+
+TASK_PFA_TEST(SPREAD_SLAB, spread_slab)
+TASK_PFA_SET(SPREAD_SLAB, spread_slab)
+TASK_PFA_CLEAR(SPREAD_SLAB, spread_slab)
 
 TASK_PFA_TEST(SPEC_SSB_DISABLE, spec_ssb_disable)
 TASK_PFA_SET(SPEC_SSB_DISABLE, spec_ssb_disable)
@@ -2112,9 +2099,10 @@ static inline int test_tsk_thread_flag(struct task_struct *tsk, int flag)
 
 static inline void set_tsk_need_resched(struct task_struct *tsk)
 {
-	if (!test_and_set_tsk_thread_flag(tsk, TIF_NEED_RESCHED) &&
-	    tracepoint_enabled(sched_set_need_resched_tp))
+	if (tracepoint_enabled(sched_set_need_resched_tp) &&
+	    !test_tsk_thread_flag(tsk, TIF_NEED_RESCHED))
 		__trace_set_need_resched(tsk, TIF_NEED_RESCHED);
+	set_tsk_thread_flag(tsk,TIF_NEED_RESCHED);
 }
 
 static inline void clear_tsk_need_resched(struct task_struct *tsk)
@@ -2141,19 +2129,44 @@ static inline void set_need_resched_current(void)
  * value indicates whether a reschedule was done in fact.
  * cond_resched_lock() will drop the spinlock before scheduling,
  */
-#if !defined(CONFIG_PREEMPTION)
+#if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
 extern int __cond_resched(void);
+
+#if defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_CALL)
+
+DECLARE_STATIC_CALL(cond_resched, __cond_resched);
+
+static __always_inline int _cond_resched(void)
+{
+	return static_call_mod(cond_resched)();
+}
+
+#elif defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
+
+extern int dynamic_cond_resched(void);
+
+static __always_inline int _cond_resched(void)
+{
+	return dynamic_cond_resched();
+}
+
+#else /* !CONFIG_PREEMPTION */
 
 static inline int _cond_resched(void)
 {
 	return __cond_resched();
 }
-#else
+
+#endif /* PREEMPT_DYNAMIC && CONFIG_HAVE_PREEMPT_DYNAMIC_CALL */
+
+#else /* CONFIG_PREEMPTION && !CONFIG_PREEMPT_DYNAMIC */
+
 static inline int _cond_resched(void)
 {
 	return 0;
 }
-#endif
+
+#endif /* !CONFIG_PREEMPTION || CONFIG_PREEMPT_DYNAMIC */
 
 #define cond_resched() ({			\
 	__might_resched(__FILE__, __LINE__, 0);	\
@@ -2333,6 +2346,15 @@ extern int sched_core_idle_cpu(int cpu);
 static inline void sched_core_free(struct task_struct *tsk) { }
 static inline void sched_core_fork(struct task_struct *p) { }
 static inline int sched_core_idle_cpu(int cpu) { return idle_cpu(cpu); }
+#endif
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#ifdef CONFIG_SCHED_CORE
+extern void sched_cs_copy(struct task_struct *src, struct task_struct *dst);
+#else
+static inline void sched_cs_copy(struct task_struct *src,
+				 struct task_struct *dst) { }
+#endif
 #endif
 
 extern void sched_set_stop_task(int cpu, struct task_struct *stop);

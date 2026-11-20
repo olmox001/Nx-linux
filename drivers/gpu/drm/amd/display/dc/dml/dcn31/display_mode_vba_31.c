@@ -2045,7 +2045,7 @@ static void DISPCLKDPPCLKDCFCLKDeepSleepPrefetchParametersWatermarksAndPerforman
 	v->DISPCLKWithRamping = 0;
 	v->DISPCLKWithoutRamping = 0;
 	v->GlobalDPPCLK = 0.0;
-	/* DAL custom code: need to update ReturnBW in case min dcfclk is overridden */
+	/* DAL custom code: need to update ReturnBW in case min dcfclk is overriden */
 	{
 	double IdealFabricAndSDPPortBandwidthPerState = dml_min(
 			v->ReturnBusWidth * v->DCFCLKState[v->VoltageLevel][v->maxMpcComb],
@@ -5337,7 +5337,7 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 		for (j = 0; j <= 1; ++j) {
 			double VMDataOnlyReturnBWPerState;
 			double HostVMInefficiencyFactor = 1;
-			unsigned int NextPrefetchModeState = MinPrefetchMode;
+			int NextPrefetchModeState = MinPrefetchMode;
 			bool UnboundedRequestEnabledThisState = false;
 			unsigned int CompressedBufferSizeInkByteThisState = 0;
 			double dummy;

@@ -122,19 +122,23 @@ static void exynos_plane_mode_set(struct exynos_drm_plane_state *exynos_state)
 			  exynos_state->crtc.w, exynos_state->crtc.h);
 }
 
-static struct drm_plane_state *exynos_drm_plane_create_state(struct drm_plane *plane)
+static void exynos_drm_plane_reset(struct drm_plane *plane)
 {
 	struct exynos_drm_plane *exynos_plane = to_exynos_plane(plane);
 	struct exynos_drm_plane_state *exynos_state;
 
+	if (plane->state) {
+		exynos_state = to_exynos_plane_state(plane->state);
+		__drm_atomic_helper_plane_destroy_state(plane->state);
+		kfree(exynos_state);
+		plane->state = NULL;
+	}
+
 	exynos_state = kzalloc_obj(*exynos_state);
-	if (!exynos_state)
-		return ERR_PTR(-ENOMEM);
-
-	__drm_atomic_helper_plane_state_init(&exynos_state->base, plane);
-	exynos_state->base.zpos = exynos_plane->config->zpos;
-
-	return &exynos_state->base;
+	if (exynos_state) {
+		__drm_atomic_helper_plane_reset(plane, &exynos_state->base);
+		plane->state->zpos = exynos_plane->config->zpos;
+	}
 }
 
 static struct drm_plane_state *
@@ -165,7 +169,7 @@ static struct drm_plane_funcs exynos_plane_funcs = {
 	.update_plane	= drm_atomic_helper_update_plane,
 	.disable_plane	= drm_atomic_helper_disable_plane,
 	.destroy	= drm_plane_cleanup,
-	.atomic_create_state = exynos_drm_plane_create_state,
+	.reset		= exynos_drm_plane_reset,
 	.atomic_duplicate_state = exynos_drm_plane_duplicate_state,
 	.atomic_destroy_state = exynos_drm_plane_destroy_state,
 };

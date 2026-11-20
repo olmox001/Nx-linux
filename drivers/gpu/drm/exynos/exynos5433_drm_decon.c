@@ -794,7 +794,7 @@ static int exynos5433_decon_probe(struct platform_device *pdev)
 	int ret;
 	int i;
 
-	ctx = devm_kzalloc_obj(dev, *ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 

@@ -114,7 +114,8 @@ static int wmt_i2c_probe(struct platform_device *pdev)
 	err = devm_request_irq(&pdev->dev, i2c->irq, wmt_i2c_isr,
 			       0, pdev->name, i2c);
 	if (err)
-		return err;
+		return dev_err_probe(&pdev->dev, err,
+				"failed to request irq %i\n", i2c->irq);
 
 	i2c->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(i2c->clk))

@@ -92,7 +92,8 @@ int ipu7_fw_isys_init(struct ipu7_isys *isys)
 	int ret;
 
 	/* Allocate and init syscom context. */
-	syscom = devm_kzalloc_obj(dev, struct ipu7_syscom_context);
+	syscom = devm_kzalloc(dev, sizeof(struct ipu7_syscom_context),
+			      GFP_KERNEL);
 	if (!syscom)
 		return -ENOMEM;
 

@@ -234,16 +234,13 @@ static int pcistub_get_gsi_from_sbdf(unsigned int sbdf)
 	int bus = PCI_BUS_NUM(sbdf);
 	int slot = PCI_SLOT(sbdf);
 	int func = PCI_FUNC(sbdf);
-	int gsi;
 
 	psdev = pcistub_device_find(domain, bus, slot, func);
+
 	if (!psdev)
 		return -ENODEV;
 
-	gsi = psdev->gsi;
-	pcistub_device_put(psdev);
-
-	return gsi;
+	return psdev->gsi;
 }
 #endif
 

@@ -453,8 +453,8 @@ void tcp_openreq_init_rwin(struct request_sock *req,
 	rcv_wnd = tcp_rwnd_init_bpf((struct sock *)req);
 	if (rcv_wnd == 0)
 		rcv_wnd = dst_metric(dst, RTAX_INITRWND);
-	else if (full_space < (u64)rcv_wnd * mss)
-		full_space = min_t(u64, (u64)rcv_wnd * mss, INT_MAX);
+	else if (full_space < rcv_wnd * mss)
+		full_space = rcv_wnd * mss;
 
 	/* tcp_full_space because it is guaranteed to be the first packet */
 	tcp_select_initial_window(sk_listener, full_space,
@@ -974,7 +974,7 @@ embryonic_reset:
 		tcp_reset(sk, skb);
 	}
 	if (!fastopen) {
-		bool unlinked = inet_csk_reqsk_queue_drop(req->rsk_listener, req);
+		bool unlinked = inet_csk_reqsk_queue_drop(sk, req);
 
 		if (unlinked)
 			__NET_INC_STATS(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);

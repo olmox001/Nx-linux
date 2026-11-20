@@ -415,8 +415,7 @@ ssize_t fsg_store_ro(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 }
 EXPORT_SYMBOL_GPL(fsg_store_ro);
 
-ssize_t fsg_store_nofua(struct fsg_lun *curlun, struct rw_semaphore *filesem,
-			const char *buf, size_t count)
+ssize_t fsg_store_nofua(struct fsg_lun *curlun, const char *buf, size_t count)
 {
 	bool		nofua;
 	int		ret;
@@ -426,10 +425,8 @@ ssize_t fsg_store_nofua(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 		return ret;
 
 	/* Sync data when switching from async mode to sync */
-	if (!nofua && curlun->nofua) {
-		guard(rwsem_read)(filesem);
+	if (!nofua && curlun->nofua)
 		fsg_lun_fsync_sub(curlun);
-	}
 
 	curlun->nofua = nofua;
 

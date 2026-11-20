@@ -208,9 +208,8 @@ static int pci_doe_sysfs_feature_populate(struct pci_dev *pdev,
 				pci_warn(pdev, "Failed adding %s to sysfs group\n",
 					 attrs[i].attr.name);
 				goto fail;
-			}
-			kfree(attrs[i].attr.name);
-			attrs[i].attr.name = NULL;
+			} else
+				kfree(attrs[i].attr.name);
 		}
 	}
 
@@ -859,8 +858,8 @@ void pci_doe_init(struct pci_dev *pdev)
 						      PCI_EXT_CAP_ID_DOE))) {
 		doe_mb = pci_doe_create_mb(pdev, offset);
 		if (IS_ERR(doe_mb)) {
-			pci_err(pdev, "[%x] failed to create mailbox: %pe\n",
-				offset, doe_mb);
+			pci_err(pdev, "[%x] failed to create mailbox: %ld\n",
+				offset, PTR_ERR(doe_mb));
 			continue;
 		}
 

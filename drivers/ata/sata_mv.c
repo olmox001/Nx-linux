@@ -252,7 +252,6 @@ enum {
 	SOC_LED_CTRL_BLINK	= (1 << 0),	/* Active LED blink */
 	SOC_LED_CTRL_ACT_PRESENCE = (1 << 2),	/* Multiplex dev presence */
 						/*  with dev activity LED */
-	SOC_LED_CTRL_ENABLE	= (1 << 3),	/* Enable SATA LED control */
 
 	/* Shadow block registers */
 	SHD_BLK			= 0x100,
@@ -1675,7 +1674,7 @@ static int mv_port_start(struct ata_port *ap)
 	unsigned long flags;
 	int tag;
 
-	pp = devm_kzalloc_obj(dev, *pp);
+	pp = devm_kzalloc(dev, sizeof(*pp), GFP_KERNEL);
 	if (!pp)
 		return -ENOMEM;
 	ap->private_data = pp;
@@ -3383,15 +3382,12 @@ static void mv6_phy_errata(struct mv_host_priv *hpriv, void __iomem *mmio,
 	writel(m2, port_mmio + PHY_MODE2);
 }
 
-/*
- * Enable the SoC SATA LED controller and device presence
- * indication on the board's SATA LEDs.
- */
+/* TODO: use the generic LED interface to configure the SATA Presence */
+/* & Acitivy LEDs on the board */
 static void mv_soc_enable_leds(struct mv_host_priv *hpriv,
 				      void __iomem *mmio)
 {
-	writel(SOC_LED_CTRL_ENABLE | SOC_LED_CTRL_ACT_PRESENCE,
-	       mv_hc_base(mmio, 0) + SOC_LED_CTRL);
+	return;
 }
 
 static void mv_soc_read_preamp(struct mv_host_priv *hpriv, int idx,
@@ -4058,23 +4054,31 @@ static int mv_platform_probe(struct platform_device *pdev)
 				n_ports);
 			return -EINVAL;
 		}
+
+		irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
 	} else {
 		mv_platform_data = dev_get_platdata(&pdev->dev);
 		n_ports = mv_platform_data->n_ports;
+		irq = platform_get_irq(pdev, 0);
 	}
-	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
+	if (!irq)
+		return -EINVAL;
 
 	host = ata_host_alloc_pinfo(&pdev->dev, ppi, n_ports);
-	hpriv = devm_kzalloc_obj(&pdev->dev, *hpriv);
+	hpriv = devm_kzalloc(&pdev->dev, sizeof(*hpriv), GFP_KERNEL);
 
 	if (!host || !hpriv)
 		return -ENOMEM;
-	hpriv->port_clks = devm_kzalloc_objs(&pdev->dev, struct clk *, n_ports);
+	hpriv->port_clks = devm_kcalloc(&pdev->dev,
+					n_ports, sizeof(struct clk *),
+					GFP_KERNEL);
 	if (!hpriv->port_clks)
 		return -ENOMEM;
-	hpriv->port_phys = devm_kzalloc_objs(&pdev->dev, struct phy *, n_ports);
+	hpriv->port_phys = devm_kcalloc(&pdev->dev,
+					n_ports, sizeof(struct phy *),
+					GFP_KERNEL);
 	if (!hpriv->port_phys)
 		return -ENOMEM;
 	host->private_data = hpriv;
@@ -4088,19 +4092,21 @@ static int mv_platform_probe(struct platform_device *pdev)
 
 	hpriv->base -= SATAHC0_REG_BASE;
 
-	hpriv->clk = devm_clk_get_optional_enabled(&pdev->dev, NULL);
-	if (IS_ERR(hpriv->clk))
-		return PTR_ERR(hpriv->clk);
+	hpriv->clk = clk_get(&pdev->dev, NULL);
+	if (IS_ERR(hpriv->clk)) {
+		dev_notice(&pdev->dev, "cannot get optional clkdev\n");
+	} else {
+		rc = clk_prepare_enable(hpriv->clk);
+		if (rc)
+			goto err;
+	}
 
 	for (port = 0; port < n_ports; port++) {
 		char port_number[16];
 		sprintf(port_number, "%d", port);
-		hpriv->port_clks[port] = devm_clk_get_optional_enabled(&pdev->dev, port_number);
-		if (IS_ERR(hpriv->port_clks[port])) {
-			rc = PTR_ERR(hpriv->port_clks[port]);
-			hpriv->n_ports = port;
-			goto err;
-		}
+		hpriv->port_clks[port] = clk_get(&pdev->dev, port_number);
+		if (!IS_ERR(hpriv->port_clks[port]))
+			clk_prepare_enable(hpriv->port_clks[port]);
 
 		sprintf(port_number, "port%d", port);
 		hpriv->port_phys[port] = devm_phy_optional_get(&pdev->dev,
@@ -4114,8 +4120,8 @@ static int mv_platform_probe(struct platform_device *pdev)
 			/* Cleanup only the initialized ports */
 			hpriv->n_ports = port;
 			goto err;
-		}
-		phy_power_on(hpriv->port_phys[port]);
+		} else
+			phy_power_on(hpriv->port_phys[port]);
 	}
 
 	/* All the ports have been initialized */
@@ -4154,8 +4160,17 @@ static int mv_platform_probe(struct platform_device *pdev)
 		return 0;
 
 err:
-	for (port = 0; port < hpriv->n_ports; port++)
+	if (!IS_ERR(hpriv->clk)) {
+		clk_disable_unprepare(hpriv->clk);
+		clk_put(hpriv->clk);
+	}
+	for (port = 0; port < hpriv->n_ports; port++) {
+		if (!IS_ERR(hpriv->port_clks[port])) {
+			clk_disable_unprepare(hpriv->port_clks[port]);
+			clk_put(hpriv->port_clks[port]);
+		}
 		phy_power_off(hpriv->port_phys[port]);
+	}
 
 	return rc;
 }
@@ -4175,8 +4190,17 @@ static void mv_platform_remove(struct platform_device *pdev)
 	int port;
 	ata_host_detach(host);
 
-	for (port = 0; port < host->n_ports; port++)
+	if (!IS_ERR(hpriv->clk)) {
+		clk_disable_unprepare(hpriv->clk);
+		clk_put(hpriv->clk);
+	}
+	for (port = 0; port < host->n_ports; port++) {
+		if (!IS_ERR(hpriv->port_clks[port])) {
+			clk_disable_unprepare(hpriv->port_clks[port]);
+			clk_put(hpriv->port_clks[port]);
+		}
 		phy_power_off(hpriv->port_phys[port]);
+	}
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -4357,7 +4381,7 @@ static int mv_pci_init_one(struct pci_dev *pdev,
 	n_ports = mv_get_hc_count(ppi[0]->flags) * MV_PORTS_PER_HC;
 
 	host = ata_host_alloc_pinfo(&pdev->dev, ppi, n_ports);
-	hpriv = devm_kzalloc_obj(&pdev->dev, *hpriv);
+	hpriv = devm_kzalloc(&pdev->dev, sizeof(*hpriv), GFP_KERNEL);
 	if (!host || !hpriv)
 		return -ENOMEM;
 	host->private_data = hpriv;

@@ -15,7 +15,6 @@
 #include <linux/errno.h>
 #include <linux/limits.h>
 #include <asm/asm.h>
-#include <asm/shared/string.h>
 #include "ctype.h"
 #include "string.h"
 
@@ -32,7 +31,17 @@
 
 int memcmp(const void *s1, const void *s2, size_t len)
 {
-	return __inline_memcmp(s1, s2, len);
+	bool diff;
+
+	/*
+	 * Make sure ZF is properly set in the len==0 case because in it,
+	 * RCX==0 and the REPE; CMPSB won't get executed.
+	 */
+	asm volatile("test %3, %3\n\t"
+		     "repe cmpsb"
+		     : "=@ccnz" (diff), "+D" (s1), "+S" (s2), "+c" (len)
+		     : : "cc", "memory");
+	return diff;
 }
 
 /*

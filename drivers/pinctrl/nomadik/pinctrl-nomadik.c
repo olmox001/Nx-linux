@@ -1215,7 +1215,7 @@ static int nmk_pinctrl_probe(struct platform_device *pdev)
 	uintptr_t version = 0;
 	int i;
 
-	npct = devm_kzalloc_obj(&pdev->dev, *npct);
+	npct = devm_kzalloc(&pdev->dev, sizeof(*npct), GFP_KERNEL);
 	if (!npct)
 		return -ENOMEM;
 

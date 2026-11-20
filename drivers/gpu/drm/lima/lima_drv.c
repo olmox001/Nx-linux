@@ -377,7 +377,7 @@ static int lima_pdev_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	ldev = devm_kzalloc_obj(&pdev->dev, *ldev);
+	ldev = devm_kzalloc(&pdev->dev, sizeof(*ldev), GFP_KERNEL);
 	if (!ldev) {
 		err = -ENOMEM;
 		goto err_out0;

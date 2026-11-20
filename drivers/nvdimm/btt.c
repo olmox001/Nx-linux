@@ -721,7 +721,7 @@ static int log_set_indices(struct arena_info *arena)
 
 static int btt_rtt_init(struct arena_info *arena)
 {
-	arena->rtt = kzalloc_objs(u32, arena->nfree);
+	arena->rtt = kcalloc(arena->nfree, sizeof(u32), GFP_KERNEL);
 	if (arena->rtt == NULL)
 		return -ENOMEM;
 
@@ -1163,7 +1163,7 @@ static int btt_rw_integrity(struct btt *btt, struct bio_integrity_payload *bip,
 		bv = bvec_iter_bvec(bip->bip_vec, bip->bip_iter);
 		/*
 		 * The 'bv' obtained from bvec_iter_bvec has its .bv_len and
-		 * .bv_offset already adjusted for iter->bi_offset, and we
+		 * .bv_offset already adjusted for iter->bi_bvec_done, and we
 		 * can use those directly
 		 */
 
@@ -1577,7 +1577,7 @@ static struct btt *btt_init(struct nd_btt *nd_btt, unsigned long long rawsize,
 	struct nd_namespace_io *nsio;
 	struct device *dev = &nd_btt->dev;
 
-	btt = devm_kzalloc_obj(dev, struct btt);
+	btt = devm_kzalloc(dev, sizeof(struct btt), GFP_KERNEL);
 	if (!btt)
 		return NULL;
 
@@ -1666,7 +1666,7 @@ int nvdimm_namespace_attach_btt(struct nd_namespace_common *ndns)
 		return -ENODEV;
 	}
 
-	btt_sb = devm_kzalloc_obj(&nd_btt->dev, *btt_sb);
+	btt_sb = devm_kzalloc(&nd_btt->dev, sizeof(*btt_sb), GFP_KERNEL);
 	if (!btt_sb)
 		return -ENOMEM;
 

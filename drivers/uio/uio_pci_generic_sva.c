@@ -88,7 +88,8 @@ static int probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		dev_warn(&pdev->dev,
 			 "No IRQ vectors available (%d), using polling\n", ret);
 
-	udev = devm_kzalloc_obj(&pdev->dev, struct uio_pci_sva_dev);
+	udev = devm_kzalloc(&pdev->dev, sizeof(struct uio_pci_sva_dev),
+			    GFP_KERNEL);
 	if (!udev) {
 		ret =  -ENOMEM;
 		goto out_disable;

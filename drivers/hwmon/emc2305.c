@@ -641,7 +641,7 @@ static int emc2305_probe(struct i2c_client *client)
 	if (vendor != EMC2305_VENDOR)
 		return -ENODEV;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

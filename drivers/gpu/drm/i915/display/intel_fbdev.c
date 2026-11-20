@@ -38,10 +38,10 @@
 #include <linux/vga_switcheroo.h>
 
 #include <drm/clients/drm_client_setup.h>
-#include <drm/clients/drm_fbdev_helper.h>
 #include <drm/intel/display_parent_interface.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_framebuffer_helper.h>
@@ -75,10 +75,9 @@ static struct intel_frontbuffer *to_frontbuffer(struct intel_fbdev *ifbdev)
 	return ifbdev->fb->frontbuffer;
 }
 
-/* The console operation has already completed, hence flush not invalidate. */
-static void intel_fbdev_flush(struct intel_fbdev *ifbdev)
+static void intel_fbdev_invalidate(struct intel_fbdev *ifbdev)
 {
-	intel_frontbuffer_flush(to_frontbuffer(ifbdev), ORIGIN_CPU);
+	intel_frontbuffer_invalidate(to_frontbuffer(ifbdev), ORIGIN_CPU);
 }
 
 FB_GEN_DEFAULT_DEFERRED_IOMEM_OPS(intel_fbdev,
@@ -92,7 +91,7 @@ static int intel_fbdev_set_par(struct fb_info *info)
 
 	ret = drm_fb_helper_set_par(info);
 	if (ret == 0)
-		intel_fbdev_flush(ifbdev);
+		intel_fbdev_invalidate(ifbdev);
 
 	return ret;
 }
@@ -104,7 +103,7 @@ static int intel_fbdev_blank(int blank, struct fb_info *info)
 
 	ret = drm_fb_helper_blank(blank, info);
 	if (ret == 0)
-		intel_fbdev_flush(ifbdev);
+		intel_fbdev_invalidate(ifbdev);
 
 	return ret;
 }
@@ -117,7 +116,7 @@ static int intel_fbdev_pan_display(struct fb_var_screeninfo *var,
 
 	ret = drm_fb_helper_pan_display(var, info);
 	if (ret == 0)
-		intel_fbdev_flush(ifbdev);
+		intel_fbdev_invalidate(ifbdev);
 
 	return ret;
 }
@@ -181,7 +180,7 @@ static void intelfb_restore(struct drm_fb_helper *fb_helper)
 {
 	struct intel_fbdev *ifbdev = to_intel_fbdev(fb_helper);
 
-	intel_fbdev_flush(ifbdev);
+	intel_fbdev_invalidate(ifbdev);
 }
 
 static void intelfb_set_suspend(struct drm_fb_helper *fb_helper, bool suspend)
@@ -263,32 +262,6 @@ err:
 
 }
 
-static bool bios_fb_ok(const struct intel_framebuffer *fb,
-		       const struct drm_fb_helper_surface_size *sizes)
-{
-	struct intel_display *display = to_intel_display(fb->base.dev);
-	int width = fb->base.width;
-	int height = fb->base.height;
-	int depth = fb->base.format->depth;
-	int bpp = fb->base.format->cpp[0] * 8;
-
-	if (sizes->fb_width > width || sizes->fb_height > height) {
-		drm_dbg_kms(display->drm,
-			    "BIOS fb too small (%dx%d), we require (%dx%d), releasing it\n",
-			    width, height, sizes->fb_width, sizes->fb_height);
-		return false;
-	}
-
-	if (sizes->surface_depth != depth || sizes->surface_bpp != bpp) {
-		drm_dbg_kms(display->drm,
-			    "BIOS fb using wrong depth/bpp (%d/%d), we require (%d/%d), releasing it\n",
-			    depth, bpp, sizes->surface_depth, sizes->surface_bpp);
-		return false;
-	}
-
-	return true;
-}
-
 int intel_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 				   struct drm_fb_helper_surface_size *sizes)
 {
@@ -306,7 +279,14 @@ int intel_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 
 	ifbdev->fb = NULL;
 
-	if (fb && !bios_fb_ok(fb, sizes)) {
+	if (fb &&
+	    (sizes->fb_width > fb->base.width ||
+	     sizes->fb_height > fb->base.height)) {
+		drm_dbg_kms(display->drm,
+			    "BIOS fb too small (%dx%d), we require (%dx%d),"
+			    " releasing it\n",
+			    fb->base.width, fb->base.height,
+			    sizes->fb_width, sizes->fb_height);
 		drm_framebuffer_put(&fb->base);
 		fb = NULL;
 	}

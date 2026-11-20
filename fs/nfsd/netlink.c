@@ -79,9 +79,8 @@ static const struct nla_policy nfsd_version_set_nl_policy[NFSD_A_SERVER_PROTO_VE
 };
 
 /* NFSD_CMD_LISTENER_SET - do */
-static const struct nla_policy nfsd_listener_set_nl_policy[NFSD_A_SERVER_SOCK_USERSPACE_RPCBIND + 1] = {
+static const struct nla_policy nfsd_listener_set_nl_policy[NFSD_A_SERVER_SOCK_ADDR + 1] = {
 	[NFSD_A_SERVER_SOCK_ADDR] = NLA_POLICY_NESTED(nfsd_sock_nl_policy),
-	[NFSD_A_SERVER_SOCK_USERSPACE_RPCBIND] = { .type = NLA_FLAG, },
 };
 
 /* NFSD_CMD_POOL_MODE_SET - do */
@@ -154,7 +153,7 @@ static const struct genl_split_ops nfsd_nl_ops[] = {
 		.cmd		= NFSD_CMD_LISTENER_SET,
 		.doit		= nfsd_nl_listener_set_doit,
 		.policy		= nfsd_listener_set_nl_policy,
-		.maxattr	= NFSD_A_SERVER_SOCK_USERSPACE_RPCBIND,
+		.maxattr	= NFSD_A_SERVER_SOCK_ADDR,
 		.flags		= GENL_ADMIN_PERM | GENL_CMD_CAP_DO,
 	},
 	{
@@ -225,11 +224,6 @@ static const struct genl_split_ops nfsd_nl_ops[] = {
 		.policy		= nfsd_unlock_export_nl_policy,
 		.maxattr	= NFSD_A_UNLOCK_EXPORT_PATH,
 		.flags		= GENL_ADMIN_PERM | GENL_CMD_CAP_DO,
-	},
-	{
-		.cmd	= NFSD_CMD_SERVER_STATS_GET,
-		.dumpit	= nfsd_nl_server_stats_get_dumpit,
-		.flags	= GENL_CMD_CAP_DUMP,
 	},
 };
 

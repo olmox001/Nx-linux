@@ -227,7 +227,7 @@ static int cavium_ptp_probe(struct pci_dev *pdev,
 	u64 clock_comp;
 	int err;
 
-	clock = devm_kzalloc_obj(dev, *clock);
+	clock = devm_kzalloc(dev, sizeof(*clock), GFP_KERNEL);
 	if (!clock) {
 		err = -ENOMEM;
 		goto error;

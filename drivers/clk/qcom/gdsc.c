@@ -603,11 +603,12 @@ int gdsc_register(struct gdsc_desc *desc,
 	struct gdsc **scs = desc->scs;
 	size_t num = desc->num;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	data->domains = devm_kzalloc_objs(dev, *data->domains, num);
+	data->domains = devm_kcalloc(dev, num, sizeof(*data->domains),
+				     GFP_KERNEL);
 	if (!data->domains)
 		return -ENOMEM;
 

@@ -24,6 +24,7 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_simple_kms_helper.h>
 
 #include <drm/display/drm_hdmi_helper.h>
 #include <drm/display/drm_hdmi_state_helper.h>
@@ -171,10 +172,6 @@ static void sun4i_hdmi_enable(struct drm_encoder *encoder,
 	writel(val, hdmi->base + SUN4I_HDMI_VID_CTRL_REG);
 }
 
-static const struct drm_encoder_funcs sun4i_hdmi_funcs = {
-	.destroy = drm_encoder_cleanup,
-};
-
 static const struct drm_encoder_helper_funcs sun4i_hdmi_helper_funcs = {
 	.atomic_disable	= sun4i_hdmi_disable,
 	.atomic_enable	= sun4i_hdmi_enable,
@@ -191,6 +188,10 @@ sun4i_hdmi_connector_clock_valid(const struct drm_connector *connector,
 
 	if (mode->flags & DRM_MODE_FLAG_DBLCLK)
 		return MODE_BAD;
+
+	/* HDMI 1.0 max TMDS character rate */
+	if (clock > HDMI_1_0_TMDS_CHAR_RATE_MAX_HZ)
+		return MODE_CLOCK_HIGH;
 
 	rounded_rate = clk_round_rate(hdmi->tmds_clk, clock);
 	if (rounded_rate > 0 &&
@@ -249,15 +250,6 @@ static struct i2c_adapter *sun4i_hdmi_get_ddc(struct device *dev)
 }
 
 static const struct drm_connector_hdmi_funcs sun4i_hdmi_hdmi_connector_funcs = {
-	/*
-	 * NOTE: Those are likely to be wrong, but I couldn't find
-	 * the actual ones in the BSP.
-	 */
-	.vendor = "AW",
-	.product = "HDMI",
-	.supported_hdmi_ver = HDMI_VERSION_1_2,
-	.supported_formats = BIT(DRM_OUTPUT_COLOR_FORMAT_RGB444),
-	.max_bpc = 8,
 	.tmds_char_rate_valid	= sun4i_hdmi_connector_clock_valid,
 	.avi = {
 		.clear_infoframe	= sun4i_hdmi_clear_avi_infoframe,
@@ -293,11 +285,10 @@ sun4i_hdmi_connector_detect(struct drm_connector *connector, bool force)
 static void sun4i_hdmi_connector_reset(struct drm_connector *connector)
 {
 	drm_atomic_helper_connector_reset(connector);
-	__drm_atomic_helper_connector_hdmi_state_init(connector, connector->state);
+	__drm_atomic_helper_connector_hdmi_reset(connector, connector->state);
 }
 
 static const struct drm_connector_funcs sun4i_hdmi_connector_funcs = {
-	.debugfs_init		= drm_hdmi_connector_debugfs_init,
 	.detect			= sun4i_hdmi_connector_detect,
 	.fill_modes		= drm_helper_probe_single_connector_modes,
 	.reset			= sun4i_hdmi_connector_reset,
@@ -520,7 +511,7 @@ static int sun4i_hdmi_bind(struct device *dev, struct device *master,
 	u32 reg;
 	int ret;
 
-	hdmi = devm_kzalloc_obj(dev, *hdmi);
+	hdmi = devm_kzalloc(dev, sizeof(*hdmi), GFP_KERNEL);
 	if (!hdmi)
 		return -ENOMEM;
 	dev_set_drvdata(dev, hdmi);
@@ -633,8 +624,8 @@ static int sun4i_hdmi_bind(struct device *dev, struct device *master,
 
 	drm_encoder_helper_add(&hdmi->encoder,
 			       &sun4i_hdmi_helper_funcs);
-	ret = drm_encoder_init(drm, &hdmi->encoder, &sun4i_hdmi_funcs,
-			       DRM_MODE_ENCODER_TMDS, NULL);
+	ret = drm_simple_encoder_init(drm, &hdmi->encoder,
+				      DRM_MODE_ENCODER_TMDS);
 	if (ret) {
 		dev_err(dev, "Couldn't initialise the HDMI encoder\n");
 		goto err_put_ddc_i2c;
@@ -660,10 +651,18 @@ static int sun4i_hdmi_bind(struct device *dev, struct device *master,
 	drm_connector_helper_add(&hdmi->connector,
 				 &sun4i_hdmi_connector_helper_funcs);
 	ret = drmm_connector_hdmi_init(drm, &hdmi->connector,
+				       /*
+					* NOTE: Those are likely to be
+					* wrong, but I couldn't find the
+					* actual ones in the BSP.
+					*/
+				       "AW", "HDMI",
 				       &sun4i_hdmi_connector_funcs,
 				       &sun4i_hdmi_hdmi_connector_funcs,
 				       DRM_MODE_CONNECTOR_HDMIA,
-				       hdmi->ddc_i2c);
+				       hdmi->ddc_i2c,
+				       BIT(DRM_OUTPUT_COLOR_FORMAT_RGB444),
+				       8);
 	if (ret) {
 		dev_err(dev,
 			"Couldn't initialise the HDMI connector\n");

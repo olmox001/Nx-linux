@@ -1378,7 +1378,8 @@ static int f71805f_probe(struct platform_device *pdev)
 		"f71872f",
 	};
 
-	data = devm_kzalloc_obj(&pdev->dev, struct f71805f_data);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct f71805f_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

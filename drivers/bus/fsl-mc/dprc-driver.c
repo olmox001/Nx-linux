@@ -266,8 +266,9 @@ int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
 		int i;
 
 		child_obj_desc_array =
-		    devm_kmalloc_objs(&mc_bus_dev->dev, *child_obj_desc_array,
-				      num_child_objects);
+		    devm_kmalloc_array(&mc_bus_dev->dev, num_child_objects,
+				       sizeof(*child_obj_desc_array),
+				       GFP_KERNEL);
 		if (!child_obj_desc_array)
 			return -ENOMEM;
 
@@ -520,8 +521,12 @@ static int register_dprc_irq_handler(struct fsl_mc_device *mc_dev)
 					  IRQF_NO_SUSPEND | IRQF_ONESHOT,
 					  dev_name(&mc_dev->dev),
 					  &mc_dev->dev);
-	if (error < 0)
+	if (error < 0) {
+		dev_err(&mc_dev->dev,
+			"devm_request_threaded_irq() failed: %d\n",
+			error);
 		return error;
+	}
 
 	return 0;
 }

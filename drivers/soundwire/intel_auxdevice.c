@@ -54,7 +54,6 @@ static struct wake_capable_part wake_capable_list[] = {
 	{0x01fa, 0x2A30},
 	{0x01fa, 0x2A3B},
 	{0x01fa, 0x4243},
-	{0x01fa, 0x4244},
 	{0x01fa, 0x4245},
 	{0x01fa, 0x4249},
 	{0x01fa, 0x4747},
@@ -71,14 +70,9 @@ static struct wake_capable_part wake_capable_list[] = {
 	{0x025d, 0x715},
 	{0x025d, 0x716},
 	{0x025d, 0x717},
-	{0x025d, 0x718},
 	{0x025d, 0x721},
 	{0x025d, 0x722},
-	{0x025d, 0x766},
-	{0x025d, 0x767},
 	{0x04b3, 0x9356},
-	{0x0102, 0x5572},
-	{0x0102, 0x5682},
 };
 
 static bool is_wake_capable(struct sdw_slave *slave)
@@ -164,7 +158,7 @@ static int sdw_master_read_intel_prop(struct sdw_bus *bus)
 	struct sdw_intel_prop *intel_prop;
 	struct fwnode_handle *link;
 	char name[32];
-	u32 quirk_mask = 0;
+	u32 quirk_mask;
 
 	/* Find master handle */
 	snprintf(name, sizeof(name),
@@ -197,7 +191,7 @@ static int sdw_master_read_intel_prop(struct sdw_bus *bus)
 	prop->quirks = SDW_MASTER_QUIRKS_CLEAR_INITIAL_CLASH |
 		SDW_MASTER_QUIRKS_CLEAR_INITIAL_PARITY;
 
-	intel_prop = devm_kzalloc_obj(bus->dev, *intel_prop);
+	intel_prop = devm_kzalloc(bus->dev, sizeof(*intel_prop), GFP_KERNEL);
 	if (!intel_prop) {
 		fwnode_handle_put(link);
 		return -ENOMEM;
@@ -320,7 +314,7 @@ static int intel_link_probe(struct auxiliary_device *auxdev,
 	struct sdw_bus *bus;
 	int ret;
 
-	sdw = devm_kzalloc_obj(dev, *sdw);
+	sdw = devm_kzalloc(dev, sizeof(*sdw), GFP_KERNEL);
 	if (!sdw)
 		return -ENOMEM;
 
@@ -675,8 +669,7 @@ static int __maybe_unused intel_suspend(struct device *dev)
 		return 0;
 	}
 
-	/* Perform clock stop with proper mode and keep the bus unwakeable in system suspend. */
-	ret = sdw_intel_stop_bus(sdw, true, false);
+	ret = sdw_intel_stop_bus(sdw, false);
 	if (ret < 0) {
 		dev_err(dev, "%s: cannot stop bus: %d\n", __func__, ret);
 		return ret;
@@ -702,14 +695,14 @@ static int __maybe_unused intel_suspend_runtime(struct device *dev)
 	clock_stop_quirks = sdw->link_res->clock_stop_quirks;
 
 	if (clock_stop_quirks & SDW_INTEL_CLK_STOP_TEARDOWN) {
-		ret = sdw_intel_stop_bus(sdw, false, false);
+		ret = sdw_intel_stop_bus(sdw, false);
 		if (ret < 0) {
 			dev_err(dev, "%s: cannot stop bus during teardown: %d\n",
 				__func__, ret);
 			return ret;
 		}
 	} else if (clock_stop_quirks & SDW_INTEL_CLK_STOP_BUS_RESET || !clock_stop_quirks) {
-		ret = sdw_intel_stop_bus(sdw, true, true);
+		ret = sdw_intel_stop_bus(sdw, true);
 		if (ret < 0) {
 			dev_err(dev, "%s: cannot stop bus during clock_stop: %d\n",
 				__func__, ret);

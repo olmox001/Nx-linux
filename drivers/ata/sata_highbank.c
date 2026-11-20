@@ -455,7 +455,7 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 	struct ahci_host_priv *hpriv;
 	struct ecx_plat_data *pdata;
 	struct ata_host *host;
-	void __iomem *mmio;
+	struct resource *mem;
 	int irq;
 	int i;
 	int rc;
@@ -463,9 +463,11 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 	struct ata_port_info pi = ahci_highbank_port_info;
 	const struct ata_port_info *ppi[] = { &pi, NULL };
 
-	mmio = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(mmio))
-		return PTR_ERR(mmio);
+	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!mem) {
+		dev_err(dev, "no mmio space\n");
+		return -EINVAL;
+	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -473,12 +475,12 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 	if (!irq)
 		return -EINVAL;
 
-	hpriv = devm_kzalloc_obj(dev, *hpriv);
+	hpriv = devm_kzalloc(dev, sizeof(*hpriv), GFP_KERNEL);
 	if (!hpriv) {
 		dev_err(dev, "can't alloc ahci_host_priv\n");
 		return -ENOMEM;
 	}
-	pdata = devm_kzalloc_obj(dev, *pdata);
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata) {
 		dev_err(dev, "can't alloc ecx_plat_data\n");
 		return -ENOMEM;
@@ -486,7 +488,12 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 
 	hpriv->irq = irq;
 	hpriv->flags |= (unsigned long)pi.private_data;
-	hpriv->mmio = mmio;
+
+	hpriv->mmio = devm_ioremap(dev, mem->start, resource_size(mem));
+	if (!hpriv->mmio) {
+		dev_err(dev, "can't map %pR\n", mem);
+		return -ENOMEM;
+	}
 
 	rc = highbank_initialize_phys(dev, hpriv->mmio);
 	if (rc)
@@ -530,6 +537,7 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 	for (i = 0; i < host->n_ports; i++) {
 		struct ata_port *ap = host->ports[i];
 
+		ata_port_desc(ap, "mmio %pR", mem);
 		ata_port_desc(ap, "port 0x%x", 0x100 + ap->port_no * 0x80);
 
 		/* set enclosure management message type */

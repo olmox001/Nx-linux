@@ -98,7 +98,8 @@ static int lt3651_charger_probe(struct platform_device *pdev)
 	struct power_supply_desc *charger_desc;
 	int ret;
 
-	lt3651_charger = devm_kzalloc_obj(&pdev->dev, *lt3651_charger);
+	lt3651_charger = devm_kzalloc(&pdev->dev, sizeof(*lt3651_charger),
+					GFP_KERNEL);
 	if (!lt3651_charger)
 		return -ENOMEM;
 

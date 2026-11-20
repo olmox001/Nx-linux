@@ -428,7 +428,6 @@ struct ftrace_profile {
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	unsigned long long		time;
 	unsigned long long		time_squared;
-	unsigned long long		time_max;
 #endif
 };
 
@@ -531,9 +530,9 @@ static int function_stat_headers(struct seq_file *m)
 {
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	seq_puts(m, "  Function                               "
-		 "Hit    Time            Avg             s^2             max\n"
+		 "Hit    Time            Avg             s^2\n"
 		    "  --------                               "
-		 "---    ----            ---             ---             ---\n");
+		 "---    ----            ---             ---\n");
 #else
 	seq_puts(m, "  Function                               Hit\n"
 		    "  --------                               ---\n");
@@ -614,8 +613,6 @@ static int function_stat_show(struct seq_file *m, void *v)
 	trace_print_graph_duration(avg, &s);
 	trace_seq_puts(&s, "    ");
 	trace_print_graph_duration(stddev, &s);
-	trace_seq_puts(&s, "    ");
-	trace_print_graph_duration(rec->time_max, &s);
 	trace_print_seq(m, &s);
 #endif
 	seq_putc(m, '\n');
@@ -923,8 +920,6 @@ static void profile_graph_return(struct ftrace_graph_ret *trace,
 	if (rec) {
 		rec->time += calltime;
 		rec->time_squared += calltime * calltime;
-		if (calltime > rec->time_max)
-			rec->time_max = calltime;
 	}
 }
 
@@ -7707,11 +7702,6 @@ static int ftrace_process_locs(struct module *mod,
 		}
 
 		addr = ftrace_call_adjust(addr);
-		/* The architecture may return 0 to reject a patch site */
-		if (!addr) {
-			skipped++;
-			continue;
-		}
 
 		end_offset = (pg->index+1) * sizeof(pg->records[0]);
 		if (end_offset > PAGE_SIZE << pg->order) {
@@ -7723,20 +7713,6 @@ static int ftrace_process_locs(struct module *mod,
 
 		rec = &pg->records[pg->index++];
 		rec->ip = addr;
-	}
-
-	/*
-	 * ftrace_release_mod() finds a module's page groups by their first
-	 * record. If every entry was skipped there is none, so unlink the
-	 * new page groups and free them now.
-	 */
-	if (mod && !start_pg->index) {
-		ftrace_pages->next = NULL;
-		mutex_unlock(&ftrace_lock);
-		/* Need to synchronize with ftrace_location_range() */
-		synchronize_rcu();
-		ftrace_free_pages(start_pg);
-		return 0;
 	}
 
 	if (pg->next) {
@@ -9433,9 +9409,37 @@ static void ftrace_startup_sysctl(void)
 	}
 }
 
+static void ftrace_shutdown_sysctl(void)
+{
+	int command;
+
+	if (unlikely(ftrace_disabled))
+		return;
+
+	/* ftrace_start_up is true if ftrace is running */
+	if (ftrace_start_up) {
+		command = FTRACE_DISABLE_CALLS;
+		if (ftrace_graph_active)
+			command |= FTRACE_STOP_FUNC_RET;
+		ftrace_run_update_code(command);
+	}
+}
 #else
 # define ftrace_startup_sysctl()       do { } while (0)
+# define ftrace_shutdown_sysctl()      do { } while (0)
 #endif /* CONFIG_DYNAMIC_FTRACE */
+
+static bool is_permanent_ops_registered(void)
+{
+	struct ftrace_ops *op;
+
+	do_for_each_ftrace_op(op, ftrace_ops_list) {
+		if (op->flags & FTRACE_OPS_FL_PERMANENT)
+			return true;
+	} while_for_each_ftrace_op(op);
+
+	return false;
+}
 
 static int
 ftrace_enable_sysctl(const struct ctl_table *table, int write,
@@ -9463,12 +9467,15 @@ ftrace_enable_sysctl(const struct ctl_table *table, int write,
 		ftrace_startup_sysctl();
 
 	} else {
-		/*
-		 * Disabling ftrace at runtime via this knob is deprecated.
-		 */
-		ftrace_enabled = true;
-		pr_warn_once("The ftrace_enabled file is deprecated and no longer disables ftrace\n");
-		return -EOPNOTSUPP;
+		if (is_permanent_ops_registered()) {
+			ftrace_enabled = true;
+			return -EBUSY;
+		}
+
+		/* stopping ftrace calls (just send to ftrace_stub) */
+		ftrace_trace_function = ftrace_stub;
+
+		ftrace_shutdown_sysctl();
 	}
 
 	last_ftrace_enabled = !!ftrace_enabled;

@@ -175,7 +175,7 @@ tps65217_bl_parse_dt(struct platform_device *pdev)
 	if (!node)
 		return ERR_PTR(-ENODEV);
 
-	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata) {
 		err = ERR_PTR(-ENOMEM);
 		goto err;
@@ -261,7 +261,8 @@ static int tps65217_bl_probe(struct platform_device *pdev)
 	if (IS_ERR(pdata))
 		return PTR_ERR(pdata);
 
-	tps65217_bl = devm_kzalloc_obj(&pdev->dev, *tps65217_bl);
+	tps65217_bl = devm_kzalloc(&pdev->dev, sizeof(*tps65217_bl),
+				GFP_KERNEL);
 	if (tps65217_bl == NULL)
 		return -ENOMEM;
 

@@ -1786,7 +1786,8 @@ static int media_not_present(struct scsi_disk *sdkp,
 	switch (sshdr->sense_key) {
 	case UNIT_ATTENTION:
 	case NOT_READY:
-		if (scsi_sense_asc(sshdr) == ASC_MEDIUM_NOT_PRESENT) {
+		/* medium not present */
+		if (sshdr->asc == 0x3A) {
 			set_media_not_present(sdkp);
 			return 1;
 		}
@@ -1910,14 +1911,12 @@ static int sd_sync_cache(struct scsi_disk *sdkp)
 
 		if (scsi_status_is_check_condition(res) &&
 		    scsi_sense_valid(&sshdr)) {
-			u8 asc = scsi_sense_asc(&sshdr);
-
 			sd_print_sense_hdr(sdkp, &sshdr);
 
 			/* we need to evaluate the error return  */
-			if (asc == ASC_MEDIUM_NOT_PRESENT ||
-			    asc == ASC_INVALID_COMMAND_OP_CODE ||
-			    sshdr.sense_code == LU_ACCESS_NOT_AUTHORIZED)
+			if (sshdr.asc == 0x3a ||	/* medium not present */
+			    sshdr.asc == 0x20 ||	/* invalid command */
+			    (sshdr.asc == 0x74 && sshdr.ascq == 0x71))	/* drive is password locked */
 				/* this is no error here */
 				return 0;
 
@@ -1927,8 +1926,8 @@ static int sd_sync_cache(struct scsi_disk *sdkp)
 			 * this is called during shutdown or suspend so just
 			 * return success so those operations can proceed.
 			 */
-			if (sshdr.sense_key == ILLEGAL_REQUEST ||
-			    sshdr.sense_code == LU_NOT_READY_FORMAT_IN_PROGRESS)
+			if ((sshdr.asc == 0x04 && sshdr.ascq == 0x04) ||
+			    sshdr.sense_key == ILLEGAL_REQUEST)
 				return 0;
 		}
 
@@ -2016,9 +2015,7 @@ static int sd_scsi_to_pr_err(struct scsi_sense_hdr *sshdr, int result)
 			return PR_STS_IOERR;
 
 		if (sshdr->sense_key == ILLEGAL_REQUEST &&
-		    (scsi_sense_asc(sshdr) ==
-				ASC_INVALID_FIELD_IN_PARAMETER_LIST ||
-		     scsi_sense_asc(sshdr) == ASC_INVALID_FIELD_IN_CDB))
+		    (sshdr->asc == 0x26 || sshdr->asc == 0x24))
 			return -EINVAL;
 
 		fallthrough;
@@ -2036,8 +2033,9 @@ static int sd_pr_in_command(struct block_device *bdev, u8 sa,
 	u8 cmd[10] = { PERSISTENT_RESERVE_IN, sa };
 	struct scsi_failure failure_defs[] = {
 		{
-			.sense_key = UNIT_ATTENTION,
-			.sense_code = SCMD_FAILURE_SENSE_CODE_ANY,
+			.sense = UNIT_ATTENTION,
+			.asc = SCMD_FAILURE_ASC_ANY,
+			.ascq = SCMD_FAILURE_ASCQ_ANY,
 			.allowed = 5,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
@@ -2147,8 +2145,9 @@ static int sd_pr_out_command(struct block_device *bdev, u8 sa, u64 key,
 	struct scsi_sense_hdr sshdr;
 	struct scsi_failure failure_defs[] = {
 		{
-			.sense_key = UNIT_ATTENTION,
-			.sense_code = SCMD_FAILURE_SENSE_CODE_ANY,
+			.sense = UNIT_ATTENTION,
+			.asc = SCMD_FAILURE_ASC_ANY,
+			.ascq = SCMD_FAILURE_ASCQ_ANY,
 			.allowed = 5,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
@@ -2441,17 +2440,16 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 		memset(SCpnt->sense_buffer, 0, SCSI_SENSE_BUFFERSIZE);
 		break;
 	case ABORTED_COMMAND:
-		if (scsi_sense_asc(&sshdr) == ASC_ID_CRC_OR_ECC_ERROR) /* DIF */
+		if (sshdr.asc == 0x10)  /* DIF: Target detected corruption */
 			good_bytes = sd_completed_bytes(SCpnt);
 		break;
 	case ILLEGAL_REQUEST:
-		switch (scsi_sense_asc(&sshdr)) {
-		case ASC_ID_CRC_OR_ECC_ERROR:
-			/* DIX */
+		switch (sshdr.asc) {
+		case 0x10:	/* DIX: Host detected corruption */
 			good_bytes = sd_completed_bytes(SCpnt);
 			break;
-		case ASC_INVALID_COMMAND_OP_CODE:
-		case ASC_INVALID_FIELD_IN_CDB:
+		case 0x20:	/* INVALID COMMAND OPCODE */
+		case 0x24:	/* INVALID FIELD IN CDB */
 			switch (SCpnt->cmnd[0]) {
 			case UNMAP:
 				sd_disable_discard(sdkp);
@@ -2496,15 +2494,15 @@ sd_spinup_disk(struct scsi_disk *sdkp)
 	struct scsi_failure failure_defs[] = {
 		/* Do not retry Medium Not Present */
 		{
-			.sense_key = UNIT_ATTENTION,
-			.sense_code =
-				MEDIUM_NOT_PRESENT | SCMD_FAILURE_ASCQ_ANY,
+			.sense = UNIT_ATTENTION,
+			.asc = 0x3A,
+			.ascq = SCMD_FAILURE_ASCQ_ANY,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
 		{
-			.sense_key = NOT_READY,
-			.sense_code =
-				MEDIUM_NOT_PRESENT | SCMD_FAILURE_ASCQ_ANY,
+			.sense = NOT_READY,
+			.asc = 0x3A,
+			.ascq = SCMD_FAILURE_ASCQ_ANY,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
 		/* Retry when scsi_status_is_good would return false 3 times */
@@ -2568,18 +2566,18 @@ sd_spinup_disk(struct scsi_disk *sdkp)
 			break;
 
 		if (sense_valid && sshdr.sense_key == NOT_READY) {
-			switch (sshdr.sense_code) {
-			case LU_NOT_READY_MANUAL_INTERVENTION_REQUIRED:
-			case LU_NOT_ACCESSIBLE_TARGET_PORT_IN_STANDBY_STATE:
-			case LU_NOT_ACCESSIBLE_TARGET_PORT_IN_UNAVAILABLE_STATE:
-			case LU_NOT_READY_SANITIZE_IN_PROGRESS:
-			case DEPOPULATION_IN_PROGRESS:
-			case DEPOPULATION_RESTORATION_IN_PROGRESS:
-				goto out;
-			default:
-				break;
-			}
-
+			if (sshdr.asc == 4 && sshdr.ascq == 3)
+				break;	/* manual intervention required */
+			if (sshdr.asc == 4 && sshdr.ascq == 0xb)
+				break;	/* standby */
+			if (sshdr.asc == 4 && sshdr.ascq == 0xc)
+				break;	/* unavailable */
+			if (sshdr.asc == 4 && sshdr.ascq == 0x1b)
+				break;	/* sanitize in progress */
+			if (sshdr.asc == 4 && sshdr.ascq == 0x24)
+				break;	/* depopulation in progress */
+			if (sshdr.asc == 4 && sshdr.ascq == 0x25)
+				break;	/* depopulation restoration in progress */
 			/*
 			 * Issue command to spin up drive when not ready
 			 */
@@ -2610,9 +2608,8 @@ sd_spinup_disk(struct scsi_disk *sdkp)
 		 * occur here.  It's characteristic of these devices.
 		 */
 		} else if (sense_valid &&
-			   sshdr.sense_key == UNIT_ATTENTION &&
-			   scsi_sense_asc(&sshdr) ==
-			   ASC_NOT_READY_TO_READY_CHANGE_MEDIUM_MAY_HAVE_CHANGED) {
+				sshdr.sense_key == UNIT_ATTENTION &&
+				sshdr.asc == 0x28) {
 			if (!spintime) {
 				spintime_expire = jiffies + 5 * HZ;
 				spintime = 1;
@@ -2631,7 +2628,6 @@ sd_spinup_disk(struct scsi_disk *sdkp)
 				
 	} while (spintime && time_before_eq(jiffies, spintime_expire));
 
-out:
 	if (spintime) {
 		if (scsi_status_is_good(the_result))
 			printk(KERN_CONT "ready\n");
@@ -2757,14 +2753,15 @@ static int read_capacity_16(struct scsi_disk *sdkp, struct scsi_device *sdp,
 			sense_valid = scsi_sense_valid(&sshdr);
 			if (sense_valid &&
 			    sshdr.sense_key == ILLEGAL_REQUEST &&
-			    (sshdr.sense_code == INVALID_COMMAND_OP_CODE ||
-			     sshdr.sense_code == INVALID_FIELD_IN_CDB))
-				/* Just retry silently with RC10 */
+			    (sshdr.asc == 0x20 || sshdr.asc == 0x24) &&
+			    sshdr.ascq == 0x00)
+				/* Invalid Command Operation Code or
+				 * Invalid Field in CDB, just retry
+				 * silently with RC10 */
 				return -EINVAL;
 			if (sense_valid &&
 			    sshdr.sense_key == UNIT_ATTENTION &&
-			    sshdr.sense_code ==
-			    POWER_ON_RESET_OR_BUS_DEVICE_RESET_OCCURRED)
+			    sshdr.asc == 0x29 && sshdr.ascq == 0x00)
 				/* Device reset might occur several times,
 				 * give it one more chance */
 				if (--reset_retries > 0)
@@ -2820,19 +2817,19 @@ static int read_capacity_10(struct scsi_disk *sdkp, struct scsi_device *sdp,
 	struct scsi_failure failure_defs[] = {
 		/* Do not retry Medium Not Present */
 		{
-			.sense_key = UNIT_ATTENTION,
-			.sense_code = MEDIUM_NOT_PRESENT,
+			.sense = UNIT_ATTENTION,
+			.asc = 0x3A,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
 		{
-			.sense_key = NOT_READY,
-			.sense_code = MEDIUM_NOT_PRESENT,
+			.sense = NOT_READY,
+			.asc = 0x3A,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
 		 /* Device reset might occur several times so retry a lot */
 		{
-			.sense_key = UNIT_ATTENTION,
-			.sense_code = POWER_ON_RESET_OR_BUS_DEVICE_RESET_OCCURRED,
+			.sense = UNIT_ATTENTION,
+			.asc = 0x29,
 			.allowed = READ_CAPACITY_RETRIES_ON_RESET,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
@@ -3261,7 +3258,8 @@ sd_read_cache_type(struct scsi_disk *sdkp, unsigned char *buffer)
 bad_sense:
 	if (res == -EIO && scsi_sense_valid(&sshdr) &&
 	    sshdr.sense_key == ILLEGAL_REQUEST &&
-	    sshdr.sense_code == INVALID_FIELD_IN_CDB)
+	    sshdr.asc == 0x24 && sshdr.ascq == 0x0)
+		/* Invalid field in CDB */
 		sd_first_printk(KERN_NOTICE, sdkp, "Cache data unavailable\n");
 	else
 		sd_first_printk(KERN_ERR, sdkp,
@@ -4161,20 +4159,23 @@ static int sd_start_stop_device(struct scsi_disk *sdkp, int start)
 	struct scsi_failure failure_defs[] = {
 		{
 			/* Power on, reset, or bus device reset occurred */
-			.sense_key = UNIT_ATTENTION,
-			.sense_code = POWER_ON_RESET_OR_BUS_DEVICE_RESET_OCCURRED,
+			.sense = UNIT_ATTENTION,
+			.asc = 0x29,
+			.ascq = 0,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
 		{
 			/* Power on occurred */
-			.sense_key = UNIT_ATTENTION,
-			.sense_code = POWER_ON_OCCURRED,
+			.sense = UNIT_ATTENTION,
+			.asc = 0x29,
+			.ascq = 1,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
 		{
 			/* SCSI bus reset */
-			.sense_key = UNIT_ATTENTION,
-			.sense_code = SCSI_BUS_RESET_OCCURRED,
+			.sense = UNIT_ATTENTION,
+			.asc = 0x29,
+			.ascq = 2,
 			.result = SAM_STAT_CHECK_CONDITION,
 		},
 		{}
@@ -4206,7 +4207,8 @@ static int sd_start_stop_device(struct scsi_disk *sdkp, int start)
 		sd_print_result(sdkp, "Start/Stop Unit failed", res);
 		if (res > 0 && scsi_sense_valid(&sshdr)) {
 			sd_print_sense_hdr(sdkp, &sshdr);
-			if (scsi_sense_asc(&sshdr) == ASC_MEDIUM_NOT_PRESENT)
+			/* 0x3a is medium not present */
+			if (sshdr.asc == 0x3a)
 				res = 0;
 		}
 	}
@@ -4268,15 +4270,7 @@ static void sd_remove(struct scsi_device *sdp)
 	struct device *dev = &sdp->sdev_gendev;
 	struct scsi_disk *sdkp = dev_get_drvdata(dev);
 
-	/*
-	 * If runtime resume fails, e.g. because the device was unplugged
-	 * while runtime suspended, the request queue stays in the pm-only
-	 * state and any I/O submitted by del_gendisk(), e.g. from
-	 * sync_filesystem(), would wait forever in __bio_queue_enter().
-	 * Prevent this by marking the disk dead.
-	 */
-	if (scsi_autopm_get_device(sdkp->device) < 0)
-		blk_mark_disk_dead(sdkp->disk);
+	scsi_autopm_get_device(sdkp->device);
 
 	device_del(&sdkp->disk_dev);
 	del_gendisk(sdkp->disk);

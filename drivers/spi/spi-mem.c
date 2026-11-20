@@ -46,9 +46,9 @@ int spi_controller_dma_map_mem_op_data(struct spi_controller *ctlr,
 		return -EINVAL;
 
 	if (op->data.dir == SPI_MEM_DATA_OUT && ctlr->dma_tx)
-		dmadev = dmaengine_get_dma_device(ctlr->dma_tx);
+		dmadev = ctlr->dma_tx->device->dev;
 	else if (op->data.dir == SPI_MEM_DATA_IN && ctlr->dma_rx)
-		dmadev = dmaengine_get_dma_device(ctlr->dma_rx);
+		dmadev = ctlr->dma_rx->device->dev;
 	else
 		dmadev = ctlr->dev.parent;
 
@@ -92,9 +92,9 @@ void spi_controller_dma_unmap_mem_op_data(struct spi_controller *ctlr,
 		return;
 
 	if (op->data.dir == SPI_MEM_DATA_OUT && ctlr->dma_tx)
-		dmadev = dmaengine_get_dma_device(ctlr->dma_tx);
+		dmadev = ctlr->dma_tx->device->dev;
 	else if (op->data.dir == SPI_MEM_DATA_IN && ctlr->dma_rx)
-		dmadev = dmaengine_get_dma_device(ctlr->dma_rx);
+		dmadev = ctlr->dma_rx->device->dev;
 	else
 		dmadev = ctlr->dev.parent;
 
@@ -172,7 +172,7 @@ bool spi_mem_default_supports_op(struct spi_mem *mem,
 		op->cmd.dtr || op->addr.dtr || op->dummy.dtr || op->data.dtr;
 
 	if (op_is_dtr) {
-		if (!spi_mem_controller_is_capable(ctlr, dtr) && !ctlr->dtr_caps)
+		if (!spi_mem_controller_is_capable(ctlr, dtr))
 			return false;
 
 		if (op->data.swap16 && !spi_mem_controller_is_capable(ctlr, swap16))
@@ -461,7 +461,6 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	xfers[xferpos].len = op->cmd.nbytes;
 	xfers[xferpos].tx_nbits = op->cmd.buswidth;
 	xfers[xferpos].speed_hz = op->max_freq;
-	xfers[xferpos].dtr_mode = op->cmd.dtr;
 	spi_message_add_tail(&xfers[xferpos], &msg);
 	xferpos++;
 	totalxferlen++;
@@ -477,7 +476,6 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		xfers[xferpos].len = op->addr.nbytes;
 		xfers[xferpos].tx_nbits = op->addr.buswidth;
 		xfers[xferpos].speed_hz = op->max_freq;
-		xfers[xferpos].dtr_mode = op->addr.dtr;
 		spi_message_add_tail(&xfers[xferpos], &msg);
 		xferpos++;
 		totalxferlen += op->addr.nbytes;
@@ -490,7 +488,6 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		xfers[xferpos].tx_nbits = op->dummy.buswidth;
 		xfers[xferpos].dummy_data = 1;
 		xfers[xferpos].speed_hz = op->max_freq;
-		xfers[xferpos].dtr_mode = op->dummy.dtr;
 		spi_message_add_tail(&xfers[xferpos], &msg);
 		xferpos++;
 		totalxferlen += op->dummy.nbytes;
@@ -507,7 +504,6 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 
 		xfers[xferpos].len = op->data.nbytes;
 		xfers[xferpos].speed_hz = op->max_freq;
-		xfers[xferpos].dtr_mode = op->data.dtr;
 		spi_message_add_tail(&xfers[xferpos], &msg);
 		xferpos++;
 		totalxferlen += op->data.nbytes;
@@ -544,38 +540,6 @@ const char *spi_mem_get_name(struct spi_mem *mem)
 	return mem->name;
 }
 EXPORT_SYMBOL_GPL(spi_mem_get_name);
-
-/**
- * spi_mem_set_dqs() - Mark DQS as being available
- * @mem: the SPI memory
- *
- * When reading at high frequencies (> 100MHz), especially when DTR is enabled,
- * transfer speed is limited due to clock skews. In particular, the controller
- * does not know the board propagation delay nor the memory chip internal delay
- * (clock in to data out) and thus cannot optimize its sampling points.
- * Mitigating this limitation is possible with the addition of a data strobe
- * signal, commonly named DQS.
- *
- * Set the DQS boolean if the feature is available and configured at the chip
- * level. Controllers may query this value.
- */
-void spi_mem_set_dqs(struct spi_mem *mem)
-{
-	mem->dqs = true;
-}
-EXPORT_SYMBOL_GPL(spi_mem_set_dqs);
-
-/**
- * spi_mem_has_dqs() - Query whether the DQS is available or not
- * @mem: the SPI memory
- *
- * Return: a boolean indicating whether the DQS signal is available or not.
- */
-bool spi_mem_has_dqs(struct spi_mem *mem)
-{
-	return mem->dqs;
-}
-EXPORT_SYMBOL_GPL(spi_mem_has_dqs);
 
 /**
  * spi_mem_adjust_op_size() - Adjust the data size of a SPI mem operation to
@@ -1084,7 +1048,7 @@ static int spi_mem_probe(struct spi_device *spi)
 	struct spi_controller *ctlr = spi->controller;
 	struct spi_mem *mem;
 
-	mem = devm_kzalloc_obj(&spi->dev, *mem);
+	mem = devm_kzalloc(&spi->dev, sizeof(*mem), GFP_KERNEL);
 	if (!mem)
 		return -ENOMEM;
 

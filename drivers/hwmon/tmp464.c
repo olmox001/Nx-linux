@@ -645,7 +645,7 @@ static int tmp464_probe(struct i2c_client *client)
 		dev_err(&client->dev, "i2c functionality check failed\n");
 		return -ENODEV;
 	}
-	data = devm_kzalloc_obj(dev, struct tmp464_data);
+	data = devm_kzalloc(dev, sizeof(struct tmp464_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

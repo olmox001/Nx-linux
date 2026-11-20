@@ -244,7 +244,7 @@ static int rzg2l_cru_probe(struct platform_device *pdev)
 	struct rzg2l_cru_dev *cru;
 	int irq, ret;
 
-	cru = devm_kzalloc_obj(dev, *cru);
+	cru = devm_kzalloc(dev, sizeof(*cru), GFP_KERNEL);
 	if (!cru)
 		return -ENOMEM;
 
@@ -360,7 +360,7 @@ static const struct rzg2l_cru_info rzg3e_cru_info = {
 	.max_width = 4095,
 	.max_height = 4095,
 	.image_conv = ICnIPMC_C0,
-	.stride_align = 128,
+	.has_stride = true,
 	.regs = rzg3e_cru_regs,
 	.irq_handler = rzg3e_cru_irq,
 	.enable_interrupts = rzg3e_cru_enable_interrupts,
@@ -405,7 +405,6 @@ static const struct rzg2l_cru_info rzg2l_cru_info = {
 	.max_width = 2800,
 	.max_height = 4095,
 	.image_conv = ICnMC,
-	.stride_align = 1,
 	.regs = rzg2l_cru_regs,
 	.irq_handler = rzg2l_cru_irq,
 	.enable_interrupts = rzg2l_cru_enable_interrupts,

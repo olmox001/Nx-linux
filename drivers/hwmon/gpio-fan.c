@@ -150,16 +150,15 @@ static int set_fan_speed(struct gpio_fan_data *fan_data, int speed_index)
 
 	__set_fan_ctrl(fan_data, fan_data->speed[speed_index].ctrl_val);
 
-	/* The GPIOs have changed, and a PM put drops the reference on error. */
-	fan_data->speed_index = speed_index;
-
-	if (speed_index == 0) {
+	if (fan_data->speed_index > 0 && speed_index == 0) {
 		int ret;
 
 		ret = pm_runtime_put_sync(fan_data->dev);
 		if (ret < 0 && ret != -ENOSYS)
 			return ret;
 	}
+
+	fan_data->speed_index = speed_index;
 
 	return 0;
 }
@@ -467,7 +466,9 @@ static int gpio_fan_get_of_data(struct gpio_fan_data *fan_data)
 		dev_err(dev, "DT properties empty / missing");
 		return -ENODEV;
 	}
-	gpios = devm_kzalloc_objs(dev, struct gpio_desc *, fan_data->num_gpios);
+	gpios = devm_kcalloc(dev,
+			     fan_data->num_gpios, sizeof(struct gpio_desc *),
+			     GFP_KERNEL);
 	if (!gpios)
 		return -ENOMEM;
 	for (i = 0; i < fan_data->num_gpios; i++) {
@@ -495,8 +496,9 @@ static int gpio_fan_get_of_data(struct gpio_fan_data *fan_data)
 	 * Speed map is in the form <RPM ctrl_val RPM ctrl_val ...>
 	 * this needs splitting into pairs to create gpio_fan_speed structs
 	 */
-	speed = devm_kzalloc_objs(dev, struct gpio_fan_speed,
-				  fan_data->num_speed);
+	speed = devm_kcalloc(dev,
+			fan_data->num_speed, sizeof(struct gpio_fan_speed),
+			GFP_KERNEL);
 	if (!speed)
 		return -ENOMEM;
 	p = NULL;
@@ -528,6 +530,8 @@ static void gpio_fan_stop(void *data)
 	mutex_lock(&fan_data->lock);
 	set_fan_speed(data, 0);
 	mutex_unlock(&fan_data->lock);
+
+	pm_runtime_disable(fan_data->dev);
 }
 
 static int gpio_fan_probe(struct platform_device *pdev)
@@ -537,7 +541,8 @@ static int gpio_fan_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
 
-	fan_data = devm_kzalloc_obj(dev, struct gpio_fan_data);
+	fan_data = devm_kzalloc(dev, sizeof(struct gpio_fan_data),
+				GFP_KERNEL);
 	if (!fan_data)
 		return -ENOMEM;
 
@@ -554,11 +559,6 @@ static int gpio_fan_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(fan_data->supply),
 				     "Failed to get fan-supply");
 
-	pm_runtime_set_suspended(dev);
-	err = devm_pm_runtime_enable(dev);
-	if (err)
-		return err;
-
 	/* Configure control GPIOs if available. */
 	if (fan_data->gpios && fan_data->num_gpios > 0) {
 		if (!fan_data->speed || fan_data->num_speed <= 1)
@@ -566,12 +566,6 @@ static int gpio_fan_probe(struct platform_device *pdev)
 		err = fan_ctrl_init(fan_data);
 		if (err)
 			return err;
-		/* If current GPIO state is active, mark RPM as active as well */
-		if (fan_data->speed_index > 0) {
-			err = pm_runtime_resume_and_get(dev);
-			if (err)
-				return err;
-		}
 		err = devm_add_action_or_reset(dev, gpio_fan_stop, fan_data);
 		if (err)
 			return err;
@@ -590,6 +584,17 @@ static int gpio_fan_probe(struct platform_device *pdev)
 		err = fan_alarm_init(fan_data);
 		if (err)
 			return err;
+	}
+
+	pm_runtime_set_suspended(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+	/* If current GPIO state is active, mark RPM as active as well */
+	if (fan_data->speed_index > 0) {
+		int ret;
+
+		ret = pm_runtime_resume_and_get(&pdev->dev);
+		if (ret)
+			return ret;
 	}
 
 	/* Optional cooling device register for Device tree platforms */

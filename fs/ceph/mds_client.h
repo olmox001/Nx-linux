@@ -375,7 +375,7 @@ struct ceph_mds_request {
 	int r_fmode;        /* file mode, if expecting cap */
 	int r_request_release_offset;
 	const struct cred *r_cred;
-	const struct mnt_idmap *r_mnt_idmap;
+	struct mnt_idmap *r_mnt_idmap;
 	struct timespec64 r_stamp;
 
 	/* for choosing which mds to send this request to */
@@ -398,7 +398,7 @@ struct ceph_mds_request {
 	int r_err;
 	u32               r_readdir_offset;
 
-	struct folio *r_locked_folio;
+	struct page *r_locked_page;
 	int r_dir_caps;
 	int r_num_caps;
 
@@ -540,9 +540,8 @@ struct ceph_mds_client {
 	struct delayed_work    delayed_work;  /* delayed work */
 	unsigned long    last_renew_caps;  /* last time we renewed our caps */
 	struct list_head cap_delay_list;   /* caps with delayed release */
-	struct list_head cap_idle_delay_list;  /* caps of closed files */
 	struct list_head cap_unlink_delay_list;  /* caps with delayed release for unlink */
-	spinlock_t       cap_delay_lock;   /* protects the three lists above */
+	spinlock_t       cap_delay_lock;   /* protects cap_delay_list and cap_unlink_delay_list */
 	struct list_head snap_flush_list;  /* cap_snaps ready to flush */
 	spinlock_t       snap_flush_lock;
 

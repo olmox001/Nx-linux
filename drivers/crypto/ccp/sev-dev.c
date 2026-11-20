@@ -245,7 +245,6 @@ static int sev_cmd_buffer_len(int cmd)
 	case SEV_CMD_SNP_LAUNCH_FINISH:		return sizeof(struct sev_data_snp_launch_finish);
 	case SEV_CMD_SNP_DBG_DECRYPT:		return sizeof(struct sev_data_snp_dbg);
 	case SEV_CMD_SNP_DBG_ENCRYPT:		return sizeof(struct sev_data_snp_dbg);
-	case SEV_CMD_SNP_VERIFY_MITIGATION:	return sizeof(struct sev_data_snp_verify_mitigation);
 	case SEV_CMD_SNP_PAGE_UNSMASH:		return sizeof(struct sev_data_snp_page_unsmash);
 	case SEV_CMD_SNP_PLATFORM_STATUS:	return sizeof(struct sev_data_snp_addr);
 	case SEV_CMD_SNP_GUEST_REQUEST:		return sizeof(struct sev_data_snp_guest_request);
@@ -261,16 +260,20 @@ static int sev_cmd_buffer_len(int cmd)
 
 static struct file *open_file_as_root(const char *filename, int flags, umode_t mode)
 {
+	struct path root __free(path_put) = {};
+
+	task_lock(&init_task);
+	get_fs_root(init_task.fs, &root);
+	task_unlock(&init_task);
+
 	CLASS(prepare_creds, cred)();
 	if (!cred)
 		return ERR_PTR(-ENOMEM);
 
 	cred->fsuid = GLOBAL_ROOT_UID;
 
-	scoped_with_init_fs() {
-		scoped_with_creds(cred)
-			return filp_open(filename, flags, mode);
-	}
+	scoped_with_creds(cred)
+		return file_open_root(&root, filename, flags, mode);
 }
 
 static int sev_read_init_ex_file(void)
@@ -1349,162 +1352,6 @@ static int snp_filter_reserved_mem_regions(struct resource *rs, void *arg)
 	return 0;
 }
 
-#ifdef CONFIG_SYSFS
-static int snp_verify_mitigation(u16 command, u64 vector,
-				 struct sev_data_snp_verify_mitigation_dst *dst)
-{
-	struct sev_data_snp_verify_mitigation_dst *mit_dst = NULL;
-	struct sev_data_snp_verify_mitigation data = {0};
-	struct sev_device *sev = psp_master->sev_data;
-	int ret, error = 0;
-
-	mit_dst = snp_alloc_firmware_page(GFP_KERNEL | __GFP_ZERO);
-	if (!mit_dst)
-		return -ENOMEM;
-
-	data.length = sizeof(data);
-	data.subcommand = command;
-	data.vector = vector;
-	data.dst_paddr = __psp_pa(mit_dst);
-	data.dst_paddr_en = true;
-
-	ret = sev_do_cmd(SEV_CMD_SNP_VERIFY_MITIGATION, &data, &error);
-	if (!ret)
-		memcpy(dst, mit_dst, sizeof(*mit_dst));
-	else
-		dev_err(sev->dev, "SNP_VERIFY_MITIGATION command failed, ret = %d, error = %#x\n",
-			ret, error);
-
-	snp_free_firmware_page(mit_dst);
-
-	return ret;
-}
-
-static ssize_t supported_mitigations_show(struct kobject *kobj,
-					  struct kobj_attribute *attr, char *buf)
-{
-	struct sev_data_snp_verify_mitigation_dst dst;
-	int ret;
-
-	ret = snp_verify_mitigation(SNP_MIT_SUBCMD_REQ_STATUS, 0, &dst);
-	if (ret)
-		return ret;
-
-	return sysfs_emit(buf, "0x%llx\n", dst.mit_supported_vector);
-}
-
-static struct kobj_attribute supported_attr =
-		__ATTR_RO_MODE(supported_mitigations, 0400);
-
-static ssize_t verified_mitigations_show(struct kobject *kobj,
-					 struct kobj_attribute *attr, char *buf)
-{
-	struct sev_data_snp_verify_mitigation_dst dst;
-	int ret;
-
-	ret = snp_verify_mitigation(SNP_MIT_SUBCMD_REQ_STATUS, 0, &dst);
-	if (ret)
-		return ret;
-
-	return sysfs_emit(buf, "0x%llx\n", dst.mit_verified_vector);
-}
-
-static ssize_t verified_mitigations_store(struct kobject *kobj,
-					  struct kobj_attribute *attr,
-					  const char *buf, size_t count)
-{
-	struct sev_data_snp_verify_mitigation_dst dst;
-	struct sev_device *sev = psp_master->sev_data;
-	u64 vector;
-	int ret;
-
-	ret = kstrtoull(buf, 0, &vector);
-	if (ret)
-		return ret;
-
-	/*
-	 * The firmware verifies a single mitigation per call. Reject vectors
-	 * with more than one bit set early to avoid a guaranteed-to-fail call
-	 */
-	if (hweight64(vector) != 1)
-		return -EINVAL;
-
-	ret = snp_verify_mitigation(SNP_MIT_SUBCMD_REQ_VERIFY, vector, &dst);
-	if (ret)
-		return ret;
-
-	if (dst.mit_failure_status) {
-		dev_err(sev->dev, "Verify Mitigation - failure status: 0x%x\n",
-			dst.mit_failure_status);
-		return -EINVAL;
-	}
-
-	return count;
-}
-
-static struct kobj_attribute verified_attr =
-		__ATTR_RW_MODE(verified_mitigations, 0600);
-
-static struct attribute *mitigation_attrs[] = {
-	&supported_attr.attr,
-	&verified_attr.attr,
-	NULL
-};
-
-static const struct attribute_group mit_attr_group = {
-	.attrs = mitigation_attrs,
-};
-
-static void sev_snp_register_verify_mitigation(struct sev_device *sev)
-{
-	int rc;
-
-	if (!(sev->snp_feat_info_0.ecx & SNP_VERIFY_MITIGATION_SUPPORTED) ||
-	    sev->verify_mit)
-		return;
-
-	if (!sev->sev_kobj) {
-		sev->sev_kobj = kobject_create_and_add("sev", firmware_kobj);
-		if (!sev->sev_kobj)
-			return;
-	}
-
-	sev->verify_mit = kobject_create_and_add("vulnerabilities", sev->sev_kobj);
-	if (!sev->verify_mit)
-		goto err_sev_kobj;
-
-	rc = sysfs_create_group(sev->verify_mit, &mit_attr_group);
-	if (rc)
-		goto err_verify_mit;
-
-	return;
-
-err_verify_mit:
-	kobject_put(sev->verify_mit);
-	sev->verify_mit = NULL;
-err_sev_kobj:
-	kobject_put(sev->sev_kobj);
-	sev->sev_kobj = NULL;
-}
-
-static void sev_snp_unregister_verify_mitigation(struct sev_device *sev)
-{
-	if (sev->verify_mit) {
-		sysfs_remove_group(sev->verify_mit, &mit_attr_group);
-		kobject_put(sev->verify_mit);
-		sev->verify_mit = NULL;
-	}
-
-	if (sev->sev_kobj) {
-		kobject_put(sev->sev_kobj);
-		sev->sev_kobj = NULL;
-	}
-}
-#else	// CONFIG_SYSFS
-static void sev_snp_register_verify_mitigation(struct sev_device *sev) { }
-static void sev_snp_unregister_verify_mitigation(struct sev_device *sev) { }
-#endif	// CONFIG_SYSFS
-
 static int __sev_snp_init_locked(int *error, unsigned int max_snp_asid)
 {
 	struct sev_data_range_list *snp_range_list __free(kfree) = NULL;
@@ -1662,8 +1509,6 @@ static int __sev_snp_init_locked(int *error, unsigned int max_snp_asid)
 	}
 
 	sev_es_tmr_size = SNP_TMR_SIZE;
-
-	snp_enable_rmpopt();
 
 	return 0;
 }
@@ -1841,17 +1686,6 @@ int sev_platform_init(struct sev_platform_init_args *args)
 	rc = _sev_platform_init_locked(args);
 	mutex_unlock(&sev_cmd_mutex);
 
-	/*
-	 * Register the sysfs interface outside the sev_cmd_mutex. The
-	 * _show()/_store() handlers issue SEV commands that acquire the
-	 * sev_cmd_mutex, so creating (and on the shutdown path, removing) the
-	 * sysfs group must stay outside that lock. sysfs provides its own
-	 * synchronization between group creation/removal and concurrent
-	 * attribute access.
-	 */
-	if (!rc)
-		sev_snp_register_verify_mitigation(psp_master->sev_data);
-
 	return rc;
 }
 EXPORT_SYMBOL_GPL(sev_platform_init);
@@ -1916,8 +1750,6 @@ static int sev_ioctl_do_reset(struct sev_issue_cmd *argp, bool writable)
 	if (!writable)
 		return -EPERM;
 
-	mutex_lock(&sev_cmd_mutex);
-
 	/*
 	 * The SEV spec requires that FACTORY_RESET must be issued in
 	 * UNINIT state. Before we go further lets check if any guest is
@@ -1929,24 +1761,18 @@ static int sev_ioctl_do_reset(struct sev_issue_cmd *argp, bool writable)
 	 */
 	rc = sev_get_platform_state(&state, &argp->error);
 	if (rc)
-		goto out_unlock;
+		return rc;
 
-	if (state == SEV_STATE_WORKING) {
-		rc = -EBUSY;
-		goto out_unlock;
-	}
+	if (state == SEV_STATE_WORKING)
+		return -EBUSY;
 
 	if (state == SEV_STATE_INIT) {
 		rc = __sev_platform_shutdown_locked(&argp->error);
 		if (rc)
-			goto out_unlock;
+			return rc;
 	}
 
-	rc = __sev_do_cmd_locked(SEV_CMD_FACTORY_RESET, NULL, &argp->error);
-
-out_unlock:
-	mutex_unlock(&sev_cmd_mutex);
-	return rc;
+	return __sev_do_cmd_locked(SEV_CMD_FACTORY_RESET, NULL, &argp->error);
 }
 
 static int sev_ioctl_do_platform_status(struct sev_issue_cmd *argp)
@@ -1956,9 +1782,7 @@ static int sev_ioctl_do_platform_status(struct sev_issue_cmd *argp)
 
 	memset(&data, 0, sizeof(data));
 
-	mutex_lock(&sev_cmd_mutex);
 	ret = __sev_do_cmd_locked(SEV_CMD_PLATFORM_STATUS, &data, &argp->error);
-	mutex_unlock(&sev_cmd_mutex);
 	if (ret)
 		return ret;
 
@@ -1977,21 +1801,16 @@ static int sev_ioctl_do_pek_pdh_gen(int cmd, struct sev_issue_cmd *argp, bool wr
 	if (!writable)
 		return -EPERM;
 
-	mutex_lock(&sev_cmd_mutex);
-
 	if (sev->sev_plat_status.state == SEV_STATE_UNINIT) {
 		rc = sev_move_to_init_state(argp, &shutdown_required);
 		if (rc)
-			goto out_unlock;
+			return rc;
 	}
 
 	rc = __sev_do_cmd_locked(cmd, NULL, &argp->error);
 
 	if (shutdown_required)
 		__sev_firmware_shutdown(sev, false);
-
-out_unlock:
-	mutex_unlock(&sev_cmd_mutex);
 
 	return rc;
 }
@@ -2031,23 +1850,13 @@ static int sev_ioctl_do_pek_csr(struct sev_issue_cmd *argp, bool writable)
 	data.len = input.length;
 
 cmd:
-	mutex_lock(&sev_cmd_mutex);
-
 	if (sev->sev_plat_status.state == SEV_STATE_UNINIT) {
 		ret = sev_move_to_init_state(argp, &shutdown_required);
-		if (ret) {
-			mutex_unlock(&sev_cmd_mutex);
-			/* No shutdown is needed if init fails */
+		if (ret)
 			goto e_free_blob;
-		}
 	}
 
 	ret = __sev_do_cmd_locked(SEV_CMD_PEK_CSR, &data, &argp->error);
-
-	if (shutdown_required)
-		__sev_firmware_shutdown(sev, false);
-
-	mutex_unlock(&sev_cmd_mutex);
 
 	/*
 	 * Firmware will returns the length of the CSR blob (either the minimum
@@ -2069,6 +1878,9 @@ cmd:
 	}
 
 e_free_blob:
+	if (shutdown_required)
+		__sev_firmware_shutdown(sev, false);
+
 	kfree(blob);
 	return ret;
 }
@@ -2341,26 +2153,19 @@ static int sev_ioctl_do_pek_import(struct sev_issue_cmd *argp, bool writable)
 	data.oca_cert_address = __psp_pa(oca_blob);
 	data.oca_cert_len = input.oca_cert_len;
 
-	mutex_lock(&sev_cmd_mutex);
-
 	/* If platform is not in INIT state then transition it to INIT */
 	if (sev->sev_plat_status.state != SEV_STATE_INIT) {
 		ret = sev_move_to_init_state(argp, &shutdown_required);
-		if (ret) {
-			mutex_unlock(&sev_cmd_mutex);
-			/* No shutdown is needed if init fails */
+		if (ret)
 			goto e_free_oca;
-		}
 	}
 
 	ret = __sev_do_cmd_locked(SEV_CMD_PEK_CERT_IMPORT, &data, &argp->error);
 
+e_free_oca:
 	if (shutdown_required)
 		__sev_firmware_shutdown(sev, false);
 
-	mutex_unlock(&sev_cmd_mutex);
-
-e_free_oca:
 	kfree(oca_blob);
 e_free_pek:
 	kfree(pek_blob);
@@ -2403,9 +2208,7 @@ static int sev_ioctl_do_get_id2(struct sev_issue_cmd *argp)
 		data.len = 0;
 	}
 
-	mutex_lock(&sev_cmd_mutex);
 	ret = __sev_do_cmd_locked(SEV_CMD_GET_ID, &data, &argp->error);
-	mutex_unlock(&sev_cmd_mutex);
 
 	/*
 	 * Firmware will return the length of the ID value (either the minimum
@@ -2463,9 +2266,7 @@ static int sev_ioctl_do_get_id(struct sev_issue_cmd *argp)
 	data->address = __psp_pa(id_blob);
 	data->len = user_size;
 
-	mutex_lock(&sev_cmd_mutex);
 	ret = __sev_do_cmd_locked(SEV_CMD_GET_ID, data, &argp->error);
-	mutex_unlock(&sev_cmd_mutex);
 	if (!ret) {
 		if (copy_to_user((void __user *)argp->data, id_blob, data->len))
 			ret = -EFAULT;
@@ -2527,29 +2328,18 @@ static int sev_ioctl_do_pdh_export(struct sev_issue_cmd *argp, bool writable)
 	data.cert_chain_len = input.cert_chain_len;
 
 cmd:
-	mutex_lock(&sev_cmd_mutex);
-
 	/* If platform is not in INIT state then transition it to INIT. */
 	if (sev->sev_plat_status.state != SEV_STATE_INIT) {
 		if (!writable) {
 			ret = -EPERM;
-			mutex_unlock(&sev_cmd_mutex);
 			goto e_free_cert;
 		}
 		ret = sev_move_to_init_state(argp, &shutdown_required);
-		if (ret) {
-			/* No shutdown is needed if init fails */
-			mutex_unlock(&sev_cmd_mutex);
+		if (ret)
 			goto e_free_cert;
-		}
 	}
 
 	ret = __sev_do_cmd_locked(SEV_CMD_PDH_CERT_EXPORT, &data, &argp->error);
-
-	if (shutdown_required)
-		__sev_firmware_shutdown(sev, false);
-
-	mutex_unlock(&sev_cmd_mutex);
 
 	/*
 	 * Firmware will return the length of the blobs (either the minimum
@@ -2581,6 +2371,9 @@ cmd:
 	}
 
 e_free_cert:
+	if (shutdown_required)
+		__sev_firmware_shutdown(sev, false);
+
 	kfree(cert_blob);
 e_free_pdh:
 	kfree(pdh_blob);
@@ -2602,8 +2395,6 @@ static int __sev_do_snp_platform_status(struct sev_user_data_snp_status *status,
 
 	data = page_address(status_page);
 
-	mutex_lock(&sev_cmd_mutex);
-
 	/*
 	 * SNP_PLATFORM_STATUS can be executed in any SNP state. But if executed
 	 * when SNP has been initialized, the status page must be firmware-owned.
@@ -2615,7 +2406,6 @@ static int __sev_do_snp_platform_status(struct sev_user_data_snp_status *status,
 		 */
 		if (rmp_mark_pages_firmware(__pa(data), 1, true)) {
 			ret = -EFAULT;
-			mutex_unlock(&sev_cmd_mutex);
 			goto cleanup;
 		}
 	}
@@ -2629,13 +2419,9 @@ static int __sev_do_snp_platform_status(struct sev_user_data_snp_status *status,
 		 * in Firmware state on failure. Use snp_reclaim_pages() to
 		 * transition either case back to Hypervisor-owned state.
 		 */
-		if (snp_reclaim_pages(__pa(data), 1, true)) {
-			mutex_unlock(&sev_cmd_mutex);
+		if (snp_reclaim_pages(__pa(data), 1, true))
 			return -EFAULT;
-		}
 	}
-
-	mutex_unlock(&sev_cmd_mutex);
 
 	if (ret)
 		goto cleanup;
@@ -2673,9 +2459,7 @@ static int sev_ioctl_do_snp_commit(struct sev_issue_cmd *argp)
 
 	buf.len = sizeof(buf);
 
-	mutex_lock(&sev_cmd_mutex);
 	ret = __sev_do_cmd_locked(SEV_CMD_SNP_COMMIT, &buf, &argp->error);
-	mutex_unlock(&sev_cmd_mutex);
 
 	return ret;
 }
@@ -2684,7 +2468,6 @@ static int sev_ioctl_do_snp_set_config(struct sev_issue_cmd *argp, bool writable
 {
 	struct sev_device *sev = psp_master->sev_data;
 	struct sev_user_data_snp_config config;
-	int ret;
 
 	if (!argp->data)
 		return -EINVAL;
@@ -2698,11 +2481,7 @@ static int sev_ioctl_do_snp_set_config(struct sev_issue_cmd *argp, bool writable
 	if (copy_from_user(&config, (void __user *)argp->data, sizeof(config)))
 		return -EFAULT;
 
-	mutex_lock(&sev_cmd_mutex);
-	ret = __sev_do_cmd_locked(SEV_CMD_SNP_CONFIG, &config, &argp->error);
-	mutex_unlock(&sev_cmd_mutex);
-
-	return ret;
+	return __sev_do_cmd_locked(SEV_CMD_SNP_CONFIG, &config, &argp->error);
 }
 
 static int sev_ioctl_do_snp_vlek_load(struct sev_issue_cmd *argp, bool writable)
@@ -2734,10 +2513,7 @@ static int sev_ioctl_do_snp_vlek_load(struct sev_issue_cmd *argp, bool writable)
 
 	input.vlek_wrapped_address = __psp_pa(blob);
 
-	mutex_lock(&sev_cmd_mutex);
 	ret = __sev_do_cmd_locked(SEV_CMD_SNP_VLEK_LOAD, &input, &argp->error);
-	mutex_unlock(&sev_cmd_mutex);
-
 	kfree(blob);
 
 	return ret;
@@ -2761,6 +2537,8 @@ static long sev_ioctl(struct file *file, unsigned int ioctl, unsigned long arg)
 
 	if (input.cmd > SEV_MAX)
 		return -EINVAL;
+
+	mutex_lock(&sev_cmd_mutex);
 
 	switch (input.cmd) {
 
@@ -2812,6 +2590,7 @@ static long sev_ioctl(struct file *file, unsigned int ioctl, unsigned long arg)
 	if (copy_to_user(argp, &input, sizeof(struct sev_issue_cmd)))
 		ret = -EFAULT;
 out:
+	mutex_unlock(&sev_cmd_mutex);
 
 	return ret;
 }
@@ -2909,7 +2688,7 @@ int sev_dev_init(struct psp_device *psp)
 		return 0;
 	}
 
-	sev = devm_kzalloc_obj(dev, *sev);
+	sev = devm_kzalloc(dev, sizeof(*sev), GFP_KERNEL);
 	if (!sev)
 		goto e_err;
 
@@ -3000,15 +2779,6 @@ static void sev_firmware_shutdown(struct sev_device *sev)
 	 */
 	if (sev->tio_status)
 		sev_tsm_uninit(sev);
-
-	/*
-	 * Remove the sysfs interface before taking the sev_cmd_mutex.
-	 * sysfs_remove_group() waits for in-flight _show()/_store() handlers
-	 * to drain, and those handlers issue SNP_VERIFY_MITIGATION via
-	 * sev_do_cmd() which acquires the sev_cmd_mutex. Removing the group
-	 * while holding the mutex could therefore deadlock.
-	 */
-	sev_snp_unregister_verify_mitigation(sev);
 
 	mutex_lock(&sev_cmd_mutex);
 
@@ -3160,7 +2930,9 @@ static int get_v1_svn(struct sev_device *sev)
 	struct sev_user_data_snp_status status;
 	int ret, error = 0;
 
+	mutex_lock(&sev_cmd_mutex);
 	ret = __sev_do_snp_platform_status(&status, &error);
+	mutex_unlock(&sev_cmd_mutex);
 	if (ret < 0)
 		return ret;
 
@@ -3175,7 +2947,9 @@ static int get_v2_svn(struct sev_device *sev)
 	struct sev_snp_tcb_version_turin *tcb;
 	int ret, error = 0;
 
+	mutex_lock(&sev_cmd_mutex);
 	ret = __sev_do_snp_platform_status(&status, &error);
+	mutex_unlock(&sev_cmd_mutex);
 	if (ret < 0)
 		return ret;
 

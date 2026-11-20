@@ -465,13 +465,13 @@ static int wl1271_probe(struct spi_device *spi)
 	struct resource res[1];
 	int ret;
 
-	pdev_data = devm_kzalloc_obj(&spi->dev, *pdev_data);
+	pdev_data = devm_kzalloc(&spi->dev, sizeof(*pdev_data), GFP_KERNEL);
 	if (!pdev_data)
 		return -ENOMEM;
 
 	pdev_data->if_ops = &spi_ops;
 
-	glue = devm_kzalloc_obj(&spi->dev, *glue);
+	glue = devm_kzalloc(&spi->dev, sizeof(*glue), GFP_KERNEL);
 	if (!glue) {
 		dev_err(&spi->dev, "can't allocate glue\n");
 		return -ENOMEM;

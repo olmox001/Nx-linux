@@ -911,7 +911,10 @@ static bool sysrq_handle_keypress(struct sysrq_state *sysrq,
 		 * keyboard state so we can release keys that have been
 		 * pressed before entering SysRq mode.
 		 */
-		assign_bit(code, sysrq->key_down, value);
+		if (value)
+			set_bit(code, sysrq->key_down);
+		else
+			clear_bit(code, sysrq->key_down);
 
 		if (was_active)
 			schedule_work(&sysrq->reinject_work);

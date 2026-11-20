@@ -1058,8 +1058,8 @@ static const struct hci_uart_proto intel_proto = {
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id intel_acpi_match[] = {
-	{ .id = "INT33E1" },
-	{ .id = "INT33E3" },
+	{ "INT33E1", 0 },
+	{ "INT33E3", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, intel_acpi_match);
@@ -1128,7 +1128,7 @@ static int intel_probe(struct platform_device *pdev)
 	struct intel_device *idev;
 	int ret;
 
-	idev = devm_kzalloc_obj(&pdev->dev, *idev);
+	idev = devm_kzalloc(&pdev->dev, sizeof(*idev), GFP_KERNEL);
 	if (!idev)
 		return -ENOMEM;
 

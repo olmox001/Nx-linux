@@ -286,9 +286,10 @@ static int tcp_write_timeout(struct sock *sk)
 	tcp_fastopen_active_detect_blackhole(sk, expired);
 	mptcp_active_detect_blackhole(sk, expired);
 
-	tcp_call_bpf_flag(sk, BPF_SOCK_OPS_RTO_CB,
-			  icsk->icsk_retransmits, icsk->icsk_rto, (int)expired);
-	bpf_tcp_ops_call(rto, sk);
+	if (BPF_SOCK_OPS_TEST_FLAG(tp, BPF_SOCK_OPS_RTO_CB_FLAG))
+		tcp_call_bpf_3arg(sk, BPF_SOCK_OPS_RTO_CB,
+				  icsk->icsk_retransmits,
+				  icsk->icsk_rto, (int)expired);
 
 	if (expired) {
 		/* Has it gone just too far? */
@@ -749,7 +750,7 @@ out:
 	sock_put(sk);
 }
 
-noinline_for_tracing void tcp_syn_ack_timeout(const struct request_sock *req)
+void tcp_syn_ack_timeout(const struct request_sock *req)
 {
 	struct net *net = read_pnet(&inet_rsk(req)->ireq_net);
 

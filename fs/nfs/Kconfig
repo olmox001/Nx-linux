@@ -123,23 +123,8 @@ config PNFS_FILE_LAYOUT
 
 config PNFS_BLOCK
 	tristate
-
-config PNFS_BLOCK_LAYOUT
-	bool "NFS client support for pNFS block layouts"
-	depends on NFS_V4 && BLOCK && BLK_DEV_DM
-	select PNFS_BLOCK
-	help
-	  Enable support for the pNFS block-volume layout type (RFC 5663).
-
-	  If unsure, say N.
-
-config PNFS_SCSI_LAYOUT
-	bool "NFS client support for pNFS SCSI layouts"
-	depends on NFS_V4 && BLOCK
+	depends on NFS_V4 && BLK_DEV_DM
 	default NFS_V4
-	select PNFS_BLOCK
-	help
-	  Enable suport for the pNFS SCSI layout type (RFC 8154).
 
 config PNFS_FLEXFILE_LAYOUT
 	tristate
@@ -189,7 +174,6 @@ config NFS_FSCACHE
 	bool "Provide NFS client caching support"
 	depends on NFS_FS
 	select NETFS_SUPPORT
-	select NETFS_PGPRIV2
 	select FSCACHE
 	help
 	  Say Y here if you want NFS data to be cached locally on disc through

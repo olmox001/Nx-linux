@@ -1005,7 +1005,8 @@ static struct tps65910_board *tps65910_parse_dt_reg_data(
 	unsigned int prop;
 	int idx = 0, ret, count;
 
-	pmic_plat_data = devm_kzalloc_obj(&pdev->dev, *pmic_plat_data);
+	pmic_plat_data = devm_kzalloc(&pdev->dev, sizeof(*pmic_plat_data),
+					GFP_KERNEL);
 	if (!pmic_plat_data)
 		return NULL;
 
@@ -1088,7 +1089,7 @@ static int tps65910_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	pmic = devm_kzalloc_obj(&pdev->dev, *pmic);
+	pmic = devm_kzalloc(&pdev->dev, sizeof(*pmic), GFP_KERNEL);
 	if (!pmic)
 		return -ENOMEM;
 
@@ -1127,18 +1128,24 @@ static int tps65910_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	pmic->desc = devm_kzalloc_objs(&pdev->dev, struct regulator_desc,
-				       pmic->num_regulators);
+	pmic->desc = devm_kcalloc(&pdev->dev,
+				  pmic->num_regulators,
+				  sizeof(struct regulator_desc),
+				  GFP_KERNEL);
 	if (!pmic->desc)
 		return -ENOMEM;
 
-	pmic->info = devm_kzalloc_objs(&pdev->dev, struct tps_info *,
-				       pmic->num_regulators);
+	pmic->info = devm_kcalloc(&pdev->dev,
+				  pmic->num_regulators,
+				  sizeof(struct tps_info *),
+				  GFP_KERNEL);
 	if (!pmic->info)
 		return -ENOMEM;
 
-	pmic->rdev = devm_kzalloc_objs(&pdev->dev, struct regulator_dev *,
-				       pmic->num_regulators);
+	pmic->rdev = devm_kcalloc(&pdev->dev,
+				  pmic->num_regulators,
+				  sizeof(struct regulator_dev *),
+				  GFP_KERNEL);
 	if (!pmic->rdev)
 		return -ENOMEM;
 

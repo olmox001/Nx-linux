@@ -295,7 +295,7 @@ static int ad5820_probe(struct i2c_client *client)
 	struct ad5820_device *coil;
 	int ret;
 
-	coil = devm_kzalloc_obj(&client->dev, *coil);
+	coil = devm_kzalloc(&client->dev, sizeof(*coil), GFP_KERNEL);
 	if (!coil)
 		return -ENOMEM;
 

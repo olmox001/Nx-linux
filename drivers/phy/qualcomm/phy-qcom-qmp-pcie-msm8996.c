@@ -218,6 +218,30 @@ struct qcom_qmp {
 	int init_count;
 };
 
+static inline void qphy_setbits(void __iomem *base, u32 offset, u32 val)
+{
+	u32 reg;
+
+	reg = readl(base + offset);
+	reg |= val;
+	writel(reg, base + offset);
+
+	/* ensure that above write is through */
+	readl(base + offset);
+}
+
+static inline void qphy_clrbits(void __iomem *base, u32 offset, u32 val)
+{
+	u32 reg;
+
+	reg = readl(base + offset);
+	reg &= ~val;
+	writel(reg, base + offset);
+
+	/* ensure that above write is through */
+	readl(base + offset);
+}
+
 /* list of clocks required by phy */
 static const char * const msm8996_phy_clk_l[] = {
 	"aux", "cfg_ahb", "ref",
@@ -508,7 +532,7 @@ static int qmp_pcie_msm8996_vreg_init(struct device *dev, const struct qmp_phy_c
 	int num = cfg->num_vregs;
 	int i;
 
-	qmp->vregs = devm_kzalloc_objs(dev, *qmp->vregs, num);
+	qmp->vregs = devm_kcalloc(dev, num, sizeof(*qmp->vregs), GFP_KERNEL);
 	if (!qmp->vregs)
 		return -ENOMEM;
 
@@ -524,7 +548,8 @@ static int qmp_pcie_msm8996_reset_init(struct device *dev, const struct qmp_phy_
 	int i;
 	int ret;
 
-	qmp->resets = devm_kzalloc_objs(dev, *qmp->resets, cfg->num_resets);
+	qmp->resets = devm_kcalloc(dev, cfg->num_resets,
+				   sizeof(*qmp->resets), GFP_KERNEL);
 	if (!qmp->resets)
 		return -ENOMEM;
 
@@ -544,7 +569,7 @@ static int qmp_pcie_msm8996_clk_init(struct device *dev, const struct qmp_phy_cf
 	int num = cfg->num_clks;
 	int i;
 
-	qmp->clks = devm_kzalloc_objs(dev, *qmp->clks, num);
+	qmp->clks = devm_kcalloc(dev, num, sizeof(*qmp->clks), GFP_KERNEL);
 	if (!qmp->clks)
 		return -ENOMEM;
 
@@ -589,7 +614,7 @@ static int phy_pipe_clk_register(struct qcom_qmp *qmp, struct device_node *np)
 		return ret;
 	}
 
-	fixed = devm_kzalloc_obj(qmp->dev, *fixed);
+	fixed = devm_kzalloc(qmp->dev, sizeof(*fixed), GFP_KERNEL);
 	if (!fixed)
 		return -ENOMEM;
 
@@ -633,7 +658,7 @@ static int qmp_pcie_msm8996_create(struct device *dev, struct device_node *np, i
 	struct qmp_phy *qphy;
 	int ret;
 
-	qphy = devm_kzalloc_obj(dev, *qphy);
+	qphy = devm_kzalloc(dev, sizeof(*qphy), GFP_KERNEL);
 	if (!qphy)
 		return -ENOMEM;
 
@@ -706,7 +731,7 @@ static int qmp_pcie_msm8996_probe(struct platform_device *pdev)
 	int num, id, expected_phys;
 	int ret;
 
-	qmp = devm_kzalloc_obj(dev, *qmp);
+	qmp = devm_kzalloc(dev, sizeof(*qmp), GFP_KERNEL);
 	if (!qmp)
 		return -ENOMEM;
 
@@ -742,7 +767,7 @@ static int qmp_pcie_msm8996_probe(struct platform_device *pdev)
 	if (num > expected_phys)
 		return -EINVAL;
 
-	qmp->phys = devm_kzalloc_objs(dev, *qmp->phys, num);
+	qmp->phys = devm_kcalloc(dev, num, sizeof(*qmp->phys), GFP_KERNEL);
 	if (!qmp->phys)
 		return -ENOMEM;
 

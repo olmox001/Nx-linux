@@ -5,34 +5,23 @@
  *
  * Copyright 2019 Analog Devices Inc.
  */
-
-#include <linux/array_size.h>
 #include <linux/bitfield.h>
-#include <linux/bitops.h>
 #include <linux/completion.h>
-#include <linux/container_of.h>
-#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/gpio/consumer.h>
+#include <linux/errno.h>
+#include <linux/kernel.h>
+#include <linux/iio/iio.h>
 #include <linux/interrupt.h>
 #include <linux/list.h>
-#include <linux/math64.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/pm_runtime.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
-#include <linux/slab.h>
 #include <linux/spi/spi.h>
-#include <linux/string.h>
-#include <linux/types.h>
-#include <linux/unaligned.h>
 
 #include <asm/byteorder.h>
-
-#include <linux/iio/iio.h>
+#include <linux/unaligned.h>
 
 /* register map */
 #define LTC2983_STATUS_REG			0x0000
@@ -504,7 +493,7 @@ __ltc2983_custom_sensor_new(struct ltc2983_data *st, const struct fwnode_handle 
 		return dev_err_ptr_probe(dev, -EINVAL,
 					 "Number of entries either 0 or not even\n");
 
-	new_custom = devm_kzalloc_obj(dev, *new_custom);
+	new_custom = devm_kzalloc(dev, sizeof(*new_custom), GFP_KERNEL);
 	if (!new_custom)
 		return ERR_PTR(-ENOMEM);
 
@@ -779,7 +768,7 @@ ltc2983_thermocouple_new(const struct fwnode_handle *child, struct ltc2983_data 
 	u32 oc_current;
 	int ret;
 
-	thermo = devm_kzalloc_obj(dev, *thermo);
+	thermo = devm_kzalloc(dev, sizeof(*thermo), GFP_KERNEL);
 	if (!thermo)
 		return ERR_PTR(-ENOMEM);
 
@@ -868,7 +857,7 @@ ltc2983_rtd_new(const struct fwnode_handle *child, struct ltc2983_data *st,
 	struct device *dev = &st->spi->dev;
 	u32 excitation_current = 0, n_wires = 2;
 
-	rtd = devm_kzalloc_obj(dev, *rtd);
+	rtd = devm_kzalloc(dev, sizeof(*rtd), GFP_KERNEL);
 	if (!rtd)
 		return ERR_PTR(-ENOMEM);
 
@@ -1031,7 +1020,7 @@ ltc2983_thermistor_new(const struct fwnode_handle *child, struct ltc2983_data *s
 	u32 excitation_current = 0;
 	int ret = 0;
 
-	thermistor = devm_kzalloc_obj(dev, *thermistor);
+	thermistor = devm_kzalloc(dev, sizeof(*thermistor), GFP_KERNEL);
 	if (!thermistor)
 		return ERR_PTR(-ENOMEM);
 
@@ -1167,7 +1156,7 @@ ltc2983_copper_trace_new(const struct fwnode_handle *child, struct ltc2983_data 
 					 "Invalid channel %d for copper trace\n",
 					 sensor->chan);
 
-	ct = devm_kzalloc_obj(dev, *ct);
+	ct = devm_kzalloc(dev, sizeof(*ct), GFP_KERNEL);
 	if (!ct)
 		return ERR_PTR(-ENOMEM);
 
@@ -1266,7 +1255,7 @@ ltc2983_leak_detector_new(const struct fwnode_handle *child, struct ltc2983_data
 					 "Invalid channel %d for leak detector\n",
 					 sensor->chan);
 
-	ld = devm_kzalloc_obj(dev, *ld);
+	ld = devm_kzalloc(dev, sizeof(*ld), GFP_KERNEL);
 	if (!ld)
 		return ERR_PTR(-ENOMEM);
 
@@ -1352,7 +1341,7 @@ ltc2983_diode_new(const struct fwnode_handle *child, const struct ltc2983_data *
 	u32 temp = 0, excitation_current = 0;
 	int ret;
 
-	diode = devm_kzalloc_obj(dev, *diode);
+	diode = devm_kzalloc(dev, sizeof(*diode), GFP_KERNEL);
 	if (!diode)
 		return ERR_PTR(-ENOMEM);
 
@@ -1425,7 +1414,7 @@ static struct ltc2983_sensor *ltc2983_r_sense_new(struct fwnode_handle *child,
 	int ret;
 	u32 temp;
 
-	rsense = devm_kzalloc_obj(dev, *rsense);
+	rsense = devm_kzalloc(dev, sizeof(*rsense), GFP_KERNEL);
 	if (!rsense)
 		return ERR_PTR(-ENOMEM);
 
@@ -1460,7 +1449,7 @@ static struct ltc2983_sensor *ltc2983_adc_new(struct fwnode_handle *child,
 	struct device *dev = &st->spi->dev;
 	struct ltc2983_adc *adc;
 
-	adc = devm_kzalloc_obj(dev, *adc);
+	adc = devm_kzalloc(dev, sizeof(*adc), GFP_KERNEL);
 	if (!adc)
 		return ERR_PTR(-ENOMEM);
 
@@ -1486,7 +1475,7 @@ static struct ltc2983_sensor *ltc2983_temp_new(struct fwnode_handle *child,
 	struct device *dev = &st->spi->dev;
 	struct ltc2983_temp *temp;
 
-	temp = devm_kzalloc_obj(dev, *temp);
+	temp = devm_kzalloc(dev, sizeof(*temp), GFP_KERNEL);
 	if (!temp)
 		return ERR_PTR(-ENOMEM);
 
@@ -1677,7 +1666,8 @@ static int ltc2983_parse_fw(struct ltc2983_data *st)
 		return dev_err_probe(dev, -EINVAL,
 				     "At least one channel must be given!\n");
 
-	st->sensors = devm_kzalloc_objs(dev, *st->sensors, st->num_channels);
+	st->sensors = devm_kcalloc(dev, st->num_channels, sizeof(*st->sensors),
+				   GFP_KERNEL);
 	if (!st->sensors)
 		return -ENOMEM;
 
@@ -2004,7 +1994,7 @@ static int ltc2983_probe(struct spi_device *spi)
 	ret = devm_request_irq(dev, spi->irq, ltc2983_irq_handler,
 			       IRQF_TRIGGER_RISING, st->info->name, st);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "failed to request an irq\n");
 
 	if (st->info->has_eeprom) {
 		ret = ltc2983_eeprom_cmd(st, LTC2983_EEPROM_WRITE_CMD,
@@ -2080,11 +2070,11 @@ static const struct ltc2983_chip_info ltm2985_chip_info_data = {
 };
 
 static const struct spi_device_id ltc2983_id_table[] = {
-	{ .name = "adt7604", .driver_data = (kernel_ulong_t)&adt7604_chip_info_data },
-	{ .name = "ltc2983", .driver_data = (kernel_ulong_t)&ltc2983_chip_info_data },
-	{ .name = "ltc2984", .driver_data = (kernel_ulong_t)&ltc2984_chip_info_data },
-	{ .name = "ltc2986", .driver_data = (kernel_ulong_t)&ltc2986_chip_info_data },
-	{ .name = "ltm2985", .driver_data = (kernel_ulong_t)&ltm2985_chip_info_data },
+	{ "adt7604", (kernel_ulong_t)&adt7604_chip_info_data },
+	{ "ltc2983", (kernel_ulong_t)&ltc2983_chip_info_data },
+	{ "ltc2984", (kernel_ulong_t)&ltc2984_chip_info_data },
+	{ "ltc2986", (kernel_ulong_t)&ltc2986_chip_info_data },
+	{ "ltm2985", (kernel_ulong_t)&ltm2985_chip_info_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, ltc2983_id_table);

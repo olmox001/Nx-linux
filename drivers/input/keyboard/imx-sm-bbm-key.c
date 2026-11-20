@@ -166,7 +166,7 @@ static int scmi_imx_bbm_key_probe(struct scmi_device *sdev)
 	if (!handle)
 		return -ENODEV;
 
-	bbnsm = devm_kzalloc_obj(dev, *bbnsm);
+	bbnsm = devm_kzalloc(dev, sizeof(*bbnsm), GFP_KERNEL);
 	if (!bbnsm)
 		return -ENOMEM;
 

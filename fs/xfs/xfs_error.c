@@ -241,21 +241,16 @@ void
 xfs_error_report(
 	const char		*tag,
 	int			level,
-	int			error,
 	struct xfs_mount	*mp,
 	const char		*filename,
 	int			linenum,
 	xfs_failaddr_t		failaddr)
 {
 	if (level <= xfs_error_level) {
-		if (error)
-			xfs_alert_tag(mp, XFS_PTAG_ERROR_REPORT,
-"Internal error %s (%d) at line %d of file %s.  Caller %pS",
-				tag, error, linenum, filename, failaddr);
-		else
-			xfs_alert_tag(mp, XFS_PTAG_ERROR_REPORT,
-"Internal error %s at line %d of file %s.  Caller %pS",
-				tag, linenum, filename, failaddr);
+		xfs_alert_tag(mp, XFS_PTAG_ERROR_REPORT,
+		"Internal error %s at line %d of file %s.  Caller %pS",
+			    tag, linenum, filename, failaddr);
+
 		xfs_stack_trace();
 	}
 }
@@ -273,8 +268,7 @@ xfs_corruption_error(
 {
 	if (buf && level <= xfs_error_level)
 		xfs_hex_dump(buf, bufsize);
-	xfs_error_report(tag, level, -EFSCORRUPTED, mp,
-			 filename, linenum, failaddr);
+	xfs_error_report(tag, level, mp, filename, linenum, failaddr);
 	xfs_alert(mp, "Corruption detected. Unmount and run xfs_repair");
 }
 

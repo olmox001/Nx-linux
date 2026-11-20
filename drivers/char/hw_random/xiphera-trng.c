@@ -62,7 +62,7 @@ static int xiphera_trng_probe(struct platform_device *pdev)
 	struct xiphera_trng *trng;
 	struct device *dev = &pdev->dev;
 
-	trng = devm_kzalloc_obj(dev, *trng);
+	trng = devm_kzalloc(dev, sizeof(*trng), GFP_KERNEL);
 	if (!trng)
 		return -ENOMEM;
 

@@ -57,7 +57,7 @@ static int rt5033_i2c_probe(struct i2c_client *i2c)
 	unsigned int dev_id, chip_rev;
 	int ret;
 
-	rt5033 = devm_kzalloc_obj(&i2c->dev, *rt5033);
+	rt5033 = devm_kzalloc(&i2c->dev, sizeof(*rt5033), GFP_KERNEL);
 	if (!rt5033)
 		return -ENOMEM;
 

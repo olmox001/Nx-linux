@@ -107,11 +107,11 @@ static int retu_wdt_probe(struct platform_device *pdev)
 	struct retu_wdt_dev *wdev;
 	int ret;
 
-	retu_wdt = devm_kzalloc_obj(&pdev->dev, *retu_wdt);
+	retu_wdt = devm_kzalloc(&pdev->dev, sizeof(*retu_wdt), GFP_KERNEL);
 	if (!retu_wdt)
 		return -ENOMEM;
 
-	wdev = devm_kzalloc_obj(&pdev->dev, *wdev);
+	wdev = devm_kzalloc(&pdev->dev, sizeof(*wdev), GFP_KERNEL);
 	if (!wdev)
 		return -ENOMEM;
 

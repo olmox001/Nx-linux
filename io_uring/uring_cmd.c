@@ -49,7 +49,7 @@ void io_uring_cmd_cleanup(struct io_kiocb *req)
 }
 
 bool io_uring_try_cancel_uring_cmd(struct io_ring_ctx *ctx,
-				   struct io_uring_task *tctx)
+				   struct io_uring_task *tctx, bool cancel_all)
 {
 	struct hlist_node *tmp;
 	struct io_kiocb *req;
@@ -63,7 +63,7 @@ bool io_uring_try_cancel_uring_cmd(struct io_ring_ctx *ctx,
 				struct io_uring_cmd);
 		struct file *file = req->file;
 
-		if (tctx && req->tctx != tctx)
+		if (!cancel_all && req->tctx != tctx)
 			continue;
 
 		if (cmd->flags & IORING_URING_CMD_CANCELABLE) {
@@ -138,11 +138,19 @@ void __io_uring_cmd_do_in_task(struct io_uring_cmd *ioucmd,
 }
 EXPORT_SYMBOL_GPL(__io_uring_cmd_do_in_task);
 
+static inline void io_req_set_cqe32_extra(struct io_kiocb *req,
+					  u64 extra1, u64 extra2)
+{
+	req->big_cqe.extra1 = extra1;
+	req->big_cqe.extra2 = extra2;
+}
+
 /*
  * Called by consumers of io_uring_cmd, if they originally returned
  * -EIOCBQUEUED upon receiving the command.
  */
-void __io_uring_cmd_done(struct io_uring_cmd *ioucmd, unsigned issue_flags)
+void __io_uring_cmd_done(struct io_uring_cmd *ioucmd, s32 ret, u64 res2,
+		       unsigned issue_flags, bool is_cqe32)
 {
 	struct io_kiocb *req = cmd_to_io_kiocb(ioucmd);
 
@@ -151,6 +159,15 @@ void __io_uring_cmd_done(struct io_uring_cmd *ioucmd, unsigned issue_flags)
 
 	io_uring_cmd_del_cancelable(ioucmd, issue_flags);
 
+	if (ret < 0)
+		req_set_fail(req);
+
+	io_req_set_res(req, ret, 0);
+	if (is_cqe32) {
+		if (req->ctx->flags & IORING_SETUP_CQE_MIXED)
+			req->cqe.flags |= IORING_CQE_F_32;
+		io_req_set_cqe32_extra(req, res2, 0);
+	}
 	io_req_uring_cleanup(req, issue_flags);
 	if (req->flags & REQ_F_IOPOLL) {
 		/* order with io_do_iopoll() checking ->iopoll_completed */
@@ -309,7 +326,7 @@ void io_uring_cmd_issue_blocking(struct io_uring_cmd *ioucmd)
 {
 	struct io_kiocb *req = cmd_to_io_kiocb(ioucmd);
 
-	io_queue_iowq(req);
+	io_req_queue_iowq(req);
 }
 
 int io_cmd_poll_multishot(struct io_uring_cmd *cmd,

@@ -82,8 +82,6 @@ struct sun4i_spi {
 
 	struct completion	done;
 
-	int			irq;
-
 	const u8		*tx_buf;
 	u8			*rx_buf;
 	int			len;
@@ -144,21 +142,15 @@ static inline void sun4i_spi_drain_fifo(struct sun4i_spi *sspi, int len)
 	}
 }
 
-static inline void sun4i_spi_fill_fifo(struct sun4i_spi *sspi)
+static inline void sun4i_spi_fill_fifo(struct sun4i_spi *sspi, int len)
 {
 	u32 cnt;
-	int len;
 	u8 byte;
 
-	/*
-	 * See how much data we can fit
-	 *
-	 * Filling the FIFO fully causes timeout for some reason
-	 * at least on spi2 on A10s
-	 */
-	cnt = SUN4I_FIFO_DEPTH - 1 - sun4i_spi_get_tx_fifo_count(sspi);
+	/* See how much data we can fit */
+	cnt = SUN4I_FIFO_DEPTH - sun4i_spi_get_tx_fifo_count(sspi);
 
-	len = min_t(int, cnt, sspi->len);
+	len = min3(len, (int)cnt, sspi->len);
 
 	while (len--) {
 		byte = sspi->tx_buf ? *sspi->tx_buf++ : 0;
@@ -214,7 +206,7 @@ static int sun4i_spi_transfer_one(struct spi_controller *host,
 				  struct spi_transfer *tfr)
 {
 	struct sun4i_spi *sspi = spi_controller_get_devdata(host);
-	unsigned int mclk_rate, div, div_cdr1, div_cdr2;
+	unsigned int mclk_rate, div;
 	unsigned long time_left;
 	unsigned int start, end, tx_time;
 	unsigned int tx_len = 0;
@@ -279,17 +271,9 @@ static int sun4i_spi_transfer_one(struct spi_controller *host,
 
 	/* Ensure that we have a parent clock fast enough */
 	mclk_rate = clk_get_rate(sspi->mclk);
-	if (!mclk_rate)
-		return -EINVAL;
-
 	if (mclk_rate < (2 * tfr->speed_hz)) {
-		ret = clk_set_rate(sspi->mclk, 2 * tfr->speed_hz);
-		if (ret)
-			return ret;
-
+		clk_set_rate(sspi->mclk, 2 * tfr->speed_hz);
 		mclk_rate = clk_get_rate(sspi->mclk);
-		if (!mclk_rate)
-			return -EINVAL;
 	}
 
 	/*
@@ -306,15 +290,15 @@ static int sun4i_spi_transfer_one(struct spi_controller *host,
 	 * First try CDR2, and if we can't reach the expected
 	 * frequency, fall back to CDR1.
 	 */
-	div_cdr1 = DIV_ROUND_UP(mclk_rate, tfr->speed_hz);
-	div_cdr2 = DIV_ROUND_UP(div_cdr1, 2);
-	if (div_cdr2 <= (SUN4I_CLK_CTL_CDR2_MASK + 1)) {
-		reg = SUN4I_CLK_CTL_CDR2(div_cdr2 - 1) | SUN4I_CLK_CTL_DRS;
-		tfr->effective_speed_hz = mclk_rate / (2 * div_cdr2);
+	div = mclk_rate / (2 * tfr->speed_hz);
+	if (div <= (SUN4I_CLK_CTL_CDR2_MASK + 1)) {
+		if (div > 0)
+			div--;
+
+		reg = SUN4I_CLK_CTL_CDR2(div) | SUN4I_CLK_CTL_DRS;
 	} else {
-		div = min(SUN4I_CLK_CTL_CDR1_MASK + 1, order_base_2(div_cdr1));
-		reg = SUN4I_CLK_CTL_CDR1(div - 1);
-		tfr->effective_speed_hz = mclk_rate / (1 << div);
+		div = ilog2(mclk_rate) - ilog2(tfr->speed_hz);
+		reg = SUN4I_CLK_CTL_CDR1(div);
 	}
 
 	sun4i_spi_write(sspi, SUN4I_CLK_CTL_REG, reg);
@@ -327,14 +311,18 @@ static int sun4i_spi_transfer_one(struct spi_controller *host,
 	sun4i_spi_write(sspi, SUN4I_BURST_CNT_REG, SUN4I_BURST_CNT(tfr->len));
 	sun4i_spi_write(sspi, SUN4I_XMIT_CNT_REG, SUN4I_XMIT_CNT(tx_len));
 
-	/* Fill the TX FIFO */
-	sun4i_spi_fill_fifo(sspi);
+	/*
+	 * Fill the TX FIFO
+	 * Filling the FIFO fully causes timeout for some reason
+	 * at least on spi2 on A10s
+	 */
+	sun4i_spi_fill_fifo(sspi, SUN4I_FIFO_DEPTH - 1);
 
 	/* Enable the interrupts */
 	sun4i_spi_enable_interrupt(sspi, SUN4I_INT_CTL_TC |
 					 SUN4I_INT_CTL_RF_F34);
 	/* Only enable Tx FIFO interrupt if we really need it */
-	if (tx_len > SUN4I_FIFO_DEPTH - 1)
+	if (tx_len > SUN4I_FIFO_DEPTH)
 		sun4i_spi_enable_interrupt(sspi, SUN4I_INT_CTL_TF_E34);
 
 	/* Start the transfer */
@@ -345,7 +333,6 @@ static int sun4i_spi_transfer_one(struct spi_controller *host,
 	start = jiffies;
 	time_left = wait_for_completion_timeout(&sspi->done,
 						msecs_to_jiffies(tx_time));
-
 	end = jiffies;
 	if (!time_left) {
 		dev_warn(&host->dev,
@@ -353,11 +340,12 @@ static int sun4i_spi_transfer_one(struct spi_controller *host,
 			 dev_name(&spi->dev), tfr->len, tfr->speed_hz,
 			 jiffies_to_msecs(end - start), tx_time);
 		ret = -ETIMEDOUT;
-		sun4i_spi_write(sspi, SUN4I_INT_CTL_REG, 0);
-		synchronize_irq(sspi->irq);
+		goto out;
 	}
 
-	sun4i_spi_drain_fifo(sspi, SUN4I_FIFO_DEPTH);
+
+out:
+	sun4i_spi_write(sspi, SUN4I_INT_CTL_REG, 0);
 
 	return ret;
 }
@@ -369,7 +357,8 @@ static irqreturn_t sun4i_spi_handler(int irq, void *dev_id)
 
 	/* Transfer complete */
 	if (status & SUN4I_INT_CTL_TC) {
-		sun4i_spi_write(sspi, SUN4I_INT_CTL_REG, 0);
+		sun4i_spi_write(sspi, SUN4I_INT_STA_REG, SUN4I_INT_CTL_TC);
+		sun4i_spi_drain_fifo(sspi, SUN4I_FIFO_DEPTH);
 		complete(&sspi->done);
 		return IRQ_HANDLED;
 	}
@@ -384,7 +373,7 @@ static irqreturn_t sun4i_spi_handler(int irq, void *dev_id)
 
 	/* Transmit FIFO 3/4 empty */
 	if (status & SUN4I_INT_CTL_TF_E34) {
-		sun4i_spi_fill_fifo(sspi);
+		sun4i_spi_fill_fifo(sspi, SUN4I_FIFO_DEPTH);
 
 		if (!sspi->len)
 			/* nothing left to transmit */
@@ -467,7 +456,6 @@ static int sun4i_spi_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	sspi->irq = irq;
 	sspi->host = host;
 	host->max_speed_hz = 100 * 1000 * 1000;
 	host->min_speed_hz = 3 * 1000;

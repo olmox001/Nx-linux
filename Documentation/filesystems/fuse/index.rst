@@ -12,5 +12,3 @@ FUSE (Filesystem in Userspace) Technical Documentation
    fuse-io
    fuse-io-uring
    fuse-passthrough
-   fuse-caches
-   uapi/fuse-uapi-io-uring

@@ -56,23 +56,6 @@ static void iio_dmaengine_buffer_block_done(void *data,
 	iio_dma_buffer_block_done(block);
 }
 
-/*
- * Cyclic transfers run until abort. Cap active cyclic blocks to one until there
- * is a use case for more.
- */
-static bool iio_dmaengine_buffer_has_active_cyclic(struct dmaengine_buffer *dmaengine_buffer)
-{
-	struct iio_dma_buffer_block *block;
-
-	guard(spinlock_irqsave)(&dmaengine_buffer->queue.list_lock);
-	list_for_each_entry(block, &dmaengine_buffer->active, head) {
-		if (block->cyclic)
-			return true;
-	}
-
-	return false;
-}
-
 static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 					     struct iio_dma_buffer_block *block)
 {
@@ -88,19 +71,15 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	unsigned int i;
 	int nents;
 
+	max_size = min(block->size, dmaengine_buffer->max_size);
+	max_size = round_down(max_size, dmaengine_buffer->align);
+
 	if (queue->buffer.direction == IIO_BUFFER_DIRECTION_IN)
 		dma_dir = DMA_DEV_TO_MEM;
 	else
 		dma_dir = DMA_MEM_TO_DEV;
 
-	if (block->cyclic && iio_dmaengine_buffer_has_active_cyclic(dmaengine_buffer)) {
-		dev_err(queue->dev, "cyclic DMA transfer already active\n");
-		return -EBUSY;
-	}
-
 	if (block->sg_table) {
-		unsigned long flags;
-
 		/*
 		 * Only the first sgt->nents entries carry a valid
 		 * sg_dma_address()/sg_dma_len() pair as mapping the table may
@@ -109,7 +88,7 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 		 */
 		nents = block->sg_table->nents;
 
-		vecs = kmalloc_objs(*vecs, nents, GFP_ATOMIC);
+		vecs = kmalloc_array(nents, sizeof(*vecs), GFP_ATOMIC);
 		if (!vecs)
 			return -ENOMEM;
 
@@ -126,19 +105,9 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 
 		nents = i;
 
-		if (block->cyclic)
-			flags = DMA_PREP_REPEAT;
-		else
-			flags = DMA_PREP_INTERRUPT;
-
-		/*
-		 * A new transfer may need to end an already active cyclic transfer
-		 * before it can run, so always set the EOT flag.
-		 */
-		flags |= DMA_PREP_LOAD_EOT;
 		desc = dmaengine_prep_peripheral_dma_vec(dmaengine_buffer->chan,
 							 vecs, nents, dma_dir,
-							 flags);
+							 DMA_PREP_INTERRUPT);
 		kfree(vecs);
 	} else {
 		max_size = min(block->size, dmaengine_buffer->max_size);
@@ -159,10 +128,8 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	if (!desc)
 		return -ENOMEM;
 
-	if (!block->cyclic) {
-		desc->callback_result = iio_dmaengine_buffer_block_done;
-		desc->callback_param = block;
-	}
+	desc->callback_result = iio_dmaengine_buffer_block_done;
+	desc->callback_param = block;
 
 	cookie = dmaengine_submit(desc);
 	if (dma_submit_error(cookie))
@@ -254,7 +221,6 @@ static const struct iio_dev_attr *iio_dmaengine_buffer_attrs[] = {
  */
 static struct iio_buffer *iio_dmaengine_buffer_alloc(struct dma_chan *chan)
 {
-	struct device *dma_dev = dmaengine_get_dma_device(chan);
 	struct dmaengine_buffer *dmaengine_buffer;
 	unsigned int width, src_width, dest_width;
 	struct dma_slave_caps caps;
@@ -282,9 +248,9 @@ static struct iio_buffer *iio_dmaengine_buffer_alloc(struct dma_chan *chan)
 	INIT_LIST_HEAD(&dmaengine_buffer->active);
 	dmaengine_buffer->chan = chan;
 	dmaengine_buffer->align = width;
-	dmaengine_buffer->max_size = dma_get_max_seg_size(dma_dev);
+	dmaengine_buffer->max_size = dma_get_max_seg_size(chan->device->dev);
 
-	iio_dma_buffer_init(&dmaengine_buffer->queue, dma_dev,
+	iio_dma_buffer_init(&dmaengine_buffer->queue, chan->device->dev,
 			    &iio_dmaengine_default_ops);
 
 	dmaengine_buffer->queue.buffer.attrs = iio_dmaengine_buffer_attrs;

@@ -709,7 +709,6 @@ static int gc2145_init_state(struct v4l2_subdev *sd,
 }
 
 static int gc2145_get_selection(struct v4l2_subdev *sd,
-				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -775,7 +774,6 @@ static int gc2145_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static int gc2145_set_pad_format(struct v4l2_subdev *sd,
-				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_format *fmt)
 {
@@ -1321,7 +1319,7 @@ static int gc2145_probe(struct i2c_client *client)
 	struct gc2145 *gc2145;
 	int ret;
 
-	gc2145 = devm_kzalloc_obj(&client->dev, *gc2145);
+	gc2145 = devm_kzalloc(&client->dev, sizeof(*gc2145), GFP_KERNEL);
 	if (!gc2145)
 		return -ENOMEM;
 

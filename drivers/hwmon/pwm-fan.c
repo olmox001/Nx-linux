@@ -514,7 +514,7 @@ static int pwm_fan_probe(struct platform_device *pdev)
 	int channel_count = 1;	/* We always have a PWM channel. */
 	int i;
 
-	ctx = devm_kzalloc_obj(dev, *ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -590,21 +590,23 @@ static int pwm_fan_probe(struct platform_device *pdev)
 	if (ctx->tach_count) {
 		channel_count++;	/* We also have a FAN channel. */
 
-		ctx->tachs = devm_kzalloc_objs(dev, struct pwm_fan_tach,
-					       ctx->tach_count);
+		ctx->tachs = devm_kcalloc(dev, ctx->tach_count,
+					  sizeof(struct pwm_fan_tach),
+					  GFP_KERNEL);
 		if (!ctx->tachs)
 			return -ENOMEM;
 
 		ctx->fan_channel.type = hwmon_fan;
-		fan_channel_config = devm_kzalloc_objs(dev, u32,
-						       ctx->tach_count + 1);
+		fan_channel_config = devm_kcalloc(dev, ctx->tach_count + 1,
+						  sizeof(u32), GFP_KERNEL);
 		if (!fan_channel_config)
 			return -ENOMEM;
 		ctx->fan_channel.config = fan_channel_config;
 
-		ctx->pulses_per_revolution = devm_kmalloc_objs(dev,
-							       *ctx->pulses_per_revolution,
-							       ctx->tach_count);
+		ctx->pulses_per_revolution = devm_kmalloc_array(dev,
+								ctx->tach_count,
+								sizeof(*ctx->pulses_per_revolution),
+								GFP_KERNEL);
 		if (!ctx->pulses_per_revolution)
 			return -ENOMEM;
 
@@ -616,7 +618,8 @@ static int pwm_fan_probe(struct platform_device *pdev)
 					       ctx->pulses_per_revolution, ctx->tach_count);
 	}
 
-	channels = devm_kzalloc_objs(dev, *channels, channel_count + 1);
+	channels = devm_kcalloc(dev, channel_count + 1,
+				sizeof(struct hwmon_channel_info *), GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
 
@@ -631,8 +634,12 @@ static int pwm_fan_probe(struct platform_device *pdev)
 		if (tach->irq > 0) {
 			ret = devm_request_irq(dev, tach->irq, pulse_handler,
 					       IRQF_NO_THREAD, pdev->name, tach);
-			if (ret)
+			if (ret) {
+				dev_err(dev,
+					"Failed to request interrupt: %d\n",
+					ret);
 				return ret;
+			}
 		}
 
 		if (!ctx->pulses_per_revolution[i]) {

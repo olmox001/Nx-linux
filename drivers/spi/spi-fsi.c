@@ -539,7 +539,7 @@ static int fsi_spi_probe(struct fsi_device *fsi)
 	if (rc)
 		return -ENODEV;
 
-	bridge = devm_kzalloc_obj(dev, *bridge);
+	bridge = devm_kzalloc(dev, sizeof(*bridge), GFP_KERNEL);
 	if (!bridge)
 		return -ENOMEM;
 

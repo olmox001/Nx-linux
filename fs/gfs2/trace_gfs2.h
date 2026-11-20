@@ -56,6 +56,7 @@
 	{(1UL << GLF_HAVE_REPLY),		"r" },		\
 	{(1UL << GLF_INITIAL),			"a" },		\
 	{(1UL << GLF_HAVE_FROZEN_REPLY),	"F" },		\
+	{(1UL << GLF_LRU),			"L" },		\
 	{(1UL << GLF_OBJECT),			"o" },		\
 	{(1UL << GLF_BLOCKING),			"b" },		\
 	{(1UL << GLF_INSTANTIATE_NEEDED),	"n" },		\
@@ -457,7 +458,7 @@ TRACE_EVENT(gfs2_bmap,
 	),
 
 	TP_fast_assign(
-		__entry->dev            = ip->i_inode.i_sb->s_dev;
+		__entry->dev            = glock_sbd(ip->i_gl)->sd_vfs->s_dev;
 		__entry->lblock		= lblock;
 		__entry->pblock		= buffer_mapped(bh) ?  bh->b_blocknr : 0;
 		__entry->inum		= ip->i_no_addr;
@@ -493,7 +494,7 @@ TRACE_EVENT(gfs2_iomap_start,
 	),
 
 	TP_fast_assign(
-		__entry->dev            = ip->i_inode.i_sb->s_dev;
+		__entry->dev            = glock_sbd(ip->i_gl)->sd_vfs->s_dev;
 		__entry->inum		= ip->i_no_addr;
 		__entry->pos		= pos;
 		__entry->length		= length;
@@ -525,7 +526,7 @@ TRACE_EVENT(gfs2_iomap_end,
 	),
 
 	TP_fast_assign(
-		__entry->dev            = ip->i_inode.i_sb->s_dev;
+		__entry->dev            = glock_sbd(ip->i_gl)->sd_vfs->s_dev;
 		__entry->inum		= ip->i_no_addr;
 		__entry->offset		= iomap->offset;
 		__entry->length		= iomap->length;

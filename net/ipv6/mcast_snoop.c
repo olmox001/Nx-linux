@@ -56,8 +56,7 @@ static int ipv6_mc_check_exthdrs(struct sk_buff *skb)
 	if (nexthdr != IPPROTO_ICMPV6)
 		return -ENOMSG;
 
-	if (!skb_set_transport_header_careful(skb, offset))
-		return -EINVAL;
+	skb_set_transport_header(skb, offset);
 
 	return 0;
 }

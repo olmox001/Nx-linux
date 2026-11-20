@@ -67,7 +67,7 @@ static int mdio_mux_multiplexer_probe(struct platform_device *pdev)
 	struct mdio_mux_multiplexer_state *s;
 	int ret = 0;
 
-	s = devm_kzalloc_obj(&pdev->dev, *s);
+	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
 	if (!s)
 		return -ENOMEM;
 

@@ -208,7 +208,7 @@ static int bcma_host_soc_probe(struct platform_device *pdev)
 	int err;
 
 	/* Alloc */
-	bus = devm_kzalloc_obj(dev, *bus);
+	bus = devm_kzalloc(dev, sizeof(*bus), GFP_KERNEL);
 	if (!bus)
 		return -ENOMEM;
 

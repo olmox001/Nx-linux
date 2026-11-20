@@ -326,7 +326,7 @@ static int brcmstb_thermal_probe(struct platform_device *pdev)
 	struct brcmstb_thermal_priv *priv;
 	int irq, ret;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -356,7 +356,8 @@ static int brcmstb_thermal_probe(struct platform_device *pdev)
 						IRQF_ONESHOT,
 						DRV_NAME, priv);
 		if (ret < 0)
-			return ret;
+			return dev_err_probe(&pdev->dev, ret,
+						"could not request IRQ\n");
 	}
 
 	dev_info(&pdev->dev, "registered AVS TMON of-sensor driver\n");

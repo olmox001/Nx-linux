@@ -238,7 +238,7 @@ retry:
 	trace_xfs_exchrange_before(ip2, 2);
 	trace_xfs_exchrange_before(ip1, 1);
 
-	error = xfs_exchmaps_check_forks(&req);
+	error = xfs_exchmaps_check_forks(mp, &req);
 	if (error)
 		goto out_trans_cancel;
 

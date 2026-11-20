@@ -10,7 +10,6 @@
 #include <asm/kvm_pgtable.h>
 #include <asm/kvm_pkvm.h>
 
-#include <nvhe/alloc.h>
 #include <nvhe/early_alloc.h>
 #include <nvhe/ffa.h>
 #include <nvhe/gfp.h>
@@ -335,10 +334,6 @@ void __noreturn __pkvm_init_finalise(void)
 	if (ret)
 		goto out;
 
-	ret = pkvm_check_host_ownership();
-	if (ret)
-		goto out;
-
 	ret = hyp_ffa_init(ffa_proxy_pages);
 	if (ret)
 		goto out;
@@ -375,11 +370,6 @@ int __pkvm_init(phys_addr_t phys, unsigned long size, unsigned long *per_cpu_bas
 		return ret;
 
 	ret = recreate_hyp_mappings(phys, size, per_cpu_base, hyp_va_bits);
-	if (ret)
-		return ret;
-
-	/* Arbitrary size, unmapped at boot and only consume VA-space */
-	ret = hyp_alloc_init(SZ_128M);
 	if (ret)
 		return ret;
 

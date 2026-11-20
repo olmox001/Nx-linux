@@ -774,18 +774,11 @@ void hpo_fpu_enc3_validate_hdmi_frl_output_link(struct hpo_frl_stream_encoder *e
 		frl_params->r_bit_nominal = 8.0e9;
 		break;
 	case HDMI_FRL_LINK_RATE_10GBPS:
+	default:
 		frl_params->r_bit_nominal = 10.0e9;
 		break;
 	case HDMI_FRL_LINK_RATE_12GBPS:
 		frl_params->r_bit_nominal = 12.0e9;
-		break;
-	case HDMI_FRL_LINK_RATE_16GBPS:
-		frl_params->r_bit_nominal = 16.0e9;
-		break;
-	case HDMI_FRL_LINK_RATE_20GBPS:
-		frl_params->r_bit_nominal = 20.0e9;
-		break;
-	default:
 		break;
 	}
 
@@ -809,18 +802,11 @@ void hpo_fpu_enc3_validate_hdmi_frl_output_link(struct hpo_frl_stream_encoder *e
 			frl_params->r_bit_nominal = 8.0e9;
 			break;
 		case HDMI_FRL_LINK_RATE_10GBPS:
+		default:
 			frl_params->r_bit_nominal = 10.0e9;
 			break;
 		case HDMI_FRL_LINK_RATE_12GBPS:
 			frl_params->r_bit_nominal = 12.0e9;
-			break;
-		case HDMI_FRL_LINK_RATE_16GBPS:
-			frl_params->r_bit_nominal = 16.0e9;
-			break;
-		case HDMI_FRL_LINK_RATE_20GBPS:
-			frl_params->r_bit_nominal = 20.0e9;
-			break;
-		default:
 			break;
 		}
 	}

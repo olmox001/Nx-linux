@@ -378,6 +378,12 @@ static int vmclock_miscdev_mmap(struct file *fp, struct vm_area_struct *vma)
 	 */
 	vm_flags_clear(vma, VM_MAYWRITE);
 
+	/*
+	 * Restrict the read-only mapping so it cannot be upgraded to
+	 * writable later with mprotect().
+	 */
+	vm_flags_clear(vma, VM_MAYWRITE);
+
 	if (vma->vm_end - vma->vm_start != PAGE_SIZE || vma->vm_pgoff)
 		return -EINVAL;
 
@@ -665,7 +671,7 @@ static int vmclock_probe(struct platform_device *pdev)
 	struct vmclock_state *st;
 	int ret;
 
-	st = devm_kzalloc_obj(dev, *st);
+	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
 	if (!st)
 		return -ENOMEM;
 

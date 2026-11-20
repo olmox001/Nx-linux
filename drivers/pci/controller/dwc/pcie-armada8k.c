@@ -271,11 +271,11 @@ static int armada8k_pcie_probe(struct platform_device *pdev)
 	struct resource *base;
 	int ret;
 
-	pcie = devm_kzalloc_obj(dev, *pcie);
+	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc_obj(dev, *pci);
+	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
 	if (!pci)
 		return -ENOMEM;
 

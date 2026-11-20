@@ -115,7 +115,6 @@ struct adi_i3c_master {
 		spinlock_t lock; /* Protect transfer */
 	} xferqueue;
 	void __iomem *regs;
-	int irq;
 	struct clk *clk;
 	unsigned long i3c_scl_lim;
 	struct {
@@ -247,7 +246,6 @@ static void adi_i3c_master_end_xfer_locked(struct adi_i3c_master *master,
 		if (cmd->cmd0 & REG_CMD_FIFO_0_RNW) {
 			rx_len = min_t(u32, REG_CMDR_FIFO_XFER_BYTES(cmdr), cmd->rx_len);
 			adi_i3c_master_rd_from_rx_fifo(master, cmd->rx_buf, rx_len);
-			cmd->rx_len = rx_len;
 		}
 		cmd->error = REG_CMDR_FIFO_ERROR(cmdr);
 	}
@@ -362,8 +360,6 @@ static int adi_i3c_master_send_ccc_cmd(struct i3c_master_controller *m,
 		adi_i3c_master_unqueue_xfer(master, xfer);
 
 	cmd->err = adi_i3c_cmd_get_err(&xfer->cmds[0]);
-	if (!xfer->ret && cmd->rnw)
-		cmd->dests[0].payload.actual_len = ccmd->rx_len;
 
 	return xfer->ret;
 }
@@ -942,7 +938,7 @@ static int adi_i3c_master_probe(struct platform_device *pdev)
 	unsigned int version;
 	int ret, irq;
 
-	master = devm_kzalloc_obj(&pdev->dev, *master);
+	master = devm_kzalloc(&pdev->dev, sizeof(*master), GFP_KERNEL);
 	if (!master)
 		return -ENOMEM;
 
@@ -958,7 +954,6 @@ static int adi_i3c_master_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
-	master->irq = irq;
 
 	version = readl(master->regs + ADI_AXI_REG_VERSION);
 	if (ADI_AXI_PCORE_VER_MAJOR(version) != 1)
@@ -975,8 +970,9 @@ static int adi_i3c_master_probe(struct platform_device *pdev)
 	master->free_rr_slots = GENMASK(ADI_MAX_DEVS, 1);
 	spin_lock_init(&master->ibi.lock);
 	master->ibi.num_slots = 15;
-	master->ibi.slots = devm_kzalloc_objs(&pdev->dev, *master->ibi.slots,
-					      master->ibi.num_slots);
+	master->ibi.slots = devm_kcalloc(&pdev->dev, master->ibi.num_slots,
+					 sizeof(*master->ibi.slots),
+					 GFP_KERNEL);
 	if (!master->ibi.slots)
 		return -ENOMEM;
 
@@ -1001,8 +997,6 @@ static void adi_i3c_master_remove(struct platform_device *pdev)
 	writel(0xff, master->regs + REG_IRQ_PENDING);
 	writel(0x00, master->regs + REG_IRQ_MASK);
 	writel(0x01, master->regs + REG_ENABLE);
-
-	devm_free_irq(&pdev->dev, master->irq, master);
 
 	i3c_master_unregister(&master->base);
 }

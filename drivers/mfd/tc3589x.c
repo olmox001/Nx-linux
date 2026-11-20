@@ -331,7 +331,7 @@ tc3589x_of_probe(struct device *dev, enum tc3589x_version *version)
 	struct device_node *child;
 	const struct of_device_id *of_id;
 
-	pdata = devm_kzalloc_obj(dev, *pdata);
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
@@ -374,7 +374,8 @@ static int tc3589x_probe(struct i2c_client *i2c)
 				     | I2C_FUNC_SMBUS_I2C_BLOCK))
 		return -EIO;
 
-	tc3589x = devm_kzalloc_obj(&i2c->dev, struct tc3589x);
+	tc3589x = devm_kzalloc(&i2c->dev, sizeof(struct tc3589x),
+				GFP_KERNEL);
 	if (!tc3589x)
 		return -ENOMEM;
 

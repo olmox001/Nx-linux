@@ -18,7 +18,6 @@
 #include <linux/pci.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
-#include <linux/regulator/consumer.h>
 #include <linux/resource.h>
 #include <linux/reset.h>
 
@@ -299,11 +298,11 @@ static int histb_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	hipcie = devm_kzalloc_obj(dev, *hipcie);
+	hipcie = devm_kzalloc(dev, sizeof(*hipcie), GFP_KERNEL);
 	if (!hipcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc_obj(dev, *pci);
+	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
 	if (!pci)
 		return -ENOMEM;
 

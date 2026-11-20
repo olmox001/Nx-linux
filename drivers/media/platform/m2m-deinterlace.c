@@ -211,6 +211,7 @@ static void deinterlace_issue_dma(struct deinterlace_ctx *ctx, int op,
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	struct deinterlace_dev *pcdev = ctx->dev;
 	struct dma_chan *chan = pcdev->dma_chan;
+	struct dma_device *dmadev = chan->device;
 	struct dma_async_tx_descriptor *tx;
 	unsigned int s_width, s_height;
 	unsigned int s_size;
@@ -329,7 +330,7 @@ static void deinterlace_issue_dma(struct deinterlace_ctx *ctx, int op,
 	ctx->xt->dst_sgl = true;
 	flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
 
-	tx = dmaengine_prep_interleaved_dma(chan, ctx->xt, flags);
+	tx = dmadev->device_prep_interleaved_dma(chan, ctx->xt, flags);
 	if (tx == NULL) {
 		v4l2_warn(&pcdev->v4l2_dev, "DMA interleaved prep error\n");
 		return;
@@ -821,7 +822,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	q_data[V4L2_M2M_DST].width = 640;
 	q_data[V4L2_M2M_DST].height = 480;
 	q_data[V4L2_M2M_DST].sizeimage = (640 * 480 * 3) / 2;
-	q_data[V4L2_M2M_DST].field = V4L2_FIELD_INTERLACED_TB;
+	q_data[V4L2_M2M_SRC].field = V4L2_FIELD_INTERLACED_TB;
 
 	return vb2_queue_init(dst_vq);
 }
@@ -913,7 +914,7 @@ static int deinterlace_probe(struct platform_device *pdev)
 	dma_cap_mask_t mask;
 	int ret = 0;
 
-	pcdev = devm_kzalloc_obj(&pdev->dev, *pcdev);
+	pcdev = devm_kzalloc(&pdev->dev, sizeof(*pcdev), GFP_KERNEL);
 	if (!pcdev)
 		return -ENOMEM;
 

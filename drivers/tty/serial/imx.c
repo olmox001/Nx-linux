@@ -2136,7 +2136,7 @@ static void imx_uart_console_write_atomic(struct console *co,
 	imx_uart_writel(sport, ucr1, UCR1);
 	imx_uart_writel(sport, old_ucr.ucr2 | UCR2_TXEN, UCR2);
 
-	if (unlikely(!sport->last_putchar_was_newline && !nbcon_is_braille(co)))
+	if (!sport->last_putchar_was_newline)
 		uart_console_write(port, "\n", 1, imx_uart_console_putchar);
 	uart_console_write(port, wctxt->outbuf, wctxt->len,
 			   imx_uart_console_putchar);
@@ -2421,7 +2421,7 @@ static int imx_uart_probe(struct platform_device *pdev)
 	struct resource *res;
 	int txirq, rxirq, rtsirq;
 
-	sport = devm_kzalloc_obj(&pdev->dev, *sport);
+	sport = devm_kzalloc(&pdev->dev, sizeof(*sport), GFP_KERNEL);
 	if (!sport)
 		return -ENOMEM;
 
@@ -2606,23 +2606,34 @@ static int imx_uart_probe(struct platform_device *pdev)
 	if (txirq > 0) {
 		ret = devm_request_irq(&pdev->dev, rxirq, imx_uart_rxint, 0,
 				       dev_name(&pdev->dev), sport);
-		if (ret)
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request rx irq: %d\n",
+				ret);
 			goto err_clk;
+		}
 
 		ret = devm_request_irq(&pdev->dev, txirq, imx_uart_txint, 0,
 				       dev_name(&pdev->dev), sport);
-		if (ret)
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request tx irq: %d\n",
+				ret);
 			goto err_clk;
+		}
 
 		ret = devm_request_irq(&pdev->dev, rtsirq, imx_uart_rtsint, 0,
 				       dev_name(&pdev->dev), sport);
-		if (ret)
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request rts irq: %d\n",
+				ret);
 			goto err_clk;
+		}
 	} else {
 		ret = devm_request_irq(&pdev->dev, rxirq, imx_uart_int, 0,
 				       dev_name(&pdev->dev), sport);
-		if (ret)
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request irq: %d\n", ret);
 			goto err_clk;
+		}
 	}
 
 	platform_set_drvdata(pdev, sport);
@@ -2742,14 +2753,8 @@ static void imx_uart_enable_wakeup(struct imx_port *sport, bool on)
 		imx_uart_writel(sport, ucr1, UCR1);
 	}
 
-	if (wake_active && irqd_is_wakeup_set(irq_get_irq_data(sport->port.irq))) {
-		struct tty_struct *tty = tty_port_tty_get(port);
-
-		if (tty) {
-			pm_wakeup_event(tty->dev, 0);
-			tty_kref_put(tty);
-		}
-	}
+	if (wake_active && irqd_is_wakeup_set(irq_get_irq_data(sport->port.irq)))
+		pm_wakeup_event(tty_port_tty_get(port)->dev, 0);
 
 	uart_port_unlock_irq(&sport->port);
 }

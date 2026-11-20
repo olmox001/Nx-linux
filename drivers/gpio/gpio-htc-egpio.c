@@ -271,7 +271,7 @@ static int __init egpio_probe(struct platform_device *pdev)
 	int               ret;
 
 	/* Initialize ei data structure. */
-	ei = devm_kzalloc_flex(&pdev->dev, *ei, chip, pdata->num_chips);
+	ei = devm_kzalloc(&pdev->dev, struct_size(ei, chip, pdata->num_chips), GFP_KERNEL);
 	if (!ei)
 		return -ENOMEM;
 

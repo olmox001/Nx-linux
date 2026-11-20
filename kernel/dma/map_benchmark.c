@@ -51,7 +51,8 @@ struct dma_single_map_param {
 
 static void *dma_single_map_benchmark_prepare(struct map_benchmark_data *map)
 {
-	struct dma_single_map_param *params __free(kfree) = kzalloc_obj(*params);
+	struct dma_single_map_param *params __free(kfree) = kzalloc(sizeof(*params),
+								    GFP_KERNEL);
 	if (!params)
 		return NULL;
 
@@ -500,7 +501,7 @@ static int __map_benchmark_probe(struct device *dev)
 	struct map_benchmark_data *map;
 	int ret;
 
-	map = devm_kzalloc_obj(dev, *map);
+	map = devm_kzalloc(dev, sizeof(*map), GFP_KERNEL);
 	if (!map)
 		return -ENOMEM;
 	map->dev = dev;

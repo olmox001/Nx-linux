@@ -169,7 +169,17 @@ static struct platform_driver lpass_cc_sc7280_driver = {
 	},
 };
 
-subsys_platform_driver(lpass_cc_sc7280_driver);
+static int __init lpass_cc_sc7280_init(void)
+{
+	return platform_driver_register(&lpass_cc_sc7280_driver);
+}
+subsys_initcall(lpass_cc_sc7280_init);
+
+static void __exit lpass_cc_sc7280_exit(void)
+{
+	platform_driver_unregister(&lpass_cc_sc7280_driver);
+}
+module_exit(lpass_cc_sc7280_exit);
 
 MODULE_DESCRIPTION("QTI LPASS_CC SC7280 Driver");
 MODULE_LICENSE("GPL v2");

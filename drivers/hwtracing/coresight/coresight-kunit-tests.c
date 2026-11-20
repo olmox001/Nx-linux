@@ -8,10 +8,12 @@
 
 static struct coresight_device *coresight_test_device(struct device *dev)
 {
-	struct coresight_device *csdev = devm_kzalloc_objs(dev,
-							   struct coresight_device,
-							   1);
-	csdev->pdata = devm_kzalloc_objs(dev, struct coresight_platform_data, 1);
+	struct coresight_device *csdev = devm_kcalloc(dev, 1,
+						     sizeof(struct coresight_device),
+						     GFP_KERNEL);
+	csdev->pdata = devm_kcalloc(dev, 1,
+				   sizeof(struct coresight_platform_data),
+				   GFP_KERNEL);
 	return csdev;
 }
 

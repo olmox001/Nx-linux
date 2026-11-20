@@ -842,7 +842,7 @@ static int rt1719_probe(struct i2c_client *i2c)
 	struct typec_capability typec_cap = { };
 	int ret;
 
-	data = devm_kzalloc_obj(&i2c->dev, *data);
+	data = devm_kzalloc(&i2c->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

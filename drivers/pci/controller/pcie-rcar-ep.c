@@ -141,7 +141,8 @@ static int rcar_pcie_ep_get_pdata(struct rcar_pcie_endpoint *ep,
 	if (IS_ERR(pcie->base))
 		return PTR_ERR(pcie->base);
 
-	ep->ob_window = devm_kzalloc_objs(dev, *window, RCAR_PCI_MAX_RESOURCES);
+	ep->ob_window = devm_kcalloc(dev, RCAR_PCI_MAX_RESOURCES,
+				     sizeof(*window), GFP_KERNEL);
 	if (!ep->ob_window)
 		return -ENOMEM;
 
@@ -479,7 +480,7 @@ static int rcar_pcie_ep_probe(struct platform_device *pdev)
 	struct pci_epc *epc;
 	int err;
 
-	ep = devm_kzalloc_obj(dev, *ep);
+	ep = devm_kzalloc(dev, sizeof(*ep), GFP_KERNEL);
 	if (!ep)
 		return -ENOMEM;
 
@@ -509,8 +510,9 @@ static int rcar_pcie_ep_probe(struct platform_device *pdev)
 		goto err_pm_put;
 	}
 
-	ep->ob_mapped_addr = devm_kzalloc_objs(dev, *ep->ob_mapped_addr,
-					       ep->num_ob_windows);
+	ep->ob_mapped_addr = devm_kcalloc(dev, ep->num_ob_windows,
+					  sizeof(*ep->ob_mapped_addr),
+					  GFP_KERNEL);
 	if (!ep->ob_mapped_addr) {
 		err = -ENOMEM;
 		dev_err(dev, "failed to allocate memory for outbound memory pointers\n");

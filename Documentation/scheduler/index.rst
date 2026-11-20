@@ -23,7 +23,5 @@ Scheduler
     sched-stats
     sched-ext
     sched-debug
-    sched-paravirt
-    sched-preemption
 
     text_files

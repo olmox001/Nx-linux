@@ -39,6 +39,8 @@
 #define IS_ISA_DEVICE(pdev) ((pdev->class >> 8) == PCI_CLASS_BRIDGE_ISA)
 #define IS_AZALIA(pdev) ((pdev)->vendor == 0x8086 && (pdev)->device == 0x3a3e)
 
+#define IOAPIC_RANGE_START	(0xfee00000)
+#define IOAPIC_RANGE_END	(0xfeefffff)
 #define IOVA_START_ADDR		(0x1000)
 
 #define DEFAULT_DOMAIN_ADDRESS_WIDTH 57
@@ -51,10 +53,12 @@ static int rwbf_quirk;
 #define rwbf_required(iommu)	(rwbf_quirk || cap_rwbf((iommu)->cap))
 
 /*
- * Skip forcing iommu on and avoid tboot-related kernel panics during
- * initialization when set to 1 (via intel_iommu=tboot_noforce).
+ * set to 1 to panic kernel if can't successfully enable VT-d
+ * (used when kernel is launched w/ TXT)
  */
+static int force_on = 0;
 int intel_iommu_tboot_noforce;
+static int no_platform_optin;
 
 #define ROOT_ENTRY_NR (VTD_PAGE_SIZE/sizeof(struct root_entry))
 
@@ -195,11 +199,7 @@ static LIST_HEAD(dmar_satc_units);
 
 static void intel_iommu_domain_free(struct iommu_domain *domain);
 
-#ifdef CONFIG_INTEL_IOMMU_DEFAULT_ON
-int dmar_policy = DMAR_ON;
-#else
-int dmar_policy = DMAR_DEFAULT_OFF;
-#endif
+int dmar_disabled = !IS_ENABLED(CONFIG_INTEL_IOMMU_DEFAULT_ON);
 int intel_iommu_sm = IS_ENABLED(CONFIG_INTEL_IOMMU_SCALABLE_MODE_DEFAULT_ON);
 
 int intel_iommu_enabled = 0;
@@ -240,10 +240,11 @@ static int __init intel_iommu_setup(char *str)
 
 	while (*str) {
 		if (!strncmp(str, "on", 2)) {
-			dmar_policy = DMAR_ON;
+			dmar_disabled = 0;
 			pr_info("IOMMU enabled\n");
 		} else if (!strncmp(str, "off", 3)) {
-			dmar_policy = DMAR_USER_OFF;
+			dmar_disabled = 1;
+			no_platform_optin = 1;
 			pr_info("IOMMU disabled\n");
 		} else if (!strncmp(str, "igfx_off", 8)) {
 			disable_igfx_iommu = 1;
@@ -875,14 +876,8 @@ static void iommu_enable_pci_ats(struct device_domain_info *info)
 	if (!pci_ats_page_aligned(pdev))
 		return;
 
-	/*
-	 * pci_enable_ats() should not fail here because earlier checks
-	 * have already verified support and configuration.
-	 */
-	if (WARN_ON(pci_enable_ats(pdev, VTD_PAGE_SHIFT)))
-		return;
-
-	info->ats_enabled = 1;
+	if (!pci_enable_ats(pdev, VTD_PAGE_SHIFT))
+		info->ats_enabled = 1;
 }
 
 static void iommu_disable_pci_ats(struct device_domain_info *info)
@@ -1051,7 +1046,7 @@ int domain_attach_iommu(struct dmar_domain *domain, struct intel_iommu *iommu)
 	}
 
 	num = ida_alloc_range(&iommu->domain_ida, IDA_START_DID,
-			      iommu->max_domain_id - 1, GFP_KERNEL);
+			      cap_ndoms(iommu->cap) - 1, GFP_KERNEL);
 	if (num < 0) {
 		pr_err("%s: No free domain ids\n", iommu->name);
 		goto err_unlock;
@@ -1116,7 +1111,7 @@ static void copied_context_tear_down(struct intel_iommu *iommu,
 	context_clear_present(context);
 	__iommu_flush_cache(iommu, context, sizeof(*context));
 
-	if (did_old < iommu->max_domain_id) {
+	if (did_old < cap_ndoms(iommu->cap)) {
 		iommu->flush.flush_context(iommu, did_old,
 					   PCI_DEVID(bus, devfn),
 					   DMA_CCMD_MASK_NOBIT,
@@ -1450,103 +1445,12 @@ static void intel_iommu_init_qi(struct intel_iommu *iommu)
 	}
 }
 
-/*
- * Reserve a domain ID inherited from the previous kernel so that it is not
- * handed out again while the copied translation structures are still live.
- *
- * Returns 0 when the ID is reserved, was already reserved, or cannot be
- * re-assigned, and a negative errno for a genuine allocation failure.
- */
-static int reserve_domain_id(struct intel_iommu *iommu, int did)
-{
-	int ret;
-
-	if (did < 0 || did >= iommu->max_domain_id)
-		return 0;
-
-	ret = ida_alloc_range(&iommu->domain_ida, did, did, GFP_KERNEL);
-	/*
-	 * Devices sharing a domain share its ID, so the same ID is seen in
-	 * more than one context entry; -ENOSPC merely reports that it is
-	 * already reserved.  On success the allocated ID is returned, which
-	 * is not an error either.
-	 */
-	if (ret == -ENOSPC || ret >= 0)
-		return 0;
-
-	return ret;
-}
-
-/*
- * Reserve the domain IDs used by a scalable mode context entry copied from
- * the previous kernel.
- */
-static int copy_pasid_table_dids(struct intel_iommu *iommu, struct context_entry *ce)
-{
-	struct pasid_dir_entry *dir;
-	unsigned long dir_size;
-	phys_addr_t dir_phys;
-	int ret = 0;
-	int i, j;
-
-	dir_phys = ce->lo & VTD_PAGE_MASK;
-	if (!dir_phys)
-		return 0;
-
-	dir_size = get_pasid_dir_size(ce);
-	dir = memremap(dir_phys, dir_size * sizeof(*dir), MEMREMAP_WB);
-	if (!dir)
-		return -ENOMEM;
-
-	for (i = 0; i < dir_size; i++) {
-		struct pasid_entry *table;
-		phys_addr_t table_phys;
-
-		if (!pasid_pde_is_present(&dir[i]))
-			continue;
-
-		/*
-		 * Do not use get_pasid_table_from_pde(); that returns a
-		 * phys_to_virt() pointer, which is not valid for memory
-		 * owned by the previous kernel.
-		 */
-		table_phys = READ_ONCE(dir[i].val) & PDE_PFN_MASK;
-		if (!table_phys)
-			continue;
-
-		/* A PASID table is one page: PASID_TBL_ENTRIES * 64 bytes. */
-		table = memremap(table_phys, PAGE_SIZE, MEMREMAP_WB);
-		if (!table) {
-			ret = -ENOMEM;
-			goto out;
-		}
-
-		for (j = 0; j < PASID_TBL_ENTRIES; j++) {
-			if (!pasid_pte_is_present(&table[j]))
-				continue;
-
-			ret = reserve_domain_id(iommu, pasid_get_domain_id(&table[j]));
-			if (ret) {
-				memunmap(table);
-				goto out;
-			}
-		}
-
-		memunmap(table);
-	}
-
-out:
-	memunmap(dir);
-
-	return ret;
-}
-
 static int copy_context_table(struct intel_iommu *iommu,
 			      struct root_entry *old_re,
 			      struct context_entry **tbl,
 			      int bus, bool ext)
 {
-	int tbl_idx, tbl_slot = 0, idx, devfn, ret = 0;
+	int tbl_idx, tbl_slot = 0, idx, devfn, ret = 0, did;
 	struct context_entry *new_ce = NULL, ce;
 	struct context_entry *old_ce = NULL;
 	struct root_entry re;
@@ -1608,20 +1512,10 @@ static int copy_context_table(struct intel_iommu *iommu,
 
 		if (!context_present(&ce))
 			continue;
-		/*
-		 * The context entry only holds a domain ID in legacy mode.
-		 * In scalable mode the IDs are in the PASID table entries.
-		 */
-		if (ext)
-			ret = copy_pasid_table_dids(iommu, &ce);
-		else
-			ret = reserve_domain_id(iommu, context_domain_id(&ce));
-		if (ret) {
-			/* Not yet published through @tbl, so free it here. */
-			iommu_free_pages(new_ce);
-			new_ce = NULL;
-			goto out_unmap;
-		}
+
+		did = context_domain_id(&ce);
+		if (did >= 0 && did < cap_ndoms(iommu->cap))
+			ida_alloc_range(&iommu->domain_ida, did, did, GFP_KERNEL);
 
 		set_context_copied(iommu, bus, devfn);
 		new_ce[idx] = ce;
@@ -1666,16 +1560,12 @@ static int copy_translation_tables(struct intel_iommu *iommu)
 		return -ENOMEM;
 
 	old_rt_phys = rtaddr_reg & VTD_PAGE_MASK;
-	if (!old_rt_phys) {
-		ret = -EINVAL;
-		goto err_free_bitmap;
-	}
+	if (!old_rt_phys)
+		return -EINVAL;
 
 	old_rt = memremap(old_rt_phys, PAGE_SIZE, MEMREMAP_WB);
-	if (!old_rt) {
-		ret = -ENOMEM;
-		goto err_free_bitmap;
-	}
+	if (!old_rt)
+		return -ENOMEM;
 
 	/* This is too big for the stack - allocate it from slab */
 	ctxt_table_entries = ext ? 512 : 256;
@@ -1690,7 +1580,7 @@ static int copy_translation_tables(struct intel_iommu *iommu)
 		if (ret) {
 			pr_err("%s: Failed to copy context table for bus %d\n",
 				iommu->name, bus);
-			goto err_free_ctxt_tbls;
+			continue;
 		}
 	}
 
@@ -1719,29 +1609,10 @@ static int copy_translation_tables(struct intel_iommu *iommu)
 
 	__iommu_flush_cache(iommu, iommu->root_entry, PAGE_SIZE);
 
-	memunmap(old_rt);
-	return 0;
+	ret = 0;
 
-err_free_ctxt_tbls:
-	/*
-	 * None of these tables have been linked into iommu->root_entry yet,
-	 * so they are unreachable and must be freed here.
-	 */
-	for (bus = 0; bus < ctxt_table_entries; bus++)
-		iommu_free_pages(ctxt_tbls[bus]);
-	kfree(ctxt_tbls);
 out_unmap:
 	memunmap(old_rt);
-err_free_bitmap:
-	bitmap_free(iommu->copied_tables);
-	iommu->copied_tables = NULL;
-
-	/*
-	 * Only reservations taken from the old context entries can be in the
-	 * ida at this point; no domain has been allocated on this IOMMU yet.
-	 * ida_destroy() empties it and leaves it ready for reuse.
-	 */
-	ida_destroy(&iommu->domain_ida);
 
 	return ret;
 }
@@ -1841,7 +1712,7 @@ static int __init init_dmars(void)
 			 * we always have to disable PMRs or DMA may fail on
 			 * this device
 			 */
-			if (dmar_policy_force_on())
+			if (force_on)
 				iommu_disable_protect_mem_regions(iommu);
 			continue;
 		}
@@ -1933,7 +1804,7 @@ static int init_iommu_hw(void)
 			 * we always have to disable PMRs or DMA may fail on
 			 * this device
 			 */
-			if (dmar_policy_force_on())
+			if (force_on)
 				iommu_disable_protect_mem_regions(iommu);
 			continue;
 		}
@@ -1994,7 +1865,7 @@ static void iommu_resume(void *data)
 	unsigned long flag;
 
 	if (init_iommu_hw()) {
-		if (dmar_policy_force_on())
+		if (force_on)
 			panic("tboot: IOMMU setup failed, DMAR can not resume!\n");
 		else
 			WARN(1, "IOMMU setup failed, DMAR can not resume!\n");
@@ -2262,7 +2133,7 @@ static int intel_iommu_add(struct dmar_drhd_unit *dmaru)
 		/*
 		 * we always have to disable PMRs or DMA may fail on this device
 		 */
-		if (dmar_policy_force_on())
+		if (force_on)
 			iommu_disable_protect_mem_regions(iommu);
 		return 0;
 	}
@@ -2500,7 +2371,7 @@ void intel_iommu_shutdown(void)
 	struct dmar_drhd_unit *drhd;
 	struct intel_iommu *iommu = NULL;
 
-	if (dmar_policy_off())
+	if (no_iommu || dmar_disabled)
 		return;
 
 	/*
@@ -2563,7 +2434,7 @@ static ssize_t domains_supported_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
 	struct intel_iommu *iommu = dev_to_intel_iommu(dev);
-	return sysfs_emit(buf, "%ld\n", iommu->max_domain_id);
+	return sysfs_emit(buf, "%ld\n", cap_ndoms(iommu->cap));
 }
 static DEVICE_ATTR_RO(domains_supported);
 
@@ -2574,7 +2445,7 @@ static ssize_t domains_used_show(struct device *dev,
 	unsigned int count = 0;
 	int id;
 
-	for (id = 0; id < iommu->max_domain_id; id++)
+	for (id = 0; id < cap_ndoms(iommu->cap); id++)
 		if (ida_exists(&iommu->domain_ida, id))
 			count++;
 
@@ -2615,25 +2486,25 @@ static bool has_external_pci(void)
 	return false;
 }
 
-static void __init platform_optin_force_iommu(void)
+static int __init platform_optin_force_iommu(void)
 {
-	if (!dmar_platform_optin() || !dmar_can_force_on(DMAR_FORCEON_PLATFORM))
-		return;
+	if (no_iommu || !dmar_platform_optin() || no_platform_optin ||
+	    !has_external_pci())
+		return 0;
 
-	if (!has_external_pci())
-		return;
+	if (dmar_disabled)
+		pr_info("Intel-IOMMU force enabled due to platform opt in\n");
 
 	/*
 	 * If Intel-IOMMU is disabled by default, we will apply identity
 	 * map for all devices except those marked as being untrusted.
 	 */
-	if (dmar_policy_off()) {
-		pr_info("Intel-IOMMU force enabled due to platform opt in\n");
+	if (dmar_disabled)
 		iommu_set_default_passthrough(false);
-	}
 
-	/* No concurrent access to dmar_policy at this point. */
-	dmar_policy = DMAR_FORCE_ON;
+	dmar_disabled = 0;
+
+	return 1;
 }
 
 static int __init probe_acpi_namespace_devices(void)
@@ -2673,20 +2544,18 @@ static int __init probe_acpi_namespace_devices(void)
 	return 0;
 }
 
-static __init void tboot_force_iommu(void)
+static __init int tboot_force_iommu(void)
 {
-	if (!tboot_enabled() || intel_iommu_tboot_noforce)
-		return;
+	if (!tboot_enabled())
+		return 0;
 
-	if (!dmar_can_force_on(DMAR_FORCEON_TBOOT))
-		panic("tboot: Failed to force IOMMU on\n");
-
-	if (dmar_policy_off())
+	if (no_iommu || dmar_disabled)
 		pr_warn("Forcing Intel-IOMMU to enabled\n");
 
-	/* No concurrent access to dmar_policy at this point. */
-	dmar_policy = DMAR_FORCE_ON;
+	dmar_disabled = 0;
 	no_iommu = 0;
+
+	return 1;
 }
 
 int __init intel_iommu_init(void)
@@ -2699,19 +2568,18 @@ int __init intel_iommu_init(void)
 	 * Intel IOMMU is required for a TXT/tboot launch or platform
 	 * opt in, so enforce that.
 	 */
-	tboot_force_iommu();
-	if (!dmar_policy_force_on())
-		platform_optin_force_iommu();
+	force_on = (!intel_iommu_tboot_noforce && tboot_force_iommu()) ||
+		    platform_optin_force_iommu();
 
 	down_write(&dmar_global_lock);
 	if (dmar_table_init()) {
-		if (dmar_policy_force_on())
+		if (force_on)
 			panic("tboot: Failed to initialize DMAR table\n");
 		goto out_free_dmar;
 	}
 
 	if (dmar_dev_scope_init() < 0) {
-		if (dmar_policy_force_on())
+		if (force_on)
 			panic("tboot: Failed to initialize DMAR device scope\n");
 		goto out_free_dmar;
 	}
@@ -2729,7 +2597,7 @@ int __init intel_iommu_init(void)
 	if (!no_iommu)
 		intel_iommu_debugfs_init();
 
-	if (dmar_policy_off()) {
+	if (no_iommu || dmar_disabled) {
 		/*
 		 * We exit the function here to ensure IOMMU's remapping and
 		 * mempool aren't setup, which means that the IOMMU's PMRs
@@ -2765,7 +2633,7 @@ int __init intel_iommu_init(void)
 
 	ret = init_dmars();
 	if (ret) {
-		if (dmar_policy_force_on())
+		if (force_on)
 			panic("tboot: Failed to initialize DMARs\n");
 		pr_err("Initialization failed\n");
 		goto out_free_dmar;
@@ -2897,7 +2765,9 @@ static int blocking_domain_attach_dev(struct iommu_domain *domain,
 				      struct device *dev,
 				      struct iommu_domain *old)
 {
-	iopf_for_domain_remove(old, dev);
+	struct device_domain_info *info = dev_iommu_priv_get(dev);
+
+	iopf_for_domain_remove(info->domain ? &info->domain->domain : NULL, dev);
 	device_block_translation(dev);
 	return 0;
 }
@@ -3024,10 +2894,10 @@ static unsigned int compute_vasz_lg2_ss(struct intel_iommu *iommu,
 		*top_level = 4;
 		return min(57, mgaw);
 	} else if (mgaw > 39 && sagaw >= BIT(2)) {
-		*top_level = 2 + ffs(sagaw >> 2);
+		*top_level = 3 + ffs(sagaw >> 3);
 		return min(48, mgaw);
 	} else if (mgaw > 30 && sagaw >= BIT(1)) {
-		*top_level = 1 + ffs(sagaw >> 1);
+		*top_level = 2 + ffs(sagaw >> 2);
 		return min(39, mgaw);
 	}
 	return 0;
@@ -3428,10 +3298,7 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 
 	dev_iommu_priv_set(dev, info);
 	if (pdev && pci_ats_supported(pdev)) {
-		ret = pci_prepare_ats(pdev, VTD_PAGE_SHIFT);
-		if (ret)
-			goto free;
-
+		pci_prepare_ats(pdev, VTD_PAGE_SHIFT);
 		ret = device_rbtree_insert(iommu, info);
 		if (ret)
 			goto free;
@@ -3525,6 +3392,7 @@ static void intel_iommu_get_resv_regions(struct device *device,
 					 struct list_head *head)
 {
 	int prot = DMA_PTE_READ | DMA_PTE_WRITE;
+	struct iommu_resv_region *reg;
 	struct dmar_rmrr_unit *rmrr;
 	struct device *i_dev;
 	int i;
@@ -3560,7 +3428,6 @@ static void intel_iommu_get_resv_regions(struct device *device,
 #ifdef CONFIG_INTEL_IOMMU_FLOPPY_WA
 	if (dev_is_pci(device)) {
 		struct pci_dev *pdev = to_pci_dev(device);
-		struct iommu_resv_region *reg;
 
 		if ((pdev->class >> 8) == PCI_CLASS_BRIDGE_ISA) {
 			reg = iommu_alloc_resv_region(0, 1UL << 24, prot,
@@ -3572,7 +3439,12 @@ static void intel_iommu_get_resv_regions(struct device *device,
 	}
 #endif /* CONFIG_INTEL_IOMMU_FLOPPY_WA */
 
-	iommu_add_resv_x86_msi_region(head);
+	reg = iommu_alloc_resv_region(IOAPIC_RANGE_START,
+				      IOAPIC_RANGE_END - IOAPIC_RANGE_START + 1,
+				      0, IOMMU_RESV_MSI, GFP_KERNEL);
+	if (!reg)
+		return;
+	list_add_tail(&reg->list, head);
 }
 
 static struct iommu_group *intel_iommu_device_group(struct device *dev)
@@ -3978,14 +3850,6 @@ static int identity_domain_attach_dev(struct iommu_domain *domain,
 	if (dev_is_real_dma_subdevice(dev))
 		return 0;
 
-	if (sm_supported(iommu))
-		ret = intel_pasid_setup_pass_through(iommu, dev, IOMMU_NO_PASID);
-	else
-		ret = device_setup_pass_through(dev);
-
-	if (ret)
-		return ret;
-
 	/*
 	 * The identity domain has no iopf_handler, so no IOPF reference is
 	 * taken for it.  The reference held by the old domain must still be
@@ -3993,9 +3857,16 @@ static int identity_domain_attach_dev(struct iommu_domain *domain,
 	 * not affect the IOPF reference count.
 	 */
 	iopf_for_domain_remove(old, dev);
-	info->domain_attached = true;
 
-	return 0;
+	if (sm_supported(iommu))
+		ret = intel_pasid_setup_pass_through(iommu, dev, IOMMU_NO_PASID);
+	else
+		ret = device_setup_pass_through(dev);
+
+	if (!ret)
+		info->domain_attached = true;
+
+	return ret;
 }
 
 static int identity_domain_set_dev_pasid(struct iommu_domain *domain,

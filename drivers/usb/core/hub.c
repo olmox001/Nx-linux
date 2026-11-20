@@ -626,11 +626,11 @@ static int hub_ext_port_status(struct usb_hub *hub, int port1, int type,
 	mutex_lock(&hub->status_mutex);
 	ret = get_port_status(hub->hdev, port1, &hub->status->port, type, len);
 	if (ret < len) {
+		if (ret != -ENODEV)
+			dev_err(hub->intfdev,
+				"%s failed (err = %d)\n", __func__, ret);
 		if (ret >= 0)
 			ret = -EIO;
-		if (ret != -ENODEV)
-			dev_dbg(hub->intfdev,
-				"get_port_status failed: err = %d\n", ret);
 	} else {
 		*status = le16_to_cpu(hub->status->port.wPortStatus);
 		*change = le16_to_cpu(hub->status->port.wPortChange);
@@ -998,11 +998,11 @@ static int hub_hub_status(struct usb_hub *hub,
 	mutex_lock(&hub->status_mutex);
 	ret = get_hub_status(hub->hdev, &hub->status->hub);
 	if (ret < (int)sizeof(hub->status->hub)) {
+		if (ret != -ENODEV)
+			dev_err(hub->intfdev,
+				"%s failed (err = %d)\n", __func__, ret);
 		if (ret >= 0)
 			ret = -EIO;
-		if (ret != -ENODEV)
-			dev_dbg(hub->intfdev,
-				"get_hub_status failed: err = %d\n", ret);
 	} else {
 		*status = le16_to_cpu(hub->status->hub.wHubStatus);
 		*change = le16_to_cpu(hub->status->hub.wHubChange);
@@ -2416,7 +2416,7 @@ static void announce_device_ids(struct usb_device *udev)
 	u16 bcdDevice = le16_to_cpu(udev->descriptor.bcdDevice);
 
 	dev_info(&udev->dev,
-		"New USB device found: idVendor=%04x, idProduct=%04x, bcdDevice=%x.%02x\n",
+		"New USB device found, idVendor=%04x, idProduct=%04x, bcdDevice=%2x.%02x\n",
 		le16_to_cpu(udev->descriptor.idVendor),
 		le16_to_cpu(udev->descriptor.idProduct),
 		bcdDevice >> 8, bcdDevice & 0xff);

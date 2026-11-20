@@ -14,7 +14,6 @@ use core::{
 
 use kernel::{
     num::{
-        FromConst,
         Integer,
         Unsigned, //
     },
@@ -273,21 +272,6 @@ macro_rules! impl_const_new {
                 unsafe { Self::__new(VALUE) }
             }
         }
-
-        impl<const N: u32, const V: i128> FromConst<V> for Bounded<$type, N> {
-            const VALUE: Self = {
-                let value = <$type as FromConst<V>>::VALUE;
-                // Statically assert that `value` fits within the set number of bits.
-                assert!(
-                    fits_within!(value, $type, N),
-                    "constant cannot be represented within the given number of bits"
-                );
-
-                // SAFETY: The assert above confirmed that `value` can be represented within `N`
-                // bits.
-                unsafe { Self::__new(value) }
-            };
-        }
         )*
     };
 }
@@ -512,42 +496,11 @@ where
     /// ```
     pub fn shr<const SHIFT: u32, const RES: u32>(self) -> Bounded<T, RES> {
         const_assert!(SHIFT < T::BITS);
-        const_assert!(RES + SHIFT >= N);
+        const { assert!(RES + SHIFT >= N) }
 
         // SAFETY: We shift the value right by `SHIFT`, reducing the number of bits needed to
         // represent the shifted value by as much, and just asserted that `RES >= N - SHIFT`.
         unsafe { Bounded::__new(self.0 >> SHIFT) }
-    }
-
-    /// Right-shifts `self` by `SHIFT` if that loses no set bits, and returns the result as a
-    /// `Bounded<_, RES>`, where `RES >= N - SHIFT`.
-    ///
-    /// Returns [`None`] if any of the `SHIFT` least significant bits of `self` is set.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use kernel::num::Bounded;
-    ///
-    /// let v = Bounded::<u32, 16>::new::<0xff00>();
-    /// let v_shifted: Option<Bounded<u32, 8>> = v.shr_exact::<8, _>();
-    ///
-    /// assert_eq!(v_shifted.map(|v| v.get()), Some(0xff));
-    ///
-    /// // A set bit would be shifted out.
-    /// let v = Bounded::<u32, 16>::new::<0xff01>();
-    /// let v_shifted: Option<Bounded<u32, 8>> = v.shr_exact::<8, _>();
-    ///
-    /// assert!(v_shifted.is_none());
-    /// ```
-    #[inline]
-    pub fn shr_exact<const SHIFT: u32, const RES: u32>(self) -> Option<Bounded<T, RES>> {
-        let shifted = self.shr::<SHIFT, RES>();
-        if shifted.get() << SHIFT == self.0 {
-            Some(shifted)
-        } else {
-            None
-        }
     }
 
     /// Left-shifts `self` by `SHIFT` and returns the result as a `Bounded<_, RES>`, where `RES >=
@@ -564,7 +517,7 @@ where
     /// assert_eq!(v_shifted.get(), 0xff00);
     /// ```
     pub fn shl<const SHIFT: u32, const RES: u32>(self) -> Bounded<T, RES> {
-        const_assert!(RES >= N + SHIFT);
+        const { assert!(RES >= N + SHIFT) }
 
         // SAFETY: We shift the value left by `SHIFT`, augmenting the number of bits needed to
         // represent the shifted value by as much, and just asserted that `RES >= N + SHIFT`.

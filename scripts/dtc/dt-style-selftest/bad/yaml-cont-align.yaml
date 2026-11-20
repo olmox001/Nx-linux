@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Test fixture with mis-aligned multi-line property
 
 maintainers:
-  - Rob Herring <robh@kernel.org>
+  - Test User <test@example.com>
 
 properties:
   compatible:
@@ -25,9 +25,6 @@ examples:
   - |
     foo@1000 {
         compatible = "example,test-cont-align";
-        reg = <0x1000 0x100>, /* comments with " < , should not matter */
-            <0x2000 0x100>, /* comments with " < , should not matter */
-            /* but comments should be placed properly */
-              <0x3000
-              0x100>;
+        reg = <0x1000 0x100>,
+            <0x2000 0x100>;
     };

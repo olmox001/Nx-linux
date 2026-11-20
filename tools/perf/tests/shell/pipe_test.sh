@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: GPL-2.0
 
 shelldir=$(dirname "$0")
+# shellcheck source=lib/perf_has_symbol.sh
 . "${shelldir}"/lib/perf_has_symbol.sh
 
 sym="noploop"

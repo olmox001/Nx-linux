@@ -152,7 +152,7 @@ static int pm8916_bms_vm_battery_probe(struct platform_device *pdev)
 	int ret, irq;
 	unsigned int tmp;
 
-	bat = devm_kzalloc_obj(dev, *bat);
+	bat = devm_kzalloc(dev, sizeof(*bat), GFP_KERNEL);
 	if (!bat)
 		return -ENOMEM;
 

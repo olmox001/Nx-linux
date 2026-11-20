@@ -19,9 +19,6 @@
 
 #include "tb.h"
 
-/* How long a hop is given to drain when a path is deactivated */
-#define TB_PORT_PENDING_TIMEOUT		500 /* ms */
-
 /* Switch NVM support */
 
 struct nvm_auth_status {
@@ -685,16 +682,7 @@ int tb_port_disable(struct tb_port *port)
 	return __tb_port_enable(port, false);
 }
 
-/**
- * tb_port_reset() - Reset the port
- * @port: Port to reset
- *
- * Resets @port. For USB4 ports this issues a USB4 port reset and for
- * legacy ports the link controller port is reset.
- *
- * Return: %0 on success, negative errno otherwise.
- */
-int tb_port_reset(struct tb_port *port)
+static int tb_port_reset(struct tb_port *port)
 {
 	if (tb_switch_is_usb4(port->sw))
 		return port->cap_usb4 ? usb4_port_reset(port) : 0;
@@ -715,7 +703,6 @@ static int tb_init_port(struct tb_port *port)
 	int cap;
 
 	INIT_LIST_HEAD(&port->list);
-	port->pp_timeout_msec = TB_PORT_PENDING_TIMEOUT;
 
 	/* Control adapter does not have configuration space */
 	if (!port->port)

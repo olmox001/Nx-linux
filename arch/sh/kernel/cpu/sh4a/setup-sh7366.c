@@ -381,3 +381,8 @@ void __init plat_irq_setup(void)
 {
 	register_intc_controller(&intc_desc);
 }
+
+void __init plat_mem_setup(void)
+{
+	/* TODO: Register Node 1 */
+}

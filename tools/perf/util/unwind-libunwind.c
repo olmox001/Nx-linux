@@ -1,28 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
-#include "unwind.h"
-
-#include <inttypes.h>
-#include <limits.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include <elf.h>
-#include <fcntl.h>
-#include <gelf.h>
-#include <unistd.h>
-
-#include <dwarf-regs.h>
-
 #include "callchain.h"
 #include "debug.h"
 #include "dso.h"
 #include "env.h"
-#include "libunwind-arch/libunwind-arch.h"
 #include "map.h"
 #include "perf_regs.h"
 #include "session.h"
 #include "symbol.h"
 #include "thread.h"
+#include "unwind.h"
+#include "libunwind-arch/libunwind-arch.h"
+#include <dwarf-regs.h>
+#include <elf.h>
+#include <fcntl.h>
+#include <gelf.h>
+#include <inttypes.h>
 
 #define DW_EH_PE_FORMAT_MASK	0x0f	/* format of the encoded value */
 #define DW_EH_PE_APPL_MASK	0x70	/* how the value is to be applied */
@@ -301,19 +293,10 @@ static int read_unwind_spec_debug_frame(struct dso *dso,
 		}
 
 		if (ofs <= 0) {
-			char *alloc_name;
-
-			mutex_lock(dso__lock(dso));
-			alloc_name = dso__symsrc_filename(dso) ?
-					strdup(dso__symsrc_filename(dso)) : NULL;
-			mutex_unlock(dso__lock(dso));
-			if (alloc_name) {
-				fd = open(alloc_name, O_RDONLY);
-				if (fd >= 0) {
-					ofs = elf_section_offset(fd, ".debug_frame");
-					close(fd);
-				}
-				free(alloc_name);
+			fd = open(dso__symsrc_filename(dso), O_RDONLY);
+			if (fd >= 0) {
+				ofs = elf_section_offset(fd, ".debug_frame");
+				close(fd);
 			}
 		}
 
@@ -338,7 +321,6 @@ static int read_unwind_spec_debug_frame(struct dso *dso,
 				}
 			}
 			if (ofs > 0) {
-				mutex_lock(dso__lock(dso));
 				if (dso__symsrc_filename(dso) != NULL) {
 					pr_warning(
 						"%s: overwrite symsrc(%s,%s)\n",
@@ -348,7 +330,6 @@ static int read_unwind_spec_debug_frame(struct dso *dso,
 					dso__free_symsrc_filename(dso);
 				}
 				dso__set_symsrc_filename(dso, debuglink);
-				mutex_unlock(dso__lock(dso));
 			} else {
 				free(debuglink);
 			}
@@ -448,23 +429,12 @@ int __libunwind__find_proc_info(void *as, uint64_t ip, void *pi, int need_unwind
 			dso__data_put_fd(dso);
 		}
 
-		mutex_lock(dso__lock(dso));
-		symfile = dso__symsrc_filename(dso) ?
-				strdup(dso__symsrc_filename(dso)) :
-				strdup(dso__name(dso));
-		mutex_unlock(dso__lock(dso));
+		symfile = dso__symsrc_filename(dso) ?: dso__name(dso);
 
-		if (symfile) {
-			if (libunwind_arch__dwarf_find_debug_frame(ui->e_machine,
-								   /*found=*/0, &di, ip,
-								   base, symfile, start,
-								   map__end(map))) {
-				ret = libunwind_arch__dwarf_search_unwind_table(ui->e_machine, as,
-										ip, &di, pi,
-										need_unwind_info,
-										arg);
-			}
-			free((char *)symfile);
+		if (libunwind_arch__dwarf_find_debug_frame(ui->e_machine, /*found=*/0, &di, ip,
+							   base, symfile, start, map__end(map))) {
+			ret = libunwind_arch__dwarf_search_unwind_table(ui->e_machine, as, ip, &di, pi,
+									need_unwind_info, arg);
 		}
 	}
 	map__put(map);

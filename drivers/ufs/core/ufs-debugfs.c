@@ -65,33 +65,23 @@ static int ee_usr_mask_get(void *data, u64 *val)
 	return 0;
 }
 
-token_context_lock(ufs_debugfs);
-
 static int ufs_debugfs_get_user_access(struct ufs_hba *hba)
-	__cond_acquires(0, ufs_debugfs)
+__acquires(&hba->host_sem)
 {
-	int err;
-
 	down(&hba->host_sem);
 	if (!ufshcd_is_user_access_allowed(hba)) {
 		up(&hba->host_sem);
 		return -EBUSY;
 	}
-	err = ufshcd_rpm_resume_and_get(hba);
-	if (err) {
-		up(&hba->host_sem);
-		return err;
-	}
-	__acquire(ufs_debugfs);
+	ufshcd_rpm_get_sync(hba);
 	return 0;
 }
 
 static void ufs_debugfs_put_user_access(struct ufs_hba *hba)
-	__releases(ufs_debugfs)
+__releases(&hba->host_sem)
 {
 	ufshcd_rpm_put_sync(hba);
 	up(&hba->host_sem);
-	__release(ufs_debugfs);
 }
 
 static int ee_usr_mask_set(void *data, u64 val)
@@ -183,7 +173,7 @@ static ssize_t ufs_saved_err_write(struct file *file, const char __user *buf,
 	if (ret < 0)
 		return ret;
 
-	spin_lock_irq(&hba->host->host_lock);
+	spin_lock_irq(hba->host->host_lock);
 	if (strcmp(attr->name, "saved_err") == 0) {
 		hba->saved_err = val;
 	} else if (strcmp(attr->name, "saved_uic_err") == 0) {
@@ -193,7 +183,7 @@ static ssize_t ufs_saved_err_write(struct file *file, const char __user *buf,
 	}
 	if (ret == 0)
 		ufshcd_schedule_eh_work(hba);
-	spin_unlock_irq(&hba->host->host_lock);
+	spin_unlock_irq(hba->host->host_lock);
 
 	return ret < 0 ? ret : count;
 }

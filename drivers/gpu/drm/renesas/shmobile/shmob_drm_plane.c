@@ -14,7 +14,6 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_dma_helper.h>
-#include <drm/drm_panic_helper.h>
 
 #include "shmob_drm_drv.h"
 #include "shmob_drm_kms.h"
@@ -252,17 +251,20 @@ static void shmob_drm_plane_atomic_destroy_state(struct drm_plane *plane,
 	kfree(to_shmob_plane_state(state));
 }
 
-static struct drm_plane_state *shmob_drm_plane_create_state(struct drm_plane *plane)
+static void shmob_drm_plane_reset(struct drm_plane *plane)
 {
 	struct shmob_drm_plane_state *state;
 
+	if (plane->state) {
+		shmob_drm_plane_atomic_destroy_state(plane, plane->state);
+		plane->state = NULL;
+	}
+
 	state = kzalloc_obj(*state);
-	if (!state)
-		return ERR_PTR(-ENOMEM);
+	if (state == NULL)
+		return;
 
-	__drm_atomic_helper_plane_state_init(&state->base, plane);
-
-	return &state->base;
+	__drm_atomic_helper_plane_reset(plane, &state->base);
 }
 
 static const struct drm_plane_helper_funcs shmob_drm_plane_helper_funcs = {
@@ -281,10 +283,9 @@ static const struct drm_plane_helper_funcs shmob_drm_primary_plane_helper_funcs 
 static const struct drm_plane_funcs shmob_drm_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.atomic_create_state = shmob_drm_plane_create_state,
+	.reset = shmob_drm_plane_reset,
 	.atomic_duplicate_state = shmob_drm_plane_atomic_duplicate_state,
 	.atomic_destroy_state = shmob_drm_plane_atomic_destroy_state,
-	DRM_PANIC_PLANE_FUNCS,
 };
 
 static const uint32_t formats[] = {

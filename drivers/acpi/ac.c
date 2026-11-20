@@ -202,7 +202,7 @@ static int acpi_ac_probe(struct platform_device *pdev)
 	if (!adev)
 		return -ENODEV;
 
-	ac = devm_kzalloc_obj(dev, *ac);
+	ac = devm_kzalloc(dev, sizeof(*ac), GFP_KERNEL);
 	if (!ac)
 		return -ENOMEM;
 

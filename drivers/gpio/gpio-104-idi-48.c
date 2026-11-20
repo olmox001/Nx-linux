@@ -36,10 +36,9 @@ MODULE_PARM_DESC(irq, "ACCES 104-IDI-48 interrupt line numbers");
 #define IDI48_IRQ_STATUS 0x7
 #define IDI48_IRQ_ENABLE IDI48_IRQ_STATUS
 
-static int idi_48_reg_mask_xlate(struct gpio_regmap *gpio,
-				 enum gpio_regmap_operation op,
-				 unsigned int base, unsigned int offset,
-				 unsigned int *reg, unsigned int *mask)
+static int idi_48_reg_mask_xlate(struct gpio_regmap *gpio, unsigned int base,
+				 unsigned int offset, unsigned int *reg,
+				 unsigned int *mask)
 {
 	const unsigned int line = offset % 8;
 	const unsigned int stride = offset / 8;
@@ -148,7 +147,7 @@ static int idi_48_probe(struct device *dev, unsigned int id)
 		return dev_err_probe(dev, PTR_ERR(map),
 				     "Unable to initialize register map\n");
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

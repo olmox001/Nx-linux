@@ -602,7 +602,7 @@ static int dp_lttpr_status_show(struct seq_file *m, void *unused)
 		break;
 	}
 
-	seq_putc(m, '\n');
+	seq_puts(m, "\n");
 	return 0;
 }
 
@@ -1077,7 +1077,7 @@ static int psr_capability_show(struct seq_file *m, void *data)
 	seq_printf(m, "Driver support: %s", str_yes_no(link->psr_settings.psr_feature_enabled));
 	if (link->psr_settings.psr_version)
 		seq_printf(m, " [0x%02x]", link->psr_settings.psr_version);
-	seq_putc(m, '\n');
+	seq_puts(m, "\n");
 
 	return 0;
 }
@@ -1262,7 +1262,7 @@ static int hdcp_sink_capability_show(struct seq_file *m, void *data)
 	if (!hdcp_cap && !hdcp2_cap)
 		seq_printf(m, "%s ", "None");
 
-	seq_putc(m, '\n');
+	seq_puts(m, "\n");
 
 	return 0;
 }
@@ -1278,24 +1278,6 @@ static int internal_display_show(struct seq_file *m, void *data)
 	struct dc_link *link = aconnector->dc_link;
 
 	seq_printf(m, "Internal: %u\n", link->is_internal_display);
-
-	return 0;
-}
-
-/*
- * Returns the maximum source viewport width (in pixels) this ASIC can
- * downscale from. A value of 0 means there is no such limit.
- * Example usage: cat /sys/kernel/debug/dri/0/eDP-1/max_downscale_src_width
- */
-static int max_downscale_src_width_show(struct seq_file *m, void *unused)
-{
-	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(m->private);
-	struct dc_link *link = aconnector->dc_link;
-
-	if (!link)
-		return -ENODEV;
-
-	seq_printf(m, "%d\n", link->dc->debug.max_downscale_src_width);
 
 	return 0;
 }
@@ -2724,10 +2706,11 @@ static int ips_status_show(struct seq_file *m, void *unused)
 		rcg_count = ips_fw->rcg_exit_count;
 		ips1_count = ips_fw->ips1_exit_count;
 		ips2_count = ips_fw->ips2_exit_count;
-		seq_printf(m, "exit counts: rcg=%u ips1=%u ips2=%u\n",
+		seq_printf(m, "exit counts: rcg=%u ips1=%u ips2=%u",
 			   rcg_count,
 			   ips1_count,
 			   ips2_count);
+		seq_puts(m, "\n");
 	}
 	return 0;
 }
@@ -2984,7 +2967,7 @@ static ssize_t hdmi_cec_state_write(struct file *f, const char __user *buf,
 		ret = amdgpu_dm_initialize_hdmi_connector(aconnector);
 		if (ret)
 			return ret;
-		amdgpu_dm_hdmi_cec_set_edid(aconnector);
+		hdmi_cec_set_edid(aconnector);
 	} else {
 		if (!aconnector->notifier)
 			return -EINVAL;
@@ -2995,71 +2978,12 @@ static ssize_t hdmi_cec_state_write(struct file *f, const char __user *buf,
 	return size;
 }
 
-/**
- * hdmi_automation_enable - Enable/Disable HDMI automation feature
- * @f: file structure.
- * @buf: userspace buffer. set to '1' to enable; '0' to disable automation feature.
- * @size: size of buffer from userpsace.
- * @pos: unused.
- *
- * Return size on success, error code on failure
- */
-static ssize_t hdmi_automation_enable(struct file *f, const char __user *buf,
-	size_t size, loff_t *pos)
-{
-	struct amdgpu_dm_connector *aconnector = file_inode(f)->i_private;
-	char *wr_buf = NULL;
-	const uint32_t wr_buf_size = 40;
-	int max_param_num = 1;
-	uint8_t param_nums = 0;
-	long param[2];
-	bool hdmi_comp_auto;
-
-	if (size == 0)
-		return -EINVAL;
-
-	wr_buf = kcalloc(wr_buf_size, sizeof(char), GFP_KERNEL);
-	if (!wr_buf)
-		return -ENOSPC;
-
-	if (parse_write_buffer_into_params(wr_buf, wr_buf_size,
-					   (long *)param, buf,
-					   max_param_num,
-					   &param_nums)) {
-		kfree(wr_buf);
-		return -EINVAL;
-	}
-
-	if (param_nums <= 0) {
-		kfree(wr_buf);
-		DRM_DEBUG_DRIVER("user data not be read\n");
-		return -EINVAL;
-	}
-
-	switch (param[0]) {
-	case 0:
-		hdmi_comp_auto = false;
-		break;
-	case 1:
-	default:
-		hdmi_comp_auto = true;
-		break;
-	}
-
-	/* Persist setting across sink re-detection/hotplug. */
-	aconnector->hdmi_comp_auto = hdmi_comp_auto;
-
-	kfree(wr_buf);
-	return size;
-}
-
 DEFINE_SHOW_ATTRIBUTE(dp_dsc_fec_support);
 DEFINE_SHOW_ATTRIBUTE(dmub_fw_state);
 DEFINE_SHOW_ATTRIBUTE(dmub_tracebuffer);
 DEFINE_SHOW_ATTRIBUTE(dp_lttpr_status);
 DEFINE_SHOW_ATTRIBUTE(hdcp_sink_capability);
 DEFINE_SHOW_ATTRIBUTE(internal_display);
-DEFINE_SHOW_ATTRIBUTE(max_downscale_src_width);
 DEFINE_SHOW_ATTRIBUTE(odm_combine_segments);
 DEFINE_SHOW_ATTRIBUTE(replay_capability);
 DEFINE_SHOW_ATTRIBUTE(psr_capability);
@@ -3171,12 +3095,6 @@ static const struct file_operations dp_mst_link_settings_debugfs_fops = {
 	.llseek = default_llseek
 };
 
-static const struct file_operations hdmi_automation_debugfs_fops = {
-	.owner = THIS_MODULE,
-	.write = hdmi_automation_enable,
-	.llseek = default_llseek
-};
-
 static const struct {
 	char *name;
 	const struct file_operations *fops;
@@ -3209,47 +3127,61 @@ static const struct {
 	const struct file_operations *fops;
 } hdmi_debugfs_entries[] = {
 		{"hdcp_sink_capability", &hdcp_sink_capability_fops},
-		{"hdmi_cec_state", &hdmi_cec_state_fops},
-		{"hdmi_automation", &hdmi_automation_debugfs_fops}
+		{"hdmi_cec_state", &hdmi_cec_state_fops}
 };
 
 /*
- * Force a specific pixel encoding for the given connector, overriding the
- * encoding that stream validation would otherwise pick. The value is an
- * enum dc_pixel_encoding:
- *
- *   0 - PIXEL_ENCODING_UNDEFINED (no override, default)
- *   1 - PIXEL_ENCODING_RGB
- *   2 - PIXEL_ENCODING_YCBCR422
- *   3 - PIXEL_ENCODING_YCBCR444
- *   4 - PIXEL_ENCODING_YCBCR420
+ * Force YUV420 output if available from the given mode
  */
-static int force_yuv_pixel_format_set(void *data, u64 val)
+static int force_yuv420_output_set(void *data, u64 val)
 {
 	struct amdgpu_dm_connector *connector = data;
 
-	if (val >= PIXEL_ENCODING_COUNT)
-		return -EINVAL;
-
-	connector->force_yuv_pixel_format = (uint8_t)val;
+	connector->force_yuv420_output = (bool)val;
+	connector->force_yuv_pixel_format = PIXEL_ENCODING_YCBCR420;
 
 	return 0;
 }
 
 /*
- * Read back the pixel encoding currently forced on the given connector.
+ * Check if YUV420 is forced when available from the given mode
  */
-static int force_yuv_pixel_format_get(void *data, u64 *val)
+static int force_yuv420_output_get(void *data, u64 *val)
 {
 	struct amdgpu_dm_connector *connector = data;
 
-	*val = connector->force_yuv_pixel_format;
+	*val = connector->force_yuv420_output;
 
 	return 0;
 }
 
-DEFINE_DEBUGFS_ATTRIBUTE(force_yuv_pixel_format_fops, force_yuv_pixel_format_get,
-			 force_yuv_pixel_format_set, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(force_yuv420_output_fops, force_yuv420_output_get,
+			 force_yuv420_output_set, "%llu\n");
+
+static int force_yuv422_output_set(void *data, u64 val)
+{
+      struct amdgpu_dm_connector *connector = data;
+
+      connector->force_yuv422_output = (bool)val;
+      connector->force_yuv_pixel_format = PIXEL_ENCODING_YCBCR422;
+
+      return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(force_yuv422_output_fops, NULL,
+                       force_yuv422_output_set, "%llu\n");
+
+static int force_yuv444_output_set(void *data, u64 val)
+{
+      struct amdgpu_dm_connector *connector = data;
+
+      connector->force_yuv_pixel_format = PIXEL_ENCODING_YCBCR444;
+
+      return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(force_yuv444_output_fops, NULL,
+                       force_yuv444_output_set, "%llu\n");
 
 /*
  *  Read Replay state
@@ -3692,72 +3624,6 @@ DEFINE_DEBUGFS_ATTRIBUTE(ips_residency_cntl_fops, ips_residency_cntl_get,
 
 DEFINE_SHOW_ATTRIBUTE(current_backlight);
 DEFINE_SHOW_ATTRIBUTE(target_backlight);
-
-/*
- * CACP ACE curve area. Read only.
- * Returns the area under the ACE PWL curve computed by DMUB firmware on
- * eDP panels that support CACP. The value is in DMU-internal units (PWL
- * area); it is only meaningful for relative comparison between CACP
- * levels on the same panel. Level 0 returns the linear baseline (largest).
- *
- * Example usage: cat /sys/kernel/debug/dri/0/eDP-1/cacp_ace_curve_area
- */
-static int cacp_ace_curve_area_show(struct seq_file *m, void *unused)
-{
-	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(m->private);
-	struct dc_link *link = aconnector->dc_link;
-	struct amdgpu_device *adev = drm_to_adev(aconnector->base.dev);
-	struct dc *dc;
-	union dmub_rb_cmd cmd;
-	unsigned int panel_inst = 0;
-	bool reallow_idle = false;
-	int ret = 0;
-
-	if (!link || link->type == dc_connection_none)
-		return -ENODEV;
-
-	if (!(link->connector_signal & SIGNAL_TYPE_EDP))
-		return -ENODEV;
-
-	if (!link->panel_config.cacp.cacp_supported)
-		return -EOPNOTSUPP;
-
-	dc = link->ctx->dc;
-
-	if (!dc_get_edp_link_panel_inst(dc, link, &panel_inst))
-		return -EINVAL;
-
-	memset(&cmd, 0, sizeof(cmd));
-	cmd.cacp_get_ace_curve_area.header.type = DMUB_CMD__CACP;
-	cmd.cacp_get_ace_curve_area.header.sub_type = DMUB_CMD__CACP_GET_ACE_CURVE_AREA;
-	cmd.cacp_get_ace_curve_area.header.payload_bytes =
-		sizeof(cmd.cacp_get_ace_curve_area) -
-		sizeof(cmd.cacp_get_ace_curve_area.header);
-	cmd.cacp_get_ace_curve_area.data.in.panel_inst = panel_inst;
-
-	mutex_lock(&adev->dm.dc_lock);
-
-	if (dc->idle_optimizations_allowed) {
-		dc_allow_idle_optimizations(dc, false);
-		reallow_idle = true;
-	}
-
-	if (!dc_wake_and_execute_dmub_cmd(dc->ctx, &cmd,
-					  DM_DMUB_WAIT_TYPE_WAIT_WITH_REPLY) ||
-	    cmd.cacp_get_ace_curve_area.header.ret_status)
-		ret = -EIO;
-	else
-		seq_printf(m, "%u\n", cmd.cacp_get_ace_curve_area.data.out.area);
-
-	if (reallow_idle)
-		dc_allow_idle_optimizations(dc, true);
-
-	mutex_unlock(&adev->dm.dc_lock);
-
-	return ret;
-}
-DEFINE_SHOW_ATTRIBUTE(cacp_ace_curve_area);
-
 DEFINE_SHOW_ATTRIBUTE(ips_status);
 DEFINE_SHOW_ATTRIBUTE(ips_residency);
 
@@ -3765,10 +3631,11 @@ static const struct {
 	char *name;
 	const struct file_operations *fops;
 } connector_debugfs_entries[] = {
-		{"force_yuv_pixel_format", &force_yuv_pixel_format_fops},
+		{"force_yuv420_output", &force_yuv420_output_fops},
+		{"force_yuv422_output", &force_yuv422_output_fops},
+		{"force_yuv444_output", &force_yuv444_output_fops},
 		{"trigger_hotplug", &trigger_hotplug_debugfs_fops},
 		{"internal_display", &internal_display_fops},
-		{"max_downscale_src_width", &max_downscale_src_width_fops},
 		{"odm_combine_segments", &odm_combine_segments_fops}
 };
 
@@ -3959,8 +3826,6 @@ void connector_debugfs_init(struct amdgpu_dm_connector *connector)
 					&disallow_edp_enter_psr_fops);
 		debugfs_create_file("disallow_edp_enter_replay", 0644, dir, connector,
 					&disallow_edp_enter_replay_fops);
-		debugfs_create_file("cacp_ace_curve_area", 0444, dir, connector,
-				    &cacp_ace_curve_area_fops);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(connector_debugfs_entries); i++) {

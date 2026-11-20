@@ -353,7 +353,7 @@ static int pm4125_probe(struct sdw_slave *pdev, const struct sdw_device_id *id)
 	int master_ch_mask_size = 0;
 	int ret, i;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -464,16 +464,10 @@ static int __maybe_unused pm4125_sdw_runtime_suspend(struct device *dev)
 static int __maybe_unused pm4125_sdw_runtime_resume(struct device *dev)
 {
 	struct pm4125_sdw_priv *priv = dev_get_drvdata(dev);
-	int ret;
 
 	if (priv->regmap) {
 		regcache_cache_only(priv->regmap, false);
-		ret = regcache_sync(priv->regmap);
-		if (ret) {
-			regcache_cache_only(priv->regmap, true);
-			regcache_mark_dirty(priv->regmap);
-			return ret;
-		}
+		regcache_sync(priv->regmap);
 	}
 
 	return 0;

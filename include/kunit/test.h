@@ -285,7 +285,6 @@ struct kunit_suite {
 	struct string_stream *log;
 	int suite_init_err;
 	bool is_init;
-	enum kunit_status status;
 };
 
 /* Stores an array of suites, end points one past the end */
@@ -400,10 +399,11 @@ struct kunit_suite_set kunit_merge_suite_sets(struct kunit_suite_set init_suite_
 const void *kunit_array_gen_params(struct kunit *test, const void *prev, char *desc);
 
 #if IS_BUILTIN(CONFIG_KUNIT)
-void kunit_run_all_tests(void);
+int kunit_run_all_tests(void);
 #else
-static inline void kunit_run_all_tests(void)
+static inline int kunit_run_all_tests(void)
 {
+	return 0;
 }
 #endif /* IS_BUILTIN(CONFIG_KUNIT) */
 

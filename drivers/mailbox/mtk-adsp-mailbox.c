@@ -116,7 +116,7 @@ static int mtk_adsp_mbox_probe(struct platform_device *pdev)
 	struct mbox_controller *mbox;
 	int ret, irq;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -127,7 +127,7 @@ static int mtk_adsp_mbox_probe(struct platform_device *pdev)
 	mbox->txdone_poll = true;
 	mbox->of_xlate = mtk_adsp_mbox_xlate;
 	mbox->num_chans = 1;
-	mbox->chans = devm_kzalloc_obj(dev, *mbox->chans);
+	mbox->chans = devm_kzalloc(dev, sizeof(*mbox->chans), GFP_KERNEL);
 	if (!mbox->chans)
 		return -ENOMEM;
 

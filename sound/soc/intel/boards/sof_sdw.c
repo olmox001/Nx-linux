@@ -140,16 +140,6 @@ static const struct dmi_system_id sof_sdw_quirk_table[] = {
 					RT711_JD2),
 	},
 	{
-		/* Dell Latitude 9420 */
-		.callback = sof_sdw_quirk_cb,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_SKU, "0A5B")
-		},
-		.driver_data = (void *)(SOF_SDW_TGL_HDMI |
-					RT711_JD2),
-	},
-	{
 		/* Dell XPS 9710 */
 		.callback = sof_sdw_quirk_cb,
 		.matches = {
@@ -966,19 +956,19 @@ static int create_sdw_dailink(struct snd_soc_card *card,
 		if (!name)
 			return -ENOMEM;
 
-		cpus = devm_kzalloc_objs(dev, *cpus, num_cpus);
+		cpus = devm_kcalloc(dev, num_cpus, sizeof(*cpus), GFP_KERNEL);
 		if (!cpus)
 			return -ENOMEM;
 
-		codecs = devm_kzalloc_objs(dev, *codecs, num_codecs);
+		codecs = devm_kcalloc(dev, num_codecs, sizeof(*codecs), GFP_KERNEL);
 		if (!codecs)
 			return -ENOMEM;
 
-		platform = devm_kzalloc_obj(dev, *platform);
+		platform = devm_kzalloc(dev, sizeof(*platform), GFP_KERNEL);
 		if (!platform)
 			return -ENOMEM;
 
-		codec_maps = devm_kzalloc_objs(dev, *codec_maps, num_codecs);
+		codec_maps = devm_kcalloc(dev, num_codecs, sizeof(*codec_maps), GFP_KERNEL);
 		if (!codec_maps)
 			return -ENOMEM;
 
@@ -1292,7 +1282,7 @@ static int sof_card_dai_links_create(struct snd_soc_card *card)
 		goto err_dai;
 	}
 
-	sof_aux = devm_kzalloc_objs(dev, *sof_aux, num_aux);
+	sof_aux = devm_kcalloc(dev, num_aux, sizeof(*sof_aux), GFP_KERNEL);
 	if (!sof_aux) {
 		ret = -ENOMEM;
 		goto err_dai;
@@ -1346,7 +1336,7 @@ static int sof_card_dai_links_create(struct snd_soc_card *card)
 		sdw_be_num, ssp_num, dmic_num,
 		intel_ctx->hdmi.idisp_codec ? hdmi_num : 0, bt_num);
 
-	codec_conf = devm_kzalloc_objs(dev, *codec_conf, num_confs);
+	codec_conf = devm_kcalloc(dev, num_confs, sizeof(*codec_conf), GFP_KERNEL);
 	if (!codec_conf) {
 		ret = -ENOMEM;
 		goto err_end;
@@ -1358,7 +1348,7 @@ static int sof_card_dai_links_create(struct snd_soc_card *card)
 	 * and functional SOF topologies to support echo reference.
 	 */
 	num_links = sdw_be_num + ssp_num + dmic_num + hdmi_num + bt_num + 1;
-	dai_links = devm_kzalloc_objs(dev, *dai_links, num_links);
+	dai_links = devm_kcalloc(dev, num_links, sizeof(*dai_links), GFP_KERNEL);
 	if (!dai_links) {
 		ret = -ENOMEM;
 		goto err_end;
@@ -1464,11 +1454,11 @@ static int mc_probe(struct platform_device *pdev)
 
 	dev_dbg(&pdev->dev, "Entry\n");
 
-	intel_ctx = devm_kzalloc_obj(&pdev->dev, *intel_ctx);
+	intel_ctx = devm_kzalloc(&pdev->dev, sizeof(*intel_ctx), GFP_KERNEL);
 	if (!intel_ctx)
 		return -ENOMEM;
 
-	ctx = devm_kzalloc_obj(&pdev->dev, *ctx);
+	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -1493,12 +1483,12 @@ static int mc_probe(struct platform_device *pdev)
 	dmi_check_system(sof_sdw_quirk_table);
 
 	if (quirk_override != -1) {
-		dev_info(&pdev->dev, "Overriding quirk 0x%lx => 0x%x\n",
+		dev_info(card->dev, "Overriding quirk 0x%lx => 0x%x\n",
 			 sof_sdw_quirk, quirk_override);
 		sof_sdw_quirk = quirk_override;
 	}
 
-	log_quirks(&pdev->dev);
+	log_quirks(card->dev);
 
 	ctx->mc_quirk = sof_sdw_quirk;
 	/* reset amp_num to ensure amp_num++ starts from 0 in each probe */
@@ -1517,13 +1507,13 @@ static int mc_probe(struct platform_device *pdev)
 	for (i = 0; i < ctx->codec_info_list_count; i++)
 		amp_num += codec_info_list[i].amp_num;
 
-	card->components = devm_kasprintf(&pdev->dev, GFP_KERNEL,
+	card->components = devm_kasprintf(card->dev, GFP_KERNEL,
 					  " cfg-amp:%d", amp_num);
 	if (!card->components)
 		return -ENOMEM;
 
 	if (mach->mach_params.dmic_num) {
-		card->components = devm_kasprintf(&pdev->dev, GFP_KERNEL,
+		card->components = devm_kasprintf(card->dev, GFP_KERNEL,
 						  "%s mic:dmic cfg-mics:%d",
 						  card->components,
 						  mach->mach_params.dmic_num);
@@ -1534,7 +1524,7 @@ static int mc_probe(struct platform_device *pdev)
 	/* Register the card */
 	ret = devm_snd_soc_register_card(card->dev, card);
 	if (ret) {
-		dev_err_probe(&pdev->dev, ret, "snd_soc_register_card failed %d\n", ret);
+		dev_err_probe(card->dev, ret, "snd_soc_register_card failed %d\n", ret);
 		asoc_sdw_mc_dailink_exit_loop(card);
 		return ret;
 	}
@@ -1552,8 +1542,8 @@ static void mc_remove(struct platform_device *pdev)
 }
 
 static const struct platform_device_id mc_id_table[] = {
-	{ .name = "sof_sdw" },
-	{ }
+	{ "sof_sdw", },
+	{}
 };
 MODULE_DEVICE_TABLE(platform, mc_id_table);
 

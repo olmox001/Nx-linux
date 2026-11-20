@@ -187,23 +187,26 @@ static ssize_t flash_fault_show(struct device *dev,
 {
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 	struct led_classdev_flash *fled_cdev = lcdev_to_flcdev(led_cdev);
-	u32 fault = 0, mask = 0x1;
-	int i, ret;
+	u32 fault, mask = 0x1;
+	char *pbuf = buf;
+	int i, ret, buf_len;
 
 	ret = led_get_flash_fault(fled_cdev, &fault);
 	if (ret < 0)
 		return -EINVAL;
 
-	for (ret = 0, i = 0; i < LED_NUM_FLASH_FAULTS; ++i) {
-		if (fault & mask)
-			ret += sysfs_emit_at(buf, ret, "%s%s",
-					     (ret ? " " : ""),
-					     led_flash_fault_names[i]);
+	*buf = '\0';
+
+	for (i = 0; i < LED_NUM_FLASH_FAULTS; ++i) {
+		if (fault & mask) {
+			buf_len = sprintf(pbuf, "%s ",
+					  led_flash_fault_names[i]);
+			pbuf += buf_len;
+		}
 		mask <<= 1;
 	}
 
-	ret += sysfs_emit_at(buf, ret, "\n");
-	return ret;
+	return strlen(strcat(buf, "\n"));
 }
 static DEVICE_ATTR_RO(flash_fault);
 

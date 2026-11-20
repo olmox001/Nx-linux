@@ -1675,3 +1675,4 @@ void otx2_tc_apply_ingress_police_rules(struct otx2_nic *nic)
 			otx2_tc_config_ingress_rule(nic, node);
 	}
 }
+EXPORT_SYMBOL(otx2_tc_apply_ingress_police_rules);

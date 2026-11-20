@@ -1692,11 +1692,19 @@ int mlx4_QUERY_FW(struct mlx4_dev *dev)
 	MLX4_GET(lg, outbox, QUERY_FW_MAX_CMD_OFFSET);
 	cmd->max_cmds = 1 << lg;
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	mlx4_dbg(dev, "FW version %d.%d.%03d (cmd intf rev %d), max commands %d\n",
 		 (int) (dev->caps.fw_ver >> 32),
 		 (int) (dev->caps.fw_ver >> 16) & 0xffff,
 		 (int) dev->caps.fw_ver & 0xffff,
 		 cmd_if_rev, cmd->max_cmds);
+#else
+	mlx4_info(dev, "FW version %d.%d.%03d (cmd intf rev %d), max commands %d\n",
+		  (int)(dev->caps.fw_ver >> 32),
+		  (int)(dev->caps.fw_ver >> 16) & 0xffff,
+		  (int)dev->caps.fw_ver & 0xffff,
+		  cmd_if_rev, cmd->max_cmds);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 	MLX4_GET(fw->catas_offset, outbox, QUERY_FW_ERR_START_OFFSET);
 	MLX4_GET(fw->catas_size,   outbox, QUERY_FW_ERR_SIZE_OFFSET);
@@ -1928,6 +1936,17 @@ int mlx4_INIT_HCA(struct mlx4_dev *dev, struct mlx4_init_hca_param *param)
 	/* Enable RSS spread to fragmented IP packets when supported */
 	if (dev->caps.flags & MLX4_DEV_CAP_FLAG_RSS_IP_FRAG)
 		*(inbox + INIT_HCA_FLAGS_OFFSET / 4) |= cpu_to_be32(1 << 13);
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	/* Disable P_Key Violation Traps for fw version 2.35.6312 and
+	 * newer. This because said fw version counts the P_Key
+	 * Violations, a feature missing from earlier versions.
+	 */
+	if (dev->caps.fw_ver >= mlx4_fw_ver(2, 35, 6312)) {
+		*(inbox + INIT_HCA_FLAGS_OFFSET / 4) |= cpu_to_be32(1 << 15);
+		mlx4_info(dev, "P_Key Violation Traps disabled\n");
+	}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	/* CX3 is capable of extending CQEs/EQEs from 32 to 64 bytes */
 	if (dev->caps.flags & MLX4_DEV_CAP_FLAG_64B_EQE) {
@@ -2800,10 +2819,12 @@ out:
 static int mlx4_check_smp_firewall_active(struct mlx4_dev *dev,
 					  struct mlx4_cmd_mailbox *mailbox)
 {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 #define MLX4_CMD_MAD_DEMUX_SET_ATTR_OFFSET		0x10
 #define MLX4_CMD_MAD_DEMUX_GETRESP_ATTR_OFFSET		0x20
 #define MLX4_CMD_MAD_DEMUX_TRAP_ATTR_OFFSET		0x40
 #define MLX4_CMD_MAD_DEMUX_TRAP_REPRESS_ATTR_OFFSET	0x70
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 	u32 set_attr_mask, getresp_attr_mask;
 	u32 trap_attr_mask, traprepress_attr_mask;
@@ -2839,6 +2860,9 @@ int mlx4_config_mad_demux(struct mlx4_dev *dev)
 {
 	struct mlx4_cmd_mailbox *mailbox;
 	int err;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	u32 get_attr_mask;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	/* Check if mad_demux is supported */
 	if (!(dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_MAD_DEMUX))
@@ -2863,14 +2887,53 @@ int mlx4_config_mad_demux(struct mlx4_dev *dev)
 	if (mlx4_check_smp_firewall_active(dev, mailbox))
 		dev->flags |= MLX4_FLAG_SECURE_HOST;
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	/* Config mad_demux to handle all MADs returned by the query above */
+#else
+	/* Config hca to handle pi and ni queries if not already handling */
+	MLX4_GET(get_attr_mask, mailbox->buf,
+		 MLX4_CMD_MAD_DEMUX_GET_ATTR_OFFSET);
+	if ((get_attr_mask & SMP_GET_PORT_NODE_INFO_MASK_BITS) !=
+	   SMP_GET_PORT_NODE_INFO_MASK_BITS){
+		get_attr_mask |= SMP_GET_PORT_NODE_INFO_MASK_BITS;
+		MLX4_PUT(mailbox->buf, get_attr_mask,
+			 MLX4_CMD_MAD_DEMUX_GET_ATTR_OFFSET);
+	};
+
+	/* Config mad_demux to handle remaining MADs returned by the query above */
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	err = mlx4_cmd(dev, mailbox->dma, 0x01 /* subn mgmt class */,
 		       MLX4_CMD_MAD_DEMUX_CONFIG, MLX4_CMD_MAD_DEMUX,
 		       MLX4_CMD_TIME_CLASS_B, MLX4_CMD_NATIVE);
 	if (err) {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		mlx4_warn(dev, "MLX4_CMD_MAD_DEMUX: configure failed (%d)\n", err);
+#else
+		mlx4_warn(dev, "MLX4_CMD_MAD_DEMUX: configure failed (%d)\n",
+			  err);
 		goto out;
 	}
+
+	/* Read back current config to verify */
+	err = mlx4_cmd_box(dev, 0, mailbox->dma, 0x01 /* subn mgmt class */,
+			   MLX4_CMD_MAD_DEMUX_QUERY_STATE, MLX4_CMD_MAD_DEMUX,
+			   MLX4_CMD_TIME_CLASS_B, MLX4_CMD_NATIVE);
+	if (err) {
+		mlx4_warn(dev, "MLX4_CMD_MAD_DEMUX: query state failed (%d)\n",
+			  err);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
+		goto out;
+	}
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	MLX4_GET(get_attr_mask, mailbox->buf,
+		 MLX4_CMD_MAD_DEMUX_GET_ATTR_OFFSET);
+	if ((get_attr_mask & SMP_GET_PORT_NODE_INFO_MASK_BITS) ==
+	    SMP_GET_PORT_NODE_INFO_MASK_BITS)
+		mlx4_info(dev, "sm port and node info query - offload successful\n");
+	else
+		mlx4_warn(dev, "sm port and node info query - offload failed\n");
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	if (dev->flags & MLX4_FLAG_SECURE_HOST)
 		mlx4_warn(dev, "HCA operating in secure-host mode. SMP firewall activated.\n");

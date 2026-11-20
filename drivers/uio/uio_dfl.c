@@ -19,7 +19,7 @@ static int uio_dfl_probe(struct dfl_device *ddev)
 	struct uio_mem *uiomem;
 	int ret;
 
-	uioinfo = devm_kzalloc_obj(dev, struct uio_info);
+	uioinfo = devm_kzalloc(dev, sizeof(struct uio_info), GFP_KERNEL);
 	if (!uioinfo)
 		return -ENOMEM;
 

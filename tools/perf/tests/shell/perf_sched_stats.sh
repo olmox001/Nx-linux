@@ -1,5 +1,5 @@
 #!/bin/sh
-# perf sched stats tests (no_mlock)
+# perf sched stats tests
 # SPDX-License-Identifier: GPL-2.0
 
 set -e

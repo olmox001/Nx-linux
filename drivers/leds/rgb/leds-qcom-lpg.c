@@ -11,7 +11,6 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/pwm.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -1343,7 +1342,7 @@ static int lpg_add_pwm(struct lpg *lpg)
 	return ret;
 }
 
-static int lpg_parse_channel(struct lpg *lpg, struct fwnode_handle *fw,
+static int lpg_parse_channel(struct lpg *lpg, struct device_node *np,
 			     struct lpg_channel **channel)
 {
 	struct lpg_channel *chan;
@@ -1351,18 +1350,17 @@ static int lpg_parse_channel(struct lpg *lpg, struct fwnode_handle *fw,
 	u32 reg;
 	int ret;
 
-	ret = fwnode_property_read_u32(fw, "reg", &reg);
+	ret = of_property_read_u32(np, "reg", &reg);
 	if (ret || !reg || reg > lpg->num_channels)
-		return dev_err_probe(lpg->dev, -EINVAL,
-				     "invalid \"reg\" of %s\n", fwnode_get_name(fw));
+		return dev_err_probe(lpg->dev, -EINVAL, "invalid \"reg\" of %pOFn\n", np);
 
 	chan = &lpg->channels[reg - 1];
 	chan->in_use = true;
 
-	ret = fwnode_property_read_u32(fw, "color", &color);
+	ret = of_property_read_u32(np, "color", &color);
 	if (ret < 0 && ret != -EINVAL)
 		return dev_err_probe(lpg->dev, ret,
-				     "failed to parse \"color\" of %s\n", fwnode_get_name(fw));
+				     "failed to parse \"color\" of %pOF\n", np);
 
 	chan->color = color;
 
@@ -1371,30 +1369,29 @@ static int lpg_parse_channel(struct lpg *lpg, struct fwnode_handle *fw,
 	return 0;
 }
 
-static int lpg_add_led(struct lpg *lpg, struct fwnode_handle *fw)
+static int lpg_add_led(struct lpg *lpg, struct device_node *np)
 {
 	struct led_init_data init_data = {};
 	struct led_classdev *cdev;
 	struct mc_subled *info;
 	struct lpg_led *led;
-	const char *trigger;
 	const char *state;
 	int num_channels;
 	u32 color = 0;
 	int ret;
 	int i;
 
-	ret = fwnode_property_read_u32(fw, "color", &color);
+	ret = of_property_read_u32(np, "color", &color);
 	if (ret < 0 && ret != -EINVAL)
 		return dev_err_probe(lpg->dev, ret,
-			      "failed to parse \"color\" of %s\n", fwnode_get_name(fw));
+			      "failed to parse \"color\" of %pOF\n", np);
 
 	if (color == LED_COLOR_ID_RGB || color == LED_COLOR_ID_MULTI)
-		num_channels = fwnode_get_child_node_count(fw);
+		num_channels = of_get_available_child_count(np);
 	else
 		num_channels = 1;
 
-	led = devm_kzalloc_flex(lpg->dev, *led, channels, num_channels);
+	led = devm_kzalloc(lpg->dev, struct_size(led, channels, num_channels), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 
@@ -1402,11 +1399,11 @@ static int lpg_add_led(struct lpg *lpg, struct fwnode_handle *fw)
 	led->num_channels = num_channels;
 
 	if (color == LED_COLOR_ID_RGB || color == LED_COLOR_ID_MULTI) {
-		info = devm_kzalloc_objs(lpg->dev, *info, num_channels);
+		info = devm_kcalloc(lpg->dev, num_channels, sizeof(*info), GFP_KERNEL);
 		if (!info)
 			return -ENOMEM;
 		i = 0;
-		fwnode_for_each_available_child_node_scoped(fw, child) {
+		for_each_available_child_of_node_scoped(np, child) {
 			ret = lpg_parse_channel(lpg, child, &led->channels[i]);
 			if (ret < 0)
 				return ret;
@@ -1417,7 +1414,7 @@ static int lpg_add_led(struct lpg *lpg, struct fwnode_handle *fw)
 		}
 
 		led->mcdev.subled_info = info;
-		led->mcdev.num_colors = i;
+		led->mcdev.num_colors = num_channels;
 
 		cdev = &led->mcdev.led_cdev;
 		cdev->brightness_set_blocking = lpg_brightness_mc_set;
@@ -1429,7 +1426,7 @@ static int lpg_add_led(struct lpg *lpg, struct fwnode_handle *fw)
 			cdev->pattern_clear = lpg_pattern_mc_clear;
 		}
 	} else {
-		ret = lpg_parse_channel(lpg, fw, &led->channels[0]);
+		ret = lpg_parse_channel(lpg, np, &led->channels[0]);
 		if (ret < 0)
 			return ret;
 
@@ -1444,15 +1441,14 @@ static int lpg_add_led(struct lpg *lpg, struct fwnode_handle *fw)
 		}
 	}
 
-	if (!fwnode_property_read_string(fw, "linux,default-trigger", &trigger))
-		cdev->default_trigger = trigger;
+	cdev->default_trigger = of_get_property(np, "linux,default-trigger", NULL);
 
 	if (lpg->lpg_chan_sdam)
 		cdev->max_brightness = PPG_MAX_LED_BRIGHTNESS;
 	else
 		cdev->max_brightness = LPG_RESOLUTION_9BIT - 1;
 
-	if (!fwnode_property_read_string(fw, "default-state", &state) &&
+	if (!of_property_read_string(np, "default-state", &state) &&
 	    !strcmp(state, "on"))
 		cdev->brightness = cdev->max_brightness;
 	else
@@ -1460,7 +1456,7 @@ static int lpg_add_led(struct lpg *lpg, struct fwnode_handle *fw)
 
 	cdev->brightness_set_blocking(cdev, cdev->brightness);
 
-	init_data.fwnode = fw;
+	init_data.fwnode = of_fwnode_handle(np);
 
 	if (color == LED_COLOR_ID_RGB || color == LED_COLOR_ID_MULTI)
 		ret = devm_led_classdev_multicolor_register_ext(lpg->dev, &led->mcdev, &init_data);
@@ -1609,7 +1605,7 @@ static int lpg_probe(struct platform_device *pdev)
 	if (!data)
 		return -EINVAL;
 
-	lpg = devm_kzalloc_flex(&pdev->dev, *lpg, channels, data->num_channels);
+	lpg = devm_kzalloc(&pdev->dev, struct_size(lpg, channels, data->num_channels), GFP_KERNEL);
 	if (!lpg)
 		return -ENOMEM;
 
@@ -1642,8 +1638,8 @@ static int lpg_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	device_for_each_child_node_scoped(&pdev->dev, child) {
-		ret = lpg_add_led(lpg, child);
+	for_each_available_child_of_node_scoped(pdev->dev.of_node, np) {
+		ret = lpg_add_led(lpg, np);
 		if (ret)
 			return ret;
 	}

@@ -31,10 +31,8 @@ static int mtd_get_sb(struct fs_context *fc,
 	int ret;
 
 	sb = sget_dev(fc, MKDEV(MTD_BLOCK_MAJOR, mtd->index));
-	if (IS_ERR(sb)) {
-		put_mtd_device(mtd);
+	if (IS_ERR(sb))
 		return PTR_ERR(sb);
-	}
 
 	if (sb->s_root) {
 		/* new mountpoint for an already mounted superblock */

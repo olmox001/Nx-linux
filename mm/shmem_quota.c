@@ -30,7 +30,6 @@
 #include <linux/slab.h>
 #include <linux/rbtree.h>
 #include <linux/shmem_fs.h>
-#include <linux/magic.h>
 
 #include <linux/quotaops.h>
 #include <linux/quota.h>
@@ -55,10 +54,6 @@ struct quota_id {
 
 static int shmem_check_quota_file(struct super_block *sb, int type)
 {
-	/* Verify enabling happens on tmpfs superblock */
-	if (sb->s_magic != TMPFS_MAGIC)
-		return 0;
-
 	/* There is no real quota file, nothing to do */
 	return 1;
 }
@@ -239,7 +234,7 @@ out_unlock:
 	return ret;
 }
 
-static bool shmem_is_default_dquot(struct dquot *dquot)
+static bool shmem_is_empty_dquot(struct dquot *dquot)
 {
 	struct shmem_sb_info *sbinfo = dquot->dq_sb->s_fs_info;
 	qsize_t bhardlimit;
@@ -253,21 +248,19 @@ static bool shmem_is_default_dquot(struct dquot *dquot)
 		ihardlimit = sbinfo->qlimits.grpquota_ihardlimit;
 	}
 
-	/*
-	 * Defaults are zero usage and soft limits, and the mount's hard limits.
-	 * DQ_FAKE_B only means that *all* limits are zero, which need not match
-	 * the mount defaults.
-	 */
-	return dquot->dq_dqb.dqb_curspace == 0 &&
-	       dquot->dq_dqb.dqb_curinodes == 0 &&
-	       dquot->dq_dqb.dqb_bsoftlimit == 0 &&
-	       dquot->dq_dqb.dqb_isoftlimit == 0 &&
-	       dquot->dq_dqb.dqb_bhardlimit == bhardlimit &&
-	       dquot->dq_dqb.dqb_ihardlimit == ihardlimit;
+	if (test_bit(DQ_FAKE_B, &dquot->dq_flags) ||
+		(dquot->dq_dqb.dqb_curspace == 0 &&
+		 dquot->dq_dqb.dqb_curinodes == 0 &&
+		 dquot->dq_dqb.dqb_bhardlimit == bhardlimit &&
+		 dquot->dq_dqb.dqb_ihardlimit == ihardlimit))
+		return true;
+
+	return false;
 }
 /*
- * Remove the ID from the tree if it has no usage and its limits match
- * the mount defaults. Otherwise, save its limits for the next acquire.
+ * Store limits from dquot in the tree unless it's fake. If it is fake
+ * remove the id from the tree since there is no useful information in
+ * there.
  */
 static int shmem_release_dquot(struct dquot *dquot)
 {
@@ -302,7 +295,7 @@ static int shmem_release_dquot(struct dquot *dquot)
 	return -ENOENT;
 
 found:
-	if (shmem_is_default_dquot(dquot)) {
+	if (shmem_is_empty_dquot(dquot)) {
 		/* Remove entry from the tree */
 		rb_erase(&entry->node, info->dqi_priv);
 		kfree(entry);

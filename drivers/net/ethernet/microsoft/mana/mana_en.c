@@ -9,6 +9,7 @@
 #include <linux/ethtool.h>
 #include <linux/filter.h>
 #include <linux/mm.h>
+#include <linux/pci.h>
 #include <linux/export.h>
 #include <linux/skbuff.h>
 
@@ -19,7 +20,6 @@
 #include <net/xdp.h>
 
 #include <net/mana/mana.h>
-
 #include <net/mana/mana_auxiliary.h>
 #include <net/mana/hw_channel.h>
 
@@ -39,9 +39,6 @@ static ssize_t mana_dbg_q_read(struct file *filp, char __user *buf, size_t count
 			       loff_t *pos)
 {
 	struct gdma_queue *gdma_q = filp->private_data;
-
-	if (gdma_q->mem_info.nr_pages)
-		return mana_gd_read_ring(gdma_q, buf, count, pos);
 
 	return simple_read_from_buffer(buf, count, pos, gdma_q->queue_mem_ptr,
 				       gdma_q->queue_size);
@@ -346,14 +343,7 @@ clear_flag:
 	rtnl_unlock();
 }
 
-/* skb->cb of the SKBs pending a TX completion */
-struct mana_skb_cb {
-	struct gdma_posted_wqe_info wqe_info;
-	bool xdp;
-};
-
-netdev_tx_t __mana_start_xmit(struct sk_buff *skb, struct net_device *ndev,
-			      bool xdp)
+netdev_tx_t mana_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	enum mana_tx_pkt_format pkt_fmt = MANA_SHORT_PKT_FMT;
 	struct mana_port_context *apc = netdev_priv(ndev);
@@ -367,7 +357,6 @@ netdev_tx_t __mana_start_xmit(struct sk_buff *skb, struct net_device *ndev,
 	struct gdma_queue *gdma_sq;
 	int err, len, num_gso_seg;
 	unsigned int csum_type;
-	struct mana_skb_cb *cb;
 	struct mana_txq *txq;
 	struct mana_cq *cq;
 
@@ -528,16 +517,14 @@ netdev_tx_t __mana_start_xmit(struct sk_buff *skb, struct net_device *ndev,
 		goto free_sgl_ptr;
 	}
 
-	cb = (struct mana_skb_cb *)skb->cb;
-	cb->xdp = xdp;
-
 	skb_queue_tail(&txq->pending_skbs, skb);
 
 	len = skb->len;
 	num_gso_seg = skb_is_gso(skb) ? skb_shinfo(skb)->gso_segs : 1;
 	net_txq = netdev_get_tx_queue(ndev, txq_idx);
 
-	err = mana_gd_post_work_request(gdma_sq, &pkg.wqe_req, &cb->wqe_info);
+	err = mana_gd_post_work_request(gdma_sq, &pkg.wqe_req,
+					(struct gdma_posted_wqe_info *)skb->cb);
 	if (!mana_can_tx(gdma_sq)) {
 		netif_tx_stop_queue(net_txq);
 		apc->eth_stats.stop_queue++;
@@ -552,14 +539,6 @@ netdev_tx_t __mana_start_xmit(struct sk_buff *skb, struct net_device *ndev,
 
 	err = NETDEV_TX_OK;
 	atomic_inc(&txq->pending_sends);
-
-	/* Account the skb in BQL before the doorbell lets the hardware
-	 * complete it. XDP frames bypass the qdisc and BQL can't hold them
-	 * back, so leave them out: XDP traffic could otherwise keep the
-	 * queue stopped, starving the stack and tripping the TX watchdog.
-	 */
-	if (!xdp)
-		netdev_tx_sent_queue(net_txq, len);
 
 	mana_gd_wq_ring_doorbell(gd->gdma_context, gdma_sq);
 
@@ -590,11 +569,6 @@ tx_drop_count:
 tx_drop:
 	dev_kfree_skb_any(skb);
 	return NETDEV_TX_OK;
-}
-
-netdev_tx_t mana_start_xmit(struct sk_buff *skb, struct net_device *ndev)
-{
-	return __mana_start_xmit(skb, ndev, false);
 }
 
 #if (MAX_SKB_FRAGS + 2 > MANA_MAX_TX_WQE_SGL_ENTRIES)
@@ -819,21 +793,6 @@ bool mana_single_rxbuf_per_page_forced(struct mana_port_context *apc, u32 mtu)
 	return PAGE_SIZE / mana_get_rxbuf_size(apc, mtu) < 2;
 }
 
-static bool
-mana_use_single_rxbuf_per_page(struct mana_port_context *apc, u32 mtu)
-{
-	/* On some platforms with 4K PAGE_SIZE, page_pool fragment allocation
-	 * in the RX refill path (~2kB buffer) can cause significant throughput
-	 * regression under high connection counts. Allow user to force one RX
-	 * buffer per page via ethtool private flag to bypass the fragment
-	 * path.
-	 */
-	if (apc->priv_flags & BIT(MANA_PRIV_FLAG_USE_FULL_PAGE_RXBUF))
-		return true;
-
-	return mana_single_rxbuf_per_page_forced(apc, mtu);
-}
-
 /* Get RX buffer's data size, alloc size, headroom and frag count based on MTU */
 static void mana_get_rxbuf_cfg(struct mana_port_context *apc,
 			       int mtu, u32 *datasize, u32 *alloc_size,
@@ -846,7 +805,7 @@ static void mana_get_rxbuf_cfg(struct mana_port_context *apc,
 
 	*headroom = mana_get_rxbuf_headroom(apc);
 
-	if (mana_use_single_rxbuf_per_page(apc, mtu)) {
+	if (mana_single_rxbuf_per_page_forced(apc, mtu)) {
 		if (mana_xdp_get(apc))
 			*alloc_size = PAGE_SIZE;
 		else
@@ -964,17 +923,6 @@ static void mana_tx_timeout(struct net_device *netdev, unsigned int txqueue)
 	struct mana_port_context *apc = netdev_priv(netdev);
 	struct mana_context *ac = apc->ac;
 	struct gdma_context *gc = ac->gdma_dev->gdma_context;
-
-	/* Debug knob for bringup/qualification: when set, log the timeout and
-	 * skip the reset so the failing state is preserved for telemetry.
-	 * Disabled by default; production behaviour is unchanged.
-	 */
-	if (READ_ONCE(apc->tx_timeout_skip_reset)) {
-		netdev_warn(netdev,
-			    "TX timeout on queue %u: reset skipped (tx_timeout_skip_reset enabled)\n",
-			    txqueue);
-		return;
-	}
 
 	/* Already in service, hence tx queue reset is not required.*/
 	if (test_bit(GC_IN_SERVICE, &gc->flags))
@@ -1314,9 +1262,6 @@ int mana_gd_query_device_cfg(struct gdma_context *gc, u32 proto_major_ver,
 		return err;
 	}
 
-	gc->cqe8_coalescing_sup = !!(resp.pf_cap_flags1 &
-				     MANA_PF_FLAG_1_CQE_8_COALESCING_SUPPORTED);
-
 	*max_num_vports = resp.max_num_vports;
 
 	if (resp.hdr.response.msg_version >= GDMA_MESSAGE_V2) {
@@ -1502,11 +1447,7 @@ static int mana_cfg_vport_steering(struct mana_port_context *apc,
 	mana_gd_init_req_hdr(&req->hdr, MANA_CONFIG_VPORT_RX, req_buf_size,
 			     sizeof(resp));
 
-	/* Request & response versions can be different.
-	 * HW can handle newer msg versions, by skipping
-	 * new fields.
-	 */
-	req->hdr.req.msg_version = GDMA_MESSAGE_V5;
+	req->hdr.req.msg_version = GDMA_MESSAGE_V2;
 	req->hdr.resp.msg_version = GDMA_MESSAGE_V2;
 
 	req->vport = apc->port_handle;
@@ -1520,13 +1461,8 @@ static int mana_cfg_vport_steering(struct mana_port_context *apc,
 	req->update_indir_tab = update_tab;
 	req->default_rxobj = apc->default_rxobj;
 
-	/* Request-msg v5 requires this field */
-	req->rss_hash_types = MANA_HASH_ENABLE_SUPPORTED;
-
-	if (rx != TRI_STATE_FALSE) {
+	if (rx != TRI_STATE_FALSE)
 		req->cqe_coalescing_enable = apc->cqe_coalescing_enable;
-		req->cqe8_coalescing_enable = apc->cqe8_coalescing_enable;
-	}
 
 	if (update_key)
 		memcpy(&req->hashkey, apc->hashkey, MANA_HASH_KEY_SIZE);
@@ -1687,15 +1623,6 @@ int mana_create_wq_obj(struct mana_port_context *apc,
 
 	mana_gd_init_req_hdr(&req.hdr, MANA_CREATE_WQ_OBJ,
 			     sizeof(req), sizeof(resp));
-
-	/* Our driver uses different message versions for request and
-	 * response in this case.
-	 * Our firmware is forward compatible with newer message versions, so
-	 * the old firmware still properly handles this message, just the new
-	 * feature fields are ignored, and queue creation will be successful.
-	 */
-	req.hdr.req.msg_version = GDMA_MESSAGE_V3;
-	req.hdr.resp.msg_version = GDMA_MESSAGE_V2;
 	req.vport = vport;
 	req.wq_type = wq_type;
 	req.wq_gdma_region = wq_spec->gdma_region;
@@ -1704,9 +1631,6 @@ int mana_create_wq_obj(struct mana_port_context *apc,
 	req.cq_size = cq_spec->queue_size;
 	req.cq_moderation_ctx_id = cq_spec->modr_ctx_id;
 	req.cq_parent_qid = cq_spec->attached_eq;
-	req.req_cq_moderation = cq_spec->req_cq_moderation;
-	req.cq_moderation_comp = cq_spec->cq_moderation_comp;
-	req.cq_moderation_usec = cq_spec->cq_moderation_usec;
 
 	err = mana_send_request(apc->ac, &req, sizeof(req), &resp,
 				sizeof(resp));
@@ -1961,18 +1885,15 @@ void mana_unmap_skb(struct sk_buff *skb, struct mana_port_context *apc)
 static void mana_poll_tx_cq(struct mana_cq *cq)
 {
 	struct gdma_comp *completions = cq->gdma_comp_buf;
+	struct gdma_posted_wqe_info *wqe_info;
 	unsigned int pkt_transmitted = 0;
 	unsigned int wqe_unit_cnt = 0;
-	unsigned int bql_bytes = 0;
-	unsigned int bql_pkts = 0;
-	unsigned int tx_bytes = 0;
 	struct mana_txq *txq = cq->txq;
 	struct mana_port_context *apc;
 	struct netdev_queue *net_txq;
 	struct gdma_queue *gdma_wq;
 	unsigned int avail_space;
 	struct net_device *ndev;
-	struct mana_skb_cb *cb;
 	struct sk_buff *skb;
 	bool txq_stopped;
 	int comp_read;
@@ -2043,16 +1964,10 @@ static void mana_poll_tx_cq(struct mana_cq *cq)
 		if (WARN_ON_ONCE(!skb))
 			return;
 
-		cb = (struct mana_skb_cb *)skb->cb;
-		wqe_unit_cnt += cb->wqe_info.wqe_size_in_bu;
+		wqe_info = (struct gdma_posted_wqe_info *)skb->cb;
+		wqe_unit_cnt += wqe_info->wqe_size_in_bu;
 
 		mana_unmap_skb(skb, apc);
-
-		tx_bytes += skb->len;
-		if (!cb->xdp) {
-			bql_pkts++;
-			bql_bytes += skb->len;
-		}
 
 		napi_consume_skb(skb, cq->budget);
 
@@ -2067,12 +1982,10 @@ static void mana_poll_tx_cq(struct mana_cq *cq)
 	gdma_wq = txq->gdma_sq;
 	avail_space = mana_gd_wq_avail_space(gdma_wq);
 
-	net_txq = txq->net_txq;
-	netdev_tx_completed_queue(net_txq, bql_pkts, bql_bytes);
-
 	/* Ensure tail updated before checking q stop */
 	smp_mb();
 
+	net_txq = txq->net_txq;
 	txq_stopped = netif_tx_queue_stopped(net_txq);
 
 	/* Ensure checking txq_stopped before apc->port_is_up. */
@@ -2085,10 +1998,6 @@ static void mana_poll_tx_cq(struct mana_cq *cq)
 
 	if (atomic_sub_return(pkt_transmitted, &txq->pending_sends) < 0)
 		WARN_ON_ONCE(1);
-
-	/* Feed DIM with the completion rate observed here, in NAPI context. */
-	cq->tx_dim_pkts += pkt_transmitted;
-	cq->tx_dim_bytes += tx_bytes;
 
 	cq->work_done = pkt_transmitted;
 }
@@ -2139,14 +2048,16 @@ static struct sk_buff *mana_build_skb(struct mana_rxq *rxq, void *buf_va,
 
 static void mana_rx_skb(void *buf_va, bool from_pool,
 			struct mana_rxcomp_oob *cqe, struct mana_rxq *rxq,
-			u32 pkt_len, u32 pkt_hash)
+			int i)
 {
 	struct mana_stats_rx *rx_stats = &rxq->stats;
 	struct net_device *ndev = rxq->ndev;
+	uint pkt_len = cqe->ppi[i].pkt_len;
 	u16 rxq_idx = rxq->rxq_idx;
 	struct napi_struct *napi;
 	struct xdp_buff xdp = {};
 	struct sk_buff *skb;
+	u32 hash_value;
 	u32 act;
 
 	rxq->rx_cq.work_done++;
@@ -2157,7 +2068,7 @@ static void mana_rx_skb(void *buf_va, bool from_pool,
 		return;
 	}
 
-	act = mana_run_xdp(ndev, rxq, &xdp, buf_va, from_pool, pkt_len);
+	act = mana_run_xdp(ndev, rxq, &xdp, buf_va, pkt_len);
 
 	if (act == XDP_REDIRECT && !rxq->xdp_rc)
 		return;
@@ -2179,15 +2090,18 @@ static void mana_rx_skb(void *buf_va, bool from_pool,
 	skb_checksum_none_assert(skb);
 	skb_record_rx_queue(skb, rxq_idx);
 
-	if ((ndev->features & NETIF_F_RXCSUM) &&
-	    (cqe->rx_tcp_csum_succeed || cqe->rx_udp_csum_succeed))
-		skb->ip_summed = CHECKSUM_UNNECESSARY;
+	if ((ndev->features & NETIF_F_RXCSUM) && cqe->rx_iphdr_csum_succeed) {
+		if (cqe->rx_tcp_csum_succeed || cqe->rx_udp_csum_succeed)
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
+	}
 
 	if (cqe->rx_hashtype != 0 && (ndev->features & NETIF_F_RXHASH)) {
+		hash_value = cqe->ppi[i].pkt_hash;
+
 		if (cqe->rx_hashtype & MANA_HASH_L4)
-			skb_set_hash(skb, pkt_hash, PKT_HASH_TYPE_L4);
+			skb_set_hash(skb, hash_value, PKT_HASH_TYPE_L4);
 		else
-			skb_set_hash(skb, pkt_hash, PKT_HASH_TYPE_L3);
+			skb_set_hash(skb, hash_value, PKT_HASH_TYPE_L3);
 	}
 
 	if (cqe->rx_vlantag_present) {
@@ -2328,43 +2242,6 @@ static void mana_refill_rx_oob(struct device *dev, struct mana_rxq *rxq,
 	rxoob->dma_sync_offset = dma_sync_offset;
 }
 
-static void mana_process_one_rx_pkt(struct device *dev, struct mana_rxq *rxq,
-				    struct mana_rxcomp_oob *oob,
-				    u32 pktlen, u32 pkt_hash)
-{
-	struct mana_recv_buf_oob *rxbuf_oob;
-	struct net_device *ndev = rxq->ndev;
-	void *old_buf = NULL;
-	bool old_fp;
-
-	rxbuf_oob = &rxq->rx_oobs[rxq->buf_index];
-	WARN_ON_ONCE(rxbuf_oob->wqe_inf.wqe_size_in_bu != 1);
-
-	if (unlikely(pktlen > rxq->datasize)) {
-		/* Increase it even if mana_rx_skb() isn't called. */
-		rxq->rx_cq.work_done++;
-
-		++ndev->stats.rx_dropped;
-		netdev_warn_once(ndev,
-				 "Dropped oversized RX packet: len=%u, datasize=%u\n",
-				 pktlen, rxq->datasize);
-
-		/* Reuse the RX buffer since rxbuf_oob is unchanged. */
-	} else {
-		mana_refill_rx_oob(dev, rxq, rxbuf_oob, pktlen,
-				   &old_buf, &old_fp);
-
-		/* Unsuccessful refill will have old_buf == NULL.
-		 * In this case, mana_rx_skb() will drop the packet.
-		 */
-		mana_rx_skb(old_buf, old_fp, oob, rxq, pktlen, pkt_hash);
-	}
-
-	mana_move_wq_tail(rxq->gdma_rq, rxbuf_oob->wqe_inf.wqe_size_in_bu);
-
-	mana_post_pkt_rxq(rxq);
-}
-
 static void mana_process_rx_cqe(struct mana_rxq *rxq, struct mana_cq *cq,
 				struct gdma_comp *cqe)
 {
@@ -2374,10 +2251,10 @@ static void mana_process_rx_cqe(struct mana_rxq *rxq, struct mana_cq *cq,
 	struct mana_recv_buf_oob *rxbuf_oob;
 	struct mana_port_context *apc;
 	struct device *dev = gc->dev;
-	bool coalesced_8 = false;
 	bool coalesced = false;
-	u32 pktlen;
-	int pkt_i;
+	void *old_buf = NULL;
+	u32 curr, pktlen;
+	bool old_fp;
 	int i;
 
 	apc = netdev_priv(ndev);
@@ -2400,11 +2277,6 @@ static void mana_process_rx_cqe(struct mana_rxq *rxq, struct mana_cq *cq,
 		coalesced = true;
 		break;
 
-	case CQE_RX_COALESCED_8:
-		coalesced = true;
-		coalesced_8 = true;
-		break;
-
 	case CQE_RX_OBJECT_FENCE:
 		complete(&rxq->fence_event);
 		return;
@@ -2416,48 +2288,54 @@ static void mana_process_rx_cqe(struct mana_rxq *rxq, struct mana_cq *cq,
 		return;
 	}
 
-	pkt_i = 0;
 	for (i = 0; i < MANA_RXCOMP_OOB_NUM_PPI; i++) {
-		u32 pkt_hash;
-
-		if (coalesced_8) {
-			/* 8-pkt mode: 2 packets per PPI entry */
-			pktlen = oob->ppi[i].pkt_len0;
-			pkt_hash = oob->ppi[i].pkt_hash0;
-		} else {
-			pktlen = oob->ppi[i].pkt_len;
-			pkt_hash = oob->ppi[i].pkt_hash;
-		}
+		old_buf = NULL;
+		pktlen = oob->ppi[i].pkt_len;
 		if (pktlen == 0)
 			break;
 
-		mana_process_one_rx_pkt(dev, rxq, oob, pktlen, pkt_hash);
-		pkt_i++;
+		curr = rxq->buf_index;
+		rxbuf_oob = &rxq->rx_oobs[curr];
+		WARN_ON_ONCE(rxbuf_oob->wqe_inf.wqe_size_in_bu != 1);
+
+		if (unlikely(pktlen > rxq->datasize)) {
+			/* Increase it even if mana_rx_skb() isn't called. */
+			rxq->rx_cq.work_done++;
+
+			++ndev->stats.rx_dropped;
+			netdev_warn_once(ndev,
+				"Dropped oversized RX packet: len=%u, datasize=%u\n",
+				pktlen, rxq->datasize);
+
+			/* Reuse the RX buffer since rxbuf_oob is unchanged. */
+		} else {
+
+			mana_refill_rx_oob(dev, rxq, rxbuf_oob, pktlen,
+					   &old_buf, &old_fp);
+
+			/* Unsuccessful refill will have old_buf == NULL.
+			 * In this case, mana_rx_skb() will drop the packet.
+			 */
+			mana_rx_skb(old_buf, old_fp, oob, rxq, i);
+		}
+
+		mana_move_wq_tail(rxq->gdma_rq,
+				  rxbuf_oob->wqe_inf.wqe_size_in_bu);
+
+		mana_post_pkt_rxq(rxq);
 
 		if (!coalesced)
 			break;
-
-		/* Process 2nd packet from the same PPI in 8-pkt mode */
-		if (coalesced_8) {
-			pktlen = oob->ppi[i].pkt_len1;
-			pkt_hash = oob->ppi[i].pkt_hash1;
-			if (pktlen == 0)
-				break;
-
-			mana_process_one_rx_pkt(dev, rxq, oob, pktlen,
-						pkt_hash);
-			pkt_i++;
-		}
 	}
 
 	/* Collect coalesced CQE count based on packets processed.
-	 * Coalesced CQEs have at least 2 packets, so index is pkt_i - 2.
+	 * Coalesced CQEs have at least 2 packets, so index is i - 2.
 	 */
-	if (pkt_i > 1) {
+	if (i > 1) {
 		u64_stats_update_begin(&rxq->stats.syncp);
-		rxq->stats.coalesced_cqe[pkt_i - 2]++;
+		rxq->stats.coalesced_cqe[i - 2]++;
 		u64_stats_update_end(&rxq->stats.syncp);
-	} else if (!pkt_i && !pktlen) {
+	} else if (!i && !pktlen) {
 		u64_stats_update_begin(&rxq->stats.syncp);
 		rxq->stats.pkt_len0_err++;
 		u64_stats_update_end(&rxq->stats.syncp);
@@ -2506,117 +2384,6 @@ static void mana_poll_rx_cq(struct mana_cq *cq)
 		xdp_do_flush();
 }
 
-static void mana_rx_dim_work(struct work_struct *work)
-{
-	struct dim *dim = container_of(work, struct dim, work);
-	struct dim_cq_moder cur_moder;
-	struct mana_cq *cq;
-
-	cur_moder = net_dim_get_rx_moderation(dim->mode, dim->profile_ix);
-	cq = container_of(dim, struct mana_cq, dim);
-
-	cur_moder.usec = min_t(u16, cur_moder.usec, MANA_INTR_MODR_USEC_MAX);
-	cur_moder.pkts = min_t(u16, cur_moder.pkts, MANA_INTR_MODR_COMP_MAX);
-
-	mana_gd_ring_dim(cq->gdma_cq, cur_moder.usec, true,
-			 cur_moder.pkts, true);
-
-	dim->state = DIM_START_MEASURE;
-}
-
-static void mana_tx_dim_work(struct work_struct *work)
-{
-	struct dim *dim = container_of(work, struct dim, work);
-	struct dim_cq_moder cur_moder;
-	struct mana_cq *cq;
-
-	cur_moder = net_dim_get_tx_moderation(dim->mode, dim->profile_ix);
-	cq = container_of(dim, struct mana_cq, dim);
-
-	cur_moder.usec = min_t(u16, cur_moder.usec, MANA_INTR_MODR_USEC_MAX);
-	cur_moder.pkts = min_t(u16, cur_moder.pkts, MANA_INTR_MODR_COMP_MAX);
-
-	mana_gd_ring_dim(cq->gdma_cq, cur_moder.usec, true,
-			 cur_moder.pkts, true);
-
-	dim->state = DIM_START_MEASURE;
-}
-
-/* The caller must update apc->rx/tx_dim_enabled before disabling and
- * after enabling. And synchronize_net() before draining the DIM work,
- * so that NAPI cannot observe a stale flag.
- */
-void mana_dim_change(struct mana_cq *cq, bool enable)
-{
-	bool is_rx = cq->type == MANA_CQ_TYPE_RX;
-	struct mana_port_context *apc;
-	work_func_t work_func;
-	u32 usec, comp;
-
-	if (is_rx) {
-		apc = netdev_priv(cq->rxq->ndev);
-		usec = apc->intr_modr_rx_usec;
-		comp = apc->intr_modr_rx_comp;
-		work_func = mana_rx_dim_work;
-	} else {
-		apc = netdev_priv(cq->txq->ndev);
-		usec = apc->intr_modr_tx_usec;
-		comp = apc->intr_modr_tx_comp;
-		work_func = mana_tx_dim_work;
-	}
-
-	/* On enable, zero the DIM state so net_dim() starts measuring from
-	 * scratch.
-	 * On disable, drain any pending DIM work and restore the static
-	 * moderation values.
-	 */
-	if (enable) {
-		memset(&cq->dim, 0, sizeof(cq->dim));
-		cq->dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
-		INIT_WORK(&cq->dim.work, work_func);
-	} else {
-		cancel_work_sync(&cq->dim.work);
-		mana_gd_ring_dim(cq->gdma_cq, usec, true, comp, true);
-	}
-}
-
-static void mana_update_rx_dim(struct mana_cq *cq)
-{
-	struct mana_port_context *apc = netdev_priv(cq->rxq->ndev);
-	struct dim_sample dim_sample = {};
-	struct mana_rxq *rxq = cq->rxq;
-
-	/* Pairs with smp_store_release() in mana_set_coalesce(): observing the
-	 * enable flag set guarantees the DIM (re)initialization is visible.
-	 */
-	if (!smp_load_acquire(&apc->rx_dim_enabled))
-		return;
-
-	dim_update_sample(READ_ONCE(cq->dim_event_ctr), rxq->stats.packets,
-			  rxq->stats.bytes, &dim_sample);
-	net_dim(&cq->dim, &dim_sample);
-}
-
-static void mana_update_tx_dim(struct mana_cq *cq)
-{
-	struct mana_port_context *apc = netdev_priv(cq->txq->ndev);
-	struct dim_sample dim_sample = {};
-
-	/* Pairs with smp_store_release() in mana_set_coalesce(): observing the
-	 * enable flag set guarantees the DIM (re)initialization is visible.
-	 */
-	if (!smp_load_acquire(&apc->tx_dim_enabled))
-		return;
-
-	/* cq->tx_dim_pkts/bytes are accumulated in mana_poll_tx_cq(), in the
-	 * same NAPI context as this read, so they track the hardware
-	 * completion rate and need no u64_stats_sync protection.
-	 */
-	dim_update_sample(READ_ONCE(cq->dim_event_ctr), cq->tx_dim_pkts,
-			  cq->tx_dim_bytes, &dim_sample);
-	net_dim(&cq->dim, &dim_sample);
-}
-
 static int mana_cq_handler(void *context, struct gdma_queue *gdma_queue)
 {
 	struct mana_cq *cq = context;
@@ -2635,15 +2402,6 @@ static int mana_cq_handler(void *context, struct gdma_queue *gdma_queue)
 	if (w < cq->budget) {
 		mana_gd_ring_cq(gdma_queue, SET_ARM_BIT);
 		cq->work_done_since_doorbell = 0;
-
-		/* Update DIM before napi_complete_done() to prevent running
-		 * net_dim() concurrently.
-		 */
-		if (cq->type == MANA_CQ_TYPE_RX)
-			mana_update_rx_dim(cq);
-		else
-			mana_update_tx_dim(cq);
-
 		napi_complete_done(&cq->napi, w);
 	} else if (cq->work_done_since_doorbell >=
 		   (cq->gdma_cq->queue_size / COMP_ENTRY_SIZE) * 4) {
@@ -2676,7 +2434,6 @@ static void mana_schedule_napi(void *context, struct gdma_queue *gdma_queue)
 {
 	struct mana_cq *cq = context;
 
-	WRITE_ONCE(cq->dim_event_ctr, cq->dim_event_ctr + 1);
 	napi_schedule_irqoff(&cq->napi);
 }
 
@@ -2702,7 +2459,6 @@ static void mana_deinit_txq(struct mana_port_context *apc, struct mana_txq *txq)
 
 static void mana_destroy_txq(struct mana_port_context *apc)
 {
-	struct gdma_context *gc = apc->ac->gdma_dev->gdma_context;
 	struct napi_struct *napi;
 	int i;
 
@@ -2720,30 +2476,12 @@ static void mana_destroy_txq(struct mana_port_context *apc)
 		if (apc->tx_qp[i]->txq.napi_initialized) {
 			napi_synchronize(napi);
 			napi_disable_locked(napi);
-			cancel_work_sync(&apc->tx_qp[i]->tx_cq.dim.work);
-		}
-
-		/* Forget the SKBs freed without being completed after a drain
-		 * timeout, now that NAPI can't complete any. Doing it here also
-		 * covers the queues that a lower channel count won't recreate,
-		 * which could otherwise stay stopped.
-		 */
-		netdev_tx_reset_queue(apc->tx_qp[i]->txq.net_txq);
-
-		if (apc->tx_qp[i]->tx_object != INVALID_MANA_HANDLE)
-			mana_destroy_wq_obj(apc, GDMA_SQ, apc->tx_qp[i]->tx_object);
-
-		if (apc->tx_qp[i]->txq.napi_initialized) {
-			/* Detach the CQ only after the WQ object is destroyed,
-			 * so a completion EQE that arrives before then still
-			 * finds the CQ in cq_table[] rather than hitting the
-			 * WARN in mana_gd_process_eqe(). One grace period then
-			 * covers both mana_gd_intr() and NAPI users.
-			 */
-			mana_gd_detach_cq(gc, apc->tx_qp[i]->tx_cq.gdma_cq);
 			netif_napi_del_locked(napi);
 			apc->tx_qp[i]->txq.napi_initialized = false;
 		}
+
+		if (apc->tx_qp[i]->tx_object != INVALID_MANA_HANDLE)
+			mana_destroy_wq_obj(apc, GDMA_SQ, apc->tx_qp[i]->tx_object);
 
 		mana_deinit_cq(apc, &apc->tx_qp[i]->tx_cq);
 
@@ -2871,11 +2609,6 @@ static int mana_create_txq(struct mana_port_context *apc,
 		cq_spec.modr_ctx_id = 0;
 		cq_spec.attached_eq = cq->gdma_cq->cq.parent->id;
 
-		/* DIM setting can be changed at runtime */
-		cq_spec.req_cq_moderation = true;
-		cq_spec.cq_moderation_usec = apc->intr_modr_tx_usec;
-		cq_spec.cq_moderation_comp = apc->intr_modr_tx_comp;
-
 		err = mana_create_wq_obj(apc, apc->port_handle, GDMA_SQ,
 					 &wq_spec, &cq_spec,
 					 &apc->tx_qp[i]->tx_object);
@@ -2906,13 +2639,6 @@ static int mana_create_txq(struct mana_port_context *apc,
 
 		set_bit(NAPI_STATE_NO_BUSY_POLL, &cq->napi.state);
 		netif_napi_add_locked(net, &cq->napi, mana_poll);
-
-		/* Initialize the DIM work before enabling NAPI, so that a poll
-		 * cannot reach net_dim() with an uninitialized cq->dim.work.
-		 */
-		INIT_WORK(&cq->dim.work, mana_tx_dim_work);
-		cq->dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
-
 		napi_enable_locked(&cq->napi);
 		txq->napi_initialized = true;
 
@@ -2950,23 +2676,14 @@ static void mana_destroy_rxq(struct mana_port_context *apc,
 		napi_synchronize(napi);
 
 		napi_disable_locked(napi);
-		cancel_work_sync(&rxq->rx_cq.dim.work);
+		netif_napi_del_locked(napi);
 	}
 
 	if (xdp_rxq_info_is_reg(&rxq->xdp_rxq))
 		xdp_rxq_info_unreg(&rxq->xdp_rxq);
 
-	if (xdp_rxq_info_is_reg(&rxq->xdp_rxq_shared))
-		xdp_rxq_info_unreg(&rxq->xdp_rxq_shared);
-
 	if (rxq->rxobj != INVALID_MANA_HANDLE)
 		mana_destroy_wq_obj(apc, GDMA_RQ, rxq->rxobj);
-
-	if (napi_initialized) {
-		/* See the comment in mana_destroy_txq() */
-		mana_gd_detach_cq(gc, rxq->rx_cq.gdma_cq);
-		netif_napi_del_locked(napi);
-	}
 
 	mana_deinit_cq(apc, &rxq->rx_cq);
 
@@ -3206,11 +2923,6 @@ static struct mana_rxq *mana_create_rxq(struct mana_port_context *apc,
 	cq_spec.modr_ctx_id = 0;
 	cq_spec.attached_eq = cq->gdma_cq->cq.parent->id;
 
-	/* DIM setting can be changed at runtime */
-	cq_spec.req_cq_moderation = true;
-	cq_spec.cq_moderation_usec = apc->intr_modr_rx_usec;
-	cq_spec.cq_moderation_comp = apc->intr_modr_rx_comp;
-
 	err = mana_create_wq_obj(apc, apc->port_handle, GDMA_RQ,
 				 &wq_spec, &cq_spec, &rxq->rxobj);
 	if (err)
@@ -3242,18 +2954,6 @@ static struct mana_rxq *mana_create_rxq(struct mana_port_context *apc,
 				 cq->napi.napi_id));
 	WARN_ON(xdp_rxq_info_reg_mem_model(&rxq->xdp_rxq, MEM_TYPE_PAGE_POOL,
 					   rxq->page_pool));
-
-	/* The pre-allocated buffers (mana_pre_alloc_rxbufs) are plain pages */
-	WARN_ON(xdp_rxq_info_reg(&rxq->xdp_rxq_shared, ndev, rxq_idx,
-				 cq->napi.napi_id));
-	WARN_ON(xdp_rxq_info_reg_mem_model(&rxq->xdp_rxq_shared,
-					   MEM_TYPE_PAGE_SHARED, NULL));
-
-	/* Initialize the DIM work before enabling NAPI, so that a poll
-	 * cannot reach net_dim() with an uninitialized cq->dim.work.
-	 */
-	INIT_WORK(&cq->dim.work, mana_rx_dim_work);
-	cq->dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
 
 	napi_enable_locked(&cq->napi);
 
@@ -3379,7 +3079,7 @@ static int mana_rss_table_alloc(struct mana_port_context *apc)
 		return -EINVAL;
 	}
 
-	apc->indir_table = kzalloc_objs(u32, apc->indir_table_sz);
+	apc->indir_table = kcalloc(apc->indir_table_sz, sizeof(u32), GFP_KERNEL);
 	if (!apc->indir_table)
 		return -ENOMEM;
 
@@ -3657,9 +3357,6 @@ static int mana_init_port(struct net_device *ndev)
 			   &apc->steer_cqe_coalescing);
 	debugfs_create_u32("current_speed", 0400, apc->mana_port_debugfs,
 			   &apc->speed);
-	debugfs_create_bool("tx_timeout_skip_reset", 0600,
-			    apc->mana_port_debugfs,
-			    &apc->tx_timeout_skip_reset);
 	return 0;
 
 reset_apc:
@@ -3816,9 +3513,10 @@ static int mana_dealloc_queues(struct net_device *ndev)
 				tsleep <<= 1;
 			}
 			if (atomic_read(&txq->pending_sends)) {
-				err = mana_gd_dev_reset(gd->gdma_context);
+				err =
+				    pcie_flr(to_pci_dev(gd->gdma_context->dev));
 				if (err) {
-					netdev_err(ndev, "device reset failed %d with %d pkts pending in txq %u\n",
+					netdev_err(ndev, "flr failed %d with %d pkts pending in txq %u\n",
 						   err,
 					    atomic_read(&txq->pending_sends),
 					    txq->gdma_txq_id);
@@ -3922,17 +3620,6 @@ static int mana_probe_port(struct mana_context *ac, int port_idx,
 	apc->port_idx = port_idx;
 	apc->link_cfg_error = 1;
 	apc->cqe_coalescing_enable = 0;
-	apc->cqe8_coalescing_enable = 0;
-
-	/* Initialize interrupt moderation settings if supported by HW */
-	if (gc->pf_cap_flags1 & GDMA_PF_CAP_FLAG_1_DYN_INTERRUPT_MODERATION) {
-		apc->intr_modr_rx_usec = MANA_INTR_MODR_USEC_DEF;
-		apc->intr_modr_rx_comp = MANA_INTR_MODR_COMP_DEF;
-		apc->intr_modr_tx_usec = MANA_INTR_MODR_USEC_DEF;
-		apc->intr_modr_tx_comp = MANA_INTR_MODR_COMP_DEF;
-		apc->rx_dim_enabled = MANA_ADAPTIVE_RX_DEF;
-		apc->tx_dim_enabled = MANA_ADAPTIVE_TX_DEF;
-	}
 
 	mutex_init(&apc->vport_mutex);
 	apc->vport_use_count = 0;
@@ -4048,9 +3735,7 @@ static int add_adev(struct gdma_dev *gd, const char *name)
 
 	/* madev is owned by the auxiliary device */
 	madev = NULL;
-	/* Keep match names independent of the common module's name. */
-	ret = __auxiliary_device_add(adev,
-				     gd->gdma_context->bus_ops->adev_prefix);
+	ret = auxiliary_device_add(adev);
 	if (ret)
 		goto add_fail;
 
@@ -4122,9 +3807,6 @@ int mana_rdma_service_event(struct gdma_context *gc, enum gdma_service_type even
 		/* RDMA device is not detected on pci */
 		return 0;
 	}
-
-	if (!gc->service_wq)
-		return -EOPNOTSUPP;
 
 	serv_work = kzalloc_obj(*serv_work, GFP_ATOMIC);
 	if (!serv_work)
@@ -4287,7 +3969,6 @@ out:
 
 	return err;
 }
-EXPORT_SYMBOL_NS(mana_probe, "NET_MANA");
 
 void mana_remove(struct gdma_dev *gd, bool suspending)
 {
@@ -4366,7 +4047,6 @@ void mana_remove(struct gdma_dev *gd, bool suspending)
 	kfree(ac);
 	dev_dbg(dev, "%s succeeded\n", __func__);
 }
-EXPORT_SYMBOL_NS(mana_remove, "NET_MANA");
 
 int mana_rdma_probe(struct gdma_dev *gd)
 {
@@ -4402,7 +4082,6 @@ int mana_rdma_probe(struct gdma_dev *gd)
 
 	return err;
 }
-EXPORT_SYMBOL_NS(mana_rdma_probe, "NET_MANA");
 
 void mana_rdma_remove(struct gdma_dev *gd)
 {
@@ -4423,7 +4102,6 @@ void mana_rdma_remove(struct gdma_dev *gd)
 
 	mana_gd_deregister_device(gd);
 }
-EXPORT_SYMBOL_NS(mana_rdma_remove, "NET_MANA");
 
 struct net_device *mana_get_primary_netdev(struct mana_context *ac,
 					   u32 port_index,

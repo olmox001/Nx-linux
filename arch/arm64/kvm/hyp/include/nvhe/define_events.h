@@ -10,3 +10,5 @@
 #define HYP_EVENT_MULTI_READ
 #include <asm/kvm_hypevents.h>
 #undef HYP_EVENT_MULTI_READ
+
+#undef HYP_EVENT

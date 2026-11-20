@@ -1866,7 +1866,7 @@ static void __mcheck_cpu_init_generic(void)
 
 	rdmsrq(MSR_IA32_MCG_CAP, cap);
 	if (cap & MCG_CTL_P)
-		wrmsrq(MSR_IA32_MCG_CTL, ~0ULL);
+		wrmsr(MSR_IA32_MCG_CTL, 0xffffffff, 0xffffffff);
 }
 
 static void __mcheck_cpu_init_prepare_banks(void)
@@ -2614,17 +2614,17 @@ static DEVICE_BOOL_ATTR(dont_log_ce, 0644, mca_cfg.dont_log_ce);
 static DEVICE_BOOL_ATTR(print_all, 0644, mca_cfg.print_all);
 
 static struct dev_ext_attribute dev_attr_check_interval = {
-	__DEVICE_ATTR(check_interval, 0644, device_show_int, store_int_with_restart),
+	__ATTR(check_interval, 0644, device_show_int, store_int_with_restart),
 	&check_interval
 };
 
 static struct dev_ext_attribute dev_attr_ignore_ce = {
-	__DEVICE_ATTR(ignore_ce, 0644, device_show_bool, set_ignore_ce),
+	__ATTR(ignore_ce, 0644, device_show_bool, set_ignore_ce),
 	&mca_cfg.ignore_ce
 };
 
 static struct dev_ext_attribute dev_attr_cmci_disabled = {
-	__DEVICE_ATTR(cmci_disabled, 0644, device_show_bool, set_cmci_disabled),
+	__ATTR(cmci_disabled, 0644, device_show_bool, set_cmci_disabled),
 	&mca_cfg.cmci_disabled
 };
 

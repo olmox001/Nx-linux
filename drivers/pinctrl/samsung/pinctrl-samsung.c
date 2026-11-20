@@ -747,7 +747,8 @@ static struct samsung_pin_group *samsung_pinctrl_create_groups(
 	const struct pinctrl_pin_desc *pdesc;
 	int i;
 
-	groups = devm_kzalloc_objs(dev, *groups, ctrldesc->npins);
+	groups = devm_kcalloc(dev, ctrldesc->npins, sizeof(*groups),
+				GFP_KERNEL);
 	if (!groups)
 		return ERR_PTR(-EINVAL);
 	grp = groups;
@@ -840,7 +841,8 @@ static struct samsung_pmx_func *samsung_pinctrl_create_functions(
 		}
 	}
 
-	functions = devm_kzalloc_objs(dev, *functions, func_cnt);
+	functions = devm_kcalloc(dev, func_cnt, sizeof(*functions),
+					GFP_KERNEL);
 	if (!functions)
 		return ERR_PTR(-ENOMEM);
 	func = functions;
@@ -929,7 +931,9 @@ static int samsung_pinctrl_register(struct platform_device *pdev,
 	ctrldesc->pmxops = &samsung_pinmux_ops;
 	ctrldesc->confops = &samsung_pinconf_ops;
 
-	pindesc = devm_kzalloc_objs(&pdev->dev, *pindesc, drvdata->nr_pins);
+	pindesc = devm_kcalloc(&pdev->dev,
+			       drvdata->nr_pins, sizeof(*pindesc),
+			       GFP_KERNEL);
 	if (!pindesc)
 		return -ENOMEM;
 	ctrldesc->pins = pindesc;
@@ -1196,7 +1200,8 @@ samsung_pinctrl_get_soc_data(struct samsung_pinctrl_drv_data *d,
 	d->suspend = ctrl->suspend;
 	d->resume = ctrl->resume;
 	d->nr_banks = ctrl->nr_banks;
-	d->pin_banks = devm_kzalloc_objs(&pdev->dev, *d->pin_banks, d->nr_banks);
+	d->pin_banks = devm_kcalloc(&pdev->dev, d->nr_banks,
+					sizeof(*d->pin_banks), GFP_KERNEL);
 	if (!d->pin_banks)
 		return ERR_PTR(-ENOMEM);
 
@@ -1260,7 +1265,7 @@ static int samsung_pinctrl_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	drvdata = devm_kzalloc_obj(dev, *drvdata);
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 
@@ -1495,8 +1500,6 @@ static const struct of_device_id samsung_pinctrl_dt_match[] = {
 		.data = &exynos7885_of_data },
 	{ .compatible = "samsung,exynos850-pinctrl",
 		.data = &exynos850_of_data },
-	{ .compatible = "samsung,exynos8855-pinctrl",
-		.data = &exynos8855_of_data },
 	{ .compatible = "samsung,exynos8890-pinctrl",
 		.data = &exynos8890_of_data },
 	{ .compatible = "samsung,exynos8895-pinctrl",

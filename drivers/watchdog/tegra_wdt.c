@@ -9,7 +9,6 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 /* minimum and maximum watchdog trigger timeout, in seconds */
@@ -68,13 +67,13 @@ static int heartbeat = WDT_HEARTBEAT;
 module_param(heartbeat, int, 0);
 MODULE_PARM_DESC(heartbeat,
 	"Watchdog heartbeats in seconds. (default = "
-	__stringify(WDT_HEARTBEAT) ")");
+	__MODULE_STRING(WDT_HEARTBEAT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
-	__stringify(WATCHDOG_NOWAYOUT) ")");
+	__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 static int tegra_wdt_start(struct watchdog_device *wdd)
 {
@@ -197,7 +196,7 @@ static int tegra_wdt_probe(struct platform_device *pdev)
 	 * Allocate our watchdog driver data, which has the
 	 * struct watchdog_device nested within it.
 	 */
-	wdt = devm_kzalloc_obj(dev, *wdt);
+	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
 

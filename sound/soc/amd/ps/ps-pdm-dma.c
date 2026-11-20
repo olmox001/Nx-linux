@@ -211,13 +211,7 @@ static int acp63_pdm_dma_open(struct snd_soc_component *component,
 
 	pdm_data->acp63_base = adata->acp63_base;
 	runtime->private_data = pdm_data;
-
-	/*
-	 * ASoC only marks the component as opened when .open() returns 0.
-	 * Since snd_pcm_hw_constraint_integer() may return 1, explicitly
-	 * return 0 to ensure .close() is not skipped on rollback.
-	 */
-	return 0;
+	return ret;
 }
 
 static int acp63_pdm_dma_hw_params(struct snd_soc_component *component,
@@ -377,7 +371,7 @@ static int acp63_pdm_audio_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	adata = devm_kzalloc_obj(&pdev->dev, *adata);
+	adata = devm_kzalloc(&pdev->dev, sizeof(*adata), GFP_KERNEL);
 	if (!adata)
 		return -ENOMEM;
 

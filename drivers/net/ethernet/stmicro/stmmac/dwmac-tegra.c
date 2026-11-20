@@ -220,7 +220,7 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 	int irq, err, i;
 	u32 value;
 
-	mgbe = devm_kzalloc_obj(&pdev->dev, *mgbe);
+	mgbe = devm_kzalloc(&pdev->dev, sizeof(*mgbe), GFP_KERNEL);
 	if (!mgbe)
 		return -ENOMEM;
 
@@ -253,8 +253,8 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 	res.addr = mgbe->regs;
 	res.irq = irq;
 
-	mgbe->clks = devm_kzalloc_objs(&pdev->dev, *mgbe->clks,
-				       ARRAY_SIZE(mgbe_clks));
+	mgbe->clks = devm_kcalloc(&pdev->dev, ARRAY_SIZE(mgbe_clks),
+				  sizeof(*mgbe->clks), GFP_KERNEL);
 	if (!mgbe->clks)
 		return -ENOMEM;
 
@@ -332,8 +332,8 @@ static int tegra_mgbe_probe(struct platform_device *pdev)
 		plat->mdio_node = of_get_child_by_name(pdev->dev.of_node, "mdio");
 
 	if (!plat->mdio_bus_data) {
-		plat->mdio_bus_data = devm_kzalloc_obj(&pdev->dev,
-						       *plat->mdio_bus_data);
+		plat->mdio_bus_data = devm_kzalloc(&pdev->dev, sizeof(*plat->mdio_bus_data),
+						   GFP_KERNEL);
 		if (!plat->mdio_bus_data) {
 			err = -ENOMEM;
 			goto disable_clks;

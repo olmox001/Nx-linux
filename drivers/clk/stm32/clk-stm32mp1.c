@@ -490,7 +490,7 @@ static struct clk_hw *_get_stm32_mux(struct device *dev, void __iomem *base,
 	struct clk_hw *mux_hw;
 
 	if (cfg->mmux) {
-		mmux = devm_kzalloc_obj(dev, *mmux);
+		mmux = devm_kzalloc(dev, sizeof(*mmux), GFP_KERNEL);
 		if (!mmux)
 			return ERR_PTR(-ENOMEM);
 
@@ -505,7 +505,7 @@ static struct clk_hw *_get_stm32_mux(struct device *dev, void __iomem *base,
 		cfg->mmux->hws[cfg->mmux->nbr_clk++] = mux_hw;
 
 	} else {
-		mux = devm_kzalloc_obj(dev, *mux);
+		mux = devm_kzalloc(dev, sizeof(*mux), GFP_KERNEL);
 		if (!mux)
 			return ERR_PTR(-ENOMEM);
 
@@ -527,7 +527,7 @@ static struct clk_hw *_get_stm32_div(struct device *dev, void __iomem *base,
 {
 	struct clk_divider *div;
 
-	div = devm_kzalloc_obj(dev, *div);
+	div = devm_kzalloc(dev, sizeof(*div), GFP_KERNEL);
 
 	if (!div)
 		return ERR_PTR(-ENOMEM);
@@ -551,7 +551,7 @@ static struct clk_hw *_get_stm32_gate(struct device *dev, void __iomem *base,
 	struct clk_hw *gate_hw;
 
 	if (cfg->mgate) {
-		mgate = devm_kzalloc_obj(dev, *mgate);
+		mgate = devm_kzalloc(dev, sizeof(*mgate), GFP_KERNEL);
 		if (!mgate)
 			return ERR_PTR(-ENOMEM);
 
@@ -566,7 +566,7 @@ static struct clk_hw *_get_stm32_gate(struct device *dev, void __iomem *base,
 		gate_hw = &mgate->gate.hw;
 
 	} else {
-		gate = devm_kzalloc_obj(dev, *gate);
+		gate = devm_kzalloc(dev, sizeof(*gate), GFP_KERNEL);
 		if (!gate)
 			return ERR_PTR(-ENOMEM);
 
@@ -902,12 +902,12 @@ static struct clk_hw *clk_register_pll(struct device *dev, const char *name,
 				       unsigned long flags,
 				       spinlock_t *lock)
 {
-	struct clk_init_data init = {};
 	struct stm32_pll_obj *element;
+	struct clk_init_data init;
 	struct clk_hw *hw;
 	int err;
 
-	element = devm_kzalloc_obj(dev, *element);
+	element = devm_kzalloc(dev, sizeof(*element), GFP_KERNEL);
 	if (!element)
 		return ERR_PTR(-ENOMEM);
 
@@ -1041,12 +1041,12 @@ static struct clk_hw *clk_register_cktim(struct device *dev, const char *name,
 					 void __iomem *timpre,
 					 spinlock_t *lock)
 {
-	struct clk_init_data init = {};
 	struct timer_cker *tim_ker;
+	struct clk_init_data init;
 	struct clk_hw *hw;
 	int err;
 
-	tim_ker = devm_kzalloc_obj(dev, *tim_ker);
+	tim_ker = devm_kzalloc(dev, sizeof(*tim_ker), GFP_KERNEL);
 	if (!tim_ker)
 		return ERR_PTR(-ENOMEM);
 
@@ -2215,7 +2215,8 @@ static int stm32_rcc_clock_init(struct device *dev, void __iomem *base,
 
 	max_binding =  data->maxbinding;
 
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws, max_binding);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, max_binding),
+				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 

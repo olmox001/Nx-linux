@@ -236,7 +236,7 @@ static int powernv_flash_probe(struct platform_device *pdev)
 	struct powernv_flash *data;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -263,7 +263,7 @@ static int powernv_flash_probe(struct platform_device *pdev)
 }
 
 /**
- * powernv_flash_release - Release the driver
+ * op_release - Release the driver
  * @pdev: the platform device
  *
  * Returns 0

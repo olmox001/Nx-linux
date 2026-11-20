@@ -2522,7 +2522,7 @@ static int vpe_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	dev = devm_kzalloc_obj(&pdev->dev, *dev);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 

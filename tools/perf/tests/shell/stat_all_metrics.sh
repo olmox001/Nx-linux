@@ -1,5 +1,5 @@
 #!/bin/bash
-# perf all metrics test (no_mlock)
+# perf all metrics test
 # SPDX-License-Identifier: GPL-2.0
 
 ParanoidAndNotRoot()
@@ -7,7 +7,7 @@ ParanoidAndNotRoot()
   [ "$(id -u)" != 0 ] && [ "$(cat /proc/sys/kernel/perf_event_paranoid)" -gt $1 ]
 }
 
-test_prog="true"
+test_prog="sleep 0.01"
 system_wide_flag="-a"
 if ParanoidAndNotRoot 0
 then

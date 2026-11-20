@@ -428,7 +428,7 @@ static void set_aperture(struct pm2fb_par *p, u32 depth)
 	}
 #endif
 
-	/* We don't use aperture two, so this may be superfluous */
+	/* We don't use aperture two, so this may be superflous */
 	pm2_WR(p, PM2R_APERTURE_TWO, PM2F_APERTURE_STANDARD);
 }
 

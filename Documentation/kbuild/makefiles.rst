@@ -1452,16 +1452,13 @@ objcopy
   OBJCOPYFLAGS_$@ may be used to set additional options.
 
 gzip
-  Compress target. Use maximum compression to compress target. Prefix the
-  recipe line with '+' so that GNU Make passes it the jobserver, which
-  scripts/jobserver-exec needs to run pigz (if available) on the free job
-  slots.
+  Compress target. Use maximum compression to compress target.
 
   Example::
 
     #arch/x86/boot/compressed/Makefile
     $(obj)/vmlinux.bin.gz: $(vmlinux.bin.all-y) FORCE
-            +$(call if_changed,gzip)
+            $(call if_changed,gzip)
 
 dtc
   Create flattened device tree blob object suitable for linking

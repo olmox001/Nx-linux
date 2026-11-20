@@ -211,8 +211,8 @@ static int rt1316_read_prop(struct sdw_slave *slave)
 	prop->sink_ports = 0x2; /* BITMAP:  00000010 */
 
 	nval = hweight32(prop->source_ports);
-	prop->src_dpn_prop = devm_kzalloc_objs(&slave->dev, *prop->src_dpn_prop,
-					       nval);
+	prop->src_dpn_prop = devm_kcalloc(&slave->dev, nval,
+		sizeof(*prop->src_dpn_prop), GFP_KERNEL);
 	if (!prop->src_dpn_prop)
 		return -ENOMEM;
 
@@ -229,8 +229,8 @@ static int rt1316_read_prop(struct sdw_slave *slave)
 
 	/* do this again for sink now */
 	nval = hweight32(prop->sink_ports);
-	prop->sink_dpn_prop = devm_kzalloc_objs(&slave->dev,
-						*prop->sink_dpn_prop, nval);
+	prop->sink_dpn_prop = devm_kcalloc(&slave->dev, nval,
+		sizeof(*prop->sink_dpn_prop), GFP_KERNEL);
 	if (!prop->sink_dpn_prop)
 		return -ENOMEM;
 
@@ -658,7 +658,7 @@ static int rt1316_sdw_init(struct device *dev, struct regmap *regmap,
 	struct rt1316_sdw_priv *rt1316;
 	int ret;
 
-	rt1316 = devm_kzalloc_obj(dev, *rt1316);
+	rt1316 = devm_kzalloc(dev, sizeof(*rt1316), GFP_KERNEL);
 	if (!rt1316)
 		return -ENOMEM;
 
@@ -756,12 +756,7 @@ static int rt1316_dev_resume(struct device *dev)
 	}
 
 	regcache_cache_only(rt1316->regmap, false);
-	ret = regcache_sync(rt1316->regmap);
-	if (ret) {
-		regcache_cache_only(rt1316->regmap, true);
-		regcache_mark_dirty(rt1316->regmap);
-		return ret;
-	}
+	regcache_sync(rt1316->regmap);
 
 	return 0;
 }

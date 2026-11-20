@@ -6,7 +6,6 @@
 //                         Cirrus Logic International Semiconductor Ltd.
 //
 
-#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/device.h>
@@ -2505,8 +2504,9 @@ static int cs47l85_component_probe(struct snd_soc_component *component)
 
 	snd_soc_component_init_regmap(component, madera->regmap);
 
-	scoped_guard(mutex, &madera->dapm_ptr_lock)
-		madera->dapm = snd_soc_component_to_dapm(component);
+	mutex_lock(&madera->dapm_ptr_lock);
+	madera->dapm = snd_soc_component_to_dapm(component);
+	mutex_unlock(&madera->dapm_ptr_lock);
 
 	ret = madera_init_inputs(component);
 	if (ret)
@@ -2537,8 +2537,9 @@ static void cs47l85_component_remove(struct snd_soc_component *component)
 	struct madera *madera = cs47l85->core.madera;
 	int i;
 
-	scoped_guard(mutex, &madera->dapm_ptr_lock)
-		madera->dapm = NULL;
+	mutex_lock(&madera->dapm_ptr_lock);
+	madera->dapm = NULL;
+	mutex_unlock(&madera->dapm_ptr_lock);
 
 	for (i = 0; i < CS47L85_NUM_ADSP; i++)
 		wm_adsp2_component_remove(&cs47l85->core.adsp[i], component);
@@ -2602,7 +2603,8 @@ static int cs47l85_probe(struct platform_device *pdev)
 		return -EPROBE_DEFER;
 	}
 
-	cs47l85 = devm_kzalloc_obj(&pdev->dev, struct cs47l85);
+	cs47l85 = devm_kzalloc(&pdev->dev, sizeof(struct cs47l85),
+			       GFP_KERNEL);
 	if (!cs47l85)
 		return -ENOMEM;
 

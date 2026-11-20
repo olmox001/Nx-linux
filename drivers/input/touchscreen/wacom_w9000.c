@@ -256,7 +256,7 @@ static int wacom_w9000_probe(struct i2c_client *client)
 		return -EIO;
 	}
 
-	wacom_data = devm_kzalloc_obj(dev, *wacom_data);
+	wacom_data = devm_kzalloc(dev, sizeof(*wacom_data), GFP_KERNEL);
 	if (!wacom_data)
 		return -ENOMEM;
 

@@ -985,7 +985,6 @@ static void s5kjn1_update_pad_format(struct s5kjn1 *s5kjn1,
 }
 
 static int s5kjn1_set_pad_format(struct v4l2_subdev *sd,
-				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *state,
 				 struct v4l2_subdev_format *fmt)
 {
@@ -1066,7 +1065,6 @@ static int s5kjn1_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static int s5kjn1_get_selection(struct v4l2_subdev *sd,
-				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -1104,7 +1102,7 @@ static int s5kjn1_init_state(struct v4l2_subdev *sd,
 		},
 	};
 
-	s5kjn1_set_pad_format(sd, NULL, state, &fmt);
+	s5kjn1_set_pad_format(sd, state, &fmt);
 
 	return 0;
 }
@@ -1295,7 +1293,7 @@ static int s5kjn1_probe(struct i2c_client *client)
 	unsigned long freq;
 	int ret;
 
-	s5kjn1 = devm_kzalloc_obj(&client->dev, *s5kjn1);
+	s5kjn1 = devm_kzalloc(&client->dev, sizeof(*s5kjn1), GFP_KERNEL);
 	if (!s5kjn1)
 		return -ENOMEM;
 

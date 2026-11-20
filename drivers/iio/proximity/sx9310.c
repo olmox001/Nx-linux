@@ -891,7 +891,7 @@ static int sx9310_check_whoami(struct device *dev,
 	if (ret)
 		return ret;
 
-	ddata = i2c_get_match_data(data->client);
+	ddata = device_get_match_data(dev);
 	if (ddata->whoami != whoami)
 		return -ENODEV;
 

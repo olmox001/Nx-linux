@@ -398,7 +398,7 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
 				goto err;
 			}
 
-			data = kzalloc_objs(u32, data_len);
+			data = kcalloc(data_len, sizeof(u32), GFP_KERNEL);
 			if (!data) {
 				ret = -ENOMEM;
 				goto err;
@@ -710,7 +710,7 @@ static void update_property_block(struct tb_xdomain *xd)
 		}
 
 		block_len = ret;
-		block = kzalloc_objs(*block, block_len);
+		block = kcalloc(block_len, sizeof(*block), GFP_KERNEL);
 		if (!block) {
 			tb_property_free_dir(dir);
 			goto out_unlock;
@@ -972,9 +972,6 @@ tb_xdp_schedule_request(struct tb *tb, const struct tb_xdp_header *hdr,
  */
 int tb_register_service_driver(struct tb_service_driver *drv)
 {
-	if (!drv->probe)
-		return -EINVAL;
-
 	drv->driver.bus = &tb_bus_type;
 	return driver_register(&drv->driver);
 }

@@ -360,7 +360,7 @@ static int uniphier_pcie_probe(struct platform_device *pdev)
 	struct uniphier_pcie *pcie;
 	int ret;
 
-	pcie = devm_kzalloc_obj(dev, *pcie);
+	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return -ENOMEM;
 

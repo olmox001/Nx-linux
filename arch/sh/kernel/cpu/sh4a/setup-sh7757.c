@@ -21,6 +21,7 @@
 #include <cpu/dma-register.h>
 #include <cpu/sh7757.h>
 
+#include <asm/mmzone.h>
 #include <asm/platform_early.h>
 
 static struct plat_sci_port scif2_platform_data = {
@@ -1237,4 +1238,8 @@ void __init plat_irq_setup_pins(int mode)
 	default:
 		BUG();
 	}
+}
+
+void __init plat_mem_setup(void)
+{
 }

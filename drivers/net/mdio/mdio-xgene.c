@@ -336,7 +336,7 @@ static int xgene_mdio_probe(struct platform_device *pdev)
 	if (!mdio_id)
 		return -ENODEV;
 
-	pdata = devm_kzalloc_obj(dev, struct xgene_mdio_pdata);
+	pdata = devm_kzalloc(dev, sizeof(struct xgene_mdio_pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 	pdata->mdio_id = mdio_id;

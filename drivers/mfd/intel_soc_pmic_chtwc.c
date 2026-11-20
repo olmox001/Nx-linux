@@ -202,7 +202,7 @@ static int cht_wc_probe(struct i2c_client *client)
 	if (client->irq < 0)
 		return dev_err_probe(dev, -EINVAL, "Invalid IRQ\n");
 
-	pmic = devm_kzalloc_obj(dev, *pmic);
+	pmic = devm_kzalloc(dev, sizeof(*pmic), GFP_KERNEL);
 	if (!pmic)
 		return -ENOMEM;
 

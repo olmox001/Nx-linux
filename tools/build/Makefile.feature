@@ -79,13 +79,12 @@ FEATURE_TESTS_BASIC :=                  \
         libelf-zstd                     \
         libnuma                         \
         numa_num_possible_cpus          \
-        python-module                   \
+        libpython                       \
         libslang                        \
         libtraceevent                   \
         libcpupower                     \
         pthread-attr-setaffinity-np     \
         pthread-barrier     		\
-        pthread-mutex-robust		\
         reallocarray                    \
         stackprotector-all              \
         timerfd                         \
@@ -114,7 +113,8 @@ FEATURE_TESTS_EXTRA :=                  \
          compile-x32                    \
          cplus-demangle                 \
          cxa-demangle                   \
-         gtk4                           \
+         gtk2                           \
+         gtk2-infobar                   \
          hello                          \
          babeltrace2-ctf-writer         \
          libcapstone                    \
@@ -122,6 +122,7 @@ FEATURE_TESTS_EXTRA :=                  \
          libbfd-liberty                 \
          libbfd-liberty-z               \
          libopencsd                     \
+         libperl                        \
          llvm                           \
          libbpf                         \
          libpfm4                        \
@@ -145,7 +146,7 @@ FEATURE_DISPLAY ?=              \
          libelf                 \
          libnuma                \
          numa_num_possible_cpus \
-         python-module          \
+         libpython              \
          libcapstone            \
          llvm-perf              \
          zlib                   \

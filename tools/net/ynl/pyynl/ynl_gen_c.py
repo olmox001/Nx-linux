@@ -526,10 +526,8 @@ class TypeString(Type):
 
     def _attr_get(self, ri, var):
         len_mem = var + '->_len.' + self.c_name
-        return [f"{var}->{self.c_name} = malloc(len + 1);",
-                f"if (!{var}->{self.c_name})",
-                "return YNL_PARSE_CB_ERROR;",
-                f"{len_mem} = len;",
+        return [f"{len_mem} = len;",
+                f"{var}->{self.c_name} = malloc(len + 1);",
                 f"memcpy({var}->{self.c_name}, ynl_attr_get_str(attr), len);",
                 f"{var}->{self.c_name}[len] = 0;"], \
                ['len = strnlen(ynl_attr_get_str(attr), ynl_attr_data_len(attr));'], \
@@ -584,10 +582,8 @@ class TypeBinary(Type):
 
     def _attr_get(self, ri, var):
         len_mem = var + '->_len.' + self.c_name
-        return [f"{var}->{self.c_name} = malloc(len);",
-                f"if (!{var}->{self.c_name})",
-                "return YNL_PARSE_CB_ERROR;",
-                f"{len_mem} = len;",
+        return [f"{len_mem} = len;",
+                f"{var}->{self.c_name} = malloc(len);",
                 f"memcpy({var}->{self.c_name}, ynl_attr_data(attr), len);"], \
                ['len = ynl_attr_data_len(attr);'], \
                ['unsigned int len;']
@@ -605,13 +601,11 @@ class TypeBinaryStruct(TypeBinary):
     def _attr_get(self, ri, var):
         struct_sz = 'sizeof(struct ' + c_lower(self.get("struct")) + ')'
         len_mem = var + '->_' + self.presence_type() + '.' + self.c_name
-        return [f"if (len < {struct_sz})",
+        return [f"{len_mem} = len;",
+                f"if (len < {struct_sz})",
                 f"{var}->{self.c_name} = calloc(1, {struct_sz});",
                 "else",
                 f"{var}->{self.c_name} = malloc(len);",
-                f"if (!{var}->{self.c_name})",
-                "return YNL_PARSE_CB_ERROR;",
-                f"{len_mem} = len;",
                 f"memcpy({var}->{self.c_name}, ynl_attr_data(attr), len);"], \
                ['len = ynl_attr_data_len(attr);'], \
                ['unsigned int len;']
@@ -637,11 +631,9 @@ class TypeBinaryScalarArray(TypeBinary):
 
     def _attr_get(self, ri, var):
         len_mem = var + '->_count.' + self.c_name
-        return [f"len = (len / sizeof(__{self.get('sub-type')})) * sizeof(__{self.get('sub-type')});",
+        return [f"{len_mem} = len / sizeof(__{self.get('sub-type')});",
+                f"len = {len_mem} * sizeof(__{self.get('sub-type')});",
                 f"{var}->{self.c_name} = malloc(len);",
-                f"if (!{var}->{self.c_name})",
-                "return YNL_PARSE_CB_ERROR;",
-                f"{len_mem} = len / sizeof(__{self.get('sub-type')});",
                 f"memcpy({var}->{self.c_name}, ynl_attr_data(attr), len);"], \
                ['len = ynl_attr_data_len(attr);'], \
                ['unsigned int len;']
@@ -951,31 +943,13 @@ class TypeSubMessage(TypeNest):
             sel_var = f"_sel_{sel}"
         else:
             sel_var = f"{var}->{sel}"
-
-        local_vars = None
-
-        if self.selector.is_enum_val() and not self.selector.is_external():
-            enum = self.family.consts[self.selector.get_enum_name()]
-            pres_var = f"{var}->_present.{sel}"
-            parse_sel = f"{sel}_str"
-            local_vars = [f'const char *{parse_sel};']
-
-            get_lines = [
-                f'if (!{pres_var})',
-                f'return ynl_submsg_failed(yarg, "{self.name}", "{selector}");',
-                f'{parse_sel} = {enum.render_name}_str({sel_var});',
-                f'if (!{parse_sel})',
-                f'return ynl_submsg_failed(yarg, "{self.name}", "enum-lookup-failed");']
-        else:
-            parse_sel = sel_var
-            get_lines = [f'if (!{parse_sel})',
-                         f'return ynl_submsg_failed(yarg, "{self.name}", "{selector}");']
-
-        get_lines += [f"if ({self.nested_render_name}_parse(&parg, {parse_sel}, attr))",
-                      "return YNL_PARSE_CB_ERROR;"]
+        get_lines = [f'if (!{sel_var})',
+                     f'return ynl_submsg_failed(yarg, "{self.name}", "{selector}");',
+                     f"if ({self.nested_render_name}_parse(&parg, {sel_var}, attr))",
+                     "return YNL_PARSE_CB_ERROR;"]
         init_lines = [f"parg.rsp_policy = &{self.nested_render_name}_nest;",
                       f"parg.data = &{var}->{self.c_name};"]
-        return get_lines, init_lines, local_vars
+        return get_lines, init_lines, None
 
 
 class Selector:
@@ -997,12 +971,6 @@ class Selector:
     def is_external(self):
         return self._external
 
-    def is_enum_val(self):
-        return self.get_enum_name() is not None
-
-    def get_enum_name(self):
-        return self.attr and self.attr.attr.get("enum")
-
 
 class Struct:
     def __init__(self, family, space_name, type_list=None, fixed_header=None,
@@ -1010,8 +978,7 @@ class Struct:
         self.family = family
         self.space_name = space_name
         self.attr_set = family.attr_sets[space_name]
-        # Stored by reference, _load_nested_set_nest() fills the list in
-        # after constructing us.
+        # Use list to catch comparisons with empty sets
         self._inherited = inherited if inherited is not None else []
         self.inherited = []
         self.fixed_header = None
@@ -1063,11 +1030,9 @@ class Struct:
         return self.attr_list
 
     def set_inherited(self, new_inherited):
-        if self.submsg:
-            raise Exception("Nesting a sub-message as an attribute set not supported")
         if self._inherited != new_inherited:
-            raise Exception("Inheriting different members, or a different order, not supported")
-        self.inherited = [c_lower(x) for x in self._inherited]
+            raise Exception("Inheriting different members not supported")
+        self.inherited = [c_lower(x) for x in sorted(self._inherited)]
 
     def external_selectors(self):
         sels = []
@@ -1421,7 +1386,7 @@ class Family(SpecFamily):
                 pns_key_list.append(name)
 
     def _load_nested_set_nest(self, spec):
-        inherit = []
+        inherit = set()
         nested = spec['nested-attributes']
         if nested not in self.root_sets:
             if nested not in self.pure_nested_structs:
@@ -1434,9 +1399,9 @@ class Family(SpecFamily):
         if 'type-value' in spec:
             if nested in self.root_sets:
                 raise Exception("Inheriting members to a space used as root not supported")
-            inherit.extend(spec['type-value'])
+            inherit.update(set(spec['type-value']))
         elif spec['type'] == 'indexed-array':
-            inherit.append('idx')
+            inherit.add('idx')
         self.pure_nested_structs[nested].set_inherited(inherit)
 
         return nested
@@ -2262,8 +2227,6 @@ def _multi_parse(ri, struct, init_lines, local_vars):
 
         ri.cw.block_start(line=f"if (n_{aspec.c_name})")
         ri.cw.p(f"dst->{aspec.c_name} = calloc(n_{aspec.c_name}, sizeof(*dst->{aspec.c_name}));")
-        ri.cw.p(f"if (!dst->{aspec.c_name})")
-        ri.cw.p("return YNL_PARSE_CB_ERROR;")
         ri.cw.p(f"dst->_count.{aspec.c_name} = n_{aspec.c_name};")
         ri.cw.p('i = 0;')
         if 'nested-attributes' in aspec:
@@ -2289,8 +2252,6 @@ def _multi_parse(ri, struct, init_lines, local_vars):
         aspec = struct[arg]
         ri.cw.block_start(line=f"if (n_{aspec.c_name})")
         ri.cw.p(f"dst->{aspec.c_name} = calloc(n_{aspec.c_name}, sizeof(*dst->{aspec.c_name}));")
-        ri.cw.p(f"if (!dst->{aspec.c_name})")
-        ri.cw.p("return YNL_PARSE_CB_ERROR;")
         ri.cw.p(f"dst->_count.{aspec.c_name} = n_{aspec.c_name};")
         ri.cw.p('i = 0;')
         if 'nested-attributes' in aspec:
@@ -2314,8 +2275,6 @@ def _multi_parse(ri, struct, init_lines, local_vars):
             ri.cw.nl()
             ri.cw.p('len = strnlen(ynl_attr_get_str(attr), ynl_attr_data_len(attr));')
             ri.cw.p(f'dst->{aspec.c_name}[i] = malloc(sizeof(struct ynl_string) + len + 1);')
-            ri.cw.p(f"if (!dst->{aspec.c_name}[i])")
-            ri.cw.p("return YNL_PARSE_CB_ERROR;")
             ri.cw.p(f"dst->{aspec.c_name}[i]->len = len;")
             ri.cw.p(f"memcpy(dst->{aspec.c_name}[i]->str, ynl_attr_get_str(attr), len);")
             ri.cw.p(f"dst->{aspec.c_name}[i]->str[len] = 0;")
@@ -2475,8 +2434,6 @@ def print_req(ri):
 
     if 'reply' in ri.op[ri.op_mode]:
         ri.cw.p('rsp = calloc(1, sizeof(*rsp));')
-        ri.cw.p('if (!rsp)')
-        ri.cw.p(f'return {ret_err};')
         ri.cw.p('yrs.yarg.data = rsp;')
         ri.cw.p(f"yrs.cb = {op_prefix(ri, 'reply')}_parse;")
         if ri.op.value is not None:
@@ -2789,9 +2746,6 @@ def print_dump_type_free(ri):
     print_free_prototype(ri, 'reply', suffix='')
     ri.cw.block_start()
     ri.cw.p(f"{sub_type} *next = rsp;")
-    ri.cw.nl()
-    ri.cw.p('if (!next)')
-    ri.cw.p('return;')
     ri.cw.nl()
     ri.cw.block_start(line='while ((void *)next != YNL_LIST_END)')
     _free_type_members_iter(ri, ri.struct['reply'])

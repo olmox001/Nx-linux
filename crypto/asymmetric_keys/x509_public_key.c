@@ -53,11 +53,9 @@ int x509_get_sig_params(struct x509_certificate *cert)
 
 	if (sig->algo_takes_data) {
 		/* The signature algorithm does whatever passes for hashing. */
-		sig->m = kmemdup(cert->tbs, cert->tbs_size, GFP_KERNEL);
-		if (!sig->m)
-			return -ENOMEM;
+		sig->m = (u8 *)cert->tbs;
 		sig->m_size = cert->tbs_size;
-		sig->m_free = true;
+		sig->m_free = false;
 		goto out;
 	}
 

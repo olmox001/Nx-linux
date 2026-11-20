@@ -149,18 +149,18 @@ static int __init run_bench(int n_threads, const char *scope, const char *label)
 	if (ret)
 		return ret;
 
-	ctxs = kzalloc_objs(*ctxs, n_threads);
+	ctxs = kcalloc(n_threads, sizeof(*ctxs), GFP_KERNEL);
 	if (!ctxs)
 		return -ENOMEM;
 
-	tasks = kzalloc_objs(*tasks, n_threads);
+	tasks = kcalloc(n_threads, sizeof(*tasks), GFP_KERNEL);
 	if (!tasks) {
 		kfree(ctxs);
 		return -ENOMEM;
 	}
 
 	total_items = (unsigned long)n_threads * wq_items;
-	all_latencies = kvmalloc_objs(u64, total_items);
+	all_latencies = kvmalloc_array(total_items, sizeof(u64), GFP_KERNEL);
 	if (!all_latencies) {
 		kfree(tasks);
 		kfree(ctxs);
@@ -169,7 +169,8 @@ static int __init run_bench(int n_threads, const char *scope, const char *label)
 
 	/* Allocate per-thread latency arrays */
 	for (i = 0; i < n_threads; i++) {
-		ctxs[i].latencies = kvmalloc_objs(u64, wq_items);
+		ctxs[i].latencies = kvmalloc_array(wq_items, sizeof(u64),
+						   GFP_KERNEL);
 		if (!ctxs[i].latencies) {
 			while (--i >= 0)
 				kvfree(ctxs[i].latencies);

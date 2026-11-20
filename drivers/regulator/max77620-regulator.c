@@ -786,7 +786,7 @@ static int max77620_regulator_probe(struct platform_device *pdev)
 	int ret = 0;
 	int id;
 
-	pmic = devm_kzalloc_obj(dev, *pmic);
+	pmic = devm_kzalloc(dev, sizeof(*pmic), GFP_KERNEL);
 	if (!pmic)
 		return -ENOMEM;
 

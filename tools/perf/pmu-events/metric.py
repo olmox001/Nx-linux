@@ -6,16 +6,18 @@ import json
 import os
 import re
 from enum import Enum
-from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
-all_pmus: Set[str] = set()
-all_events: Set[str] = set()
-experimental_events: Set[str] = set()
-all_events_all_models: Set[str] = set()
+all_pmus = set()
+all_events = set()
+experimental_events = set()
+all_events_all_models = set()
 
 def LoadEvents(directory: str) -> None:
   """Populate a global set of all known events for the purpose of validating Event names"""
+  global all_pmus
   global all_events
+  global experimental_events
   global all_events_all_models
   all_events = {
       "context\\-switches",
@@ -28,31 +30,29 @@ def LoadEvents(directory: str) -> None:
     filename = os.fsdecode(file)
     if filename.endswith(".json"):
       try:
-        with open(f"{directory}/{filename}", encoding="utf-8") as f:
-          for x in json.load(f):
-            if "Unit" in x:
-              all_pmus.add(x["Unit"])
-            if "EventName" in x:
-              all_events.add(x["EventName"])
-              if "Experimental" in x and x["Experimental"] == "1":
-                experimental_events.add(x["EventName"])
-            elif "ArchStdEvent" in x:
-              all_events.add(x["ArchStdEvent"])
+        for x in json.load(open(f"{directory}/{filename}")):
+          if "Unit" in x:
+            all_pmus.add(x["Unit"])
+          if "EventName" in x:
+            all_events.add(x["EventName"])
+            if "Experimental" in x and x["Experimental"] == "1":
+              experimental_events.add(x["EventName"])
+          elif "ArchStdEvent" in x:
+            all_events.add(x["ArchStdEvent"])
       except json.decoder.JSONDecodeError:
         # The generated directory may be the same as the input, which
         # causes partial json files. Ignore errors.
         pass
   all_events_all_models = all_events.copy()
-  for root, _, files in os.walk(directory + ".."):
+  for root, dirs, files in os.walk(directory + ".."):
     for filename in files:
       if filename.endswith(".json"):
         try:
-          with open(f"{root}/{filename}", encoding="utf-8") as f:
-            for x in json.load(f):
-              if "EventName" in x:
-                all_events_all_models.add(x["EventName"])
-              elif "ArchStdEvent" in x:
-                all_events_all_models.add(x["ArchStdEvent"])
+          for x in json.load(open(f"{root}/{filename}")):
+            if "EventName" in x:
+              all_events_all_models.add(x["EventName"])
+            elif "ArchStdEvent" in x:
+              all_events_all_models.add(x["ArchStdEvent"])
         except json.decoder.JSONDecodeError:
           # The generated directory may be the same as the input, which
           # causes partial json files. Ignore errors.
@@ -65,6 +65,7 @@ def CheckPmu(name: str) -> bool:
 
 def CheckEvent(name: str) -> bool:
   """Check the event name exists in the set of all loaded events"""
+  global all_events
   if len(all_events) == 0:
     # No events loaded so assume any event is good.
     return True
@@ -80,6 +81,7 @@ def CheckEvent(name: str) -> bool:
 
 def CheckEveryEvent(*names: str) -> None:
   """Check all the events exist in at least one json file"""
+  global all_events_all_models
   if len(all_events_all_models) == 0:
     assert len(names) == 1, f"Cannot determine valid events in {names}"
     # No events loaded so assume any event is good.
@@ -94,10 +96,11 @@ def CheckEveryEvent(*names: str) -> None:
       if any([name.startswith(x) for x in ['amd', 'arm', 'cpu', 'msr', 'power', 'cha', 'uncore']]):
         continue
     if name not in all_events_all_models:
-      raise ValueError(f"Is {name} a named json event?")
+      raise Exception(f"Is {name} a named json event?")
 
 
 def IsExperimentalEvent(name: str) -> bool:
+  global experimental_events
   if ':' in name:
     # Remove trailing modifier.
     name = name[:name.find(':')]
@@ -273,7 +276,7 @@ class Operator(Expression):
     lhs = self.lhs.Simplify()
     rhs = self.rhs.Simplify()
     if isinstance(lhs, Constant) and isinstance(rhs, Constant):
-      return Constant(ast.literal_eval(lhs.value + self.operator + rhs.value))
+      return Constant(ast.literal_eval(lhs + self.operator + rhs))
 
     if isinstance(self.lhs, Constant):
       if self.operator in ('+', '|') and lhs.value == '0':
@@ -295,7 +298,7 @@ class Operator(Expression):
       if self.operator == '*' and rhs.value == '0':
         return Constant(0)
 
-      if self.operator == '*' and rhs.value == '1':
+      if self.operator == '*' and self.rhs.value == '1':
         return lhs
 
     return Operator(self.operator, lhs, rhs)
@@ -313,7 +316,9 @@ class Operator(Expression):
     if self.Equals(expression):
       return Event(name)
     lhs = self.lhs.Substitute(name, expression)
-    rhs = self.rhs.Substitute(name, expression)
+    rhs = None
+    if self.rhs:
+      rhs = self.rhs.Substitute(name, expression)
     return Operator(self.operator, lhs, rhs)
 
 
@@ -377,9 +382,7 @@ class Function(Expression):
                rhs: Optional[Union[int, float, Expression]] = None):
     self.fn = fn
     self.lhs = _Constify(lhs)
-    self.rhs = None
-    if rhs is not None:
-      self.rhs = _Constify(rhs)
+    self.rhs = _Constify(rhs)
 
   def ToPerfJson(self):
     if self.rhs:
@@ -404,8 +407,7 @@ class Function(Expression):
     return Function(self.fn, lhs, rhs)
 
   def HasExperimentalEvents(self) -> bool:
-    return (self.lhs.HasExperimentalEvents() or
-            (self.rhs is not None and self.rhs.HasExperimentalEvents()))
+    return self.lhs.HasExperimentalEvents() or (self.rhs and self.rhs.HasExperimentalEvents())
 
   def Equals(self, other: Expression) -> bool:
     if isinstance(other, Function):
@@ -444,13 +446,14 @@ class Event(Expression):
         error += " or " + name
       else:
         error = name
-    raise ValueError(f"No event {error} in:\n{all_events}")
+    global all_events
+    raise Exception(f"No event {error} in:\n{all_events}")
 
   def HasExperimentalEvents(self) -> bool:
     return IsExperimentalEvent(self.name)
 
   def ToPerfJson(self):
-    result = re.sub('/', '@', _FixEscapes(self.name))
+    result = re.sub('/', '@', self.name)
     return result
 
   def ToPython(self):
@@ -651,7 +654,7 @@ class Metric:
 
     return result
 
-  def ToMetricGroupDescriptions(self, _root: bool = True) -> Dict[str, str]:
+  def ToMetricGroupDescriptions(self, root: bool = True) -> Dict[str, str]:
     return {}
 
 class MetricGroup:
@@ -663,7 +666,7 @@ class MetricGroup:
   """
 
   def __init__(self, name: str,
-               metric_list: Sequence[Union[Optional[Metric], Optional['MetricGroup']]],
+               metric_list: List[Union[Optional[Metric], Optional['MetricGroup']]],
                description: Optional[str] = None):
     self.name = name
     self.metric_list = []
@@ -680,7 +683,7 @@ class MetricGroup:
 
   def Flatten(self) -> Set[Metric]:
     """Returns a set of all leaf metrics."""
-    result: Set[Metric] = set()
+    result = set()
     for x in self.metric_list:
       result = result.union(x.Flatten())
 
@@ -692,7 +695,7 @@ class MetricGroup:
       result.append(x.ToPerfJson())
     return result
 
-  def ToMetricGroupDescriptions(self, _root: bool = True) -> Dict[str, str]:
+  def ToMetricGroupDescriptions(self, root: bool = True) -> Dict[str, str]:
     result = {self.name: self.description} if self.description else {}
     for x in self.metric_list:
       result.update(x.ToMetricGroupDescriptions(False))

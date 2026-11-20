@@ -879,7 +879,6 @@ static int tvp514x_get_pad_format(struct v4l2_subdev *sd,
 }
 
 static int tvp514x_set_pad_format(struct v4l2_subdev *sd,
-				  const struct v4l2_subdev_client_info *ci,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_format *fmt)
 {
@@ -956,7 +955,7 @@ tvp514x_get_pdata(struct i2c_client *client)
 	if (v4l2_fwnode_endpoint_parse(of_fwnode_handle(endpoint), &bus_cfg))
 		goto done;
 
-	pdata = devm_kzalloc_obj(&client->dev, *pdata);
+	pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		goto done;
 
@@ -992,7 +991,7 @@ static int tvp514x_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -EIO;
 
-	decoder = devm_kzalloc_obj(&client->dev, *decoder);
+	decoder = devm_kzalloc(&client->dev, sizeof(*decoder), GFP_KERNEL);
 	if (!decoder)
 		return -ENOMEM;
 

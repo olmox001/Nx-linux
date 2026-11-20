@@ -12,7 +12,6 @@ maintainers:
 properties:
   compatible:
     oneOf:
-      - const: spacemit,k3-aclint-mswi
       - items:
           - enum:
               - sophgo,sg2042-aclint-mswi

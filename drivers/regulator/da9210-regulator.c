@@ -136,7 +136,7 @@ static int da9210_i2c_probe(struct i2c_client *i2c)
 	struct regulator_config config = { };
 	int error;
 
-	chip = devm_kzalloc_obj(&i2c->dev, struct da9210);
+	chip = devm_kzalloc(&i2c->dev, sizeof(struct da9210), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -202,8 +202,8 @@ static int da9210_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id da9210_i2c_id[] = {
-	{ .name = "da9210" },
-	{ }
+	{ "da9210" },
+	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, da9210_i2c_id);

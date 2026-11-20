@@ -60,7 +60,6 @@
 #include <linux/codetag.h>
 #include <linux/debugfs.h>
 #include <linux/execmem.h>
-#include <linux/error-injection.h>
 #include <uapi/linux/module.h>
 #include "internal.h"
 
@@ -192,22 +191,11 @@ static inline int strong_try_module_get(struct module *mod)
 		return -ENOENT;
 }
 
-/**
- * add_taint_module: add a taint flag if not already set for a specific module
- * @mod: pointer to the module that caused the problem
- * @flag: one of the TAINT_* constants.
- * @lockdep_ok: whether lock debugging is still OK.
- *
- * If something bad has gone wrong, you'll want
- * @lockdep_ok = LOCKDEP_NOW_UNRELIABLE, but for some
- * noteworthy-but-not-corrupting cases, it can be set to LOCKDEP_STILL_OK.
- */
-void add_taint_module(struct module *mod, unsigned flag,
-		      enum lockdep_ok lockdep_ok)
+static inline void add_taint_module(struct module *mod, unsigned flag,
+				    enum lockdep_ok lockdep_ok)
 {
 	add_taint(flag, lockdep_ok);
-	if (mod)
-		set_bit(flag, &mod->taints);
+	set_bit(flag, &mod->taints);
 }
 
 /*
@@ -1470,6 +1458,7 @@ static void free_module(struct module *mod)
 
 	/* This may be empty, but that's OK */
 	module_arch_freeing_init(mod);
+	kfree(mod->args);
 	percpu_modfree(mod);
 
 	free_mod_mem(mod);
@@ -2735,10 +2724,6 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 	mod->btf_base_data = any_section_objs(info, ".BTF.base", 1,
 					      &mod->btf_base_data_size);
 #endif
-#if IS_ENABLED(CONFIG_DEBUG_INFO_BTF_INLINE)
-	mod->btf_inline_data = any_section_objs(info, ".BTF.inline", 1,
-						&mod->btf_inline_data_size);
-#endif
 #ifdef CONFIG_JUMP_LABEL
 	mod->jump_entries = section_objs(info, "__jump_table",
 					sizeof(*mod->jump_entries),
@@ -3193,9 +3178,6 @@ static noinline int do_init_module(struct module *mod)
 	mod->btf_data = NULL;
 	mod->btf_base_data = NULL;
 #endif
-#if IS_ENABLED(CONFIG_DEBUG_INFO_BTF_INLINE)
-	mod->btf_inline_data = NULL;
-#endif
 	/*
 	 * We want to free module_init, but be aware that kallsyms may be
 	 * walking this within an RCU read section. In all the failure paths, we
@@ -3455,7 +3437,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	struct module *mod;
 	bool module_allocated = false;
 	long err = 0;
-	char *args = NULL, *after_dashes;
+	char *after_dashes;
 
 	/*
 	 * Do the signature check (if any) first. All that
@@ -3553,9 +3535,9 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	flush_module_icache(mod);
 
 	/* Now copy in args */
-	args = strndup_user(uargs, ~0UL >> 1);
-	if (IS_ERR(args)) {
-		err = PTR_ERR(args);
+	mod->args = strndup_user(uargs, ~0UL >> 1);
+	if (IS_ERR(mod->args)) {
+		err = PTR_ERR(mod->args);
 		goto free_arch_cleanup;
 	}
 
@@ -3576,7 +3558,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	mod->async_probe_requested = async_probe;
 
 	/* Module is ready to execute: parsing args may do that. */
-	after_dashes = parse_args(mod->name, args, mod->kp, mod->num_kp,
+	after_dashes = parse_args(mod->name, mod->args, mod->kp, mod->num_kp,
 				  -32768, 32767, mod,
 				  unknown_module_param_cb);
 	if (IS_ERR(after_dashes)) {
@@ -3586,8 +3568,6 @@ static int load_module(struct load_info *info, const char __user *uargs,
 		pr_warn("%s: parameters '%s' after `--' ignored\n",
 		       mod->name, after_dashes);
 	}
-	kfree(args);
-	args = NULL;
 
 	/* Link in to sysfs. */
 	err = mod_sysfs_setup(mod, info, mod->kp, mod->num_kp);
@@ -3633,7 +3613,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
  ddebug_cleanup:
 	ftrace_release_mod(mod);
 	synchronize_rcu();
-	kfree(args);
+	kfree(mod->args);
  free_arch_cleanup:
 	module_arch_cleanup(mod);
  free_modinfo:

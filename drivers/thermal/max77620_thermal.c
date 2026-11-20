@@ -88,7 +88,7 @@ static int max77620_thermal_probe(struct platform_device *pdev)
 	struct max77620_therm_info *mtherm;
 	int ret;
 
-	mtherm = devm_kzalloc_obj(&pdev->dev, *mtherm);
+	mtherm = devm_kzalloc(&pdev->dev, sizeof(*mtherm), GFP_KERNEL);
 	if (!mtherm)
 		return -ENOMEM;
 
@@ -121,15 +121,19 @@ static int max77620_thermal_probe(struct platform_device *pdev)
 					max77620_thermal_irq,
 					IRQF_ONESHOT | IRQF_SHARED,
 					dev_name(&pdev->dev), mtherm);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to request irq1: %d\n", ret);
 		return ret;
+	}
 
 	ret = devm_request_threaded_irq(&pdev->dev, mtherm->irq_tjalarm2, NULL,
 					max77620_thermal_irq,
 					IRQF_ONESHOT | IRQF_SHARED,
 					dev_name(&pdev->dev), mtherm);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to request irq2: %d\n", ret);
 		return ret;
+	}
 
 	return 0;
 }

@@ -638,7 +638,7 @@ static int mlxsw_i2c_probe(struct i2c_client *client)
 	u8 status;
 	int err;
 
-	mlxsw_i2c = devm_kzalloc_obj(&client->dev, *mlxsw_i2c);
+	mlxsw_i2c = devm_kzalloc(&client->dev, sizeof(*mlxsw_i2c), GFP_KERNEL);
 	if (!mlxsw_i2c)
 		return -ENOMEM;
 

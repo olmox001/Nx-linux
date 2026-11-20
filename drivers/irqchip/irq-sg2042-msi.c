@@ -254,7 +254,7 @@ static int sg2042_msi_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, struct sg204x_msi_chipdata);
+	data = devm_kzalloc(dev, sizeof(struct sg204x_msi_chipdata), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

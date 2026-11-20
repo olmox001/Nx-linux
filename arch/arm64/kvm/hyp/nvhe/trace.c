@@ -4,7 +4,6 @@
  * Author: Vincent Donnefort <vdonnefort@google.com>
  */
 
-#include <nvhe/alloc.h>
 #include <nvhe/clock.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/mm.h>
@@ -36,7 +35,7 @@ static bool hyp_trace_buffer_loaded(struct hyp_trace_buffer *trace_buffer)
 void *tracing_reserve_entry(unsigned long length)
 {
 	return simple_ring_buffer_reserve(this_cpu_ptr(trace_buffer.simple_rbs), length,
-					  trace_hyp_clock());
+					  trace_clock());
 }
 
 void tracing_commit_entry(void)
@@ -63,34 +62,18 @@ static void __release_host_mem(void *start, u64 size)
 	WARN_ON(__pkvm_hyp_donate_host(hyp_virt_to_pfn(start), size >> PAGE_SHIFT));
 }
 
-static int hyp_trace_buffer_alloc_bpages(struct hyp_trace_buffer *trace_buffer,
-					 struct hyp_trace_desc *desc)
+static int hyp_trace_buffer_load_bpage_backing(struct hyp_trace_buffer *trace_buffer,
+					       struct hyp_trace_desc *desc)
 {
-	void *start;
-	size_t size;
+	void *start = (void *)kern_hyp_va(desc->bpages_backing_start);
+	size_t size = desc->bpages_backing_size;
 	int ret;
 
-	if (is_protected_kvm_enabled()) {
-		struct ring_buffer_desc *rb_desc;
-		int cpu;
+	ret = __admit_host_mem(start, size);
+	if (ret)
+		return ret;
 
-		size = 0;
-		for_each_ring_buffer_desc(rb_desc, cpu, &desc->trace_buffer_desc)
-			size += rb_desc->nr_page_va * sizeof(struct simple_buffer_page);
-
-		start = hyp_alloc(size);
-		if (!start)
-			return hyp_alloc_errno();
-	} else {
-		start = (void *)kern_hyp_va(desc->bpages_backing_start);
-		size = desc->bpages_backing_size;
-
-		ret = __admit_host_mem(start, size);
-		if (ret)
-			return ret;
-
-		memset(start, 0, size);
-	}
+	memset(start, 0, size);
 
 	trace_buffer->bpages_backing_start = start;
 	trace_buffer->bpages_backing_size = size;
@@ -98,7 +81,7 @@ static int hyp_trace_buffer_alloc_bpages(struct hyp_trace_buffer *trace_buffer,
 	return 0;
 }
 
-static void hyp_trace_buffer_free_bpages(struct hyp_trace_buffer *trace_buffer)
+static void hyp_trace_buffer_unload_bpage_backing(struct hyp_trace_buffer *trace_buffer)
 {
 	void *start = trace_buffer->bpages_backing_start;
 	size_t size = trace_buffer->bpages_backing_size;
@@ -106,14 +89,11 @@ static void hyp_trace_buffer_free_bpages(struct hyp_trace_buffer *trace_buffer)
 	if (!size)
 		return;
 
-	if (is_protected_kvm_enabled()) {
-		hyp_free(start);
-	} else {
-		memset(start, 0, size);
-		__release_host_mem(start, size);
-	}
+	memset(start, 0, size);
 
-	trace_buffer->bpages_backing_start = NULL;
+	__release_host_mem(start, size);
+
+	trace_buffer->bpages_backing_start = 0;
 	trace_buffer->bpages_backing_size = 0;
 }
 
@@ -148,7 +128,7 @@ static void hyp_trace_buffer_unload(struct hyp_trace_buffer *trace_buffer)
 		simple_ring_buffer_unload_mm(per_cpu_ptr(trace_buffer->simple_rbs, cpu),
 					     __unpin_shared_page);
 
-	hyp_trace_buffer_free_bpages(trace_buffer);
+	hyp_trace_buffer_unload_bpage_backing(trace_buffer);
 }
 
 static int hyp_trace_buffer_load(struct hyp_trace_buffer *trace_buffer,
@@ -163,7 +143,7 @@ static int hyp_trace_buffer_load(struct hyp_trace_buffer *trace_buffer,
 	if (hyp_trace_buffer_loaded(trace_buffer))
 		return -EINVAL;
 
-	ret = hyp_trace_buffer_alloc_bpages(trace_buffer, desc);
+	ret = hyp_trace_buffer_load_bpage_backing(trace_buffer, desc);
 	if (ret)
 		return ret;
 
@@ -188,43 +168,47 @@ static bool hyp_trace_desc_is_valid(struct hyp_trace_desc *desc, size_t desc_siz
 {
 	struct ring_buffer_desc *rb_desc;
 	unsigned int cpu;
+	size_t nr_bpages;
 	void *desc_end;
 
 	if (!is_protected_kvm_enabled())
 		return true;
 
 	/*
-	 * desc_size is an untrusted host-provided value. We rely on
-	 * __pkvm_host_donate_hyp() to enforce its validity.
+	 * Both desc_size and bpages_backing_size are untrusted host-provided
+	 * values. We rely on __pkvm_host_donate_hyp() to enforce their validity.
 	 */
 	desc_end = (void *)desc + desc_size;
-
-	if (desc->trace_buffer_desc.nr_cpus != hyp_nr_cpus)
-		return false;
+	nr_bpages = desc->bpages_backing_size / sizeof(struct simple_buffer_page);
 
 	for_each_ring_buffer_desc(rb_desc, cpu, &desc->trace_buffer_desc) {
 		/* Can we read nr_page_va? */
 		if ((void *)rb_desc + struct_size(rb_desc, page_va, 0) > desc_end)
 			return false;
 
-		/* simple_ring_buffer_init_mm() expects at least 3 pages */
-		if (rb_desc->nr_page_va < 3)
-			return false;
-
 		/* Overflow desc? */
 		if ((void *)rb_desc + struct_size(rb_desc, page_va, rb_desc->nr_page_va) > desc_end)
 			return false;
 
+		/* Overflow bpages backing memory? */
+		if (nr_bpages < rb_desc->nr_page_va)
+			return false;
+
+		if (cpu >= hyp_nr_cpus)
+			return false;
+
 		if (cpu != rb_desc->cpu)
 			return false;
+
+		nr_bpages -= rb_desc->nr_page_va;
 	}
 
 	return true;
 }
 
-int __tracing_load(void __kern *desc_hva, size_t desc_size)
+int __tracing_load(unsigned long desc_hva, size_t desc_size)
 {
-	struct hyp_trace_desc *desc = kern_hyp_va_host(desc_hva);
+	struct hyp_trace_desc *desc = (struct hyp_trace_desc *)kern_hyp_va(desc_hva);
 	int ret;
 
 	ret = __admit_host_mem(desc, desc_size);
@@ -306,7 +290,7 @@ void __tracing_update_clock(u32 mult, u32 shift, u64 epoch_ns, u64 epoch_cyc)
 	}
 
 	/* ...we can now override the old one and swap. */
-	trace_hyp_clock_update(mult, shift, epoch_ns, epoch_cyc);
+	trace_clock_update(mult, shift, epoch_ns, epoch_cyc);
 }
 
 int __tracing_reset(unsigned int cpu)

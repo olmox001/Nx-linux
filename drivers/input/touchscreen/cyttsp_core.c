@@ -658,6 +658,7 @@ struct cyttsp *cyttsp_probe(const struct cyttsp_bus_ops *bus_ops,
 
 	input_dev->name = "Cypress TTSP TouchScreen";
 	input_dev->id.bustype = bus_ops->bustype;
+	input_dev->dev.parent = ts->dev;
 
 	input_dev->open = cyttsp_open;
 	input_dev->close = cyttsp_close;

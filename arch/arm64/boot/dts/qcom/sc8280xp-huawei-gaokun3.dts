@@ -582,17 +582,14 @@
 };
 
 &gpi_dma0 {
-	dma-channel-mask = <0xb>;
 	status = "okay";
 };
 
 &gpi_dma1 {
-	dma-channel-mask = <0x3>;
 	status = "okay";
 };
 
 &gpi_dma2 {
-	dma-channel-mask = <0xb>;
 	status = "okay";
 };
 
@@ -742,6 +739,9 @@
 };
 
 &pcie2a {
+	perst-gpios = <&tlmm 143 GPIO_ACTIVE_LOW>;
+	wake-gpios = <&tlmm 145 GPIO_ACTIVE_LOW>;
+
 	vddpe-3v3-supply = <&vreg_nvme>;
 
 	pinctrl-0 = <&pcie2a_default>;
@@ -757,13 +757,11 @@
 	status = "okay";
 };
 
-&pcie2a_port0 {
-	reset-gpios = <&tlmm 143 GPIO_ACTIVE_LOW>;
-	wake-gpios = <&tlmm 145 GPIO_ACTIVE_LOW>;
-};
-
 &pcie4 {
 	max-link-speed = <2>;
+
+	perst-gpios = <&tlmm 141 GPIO_ACTIVE_LOW>;
+	wake-gpios = <&tlmm 139 GPIO_ACTIVE_LOW>;
 
 	vddpe-3v3-supply = <&vreg_wlan>;
 
@@ -774,9 +772,6 @@
 };
 
 &pcie4_port0 {
-	reset-gpios = <&tlmm 141 GPIO_ACTIVE_LOW>;
-	wake-gpios = <&tlmm 139 GPIO_ACTIVE_LOW>;
-
 	wifi@0 {
 		compatible = "pci17cb,1103";
 		reg = <0x10000 0x0 0x0 0x0 0x0>;
@@ -1366,11 +1361,11 @@
 		};
 
 		wake-n-pins {
-			pins = "gpio145";
-			function = "gpio";
-			drive-strength = <2>;
-			bias-pull-up;
-		};
+		       pins = "gpio145";
+		       function = "gpio";
+		       drive-strength = <2>;
+		       bias-pull-up;
+	       };
 	};
 
 	pcie4_default: pcie4-default-state {

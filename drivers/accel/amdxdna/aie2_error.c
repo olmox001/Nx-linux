@@ -343,14 +343,15 @@ void aie2_error_async_events_free(struct amdxdna_dev_hdl *ndev)
 	kfree(events);
 }
 
-int aie2_error_async_events_alloc(struct amdxdna_dev_hdl *ndev, u32 num_events)
+int aie2_error_async_events_alloc(struct amdxdna_dev_hdl *ndev)
 {
 	struct amdxdna_dev *xdna = ndev->aie.xdna;
-	u32 total_size = ASYNC_BUF_SIZE * num_events;
+	u32 total_col = ndev->total_col;
+	u32 total_size = ASYNC_BUF_SIZE * total_col;
 	struct async_events *events;
 	int i, ret;
 
-	events = kzalloc_flex(*events, event, num_events);
+	events = kzalloc_flex(*events, event, total_col);
 	if (!events)
 		return -ENOMEM;
 
@@ -360,7 +361,7 @@ int aie2_error_async_events_alloc(struct amdxdna_dev_hdl *ndev, u32 num_events)
 		goto free_events;
 	}
 	events->size = total_size;
-	events->event_cnt = num_events;
+	events->event_cnt = total_col;
 
 	events->wq = alloc_ordered_workqueue("async_wq", 0);
 	if (!events->wq) {

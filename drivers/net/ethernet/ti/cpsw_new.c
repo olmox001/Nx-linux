@@ -1266,8 +1266,9 @@ static int cpsw_probe_dt(struct cpsw_common *cpsw)
 	data->bd_ram_size = CPSW_BD_RAM_SIZE;
 	data->mac_control = 0;
 
-	data->slave_data = devm_kzalloc_objs(dev, struct cpsw_slave_data,
-					     CPSW_SLAVE_PORTS_NUM);
+	data->slave_data = devm_kcalloc(dev, CPSW_SLAVE_PORTS_NUM,
+					sizeof(struct cpsw_slave_data),
+					GFP_KERNEL);
 	if (!data->slave_data) {
 		of_node_put(tmp_node);
 		return -ENOMEM;
@@ -1874,7 +1875,7 @@ static const struct of_device_id cpsw_of_mtable[] = {
 	{ .compatible = "ti,am335x-cpsw-switch"},
 	{ .compatible = "ti,am4372-cpsw-switch"},
 	{ .compatible = "ti,dra7-cpsw-switch"},
-	{ /* sentinel */ }
+	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, cpsw_of_mtable);
 
@@ -1895,7 +1896,7 @@ static int cpsw_probe(struct platform_device *pdev)
 	struct clk *clk;
 	int irq;
 
-	cpsw = devm_kzalloc_obj(dev, struct cpsw_common);
+	cpsw = devm_kzalloc(dev, sizeof(struct cpsw_common), GFP_KERNEL);
 	if (!cpsw)
 		return -ENOMEM;
 
@@ -1903,8 +1904,10 @@ static int cpsw_probe(struct platform_device *pdev)
 
 	cpsw->dev = dev;
 
-	cpsw->slaves = devm_kzalloc_objs(dev, struct cpsw_slave,
-					 CPSW_SLAVE_PORTS_NUM);
+	cpsw->slaves = devm_kcalloc(dev,
+				    CPSW_SLAVE_PORTS_NUM,
+				    sizeof(struct cpsw_slave),
+				    GFP_KERNEL);
 	if (!cpsw->slaves)
 		return -ENOMEM;
 

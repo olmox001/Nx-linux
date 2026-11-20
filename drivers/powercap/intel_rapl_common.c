@@ -755,17 +755,17 @@ EXPORT_SYMBOL_NS_GPL(rapl_default_check_unit, "INTEL_RAPL");
 
 static void power_limit_irq_save_cpu(void *info)
 {
-	struct msr val;
+	u32 l, h = 0;
 	struct rapl_package *rp = (struct rapl_package *)info;
 
 	/* save the state of PLN irq mask bit before disabling it */
-	rdmsrq_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, &val.q);
+	rdmsr_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, &l, &h);
 	if (!(rp->power_limit_irq & PACKAGE_PLN_INT_SAVED)) {
-		rp->power_limit_irq = val.l & PACKAGE_THERM_INT_PLN_ENABLE;
+		rp->power_limit_irq = l & PACKAGE_THERM_INT_PLN_ENABLE;
 		rp->power_limit_irq |= PACKAGE_PLN_INT_SAVED;
 	}
-	val.l &= ~PACKAGE_THERM_INT_PLN_ENABLE;
-	wrmsrq_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, val.q);
+	l &= ~PACKAGE_THERM_INT_PLN_ENABLE;
+	wrmsr_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, l, h);
 }
 
 /* REVISIT:
@@ -795,7 +795,7 @@ static void package_power_limit_irq_save(struct rapl_package *rp)
  */
 static void package_power_limit_irq_restore(struct rapl_package *rp)
 {
-	struct msr val;
+	u32 l, h;
 
 	if (rp->lead_cpu < 0)
 		return;
@@ -807,14 +807,14 @@ static void package_power_limit_irq_restore(struct rapl_package *rp)
 	if (!(rp->power_limit_irq & PACKAGE_PLN_INT_SAVED))
 		return;
 
-	rdmsrq_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, &val.q);
+	rdmsr_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, &l, &h);
 
 	if (rp->power_limit_irq & PACKAGE_THERM_INT_PLN_ENABLE)
-		val.l |= PACKAGE_THERM_INT_PLN_ENABLE;
+		l |= PACKAGE_THERM_INT_PLN_ENABLE;
 	else
-		val.l &= ~PACKAGE_THERM_INT_PLN_ENABLE;
+		l &= ~PACKAGE_THERM_INT_PLN_ENABLE;
 
-	wrmsrq_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, val.q);
+	wrmsr_safe(MSR_IA32_PACKAGE_THERM_INTERRUPT, l, h);
 }
 
 void rapl_default_set_floor_freq(struct rapl_domain *rd, bool mode)
@@ -1139,23 +1139,21 @@ static struct rapl_pmu rapl_pmu;
 
 /* PMU helpers */
 
-static int get_pmu_cpu(struct rapl_package *rp)
+static void set_pmu_cpumask(struct rapl_package *rp, cpumask_var_t mask)
 {
 	int cpu;
 
 	if (!rp->has_pmu)
-		return nr_cpu_ids;
+		return;
 
 	/* Only TPMI & MSR RAPL are supported for now */
 	if (rp->priv->type != RAPL_IF_TPMI && rp->priv->type != RAPL_IF_MSR)
-		return nr_cpu_ids;
+		return;
 
 	/* TPMI/MSR RAPL uses any CPU in the package for PMU */
 	for_each_online_cpu(cpu)
 		if (topology_physical_package_id(cpu) == rp->id)
-			return cpu;
-
-	return nr_cpu_ids;
+			cpumask_set_cpu(cpu, mask);
 }
 
 static bool is_rp_pmu_cpu(struct rapl_package *rp, int cpu)
@@ -1437,7 +1435,6 @@ static ssize_t cpumask_show(struct device *dev,
 {
 	struct rapl_package *rp;
 	cpumask_var_t cpu_mask;
-	int cpu;
 	int ret;
 
 	if (!alloc_cpumask_var(&cpu_mask, GFP_KERNEL))
@@ -1449,9 +1446,7 @@ static ssize_t cpumask_show(struct device *dev,
 
 	/* Choose a cpu for each RAPL Package */
 	list_for_each_entry(rp, &rapl_packages, plist) {
-		cpu = get_pmu_cpu(rp);
-		if (cpu < nr_cpu_ids)
-			cpumask_set_cpu(cpu, cpu_mask);
+		set_pmu_cpumask(rp, cpu_mask);
 	}
 	cpus_read_unlock();
 
@@ -1666,9 +1661,7 @@ void rapl_package_remove_pmu_locked(struct rapl_package *rp)
 			return;
 	}
 
-	if (rapl_pmu.registered)
-		perf_pmu_unregister(&rapl_pmu.pmu);
-
+	perf_pmu_unregister(&rapl_pmu.pmu);
 	memset(&rapl_pmu, 0, sizeof(struct rapl_pmu));
 }
 EXPORT_SYMBOL_NS_GPL(rapl_package_remove_pmu_locked, "INTEL_RAPL");

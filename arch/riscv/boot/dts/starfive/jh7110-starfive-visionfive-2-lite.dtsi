@@ -74,11 +74,7 @@
 	tx-internal-delay-ps = <1500>;
 };
 
-&pwm0 {
-	status = "okay";
-};
-
-&pwm1 {
+&pwm {
 	status = "okay";
 };
 

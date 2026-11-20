@@ -261,7 +261,6 @@ struct smack_audit_data {
 	char *subject;
 	char *object;
 	char *request;
-	struct task_struct *subj_tsk;
 	int result;
 };
 

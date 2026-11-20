@@ -116,7 +116,8 @@ int st_nci_probe(struct llt_ndlc *ndlc, int phy_headroom,
 	int r;
 	u32 protocols;
 
-	info = devm_kzalloc_obj(ndlc->dev, struct st_nci_info);
+	info = devm_kzalloc(ndlc->dev,
+			sizeof(struct st_nci_info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

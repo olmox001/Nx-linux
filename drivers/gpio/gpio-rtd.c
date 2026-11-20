@@ -529,7 +529,7 @@ static int rtd_gpio_probe(struct platform_device *pdev)
 	struct rtd_gpio *data;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

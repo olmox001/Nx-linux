@@ -345,7 +345,7 @@ static int rtl_ecc_init_ctx(struct nand_device *nand)
 	if (ret)
 		return ret;
 
-	ctx = devm_kzalloc_obj(dev, *ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -396,7 +396,7 @@ static int rtl_ecc_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	rtlc = devm_kzalloc_obj(dev, *rtlc);
+	rtlc = devm_kzalloc(dev, sizeof(*rtlc), GFP_KERNEL);
 	if (!rtlc)
 		return -ENOMEM;
 

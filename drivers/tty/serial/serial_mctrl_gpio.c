@@ -140,7 +140,7 @@ struct mctrl_gpios *mctrl_gpio_init_noauto(struct device *dev, unsigned int idx)
 	struct mctrl_gpios *gpios;
 	enum mctrl_gpio_idx i;
 
-	gpios = devm_kzalloc_obj(dev, *gpios);
+	gpios = devm_kzalloc(dev, sizeof(*gpios), GFP_KERNEL);
 	if (!gpios)
 		return ERR_PTR(-ENOMEM);
 
@@ -256,6 +256,9 @@ struct mctrl_gpios *mctrl_gpio_init(struct uart_port *port, unsigned int idx)
 				       gpios);
 		if (ret) {
 			/* alternatively implement polling */
+			dev_err(port->dev,
+				"failed to request irq for %s (idx=%d, err=%d)\n",
+				mctrl_gpios_desc[i].name, idx, ret);
 			return ERR_PTR(ret);
 		}
 	}

@@ -5,7 +5,6 @@
 #ifndef UFS_QCOM_H_
 #define UFS_QCOM_H_
 
-#include <linux/msi.h>
 #include <linux/reset-controller.h>
 #include <linux/reset.h>
 #include <soc/qcom/ice.h>
@@ -331,9 +330,8 @@ struct ufs_qcom_host {
 	struct phy *generic_phy;
 	struct ufs_hba *hba;
 	struct ufs_pa_layer_attr dev_req_params;
-	struct clk *tx_lane0_sync_clk;
-	struct clk *rx_lane0_sync_clk;
-	struct clk *rx_lane1_sync_clk;
+	struct clk_bulk_data *clks;
+	u32 num_clks;
 	bool is_lane_clks_enabled;
 
 	struct icc_path *icc_ddr;
@@ -361,10 +359,8 @@ struct ufs_qcom_host {
 	u32 phy_gear;
 
 	bool esi_enabled;
-	struct msi_msg esi_msg;
 
 	u32 saved_tx_eq_g1_setting;
-	u32 boot_spare_cfg;
 };
 
 struct ufs_qcom_drvdata {

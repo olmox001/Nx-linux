@@ -64,7 +64,7 @@ static int pf1550_onkey_probe(struct platform_device *pdev)
 	bool key_power = false;
 	int i, irq, error;
 
-	onkey = devm_kzalloc_obj(&pdev->dev, *onkey);
+	onkey = devm_kzalloc(&pdev->dev, sizeof(*onkey), GFP_KERNEL);
 	if (!onkey)
 		return -ENOMEM;
 

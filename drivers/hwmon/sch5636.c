@@ -392,7 +392,8 @@ static int sch5636_probe(struct platform_device *pdev)
 	int i, err, val, revision[2];
 	char id[4];
 
-	data = devm_kzalloc_obj(&pdev->dev, struct sch5636_data);
+	data = devm_kzalloc(&pdev->dev, sizeof(struct sch5636_data),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

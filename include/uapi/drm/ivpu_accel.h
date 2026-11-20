@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
- * Copyright (C) 2020-2026 Intel Corporation
+ * Copyright (C) 2020-2025 Intel Corporation
  */
 
 #ifndef __UAPI_IVPU_DRM_H__
@@ -96,7 +96,6 @@ extern "C" {
 #define DRM_IVPU_PARAM_SKU		    12
 #define DRM_IVPU_PARAM_CAPABILITIES	    13
 #define DRM_IVPU_PARAM_PREEMPT_BUFFER_SIZE  14
-#define DRM_IVPU_PARAM_CMDQ_PRIORITY	    15
 
 #define DRM_IVPU_PLATFORM_TYPE_SILICON	    0
 
@@ -140,15 +139,6 @@ extern "C" {
  * This allows creating GEM buffers from existing user memory regions.
  */
 #define DRM_IVPU_CAP_BO_CREATE_FROM_USERPTR	4
-
-/**
- * DRM_IVPU_CAP_CMDQ_SET_PRIORITY
- *
- * Driver supports DRM_IVPU_PARAM_CMDQ_PRIORITY parameter to get/set command
- * queue priority.
- * This allows changing command queue priority after creation.
- */
-#define DRM_IVPU_CAP_CMDQ_SET_PRIORITY	5
 
 /**
  * struct drm_ivpu_param - Get/Set VPU parameters
@@ -202,11 +192,6 @@ struct drm_ivpu_param {
 	 *
 	 * %DRM_IVPU_PARAM_PREEMPT_BUFFER_SIZE:
 	 * Size of the preemption buffer (read-only)
-	 *
-	 * %DRM_IVPU_PARAM_CMDQ_PRIORITY:
-	 * Get/Set command queue priority (see DRM_IVPU_JOB_PRIORITY_*).
-	 * DRM_IVPU_JOB_PRIORITY_DEFAULT is treated as DRM_IVPU_JOB_PRIORITY_NORMAL.
-	 * Command queue ID is given via drm_ivpu_param.index.
 	 */
 	__u32 param;
 

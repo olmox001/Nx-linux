@@ -935,14 +935,6 @@
 	};
 };
 
-&gpu {
-	status = "okay";
-};
-
-&gpu_zap_shader {
-	firmware-name = "qcom/sm8750/gen80000_zap.mbn";
-};
-
 &i2c3 {
 	status = "okay";
 
@@ -1127,7 +1119,7 @@
 };
 
 &pcieport0 {
-	wake-gpios = <&tlmm 104 GPIO_ACTIVE_LOW>;
+	wake-gpios = <&tlmm 104 GPIO_ACTIVE_HIGH>;
 	reset-gpios = <&tlmm 102 GPIO_ACTIVE_LOW>;
 
 	wifi@0 {

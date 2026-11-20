@@ -1677,7 +1677,10 @@ static void atmci_detect_change(struct timer_list *t)
 
 		spin_lock(&host->lock);
 
-		assign_bit(ATMCI_CARD_PRESENT, &slot->flags, present);
+		if (!present)
+			clear_bit(ATMCI_CARD_PRESENT, &slot->flags);
+		else
+			set_bit(ATMCI_CARD_PRESENT, &slot->flags);
 
 		/* Clean up queue if present */
 		mrq = slot->mrq;
@@ -2448,7 +2451,7 @@ static int atmci_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	host = devm_kzalloc_obj(dev, *host);
+	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
 	if (!host)
 		return -ENOMEM;
 

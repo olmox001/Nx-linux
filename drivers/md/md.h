@@ -311,7 +311,7 @@ static inline int is_badblock(struct md_rdev *rdev, sector_t s, sector_t sectors
 }
 
 static inline int rdev_has_badblock(struct md_rdev *rdev, sector_t s,
-				    sector_t sectors)
+				    int sectors)
 {
 	sector_t first_bad;
 	sector_t bad_sectors;
@@ -319,9 +319,9 @@ static inline int rdev_has_badblock(struct md_rdev *rdev, sector_t s,
 	return is_badblock(rdev, s, sectors, &first_bad, &bad_sectors);
 }
 
-extern bool rdev_set_badblocks(struct md_rdev *rdev, sector_t s, sector_t sectors,
+extern bool rdev_set_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 			       int is_new);
-extern void rdev_clear_badblocks(struct md_rdev *rdev, sector_t s, sector_t sectors,
+extern void rdev_clear_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 				 int is_new);
 struct md_cluster_info;
 struct md_cluster_operations;
@@ -797,10 +797,6 @@ struct md_personality
 	/* convert io ranges from array to bitmap */
 	void (*bitmap_sector)(struct mddev *mddev, sector_t *offset,
 			      unsigned long *sectors);
-	void (*bitmap_sector_map)(struct mddev *mddev, sector_t *offset,
-				  unsigned long *sectors, bool previous);
-	sector_t (*bitmap_sync_size)(struct mddev *mddev, bool previous);
-	sector_t (*bitmap_array_sectors)(struct mddev *mddev, bool previous);
 };
 
 struct md_sysfs_entry {
@@ -924,10 +920,6 @@ extern void md_error(struct mddev *mddev, struct md_rdev *rdev);
 extern void md_finish_reshape(struct mddev *mddev);
 void md_submit_discard_bio(struct mddev *mddev, struct md_rdev *rdev,
 			struct bio *bio, sector_t start, sector_t size);
-struct bio *mddev_bio_split_at_reshape_offset(struct mddev *mddev,
-					      struct bio *bio,
-					      unsigned int *max_sectors,
-					      struct bio_set *bs);
 void md_account_bio(struct mddev *mddev, struct bio **bio);
 
 extern bool __must_check md_flush_request(struct mddev *mddev, struct bio *bio);
@@ -987,13 +979,6 @@ static inline void rdev_dec_pending(struct md_rdev *rdev, struct mddev *mddev)
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 		md_wakeup_thread(mddev->thread);
 	}
-}
-
-static inline void rdev_record_write_error(struct md_rdev *rdev)
-{
-	set_bit(WriteErrorSeen, &rdev->flags);
-	if (!test_and_set_bit(WantReplacement, &rdev->flags))
-		set_bit(MD_RECOVERY_NEEDED, &rdev->mddev->recovery);
 }
 
 static inline int mddev_is_clustered(struct mddev *mddev)

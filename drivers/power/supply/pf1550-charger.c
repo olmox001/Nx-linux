@@ -553,7 +553,7 @@ static int pf1550_charger_probe(struct platform_device *pdev)
 	struct pf1550_charger *chg;
 	int i, irq, ret;
 
-	chg = devm_kzalloc_obj(&pdev->dev, *chg);
+	chg = devm_kzalloc(&pdev->dev, sizeof(*chg), GFP_KERNEL);
 	if (!chg)
 		return -ENOMEM;
 
@@ -565,22 +565,6 @@ static int pf1550_charger_probe(struct platform_device *pdev)
 				     "failed to get regmap\n");
 
 	platform_set_drvdata(pdev, chg);
-
-	psy_cfg.drv_data = chg;
-
-	chg->charger = devm_power_supply_register(&pdev->dev,
-						  &pf1550_charger_desc,
-						  &psy_cfg);
-	if (IS_ERR(chg->charger))
-		return dev_err_probe(&pdev->dev, PTR_ERR(chg->charger),
-				     "failed: power supply register\n");
-
-	chg->battery = devm_power_supply_register(&pdev->dev,
-						  &pf1550_battery_desc,
-						  &psy_cfg);
-	if (IS_ERR(chg->battery))
-		return dev_err_probe(&pdev->dev, PTR_ERR(chg->battery),
-				     "failed: power supply register\n");
 
 	ret = devm_delayed_work_autocancel(chg->dev, &chg->vbus_sense_work,
 					   pf1550_chg_vbus_work);
@@ -600,6 +584,22 @@ static int pf1550_charger_probe(struct platform_device *pdev)
 		return dev_err_probe(chg->dev, ret,
 				     "failed to add battery sense work\n");
 
+	psy_cfg.drv_data = chg;
+
+	chg->charger = devm_power_supply_register(&pdev->dev,
+						  &pf1550_charger_desc,
+						  &psy_cfg);
+	if (IS_ERR(chg->charger))
+		return dev_err_probe(&pdev->dev, PTR_ERR(chg->charger),
+				     "failed: power supply register\n");
+
+	chg->battery = devm_power_supply_register(&pdev->dev,
+						  &pf1550_battery_desc,
+						  &psy_cfg);
+	if (IS_ERR(chg->battery))
+		return dev_err_probe(&pdev->dev, PTR_ERR(chg->battery),
+				     "failed: power supply register\n");
+
 	for (i = 0; i < PF1550_CHARGER_IRQ_NR; i++) {
 		irq = platform_get_irq(pdev, i);
 		if (irq < 0)
@@ -612,7 +612,8 @@ static int pf1550_charger_probe(struct platform_device *pdev)
 						IRQF_NO_SUSPEND,
 						"pf1550-charger", chg);
 		if (ret)
-			return ret;
+			return dev_err_probe(&pdev->dev, ret,
+					     "failed irq request\n");
 	}
 
 	pf1550_dt_parse_dev_info(chg);

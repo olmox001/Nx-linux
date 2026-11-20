@@ -267,7 +267,8 @@ static int wm831x_gpio_probe(struct platform_device *pdev)
 
 	device_set_node(&pdev->dev, dev_fwnode(pdev->dev.parent));
 
-	wm831x_gpio = devm_kzalloc_obj(&pdev->dev, *wm831x_gpio);
+	wm831x_gpio = devm_kzalloc(&pdev->dev, sizeof(*wm831x_gpio),
+				   GFP_KERNEL);
 	if (wm831x_gpio == NULL)
 		return -ENOMEM;
 

@@ -410,7 +410,7 @@ struct imx_media_fim *imx_media_fim_init(struct v4l2_subdev *sd)
 	struct imx_media_fim *fim;
 	int ret;
 
-	fim = devm_kzalloc_obj(sd->dev, *fim);
+	fim = devm_kzalloc(sd->dev, sizeof(*fim), GFP_KERNEL);
 	if (!fim)
 		return ERR_PTR(-ENOMEM);
 

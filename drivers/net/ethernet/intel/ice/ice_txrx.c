@@ -482,7 +482,8 @@ int ice_setup_tx_ring(struct ice_tx_ring *tx_ring)
 	/* warn if we are about to overwrite the pointer */
 	WARN_ON(tx_ring->tx_buf);
 	tx_ring->tx_buf =
-		devm_kzalloc_objs(dev, *tx_ring->tx_buf, tx_ring->count);
+		devm_kcalloc(dev, sizeof(*tx_ring->tx_buf), tx_ring->count,
+			     GFP_KERNEL);
 	if (!tx_ring->tx_buf)
 		return -ENOMEM;
 
@@ -1890,7 +1891,7 @@ int ice_tso(struct ice_tx_buf *first, struct ice_tx_offload_params *off)
 					 SKB_GSO_UDP_TUNNEL_CSUM)) {
 		if (!(skb_shinfo(skb)->gso_type & SKB_GSO_PARTIAL) &&
 		    (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_TUNNEL_CSUM)) {
-			udp_set_len_short(l4.udp, 0);
+			l4.udp->len = 0;
 
 			/* determine offset of outer transport header */
 			l4_start = (u8)(l4.hdr - skb->data);

@@ -135,7 +135,7 @@ static void gab_work(struct work_struct *work)
 	adc_bat = container_of(delayed_work, struct gab, bat_work);
 	status = adc_bat->status;
 
-	if (power_supply_am_i_supplied(adc_bat->psy) <= 0)
+	if (!power_supply_am_i_supplied(adc_bat->psy))
 		adc_bat->status =  POWER_SUPPLY_STATUS_DISCHARGING;
 	else if (gab_charge_finished(adc_bat))
 		adc_bat->status = POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -167,7 +167,7 @@ static int gab_probe(struct platform_device *pdev)
 	int index = ARRAY_SIZE(gab_props);
 	bool any = false;
 
-	adc_bat = devm_kzalloc_obj(&pdev->dev, *adc_bat);
+	adc_bat = devm_kzalloc(&pdev->dev, sizeof(*adc_bat), GFP_KERNEL);
 	if (!adc_bat)
 		return -ENOMEM;
 
@@ -186,8 +186,11 @@ static int gab_probe(struct platform_device *pdev)
 	 * copying the static properties and allocating extra memory for holding
 	 * the extra configurable properties received from platform data.
 	 */
-	properties = devm_kzalloc_objs(&pdev->dev, *properties,
-				       ARRAY_SIZE(gab_props) + ARRAY_SIZE(gab_chan_name));
+	properties = devm_kcalloc(&pdev->dev,
+				  ARRAY_SIZE(gab_props) +
+				  ARRAY_SIZE(gab_chan_name),
+				  sizeof(*properties),
+				  GFP_KERNEL);
 	if (!properties)
 		return -ENOMEM;
 
@@ -240,9 +243,6 @@ static int gab_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret, "Failed to register delayed work\n");
 
 	adc_bat->charge_finished = devm_gpiod_get_optional(&pdev->dev, "charged", GPIOD_IN);
-	if (IS_ERR(adc_bat->charge_finished))
-		return dev_err_probe(&pdev->dev, PTR_ERR(adc_bat->charge_finished),
-				     "failed to get charged GPIO\n");
 	if (adc_bat->charge_finished) {
 		int irq;
 
@@ -251,7 +251,7 @@ static int gab_probe(struct platform_device *pdev)
 				IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
 				"battery charged", adc_bat);
 		if (ret < 0)
-			return ret;
+			return dev_err_probe(&pdev->dev, ret, "Failed to register irq\n");
 	}
 
 	platform_set_drvdata(pdev, adc_bat);
@@ -303,4 +303,3 @@ module_platform_driver(gab_driver);
 MODULE_AUTHOR("anish kumar <yesanishhere@gmail.com>");
 MODULE_DESCRIPTION("generic battery driver using IIO");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("IIO_CONSUMER");

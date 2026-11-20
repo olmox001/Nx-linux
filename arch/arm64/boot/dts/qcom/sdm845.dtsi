@@ -363,7 +363,6 @@
 	firmware {
 		scm {
 			compatible = "qcom,scm-sdm845", "qcom,scm";
-			sram = <&minidump_config>;
 		};
 	};
 
@@ -2395,14 +2394,15 @@
 
 			power-domains = <&gcc PCIE_0_GDSC>;
 
+			phys = <&pcie0_phy>;
+			phy-names = "pciephy";
+
 			status = "disabled";
 
-			pcie0_port0: pcie@0 {
+			pcie@0 {
 				device_type = "pci";
 				reg = <0x0 0x0 0x0 0x0 0x0>;
 				bus-range = <0x01 0xff>;
-
-				phys = <&pcie0_phy>;
 
 				#address-cells = <3>;
 				#size-cells = <2>;
@@ -2524,14 +2524,15 @@
 
 			power-domains = <&gcc PCIE_1_GDSC>;
 
+			phys = <&pcie1_phy>;
+			phy-names = "pciephy";
+
 			status = "disabled";
 
-			pcie1_port0: pcie@0 {
+			pcie@0 {
 				device_type = "pci";
 				reg = <0x0 0x0 0x0 0x0 0x0>;
 				bus-range = <0x01 0xff>;
-
-				phys = <&pcie1_phy>;
 
 				#address-cells = <3>;
 				#size-cells = <2>;
@@ -2778,9 +2779,6 @@
 					   <&ipa_smp2p_out 1>;
 			qcom,smem-state-names = "ipa-clock-enabled-valid",
 						"ipa-clock-enabled";
-
-			qcom,gsi-loader = "self";
-			memory-region = <&ipa_fw_mem>;
 
 			sram = <&ipa_modem_tables>;
 
@@ -4624,7 +4622,7 @@
 			interconnect-names = "mdp0-mem", "mdp1-mem";
 
 			iommus = <&apps_smmu 0x880 0x8>,
-				 <&apps_smmu 0xc80 0x8>;
+			         <&apps_smmu 0xc80 0x8>;
 
 			status = "disabled";
 
@@ -5029,7 +5027,7 @@
 				     <GIC_SPI 370 IRQ_TYPE_EDGE_RISING>,
 				     <GIC_SPI 371 IRQ_TYPE_EDGE_RISING>;
 			clocks = <&gcc GCC_GPU_MEMNOC_GFX_CLK>,
-				 <&gcc GCC_GPU_CFG_AHB_CLK>;
+			         <&gcc GCC_GPU_CFG_AHB_CLK>;
 			clock-names = "bus", "iface";
 
 			power-domains = <&gpucc GPU_CX_GDSC>;
@@ -5048,7 +5046,7 @@
 			interrupt-names = "hfi", "gmu";
 
 			clocks = <&gpucc GPU_CC_CX_GMU_CLK>,
-				 <&gpucc GPU_CC_CXO_CLK>,
+			         <&gpucc GPU_CC_CXO_CLK>,
 				 <&gcc GCC_DDRSS_GPU_AXI_CLK>,
 				 <&gcc GCC_GPU_MEMNOC_GFX_CLK>;
 			clock-names = "gmu", "cxo", "axi", "memnoc";
@@ -5104,7 +5102,7 @@
 
 		pdc_intc: interrupt-controller@b220000 {
 			compatible = "qcom,sdm845-pdc", "qcom,pdc";
-			reg = <0 0x0b220000 0 0x10000>;
+			reg = <0 0x0b220000 0 0x30000>;
 			qcom,pdc-ranges = <0 480 94>, <94 609 15>, <115 630 7>;
 			#interrupt-cells = <2>;
 			interrupt-parent = <&intc>;
@@ -5193,10 +5191,6 @@
 			#size-cells = <1>;
 
 			ranges = <0 0 0x14680000 0x40000>;
-
-			minidump_config: minidump-sram@1c {
-				reg = <0x1c 0x4>;
-			};
 
 			ipa_modem_tables: modem-tables@3d000 {
 				reg = <0x3d000 0x2000>;

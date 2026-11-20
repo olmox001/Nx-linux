@@ -369,7 +369,7 @@ static int ezport_firmware_flash_data(struct spi_device *spi,
 	dev_dbg(&spi->dev, "EzPort verify flashed data...\n");
 	ret = ezport_firmware_compare_data(spi, data, size);
 
-	/* allow missing FW verification in secure mode */
+	/* allow missing FW verfication in secure mode */
 	if (ret == -EACCES)
 		ret = 0;
 
@@ -510,7 +510,7 @@ static int gehc_achc_probe(struct spi_device *spi)
 	spi->bits_per_word = 8;
 	spi->mode = SPI_MODE_0;
 
-	achc = devm_kzalloc_obj(&spi->dev, *achc);
+	achc = devm_kzalloc(&spi->dev, sizeof(*achc), GFP_KERNEL);
 	if (!achc)
 		return -ENOMEM;
 	spi_set_drvdata(spi, achc);
@@ -538,8 +538,8 @@ static int gehc_achc_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id gehc_achc_id[] = {
-	{ .name = "ge,achc" },
-	{ .name = "achc" },
+	{ "ge,achc", 0 },
+	{ "achc", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, gehc_achc_id);

@@ -441,7 +441,8 @@ static int tool_init_peers(struct tool_ctx *tc)
 	int pidx;
 
 	tc->peer_cnt = ntb_peer_port_count(tc->ntb);
-	tc->peers = devm_kzalloc_objs(&tc->ntb->dev, *tc->peers, tc->peer_cnt);
+	tc->peers = devm_kcalloc(&tc->ntb->dev, tc->peer_cnt,
+				 sizeof(*tc->peers), GFP_KERNEL);
 	if (tc->peers == NULL)
 		return -ENOMEM;
 
@@ -960,8 +961,8 @@ static int tool_init_mws(struct tool_ctx *tc)
 
 	/* Initialize outbound memory windows */
 	tc->outmw_cnt = ntb_peer_mw_count(tc->ntb);
-	tc->outmws = devm_kzalloc_objs(&tc->ntb->dev, *tc->outmws,
-				       tc->outmw_cnt);
+	tc->outmws = devm_kcalloc(&tc->ntb->dev, tc->outmw_cnt,
+				  sizeof(*tc->outmws), GFP_KERNEL);
 	if (tc->outmws == NULL)
 		return -ENOMEM;
 
@@ -975,8 +976,8 @@ static int tool_init_mws(struct tool_ctx *tc)
 	for (pidx = 0; pidx < tc->peer_cnt; pidx++) {
 		tc->peers[pidx].inmw_cnt = ntb_mw_count(tc->ntb, pidx);
 		tc->peers[pidx].inmws =
-			devm_kzalloc_objs(&tc->ntb->dev, *tc->peers[pidx].inmws,
-					  tc->peers[pidx].inmw_cnt);
+			devm_kcalloc(&tc->ntb->dev, tc->peers[pidx].inmw_cnt,
+				    sizeof(*tc->peers[pidx].inmws), GFP_KERNEL);
 		if (tc->peers[pidx].inmws == NULL)
 			return -ENOMEM;
 
@@ -988,9 +989,8 @@ static int tool_init_mws(struct tool_ctx *tc)
 
 		tc->peers[pidx].outmw_cnt = ntb_peer_mw_count(tc->ntb);
 		tc->peers[pidx].outmws =
-			devm_kzalloc_objs(&tc->ntb->dev,
-					  *tc->peers[pidx].outmws,
-					  tc->peers[pidx].outmw_cnt);
+			devm_kcalloc(&tc->ntb->dev, tc->peers[pidx].outmw_cnt,
+				   sizeof(*tc->peers[pidx].outmws), GFP_KERNEL);
 		if (tc->peers[pidx].outmws == NULL)
 			return -ENOMEM;
 
@@ -1236,8 +1236,8 @@ static int tool_init_spads(struct tool_ctx *tc)
 
 	/* Initialize inbound scratchpad structures */
 	tc->inspad_cnt = ntb_spad_count(tc->ntb);
-	tc->inspads = devm_kzalloc_objs(&tc->ntb->dev, *tc->inspads,
-					tc->inspad_cnt);
+	tc->inspads = devm_kcalloc(&tc->ntb->dev, tc->inspad_cnt,
+				   sizeof(*tc->inspads), GFP_KERNEL);
 	if (tc->inspads == NULL)
 		return -ENOMEM;
 
@@ -1251,9 +1251,8 @@ static int tool_init_spads(struct tool_ctx *tc)
 	for (pidx = 0; pidx < tc->peer_cnt; pidx++) {
 		tc->peers[pidx].outspad_cnt = ntb_spad_count(tc->ntb);
 		tc->peers[pidx].outspads =
-			devm_kzalloc_objs(&tc->ntb->dev,
-					  *tc->peers[pidx].outspads,
-					  tc->peers[pidx].outspad_cnt);
+			devm_kcalloc(&tc->ntb->dev, tc->peers[pidx].outspad_cnt,
+				sizeof(*tc->peers[pidx].outspads), GFP_KERNEL);
 		if (tc->peers[pidx].outspads == NULL)
 			return -ENOMEM;
 
@@ -1401,8 +1400,8 @@ static int tool_init_msgs(struct tool_ctx *tc)
 
 	/* Initialize inbound message structures */
 	tc->inmsg_cnt = ntb_msg_count(tc->ntb);
-	tc->inmsgs = devm_kzalloc_objs(&tc->ntb->dev, *tc->inmsgs,
-				       tc->inmsg_cnt);
+	tc->inmsgs = devm_kcalloc(&tc->ntb->dev, tc->inmsg_cnt,
+				   sizeof(*tc->inmsgs), GFP_KERNEL);
 	if (tc->inmsgs == NULL)
 		return -ENOMEM;
 
@@ -1416,9 +1415,8 @@ static int tool_init_msgs(struct tool_ctx *tc)
 	for (pidx = 0; pidx < tc->peer_cnt; pidx++) {
 		tc->peers[pidx].outmsg_cnt = ntb_msg_count(tc->ntb);
 		tc->peers[pidx].outmsgs =
-			devm_kzalloc_objs(&tc->ntb->dev,
-					  *tc->peers[pidx].outmsgs,
-					  tc->peers[pidx].outmsg_cnt);
+			devm_kcalloc(&tc->ntb->dev, tc->peers[pidx].outmsg_cnt,
+				sizeof(*tc->peers[pidx].outmsgs), GFP_KERNEL);
 		if (tc->peers[pidx].outmsgs == NULL)
 			return -ENOMEM;
 
@@ -1441,7 +1439,7 @@ static struct tool_ctx *tool_create_data(struct ntb_dev *ntb)
 {
 	struct tool_ctx *tc;
 
-	tc = devm_kzalloc_obj(&ntb->dev, *tc);
+	tc = devm_kzalloc(&ntb->dev, sizeof(*tc), GFP_KERNEL);
 	if (tc == NULL)
 		return ERR_PTR(-ENOMEM);
 

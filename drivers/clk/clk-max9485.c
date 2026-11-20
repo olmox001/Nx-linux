@@ -268,7 +268,7 @@ static int max9485_i2c_probe(struct i2c_client *client)
 	const char *xclk_name;
 	int i, ret;
 
-	drvdata = devm_kzalloc_obj(dev, *drvdata);
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 

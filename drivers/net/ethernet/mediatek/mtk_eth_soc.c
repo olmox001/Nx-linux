@@ -26,7 +26,6 @@
 #include <linux/bitfield.h>
 #include <net/dsa.h>
 #include <net/dst_metadata.h>
-#include <net/netdev_lock.h>
 #include <net/page_pool/helpers.h>
 #include <linux/genalloc.h>
 
@@ -2814,7 +2813,8 @@ static int mtk_rx_alloc(struct mtk_eth *eth, int ring_no, int rx_flag)
 
 	ring->frag_size = mtk_max_frag_size(rx_data_len);
 	ring->buf_size = mtk_max_buf_size(ring->frag_size);
-	ring->data = kzalloc_objs(*ring->data, rx_dma_size);
+	ring->data = kcalloc(rx_dma_size, sizeof(*ring->data),
+			     GFP_KERNEL);
 	if (!ring->data)
 		return -ENOMEM;
 
@@ -4879,7 +4879,9 @@ static int mtk_add_mac(struct mtk_eth *eth, struct device_node *np)
 	memset(mac->hwlro_ip, 0, sizeof(mac->hwlro_ip));
 	mac->hwlro_ip_cnt = 0;
 
-	mac->hw_stats = devm_kzalloc_obj(eth->dev, *mac->hw_stats);
+	mac->hw_stats = devm_kzalloc(eth->dev,
+				     sizeof(*mac->hw_stats),
+				     GFP_KERNEL);
 	if (!mac->hw_stats) {
 		dev_err(eth->dev, "failed to allocate counter memory\n");
 		err = -ENOMEM;
@@ -5044,13 +5046,9 @@ void mtk_eth_set_dma_device(struct mtk_eth *eth, struct device *dma_dev)
 			continue;
 
 		list_add_tail(&dev->close_list, &dev_list);
-		netdev_lock_ops(dev);
 	}
 
 	netif_close_many(&dev_list, false);
-
-	list_for_each_entry(dev, &dev_list, close_list)
-		netdev_unlock_ops(dev);
 
 	eth->dma_dev = dma_dev;
 
@@ -5117,7 +5115,7 @@ static int mtk_probe(struct platform_device *pdev)
 	struct mtk_eth *eth;
 	int err, i;
 
-	eth = devm_kzalloc_obj(&pdev->dev, *eth);
+	eth = devm_kzalloc(&pdev->dev, sizeof(*eth), GFP_KERNEL);
 	if (!eth)
 		return -ENOMEM;
 

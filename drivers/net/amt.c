@@ -35,19 +35,9 @@
 static struct workqueue_struct *amt_wq;
 
 static HLIST_HEAD(source_gc_list);
-/* Lock for source_gc_list, group_gc_list and the counts below */
+/* Lock for source_gc_list */
 static spinlock_t source_gc_lock;
 static struct delayed_work source_gc_wq;
-static HLIST_HEAD(group_gc_list);
-static struct delayed_work group_gc_wq;
-/* Nodes parked on source_gc_list and group_gc_list, and the sources among
- * them, so that a drain of either list can take its nodes off the count.
- * Parked nodes are not charged to max_groups or max_sources, so
- * Report/Leave churn could park them faster than the AMT_GC_INTERVAL tick
- * frees them: once AMT_GC_KICK are parked, the drain runs at once.
- */
-static unsigned int amt_gc_queued;
-static unsigned int amt_gc_sources;
 static char *status_str[] = {
 	"AMT_STATUS_INIT",
 	"AMT_STATUS_SENT_DISCOVERY",
@@ -98,15 +88,11 @@ static void __amt_source_gc_work(void)
 
 	spin_lock_bh(&source_gc_lock);
 	hlist_move_list(&source_gc_list, &gc_list);
-	amt_gc_queued -= amt_gc_sources;
-	amt_gc_sources = 0;
 	spin_unlock_bh(&source_gc_lock);
 
-	hlist_for_each_entry_safe(snode, t, &gc_list, gc_node) {
-		cancel_delayed_work_sync(&snode->source_timer);
-		hlist_del_init(&snode->gc_node);
+	hlist_for_each_entry_safe(snode, t, &gc_list, node) {
+		hlist_del_rcu(&snode->node);
 		kfree_rcu(snode, rcu);
-		cond_resched();
 	}
 }
 
@@ -118,62 +104,6 @@ static void amt_source_gc_work(struct work_struct *work)
 	mod_delayed_work(amt_wq, &source_gc_wq,
 			 msecs_to_jiffies(AMT_GC_INTERVAL));
 	spin_unlock_bh(&source_gc_lock);
-}
-
-static void __amt_group_gc_work(void)
-{
-	struct amt_group_node *gnode;
-	struct hlist_head gc_list;
-	struct hlist_node *t;
-
-	spin_lock_bh(&source_gc_lock);
-	hlist_move_list(&group_gc_list, &gc_list);
-	amt_gc_queued = amt_gc_sources;
-	spin_unlock_bh(&source_gc_lock);
-
-	/* Group deletion queues all of its sources first.  Reclaim them now
-	 * rather than at the next periodic run; a source callback cannot
-	 * reach a freed group because it resolves snode->gnode under RCU and
-	 * the pointer is cleared before the source is queued.  Call the GC
-	 * here rather than flush source_gc_wq: a flush queues the work and
-	 * waits for it to run, which needs a free amt_wq active slot, and
-	 * when this runs on amt_wq every slot can be held by such waiters.
-	 * The cancel_delayed_work_sync() calls in the GC need no slot: each
-	 * takes a pending timer work off its timer or queue, or waits for a
-	 * running one on a barrier that max_active does not count.
-	 */
-	__amt_source_gc_work();
-
-	hlist_for_each_entry_safe(gnode, t, &gc_list, gc_node) {
-		cancel_delayed_work_sync(&gnode->group_timer);
-		hlist_del_init(&gnode->gc_node);
-		kfree_rcu(gnode, rcu);
-		cond_resched();
-	}
-}
-
-static void amt_group_gc_work(struct work_struct *work)
-{
-	__amt_group_gc_work();
-
-	/* Run again at once if AMT_GC_KICK nodes were parked meanwhile: a
-	 * kick that landed during the drain must not be pushed back to the
-	 * interval.
-	 */
-	spin_lock_bh(&source_gc_lock);
-	mod_delayed_work(amt_wq, &group_gc_wq,
-			 amt_gc_queued >= AMT_GC_KICK ? 0 :
-			 msecs_to_jiffies(AMT_GC_INTERVAL));
-	spin_unlock_bh(&source_gc_lock);
-}
-
-/* Caller holds source_gc_lock and has just parked one node.  This runs
- * under tunnel->lock, often in softirq; mod_delayed_work() does not sleep.
- */
-static void amt_gc_parked(void)
-{
-	if (++amt_gc_queued == AMT_GC_KICK)
-		mod_delayed_work(amt_wq, &group_gc_wq, 0);
 }
 
 static bool amt_addr_equal(union amt_addr *a, union amt_addr *b)
@@ -285,13 +215,8 @@ static struct amt_group_node *amt_lookup_group(struct amt_tunnel_list *tunnel,
 
 static void amt_destroy_source(struct amt_source_node *snode)
 {
+	struct amt_group_node *gnode = snode->gnode;
 	struct amt_tunnel_list *tunnel;
-	struct amt_group_node *gnode;
-
-	if (snode->dead)
-		return;
-	snode->dead = true;
-	gnode = snode->gnode;
 
 	tunnel = gnode->tunnel_list;
 
@@ -313,11 +238,8 @@ static void amt_destroy_source(struct amt_source_node *snode)
 	hlist_del_init_rcu(&snode->node);
 	tunnel->nr_sources--;
 	gnode->nr_sources--;
-	WRITE_ONCE(snode->gnode, NULL);
 	spin_lock_bh(&source_gc_lock);
-	hlist_add_head(&snode->gc_node, &source_gc_list);
-	amt_gc_sources++;
-	amt_gc_parked();
+	hlist_add_head_rcu(&snode->node, &source_gc_list);
 	spin_unlock_bh(&source_gc_lock);
 }
 
@@ -327,9 +249,6 @@ static void amt_del_group(struct amt_dev *amt, struct amt_group_node *gnode)
 	struct hlist_node *t;
 	int i;
 
-	if (gnode->dead)
-		return;
-	gnode->dead = true;
 	if (cancel_delayed_work(&gnode->group_timer))
 		dev_put(amt->dev);
 	hlist_del_rcu(&gnode->node);
@@ -347,11 +266,10 @@ static void amt_del_group(struct amt_dev *amt, struct amt_group_node *gnode)
 		hlist_for_each_entry_safe(snode, t, &gnode->sources[i], node)
 			amt_destroy_source(snode);
 
-	WRITE_ONCE(gnode->tunnel_list, NULL);
-	spin_lock_bh(&source_gc_lock);
-	hlist_add_head(&gnode->gc_node, &group_gc_list);
-	amt_gc_parked();
-	spin_unlock_bh(&source_gc_lock);
+	/* tunnel->lock was acquired outside of amt_del_group()
+	 * But rcu_read_lock() was acquired too so It's safe.
+	 */
+	kfree_rcu(gnode, rcu);
 }
 
 /* If a source timer expires with a router filter-mode for the group of
@@ -364,28 +282,13 @@ static void amt_source_work(struct work_struct *work)
 	struct amt_source_node *snode = container_of(to_delayed_work(work),
 						     struct amt_source_node,
 						     source_timer);
+	struct amt_group_node *gnode = snode->gnode;
+	struct amt_dev *amt = gnode->amt;
 	struct amt_tunnel_list *tunnel;
-	struct amt_group_node *gnode;
-	struct amt_dev *amt;
 
-	rcu_read_lock();
-	gnode = READ_ONCE(snode->gnode);
-	if (!gnode) {
-		rcu_read_unlock();
-		return;
-	}
-	amt = gnode->amt;
-	tunnel = READ_ONCE(gnode->tunnel_list);
-	if (!tunnel) {
-		rcu_read_unlock();
-		return;
-	}
+	tunnel = gnode->tunnel_list;
 	spin_lock_bh(&tunnel->lock);
-	if (snode->dead || gnode->dead) {
-		spin_unlock_bh(&tunnel->lock);
-		rcu_read_unlock();
-		return;
-	}
+	rcu_read_lock();
 	if (gnode->filter_mode == MCAST_INCLUDE) {
 		amt_destroy_source(snode);
 		if (!gnode->nr_sources)
@@ -396,8 +299,8 @@ static void amt_source_work(struct work_struct *work)
 		 */
 		snode->status = AMT_SOURCE_STATUS_D_FWD;
 	}
-	spin_unlock_bh(&tunnel->lock);
 	rcu_read_unlock();
+	spin_unlock_bh(&tunnel->lock);
 }
 
 static void amt_act_src(struct amt_tunnel_list *tunnel,
@@ -465,7 +368,6 @@ static struct amt_source_node *amt_alloc_snode(struct amt_group_node *gnode,
 	snode->status = AMT_SOURCE_STATUS_NONE;
 	snode->flags = AMT_SOURCE_NEW;
 	INIT_HLIST_NODE(&snode->node);
-	INIT_HLIST_NODE(&snode->gc_node);
 	INIT_DELAYED_WORK(&snode->source_timer, amt_source_work);
 
 	return snode;
@@ -501,31 +403,23 @@ static void amt_group_work(struct work_struct *work)
 	struct amt_group_node *gnode = container_of(to_delayed_work(work),
 						    struct amt_group_node,
 						    group_timer);
-	struct amt_tunnel_list *tunnel;
+	struct amt_tunnel_list *tunnel = gnode->tunnel_list;
+	struct amt_dev *amt = gnode->amt;
 	struct amt_source_node *snode;
 	bool delete_group = true;
 	struct hlist_node *t;
-	struct amt_dev *amt;
 	int i, buckets;
 
-	rcu_read_lock();
-	tunnel = READ_ONCE(gnode->tunnel_list);
-	amt = gnode->amt;
-	if (!tunnel)
-		goto out;
 	buckets = amt->hash_buckets;
 
 	spin_lock_bh(&tunnel->lock);
-	if (gnode->dead) {
-		spin_unlock_bh(&tunnel->lock);
-		goto out;
-	}
 	if (gnode->filter_mode == MCAST_INCLUDE) {
 		/* Not Used */
 		spin_unlock_bh(&tunnel->lock);
 		goto out;
 	}
 
+	rcu_read_lock();
 	for (i = 0; i < buckets; i++) {
 		hlist_for_each_entry_safe(snode, t,
 					  &gnode->sources[i], node) {
@@ -542,9 +436,9 @@ static void amt_group_work(struct work_struct *work)
 		amt_del_group(amt, gnode);
 	else
 		gnode->filter_mode = MCAST_INCLUDE;
+	rcu_read_unlock();
 	spin_unlock_bh(&tunnel->lock);
 out:
-	rcu_read_unlock();
 	dev_put(amt->dev);
 }
 
@@ -585,7 +479,6 @@ static struct amt_group_node *amt_add_group(struct amt_dev *amt,
 	gnode->tunnel_list = tunnel;
 	gnode->filter_mode = MCAST_INCLUDE;
 	INIT_HLIST_NODE(&gnode->node);
-	INIT_HLIST_NODE(&gnode->gc_node);
 	INIT_DELAYED_WORK(&gnode->group_timer, amt_group_work);
 	for (i = 0; i < amt->hash_buckets; i++)
 		INIT_HLIST_HEAD(&gnode->sources[i]);
@@ -700,6 +593,14 @@ static void __amt_update_relay_status(struct amt_tunnel_list *tunnel,
 	tunnel->status = status;
 }
 
+static void amt_update_relay_status(struct amt_tunnel_list *tunnel,
+				    enum amt_status status, bool validate)
+{
+	spin_lock_bh(&tunnel->lock);
+	__amt_update_relay_status(tunnel, status, validate);
+	spin_unlock_bh(&tunnel->lock);
+}
+
 static void amt_send_discovery(struct amt_dev *amt)
 {
 	struct amt_header_discovery *amtd;
@@ -727,7 +628,7 @@ static void amt_send_discovery(struct amt_dev *amt)
 				   IPPROTO_UDP, 0,
 				   amt->stream_dev->ifindex);
 	if (IS_ERR(rt)) {
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 		goto out;
 	}
 
@@ -737,7 +638,7 @@ static void amt_send_discovery(struct amt_dev *amt)
 	skb = netdev_alloc_skb_ip_align(amt->dev, len);
 	if (!skb) {
 		ip_rt_put(rt);
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 		goto out;
 	}
 
@@ -757,7 +658,7 @@ static void amt_send_discovery(struct amt_dev *amt)
 	udph		= udp_hdr(skb);
 	udph->source	= amt->gw_port;
 	udph->dest	= amt->relay_port;
-	udp_set_len_short(udph, sizeof(*udph) + sizeof(*amtd));
+	udph->len	= htons(sizeof(*udph) + sizeof(*amtd));
 	udph->check	= 0;
 	offset = skb_transport_offset(skb);
 	skb->csum = skb_checksum(skb, offset, skb->len - offset, 0);
@@ -782,7 +683,7 @@ static void amt_send_discovery(struct amt_dev *amt)
 	ip_send_check(iph);
 	err = ip_local_out(amt->net, sk, skb);
 	if (unlikely(net_xmit_eval(err)))
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 
 	amt_update_gw_status(amt, AMT_STATUS_SENT_DISCOVERY, true);
 out:
@@ -798,13 +699,11 @@ static void amt_send_request(struct amt_dev *amt, bool v6)
 	struct iphdr *iph;
 	struct rtable *rt;
 	struct flowi4 fl4;
-	__be32 remote_ip;
 	struct sock *sk;
 	u32 len;
 	int err;
 
 	rcu_read_lock();
-	remote_ip = READ_ONCE(amt->remote_ip);
 	sk = rcu_dereference(amt->sk);
 	if (!sk)
 		goto out;
@@ -813,12 +712,12 @@ static void amt_send_request(struct amt_dev *amt, bool v6)
 		goto out;
 
 	rt = ip_route_output_ports(amt->net, &fl4, sk,
-				   remote_ip, amt->local_ip,
+				   amt->remote_ip, amt->local_ip,
 				   amt->gw_port, amt->relay_port,
 				   IPPROTO_UDP, 0,
 				   amt->stream_dev->ifindex);
 	if (IS_ERR(rt)) {
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 		goto out;
 	}
 
@@ -828,7 +727,7 @@ static void amt_send_request(struct amt_dev *amt, bool v6)
 	skb = netdev_alloc_skb_ip_align(amt->dev, len);
 	if (!skb) {
 		ip_rt_put(rt);
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 		goto out;
 	}
 
@@ -850,11 +749,11 @@ static void amt_send_request(struct amt_dev *amt, bool v6)
 	udph		= udp_hdr(skb);
 	udph->source	= amt->gw_port;
 	udph->dest	= amt->relay_port;
-	udp_set_len_short(udph, sizeof(*amtrh) + sizeof(*udph));
+	udph->len	= htons(sizeof(*amtrh) + sizeof(*udph));
 	udph->check	= 0;
 	offset = skb_transport_offset(skb);
 	skb->csum = skb_checksum(skb, offset, skb->len - offset, 0);
-	udph->check = csum_tcpudp_magic(amt->local_ip, remote_ip,
+	udph->check = csum_tcpudp_magic(amt->local_ip, amt->remote_ip,
 					sizeof(*udph) + sizeof(*amtrh),
 					IPPROTO_UDP, skb->csum);
 
@@ -865,7 +764,7 @@ static void amt_send_request(struct amt_dev *amt, bool v6)
 	iph->tos	= AMT_TOS;
 	iph->frag_off	= 0;
 	iph->ttl	= ip4_dst_hoplimit(&rt->dst);
-	iph->daddr	= remote_ip;
+	iph->daddr	= amt->remote_ip;
 	iph->saddr	= amt->local_ip;
 	iph->protocol	= IPPROTO_UDP;
 	iph->tot_len	= htons(len);
@@ -875,7 +774,7 @@ static void amt_send_request(struct amt_dev *amt, bool v6)
 	ip_send_check(iph);
 	err = ip_local_out(amt->net, sk, skb);
 	if (unlikely(net_xmit_eval(err)))
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 
 out:
 	rcu_read_unlock();
@@ -883,16 +782,11 @@ out:
 
 static bool amt_send_membership_query(struct amt_dev *amt,
 				      struct sk_buff *skb,
-				      __be32 daddr, __be16 dport,
-				      __be32 nonce, u64 mac,
+				      struct amt_tunnel_list *tunnel,
 				      bool v6);
 
-/* The destination is passed by value rather than as a tunnel: a Request is
- * unauthenticated, so no tunnel state is created or changed for it - see
- * amt_request_handler().
- */
-static void amt_send_igmp_gq(struct amt_dev *amt, __be32 daddr, __be16 dport,
-			     __be32 nonce, u64 mac)
+static void amt_send_igmp_gq(struct amt_dev *amt,
+			     struct amt_tunnel_list *tunnel)
 {
 	struct sk_buff *skb;
 
@@ -901,9 +795,8 @@ static void amt_send_igmp_gq(struct amt_dev *amt, __be32 daddr, __be16 dport,
 		return;
 
 	skb_pull(skb, sizeof(struct ethhdr));
-	if (amt_send_membership_query(amt, skb, daddr, dport, nonce, mac,
-				      false)) {
-		DEV_STATS_INC(amt->dev, tx_dropped);
+	if (amt_send_membership_query(amt, skb, tunnel, false)) {
+		amt->dev->stats.tx_dropped++;
 		kfree_skb(skb);
 	}
 }
@@ -947,7 +840,7 @@ static struct sk_buff *amt_build_mld_gq(struct amt_dev *amt)
 
 	if (ipv6_dev_get_saddr(amt->net, amt->dev, &ip6h->daddr, 0,
 			       &ip6h->saddr)) {
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 		kfree_skb(skb);
 		return NULL;
 	}
@@ -981,8 +874,7 @@ static struct sk_buff *amt_build_mld_gq(struct amt_dev *amt)
 	return skb;
 }
 
-static void amt_send_mld_gq(struct amt_dev *amt, __be32 daddr, __be16 dport,
-			    __be32 nonce, u64 mac)
+static void amt_send_mld_gq(struct amt_dev *amt, struct amt_tunnel_list *tunnel)
 {
 	struct sk_buff *skb;
 
@@ -991,15 +883,13 @@ static void amt_send_mld_gq(struct amt_dev *amt, __be32 daddr, __be16 dport,
 		return;
 
 	skb_pull(skb, sizeof(struct ethhdr));
-	if (amt_send_membership_query(amt, skb, daddr, dport, nonce, mac,
-				      true)) {
-		DEV_STATS_INC(amt->dev, tx_dropped);
+	if (amt_send_membership_query(amt, skb, tunnel, true)) {
+		amt->dev->stats.tx_dropped++;
 		kfree_skb(skb);
 	}
 }
 #else
-static void amt_send_mld_gq(struct amt_dev *amt, __be32 daddr, __be16 dport,
-			    __be32 nonce, u64 mac)
+static void amt_send_mld_gq(struct amt_dev *amt, struct amt_tunnel_list *tunnel)
 {
 }
 #endif
@@ -1033,16 +923,7 @@ static void amt_secret_work(struct work_struct *work)
 					   secret_wq);
 
 	spin_lock_bh(&amt->lock);
-	write_seqcount_begin(&amt->key_seq);
-	/* Keep three previous generations for a 180-240s MAC lifetime.
-	 * Its 180s floor exceeds the advertised QQIC (amt->qi, 125s),
-	 * allowing the gateway to renew its MAC with a periodic Request.
-	 */
-	amt->key[3] = amt->key[2];
-	amt->key[2] = amt->key[1];
-	amt->key[1] = amt->key[0];
-	get_random_bytes(&amt->key[0], sizeof(siphash_key_t));
-	write_seqcount_end(&amt->key_seq);
+	get_random_bytes(&amt->key, sizeof(siphash_key_t));
 	spin_unlock_bh(&amt->lock);
 	mod_delayed_work(amt_wq, &amt->secret_wq,
 			 msecs_to_jiffies(AMT_SECRET_TIMEOUT));
@@ -1083,7 +964,7 @@ static void amt_event_send_request(struct amt_dev *amt)
 		amt->qi = AMT_INIT_REQ_TIMEOUT;
 		WRITE_ONCE(amt->ready4, false);
 		WRITE_ONCE(amt->ready6, false);
-		WRITE_ONCE(amt->remote_ip, 0);
+		amt->remote_ip = 0;
 		amt_update_gw_status(amt, AMT_STATUS_INIT, false);
 		amt->req_cnt = 0;
 		amt->nonce = 0;
@@ -1120,7 +1001,6 @@ static bool amt_send_membership_update(struct amt_dev *amt,
 				       struct sk_buff *skb,
 				       bool v6)
 {
-	__be32 remote_ip = READ_ONCE(amt->remote_ip);
 	struct amt_header_membership_update *amtmu;
 	struct iphdr *iph;
 	struct flowi4 fl4;
@@ -1140,13 +1020,13 @@ static bool amt_send_membership_update(struct amt_dev *amt,
 	skb_reset_inner_headers(skb);
 	memset(&fl4, 0, sizeof(struct flowi4));
 	fl4.flowi4_oif         = amt->stream_dev->ifindex;
-	fl4.daddr              = remote_ip;
+	fl4.daddr              = amt->remote_ip;
 	fl4.saddr              = amt->local_ip;
 	fl4.flowi4_dscp        = inet_dsfield_to_dscp(AMT_TOS);
 	fl4.flowi4_proto       = IPPROTO_UDP;
 	rt = ip_route_output_key(amt->net, &fl4);
 	if (IS_ERR(rt)) {
-		netdev_dbg(amt->dev, "no route to %pI4\n", &remote_ip);
+		netdev_dbg(amt->dev, "no route to %pI4\n", &amt->remote_ip);
 		return true;
 	}
 
@@ -1197,17 +1077,7 @@ static void amt_send_multicast_data(struct amt_dev *amt,
 	if (!skb)
 		return;
 
-	/* amt_dev_xmit() pulled the Ethernet header without moving the mac
-	 * header. The tunnelled payload has no link-layer header, so the
-	 * inner mac header must coincide with the inner IP header.
-	 */
-	skb_reset_mac_header(skb);
 	skb_reset_inner_headers(skb);
-	if (udp_tunnel_handle_offloads(skb, true)) {
-		kfree_skb(skb);
-		return;
-	}
-
 	memset(&fl4, 0, sizeof(struct flowi4));
 	fl4.flowi4_oif         = amt->stream_dev->ifindex;
 	fl4.daddr              = tunnel->ip4;
@@ -1242,16 +1112,9 @@ static void amt_send_multicast_data(struct amt_dev *amt,
 			    0);
 }
 
-/* Send a Membership Query in reply to an unauthenticated Request.
- *
- * No per-source state is read or created: the gateway echoes the nonce and
- * the keyed MAC in its Membership Update, where the MAC is recomputed, so
- * everything this needs is passed by value.
- */
 static bool amt_send_membership_query(struct amt_dev *amt,
 				      struct sk_buff *skb,
-				      __be32 daddr, __be16 dport,
-				      __be32 nonce, u64 mac,
+				      struct amt_tunnel_list *tunnel,
 				      bool v6)
 {
 	struct amt_header_membership_query *amtmq;
@@ -1272,13 +1135,13 @@ static bool amt_send_membership_query(struct amt_dev *amt,
 	skb_reset_inner_headers(skb);
 	memset(&fl4, 0, sizeof(struct flowi4));
 	fl4.flowi4_oif         = amt->stream_dev->ifindex;
-	fl4.daddr              = daddr;
+	fl4.daddr              = tunnel->ip4;
 	fl4.saddr              = amt->local_ip;
 	fl4.flowi4_dscp        = inet_dsfield_to_dscp(AMT_TOS);
 	fl4.flowi4_proto       = IPPROTO_UDP;
 	rt = ip_route_output_key(amt->net, &fl4);
 	if (IS_ERR(rt)) {
-		netdev_dbg(amt->dev, "no route to %pI4\n", &daddr);
+		netdev_dbg(amt->dev, "no route to %pI4\n", &tunnel->ip4);
 		return true;
 	}
 
@@ -1288,8 +1151,8 @@ static bool amt_send_membership_query(struct amt_dev *amt,
 	amtmq->reserved = 0;
 	amtmq->l	= 0;
 	amtmq->g	= 0;
-	amtmq->nonce	= nonce;
-	amtmq->response_mac = mac;
+	amtmq->nonce	= tunnel->nonce;
+	amtmq->response_mac = tunnel->mac;
 
 	if (!v6)
 		skb_set_inner_protocol(skb, htons(ETH_P_IP));
@@ -1302,10 +1165,11 @@ static bool amt_send_membership_query(struct amt_dev *amt,
 			    ip4_dst_hoplimit(&rt->dst),
 			    0,
 			    amt->relay_port,
-			    dport,
+			    tunnel->source_port,
 			    false,
 			    false,
 			    0);
+	amt_update_relay_status(tunnel, AMT_STATUS_SENT_QUERY, true);
 	return false;
 }
 
@@ -1369,7 +1233,7 @@ static netdev_tx_t amt_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		group.ip6 = ipv6_hdr(skb)->daddr;
 #endif
 	} else {
-		DEV_STATS_INC(dev, tx_errors);
+		dev->stats.tx_errors++;
 		goto free;
 	}
 
@@ -1382,21 +1246,12 @@ static netdev_tx_t amt_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 		/* Gateway only passes IGMP/MLD packets */
 		if (!report)
 			goto free;
-		/* A validated report can only be forwarded after the relay's
-		 * family-specific Membership Query supplies the state echoed
-		 * by the Membership Update. Log this readiness failure before
-		 * the shared drop path accounts it.
-		 */
 		if ((!v6 && !READ_ONCE(amt->ready4)) ||
-		    (v6 && !READ_ONCE(amt->ready6))) {
-			netdev_dbg(dev, "drop %s report: waiting for Membership Query\n",
-				   v6 ? "MLD" : "IGMP");
+		    (v6 && !READ_ONCE(amt->ready6)))
 			goto free;
-		}
 		if (amt_send_membership_update(amt, skb,  v6))
 			goto free;
-		/* Sent: the tunnel consumed the skb.  Not a drop. */
-		return NETDEV_TX_OK;
+		goto unlock;
 	} else if (amt->mode == AMT_MODE_RELAY) {
 		if (!data)
 			goto free;
@@ -1425,7 +1280,8 @@ found:
 	return NETDEV_TX_OK;
 free:
 	dev_kfree_skb(skb);
-	DEV_STATS_INC(dev, tx_dropped);
+unlock:
+	dev->stats.tx_dropped++;
 	return NETDEV_TX_OK;
 }
 
@@ -1433,12 +1289,8 @@ static int amt_parse_type(struct sk_buff *skb)
 {
 	struct amt_header *amth;
 
-	/* skb->data is the UDP header on receive, but the quoted IP header
-	 * when amt_err_lookup() parses an ICMP error, so pull up to the
-	 * transport header rather than from skb->data.
-	 */
-	if (!pskb_may_pull(skb, skb_transport_offset(skb) +
-			   sizeof(struct udphdr) + sizeof(struct amt_header)))
+	if (!pskb_may_pull(skb, sizeof(struct udphdr) +
+			   sizeof(struct amt_header)))
 		return -1;
 
 	amth = (struct amt_header *)(udp_hdr(skb) + 1);
@@ -1473,46 +1325,14 @@ static void amt_tunnel_expire(struct work_struct *work)
 						      struct amt_tunnel_list,
 						      gc_wq);
 	struct amt_dev *amt = tunnel->amt;
-	unsigned long deadline, now;
 
 	spin_lock_bh(&amt->lock);
-	spin_lock_bh(&tunnel->lock);
-	/* amt_dev_stop() has taken ownership of the teardown. */
-	if (READ_ONCE(tunnel->dead)) {
-		spin_unlock_bh(&tunnel->lock);
-		spin_unlock_bh(&amt->lock);
-		return;
-	}
-	/* A Membership Update may have refreshed the tunnel after this work
-	 * was queued.  Re-arm from last_seen rather than letting
-	 * amt_update_handler() re-arm gc_wq: this handler is then the only
-	 * context that frees the tunnel on the timeout path; amt_dev_stop()
-	 * still owns teardown during device shutdown.  last_seen is read and
-	 * dead is set under tunnel->lock, which the Update path holds while
-	 * it refreshes last_seen, so an Update either keeps the tunnel alive
-	 * or finds it dead.
-	 */
-	now = jiffies;
-	deadline = tunnel->last_seen + msecs_to_jiffies(amt_gmi(amt)) * 3;
-	if (time_before(now, deadline)) {
-		mod_delayed_work(amt_wq, &tunnel->gc_wq, deadline - now);
-		spin_unlock_bh(&tunnel->lock);
-		spin_unlock_bh(&amt->lock);
-		return;
-	}
-	WRITE_ONCE(tunnel->dead, true);
-	spin_unlock_bh(&tunnel->lock);
 	rcu_read_lock();
 	list_del_rcu(&tunnel->list);
 	amt->nr_tunnels--;
 	amt_clear_groups(tunnel);
 	rcu_read_unlock();
 	spin_unlock_bh(&amt->lock);
-	/* Free now, rather than at the next periodic run, the nodes that
-	 * amt_clear_groups() queued.  Call the GC rather than flush
-	 * group_gc_wq, as explained in __amt_group_gc_work().
-	 */
-	__amt_group_gc_work();
 	kfree_rcu(tunnel, rcu);
 }
 
@@ -2310,12 +2130,13 @@ static void amt_mldv1_leave_handler(struct amt_dev *amt, struct sk_buff *skb,
 				    struct amt_tunnel_list *tunnel)
 {
 	struct mld_msg *mld = (struct mld_msg *)icmp6_hdr(skb);
-	struct ipv6hdr *ip6h = ipv6_hdr(skb);
+	struct iphdr *iph = ip_hdr(skb);
 	struct amt_group_node *gnode;
 	union amt_addr group, host;
 
 	memcpy(&group.ip6, &mld->mld_mca, sizeof(struct in6_addr));
-	memcpy(&host.ip6, &ip6h->saddr, sizeof(struct in6_addr));
+	memset(&host, 0, sizeof(union amt_addr));
+	host.ip4 = iph->saddr;
 
 	gnode = amt_lookup_group(tunnel, &group, &host, true);
 	if (gnode) {
@@ -2447,8 +2268,8 @@ static bool amt_advertisement_handler(struct amt_dev *amt, struct sk_buff *skb)
 	    amt->nonce != amta->nonce)
 		return true;
 
-	WRITE_ONCE(amt->remote_ip, amta->ip4);
-	netdev_dbg(amt->dev, "advertised remote ip = %pI4\n", &amta->ip4);
+	amt->remote_ip = amta->ip4;
+	netdev_dbg(amt->dev, "advertised remote ip = %pI4\n", &amt->remote_ip);
 	mod_delayed_work(amt_wq, &amt->req_wq, 0);
 
 	amt_update_gw_status(amt, AMT_STATUS_RECEIVED_ADVERTISEMENT, true);
@@ -2545,10 +2366,6 @@ static bool amt_membership_query_handler(struct amt_dev *amt,
 	if (amtmq->reserved || amtmq->version)
 		return true;
 
-	/* A deferred query may outlive a relay address change. */
-	if (ip_hdr(skb)->saddr != READ_ONCE(amt->remote_ip))
-		return true;
-
 	if (amtmq->nonce != amt->nonce)
 		return true;
 
@@ -2641,165 +2458,16 @@ static bool amt_membership_query_handler(struct amt_dev *amt,
 	return false;
 }
 
-/* The live tunnel of the gateway endpoint @saddr:@sport, or NULL.  Dead
- * tunnels are skipped, so the retry in amt_update_tunnel() after losing a
- * race with amt_tunnel_expire() creates the replacement.
- */
-static struct amt_tunnel_list *amt_tunnel_lookup(struct amt_dev *amt,
-						 __be32 saddr, __be16 sport)
-{
-	struct amt_tunnel_list *tunnel;
-
-	list_for_each_entry_rcu(tunnel, &amt->tunnel_list, list) {
-		if (tunnel->ip4 == saddr && tunnel->source_port == sport &&
-		    !READ_ONCE(tunnel->dead))
-			return tunnel;
-	}
-	return NULL;
-}
-
-/* Most tunnels one source address may hold: an eighth of the table, at
- * least one and at most AMT_MAX_TUNNELS_PER_SRC.
- */
-static u32 amt_max_tunnels_per_src(const struct amt_dev *amt)
-{
-	return clamp_t(u32, amt->max_tunnels / 8, 1,
-		       AMT_MAX_TUNNELS_PER_SRC);
-}
-
-/* Look up the tunnel for a source whose Membership Update has already been
- * authenticated, creating it on first contact.
- *
- * This is the only place tunnel state is allocated, so amt->max_tunnels
- * bounds the number of *verified* gateways rather than the number of
- * unverified Requests anyone can send.  A per-source cap derived from the
- * table, amt_max_tunnels_per_src(), additionally limits the tunnels one
- * verified source address may hold.
- */
-static struct amt_tunnel_list *amt_tunnel_get_or_create(struct amt_dev *amt,
-							__be32 saddr,
-							__be16 sport)
-{
-	struct amt_tunnel_list *tunnel;
-	u32 per_src = 0;
-	int i;
-
-	tunnel = amt_tunnel_lookup(amt, saddr, sport);
-	if (tunnel)
-		return tunnel;
-
-	spin_lock_bh(&amt->lock);
-
-	/* Re-check under the lock in case a concurrent Update won the race, and
-	 * count how many tunnels this source already holds on the same walk.
-	 * Skip dead tunnels, as amt_tunnel_lookup() and the Request path do, so
-	 * a tunnel being freed neither stands in for its endpoint nor counts
-	 * against its address.
-	 */
-	list_for_each_entry(tunnel, &amt->tunnel_list, list) {
-		if (tunnel->ip4 != saddr || READ_ONCE(tunnel->dead))
-			continue;
-		if (tunnel->source_port == sport) {
-			spin_unlock_bh(&amt->lock);
-			return tunnel;
-		}
-		per_src++;
-	}
-
-	if (amt->nr_tunnels >= amt->max_tunnels ||
-	    per_src >= amt_max_tunnels_per_src(amt)) {
-		spin_unlock_bh(&amt->lock);
-		return NULL;
-	}
-
-	if (!netif_running(amt->dev)) {
-		spin_unlock_bh(&amt->lock);
-		return NULL;
-	}
-
-	tunnel = kzalloc(sizeof(*tunnel) +
-			 (sizeof(struct hlist_head) * amt->hash_buckets),
-			 GFP_ATOMIC);
-	if (!tunnel) {
-		spin_unlock_bh(&amt->lock);
-		return NULL;
-	}
-
-	tunnel->source_port = sport;
-	tunnel->ip4 = saddr;
-	tunnel->amt = amt;
-	spin_lock_init(&tunnel->lock);
-	for (i = 0; i < amt->hash_buckets; i++)
-		INIT_HLIST_HEAD(&tunnel->groups[i]);
-
-	tunnel->last_seen = jiffies;
-	INIT_DELAYED_WORK(&tunnel->gc_wq, amt_tunnel_expire);
-	__amt_update_relay_status(tunnel, AMT_STATUS_RECEIVED_UPDATE, false);
-
-	/* Publish only once the entry is fully initialised. */
-	list_add_tail_rcu(&tunnel->list, &amt->tunnel_list);
-	amt->nr_tunnels++;
-	mod_delayed_work(amt_wq, &tunnel->gc_wq,
-			 msecs_to_jiffies(amt_gmi(amt)) * 3);
-	spin_unlock_bh(&amt->lock);
-
-	return tunnel;
-}
-
-/* Apply a valid, authenticated Membership Update to the tunnel of its
- * endpoint, creating the tunnel on first contact.  Returns false if the
- * Update is dropped.
- *
- * amt_tunnel_expire() reads last_seen and sets dead under tunnel->lock, so
- * the refresh below either keeps the tunnel alive or finds it dead.  A
- * tunnel that expired between the lookup and the lock is skipped by the
- * second amt_tunnel_get_or_create() call, which creates its replacement.
- */
-static bool amt_update_tunnel(struct amt_dev *amt, struct sk_buff *skb,
-			      __be32 saddr, __be16 sport, bool v6)
-{
-	struct amt_tunnel_list *tunnel;
-	int i;
-
-	for (i = 0; i < 2; i++) {
-		tunnel = amt_tunnel_get_or_create(amt, saddr, sport);
-		if (!tunnel)
-			return false;
-
-		spin_lock_bh(&tunnel->lock);
-		if (!READ_ONCE(tunnel->dead)) {
-			/* gc_wq is re-armed by amt_tunnel_expire() itself
-			 * from last_seen, never from here, so this cannot
-			 * re-queue the work of a tunnel that is being freed.
-			 */
-			tunnel->last_seen = jiffies;
-#if IS_ENABLED(CONFIG_IPV6)
-			if (v6)
-				amt_mld_report_handler(amt, skb, tunnel);
-			else
-#endif
-				amt_igmp_report_handler(amt, skb, tunnel);
-			spin_unlock_bh(&tunnel->lock);
-			return true;
-		}
-		spin_unlock_bh(&tunnel->lock);
-	}
-	return false;
-}
-
 static bool amt_update_handler(struct amt_dev *amt, struct sk_buff *skb)
 {
 	struct amt_header_membership_update *amtmu;
-	bool verified = false;
-	siphash_key_t key[4];
-	int len, hdr_size, i;
+	struct amt_tunnel_list *tunnel;
 	struct ethhdr *eth;
 	struct iphdr *iph;
-	unsigned int seq;
+	int len, hdr_size;
 	u64 response_mac;
 	__be32 saddr;
 	__be32 nonce;
-	__be16 sport;
 
 	saddr = ip_hdr(skb)->saddr;
 
@@ -2813,45 +2481,30 @@ static bool amt_update_handler(struct amt_dev *amt, struct sk_buff *skb)
 
 	nonce = amtmu->nonce;
 	response_mac = amtmu->response_mac;
-	/* Snapshot the tunnel endpoint port before the encap is stripped. */
-	sport = udp_hdr(skb)->source;
 
-	/* Recompute the MAC handed out in the Membership Query.  Four live
-	 * secrets cover 180-240s, exceeding the advertised QQIC (amt->qi,
-	 * 125s), so a periodic Request can renew the MAC before it expires.
-	 * Authenticate before decapsulation or allocating tunnel state.
-	 */
-	do {
-		seq = read_seqcount_begin(&amt->key_seq);
-		for (i = 0; i < ARRAY_SIZE(key); i++)
-			key[i] = amt->key[i];
-	} while (read_seqcount_retry(&amt->key_seq, seq));
-
-	for (i = 0; i < ARRAY_SIZE(key); i++) {
-		u64 mac = siphash_3u32((__force u32)saddr,
-				       (__force u32)sport,
-				       (__force u32)nonce,
-				       &key[i]) >> 16;
-
-		if (response_mac == mac) {
-			verified = true;
-			break;
-		}
-	}
-
-	if (!verified) {
-		netdev_dbg(amt->dev, "Invalid MAC\n");
-		return true;
-	}
-
-	/* Create or refresh a tunnel only once the encapsulated message has
-	 * passed ip_mc_check_igmp() or ipv6_mc_check_mld().
-	 */
 	if (iptunnel_pull_header(skb, hdr_size, skb->protocol, false))
 		return true;
 
 	skb_reset_network_header(skb);
 
+	list_for_each_entry_rcu(tunnel, &amt->tunnel_list, list) {
+		if (tunnel->ip4 == saddr) {
+			if ((nonce == tunnel->nonce &&
+			     response_mac == tunnel->mac)) {
+				mod_delayed_work(amt_wq, &tunnel->gc_wq,
+						 msecs_to_jiffies(amt_gmi(amt))
+								  * 3);
+				goto report;
+			} else {
+				netdev_dbg(amt->dev, "Invalid MAC\n");
+				return true;
+			}
+		}
+	}
+
+	return true;
+
+report:
 	if (!pskb_may_pull(skb, sizeof(*iph)))
 		return true;
 
@@ -2865,8 +2518,9 @@ static bool amt_update_handler(struct amt_dev *amt, struct sk_buff *skb)
 			return true;
 		}
 
-		if (!amt_update_tunnel(amt, skb, saddr, sport, false))
-			return true;
+		spin_lock_bh(&tunnel->lock);
+		amt_igmp_report_handler(amt, skb, tunnel);
+		spin_unlock_bh(&tunnel->lock);
 
 		skb_push(skb, sizeof(struct ethhdr));
 		skb_reset_mac_header(skb);
@@ -2884,8 +2538,9 @@ static bool amt_update_handler(struct amt_dev *amt, struct sk_buff *skb)
 			return true;
 		}
 
-		if (!amt_update_tunnel(amt, skb, saddr, sport, true))
-			return true;
+		spin_lock_bh(&tunnel->lock);
+		amt_mld_report_handler(amt, skb, tunnel);
+		spin_unlock_bh(&tunnel->lock);
 
 		skb_push(skb, sizeof(struct ethhdr));
 		skb_reset_mac_header(skb);
@@ -2904,10 +2559,13 @@ static bool amt_update_handler(struct amt_dev *amt, struct sk_buff *skb)
 	skb->pkt_type = PACKET_MULTICAST;
 	skb->ip_summed = CHECKSUM_NONE;
 	len = skb->len;
-	if (__netif_rx(skb) == NET_RX_SUCCESS)
+	if (__netif_rx(skb) == NET_RX_SUCCESS) {
+		amt_update_relay_status(tunnel, AMT_STATUS_RECEIVED_UPDATE,
+					true);
 		dev_sw_netstats_rx_add(amt->dev, len);
-	else
+	} else {
 		amt->dev->stats.rx_dropped++;
+	}
 
 	return false;
 }
@@ -2940,7 +2598,7 @@ static void amt_send_advertisement(struct amt_dev *amt, __be32 nonce,
 				   IPPROTO_UDP, 0,
 				   amt->stream_dev->ifindex);
 	if (IS_ERR(rt)) {
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 		goto out;
 	}
 
@@ -2950,7 +2608,7 @@ static void amt_send_advertisement(struct amt_dev *amt, __be32 nonce,
 	skb = netdev_alloc_skb_ip_align(amt->dev, len);
 	if (!skb) {
 		ip_rt_put(rt);
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 		goto out;
 	}
 
@@ -2971,7 +2629,7 @@ static void amt_send_advertisement(struct amt_dev *amt, __be32 nonce,
 	udph		= udp_hdr(skb);
 	udph->source	= amt->relay_port;
 	udph->dest	= dport;
-	udp_set_len_short(udph, sizeof(*amta) + sizeof(*udph));
+	udph->len	= htons(sizeof(*amta) + sizeof(*udph));
 	udph->check	= 0;
 	offset = skb_transport_offset(skb);
 	skb->csum = skb_checksum(skb, offset, skb->len - offset, 0);
@@ -2996,7 +2654,7 @@ static void amt_send_advertisement(struct amt_dev *amt, __be32 nonce,
 	ip_send_check(iph);
 	err = ip_local_out(amt->net, sk, skb);
 	if (unlikely(net_xmit_eval(err)))
-		DEV_STATS_INC(amt->dev, tx_errors);
+		amt->dev->stats.tx_errors++;
 
 out:
 	rcu_read_unlock();
@@ -3023,30 +2681,15 @@ static bool amt_discovery_handler(struct amt_dev *amt, struct sk_buff *skb)
 	return false;
 }
 
-/* Handle an AMT Request.
- *
- * The source of a Request is unauthenticated: it is a bare UDP datagram with a
- * trivially spoofable source address.  Allocating tunnel state here would let
- * an attacker fill the table from spoofed addresses, or let one spoofed packet
- * overwrite the nonce/MAC of an established tunnel and cut that gateway off.
- *
- * Nothing needs to be remembered at this point.  Every input to the keyed MAC
- * is carried in the packet or is device state, so the MAC is generated here,
- * echoed back by the gateway in its Membership Update, and recomputed and
- * verified there - see amt_update_handler().  Tunnel state is created only once
- * that verification succeeds and the encapsulated message passes its IGMP or
- * MLD check.
- */
 static bool amt_request_handler(struct amt_dev *amt, struct sk_buff *skb)
 {
 	struct amt_header_request *amtrh;
 	struct amt_tunnel_list *tunnel;
-	bool full, have = false;
+	unsigned long long key;
 	struct udphdr *udph;
 	struct iphdr *iph;
-	siphash_key_t key;
-	u32 per_src = 0;
 	u64 mac;
+	int i;
 
 	if (!pskb_may_pull(skb, sizeof(*udph) + sizeof(*amtrh)))
 		return true;
@@ -3058,45 +2701,59 @@ static bool amt_request_handler(struct amt_dev *amt, struct sk_buff *skb)
 	if (amtrh->reserved1 || amtrh->reserved2 || amtrh->version)
 		return true;
 
+	list_for_each_entry_rcu(tunnel, &amt->tunnel_list, list)
+		if (tunnel->ip4 == iph->saddr)
+			goto send;
+
+	spin_lock_bh(&amt->lock);
+	if (amt->nr_tunnels >= amt->max_tunnels) {
+		spin_unlock_bh(&amt->lock);
+		icmp_ndo_send(skb, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH, 0);
+		return true;
+	}
+
+	tunnel = kzalloc(sizeof(*tunnel) +
+			 (sizeof(struct hlist_head) * amt->hash_buckets),
+			 GFP_ATOMIC);
+	if (!tunnel) {
+		spin_unlock_bh(&amt->lock);
+		return true;
+	}
+
+	tunnel->source_port = udph->source;
+	tunnel->ip4 = iph->saddr;
+
+	memcpy(&key, &tunnel->key, sizeof(unsigned long long));
+	tunnel->amt = amt;
+	spin_lock_init(&tunnel->lock);
+	for (i = 0; i < amt->hash_buckets; i++)
+		INIT_HLIST_HEAD(&tunnel->groups[i]);
+
+	INIT_DELAYED_WORK(&tunnel->gc_wq, amt_tunnel_expire);
+
+	list_add_tail_rcu(&tunnel->list, &amt->tunnel_list);
+	tunnel->key = amt->key;
+	__amt_update_relay_status(tunnel, AMT_STATUS_RECEIVED_REQUEST, true);
+	amt->nr_tunnels++;
+	mod_delayed_work(amt_wq, &tunnel->gc_wq,
+			 msecs_to_jiffies(amt_gmi(amt)));
+	spin_unlock_bh(&amt->lock);
+
+send:
+	tunnel->nonce = amtrh->nonce;
+	mac = siphash_3u32((__force u32)tunnel->ip4,
+			   (__force u32)tunnel->source_port,
+			   (__force u32)tunnel->nonce,
+			   &tunnel->key);
+	tunnel->mac = mac >> 16;
+
 	if (!netif_running(amt->dev) || !netif_running(amt->stream_dev))
 		return true;
 
-	/* Snapshot the secret and the table-full state under the lock and walk
-	 * the endpoints outside it, so a Request holds amt->lock only for this
-	 * O(1) snapshot.
-	 */
-	spin_lock_bh(&amt->lock);
-	key = amt->key[0];
-	full = amt->nr_tunnels >= amt->max_tunnels;
-	spin_unlock_bh(&amt->lock);
-
-	/* Skip dead tunnels, as amt_tunnel_lookup() does: each is already
-	 * being torn down, so it must not count against a new endpoint.
-	 */
-	rcu_read_lock();
-	list_for_each_entry_rcu(tunnel, &amt->tunnel_list, list) {
-		if (tunnel->ip4 != iph->saddr || READ_ONCE(tunnel->dead))
-			continue;
-		per_src++;
-		if (tunnel->source_port == udph->source)
-			have = true;
-	}
-	rcu_read_unlock();
-
-	/* Withhold the Query when a new endpoint cannot get a tunnel. */
-	if (!have && (full || per_src >= amt_max_tunnels_per_src(amt)))
-		return true;
-
-	mac = siphash_3u32((__force u32)iph->saddr,
-			   (__force u32)udph->source,
-			   (__force u32)amtrh->nonce,
-			   &key) >> 16;
 	if (!amtrh->p)
-		amt_send_igmp_gq(amt, iph->saddr, udph->source, amtrh->nonce,
-				 mac);
+		amt_send_igmp_gq(amt, tunnel);
 	else
-		amt_send_mld_gq(amt, iph->saddr, udph->source, amtrh->nonce,
-				mac);
+		amt_send_mld_gq(amt, tunnel);
 
 	return false;
 }
@@ -3136,7 +2793,6 @@ drop:
 static int amt_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	struct amt_dev *amt;
-	__be32 remote_ip;
 	__be32 saddr;
 	int type;
 	bool err;
@@ -3148,7 +2804,6 @@ static int amt_rcv(struct sock *sk, struct sk_buff *skb)
 		kfree_skb(skb);
 		goto out;
 	}
-	remote_ip = READ_ONCE(amt->remote_ip);
 
 	skb->dev = amt->dev;
 	saddr = ip_hdr(skb)->saddr;
@@ -3173,7 +2828,7 @@ static int amt_rcv(struct sock *sk, struct sk_buff *skb)
 			}
 			goto out;
 		case AMT_MSG_MULTICAST_DATA:
-			if (!remote_ip || saddr != remote_ip) {
+			if (saddr != amt->remote_ip) {
 				netdev_dbg(amt->dev, "Invalid Relay IP\n");
 				err = true;
 				goto drop;
@@ -3184,7 +2839,7 @@ static int amt_rcv(struct sock *sk, struct sk_buff *skb)
 			else
 				goto out;
 		case AMT_MSG_MEMBERSHIP_QUERY:
-			if (!remote_ip || saddr != remote_ip) {
+			if (saddr != amt->remote_ip) {
 				netdev_dbg(amt->dev, "Invalid Relay IP\n");
 				err = true;
 				goto drop;
@@ -3364,16 +3019,6 @@ static int amt_dev_open(struct net_device *dev)
 	enable_delayed_work(&amt->discovery_wq);
 	enable_delayed_work(&amt->req_wq);
 
-	/* Seed the keys before amt_socket_create() enables the encap receive
-	 * path, so no Query MAC is generated, and no Update verified, with an
-	 * all-zero (predictable) secret.
-	 */
-	spin_lock_bh(&amt->lock);
-	write_seqcount_begin(&amt->key_seq);
-	get_random_bytes(&amt->key, sizeof(amt->key));
-	write_seqcount_end(&amt->key_seq);
-	spin_unlock_bh(&amt->lock);
-
 	err = amt_socket_create(amt);
 	if (err) {
 		disable_delayed_work(&amt->req_wq);
@@ -3382,8 +3027,9 @@ static int amt_dev_open(struct net_device *dev)
 	}
 
 	amt->req_cnt = 0;
-	WRITE_ONCE(amt->remote_ip, 0);
+	amt->remote_ip = 0;
 	amt->nonce = 0;
+	get_random_bytes(&amt->key, sizeof(siphash_key_t));
 
 	amt->status = AMT_STATUS_INIT;
 	if (amt->mode == AMT_MODE_GATEWAY) {
@@ -3399,7 +3045,7 @@ static int amt_dev_open(struct net_device *dev)
 static int amt_dev_stop(struct net_device *dev)
 {
 	struct amt_dev *amt = netdev_priv(dev);
-	struct amt_tunnel_list *tunnel;
+	struct amt_tunnel_list *tunnel, *tmp;
 	struct sk_buff *skb;
 	struct sock *sk;
 	int i;
@@ -3408,14 +3054,9 @@ static int amt_dev_stop(struct net_device *dev)
 	disable_delayed_work_sync(&amt->discovery_wq);
 	cancel_delayed_work_sync(&amt->secret_wq);
 
-	/* shutdown.  Detach the receive path as well, so that once the
-	 * grace period ends no amt_rcv() can still see the device and queue
-	 * work after the teardown below.
-	 */
+	/* shutdown */
 	sk = rtnl_dereference(amt->sk);
 	RCU_INIT_POINTER(amt->sk, NULL);
-	if (sk)
-		rcu_assign_sk_user_data(sk, NULL);
 	synchronize_net();
 	if (sk)
 		udp_tunnel_sock_release(sk);
@@ -3431,39 +3072,13 @@ static int amt_dev_stop(struct net_device *dev)
 	amt->ready4 = false;
 	amt->ready6 = false;
 	amt->req_cnt = 0;
-	WRITE_ONCE(amt->remote_ip, 0);
+	amt->remote_ip = 0;
 
-	/* Mark every tunnel dead first, so a concurrent amt_tunnel_expire()
-	 * sees ->dead and bails instead of freeing a tunnel in parallel; this
-	 * path is then the sole freer.
-	 */
-	spin_lock_bh(&amt->lock);
-	list_for_each_entry(tunnel, &amt->tunnel_list, list) {
-		spin_lock_bh(&tunnel->lock);
-		WRITE_ONCE(tunnel->dead, true);
-		spin_unlock_bh(&tunnel->lock);
-	}
-	spin_unlock_bh(&amt->lock);
-
-	/* Unlink one tunnel at a time with list_del_rcu() rather than splicing
-	 * the list onto a local head: a lockless reader walking tunnel_list
-	 * must always terminate at &amt->tunnel_list, never at a stack head.
-	 */
-	for (;;) {
-		spin_lock_bh(&amt->lock);
-		tunnel = list_first_entry_or_null(&amt->tunnel_list,
-						  struct amt_tunnel_list, list);
-		if (tunnel) {
-			list_del_rcu(&tunnel->list);
-			amt->nr_tunnels--;
-		}
-		spin_unlock_bh(&amt->lock);
-		if (!tunnel)
-			break;
-
+	list_for_each_entry_safe(tunnel, tmp, &amt->tunnel_list, list) {
+		list_del_rcu(&tunnel->list);
+		amt->nr_tunnels--;
 		cancel_delayed_work_sync(&tunnel->gc_wq);
 		amt_clear_groups(tunnel);
-		__amt_group_gc_work();
 		kfree_rcu(tunnel, rcu);
 	}
 
@@ -3532,9 +3147,9 @@ static const struct nla_policy amt_policy[IFLA_AMT_MAX + 1] = {
 	[IFLA_AMT_RELAY_PORT]	= { .type = NLA_U16 },
 	[IFLA_AMT_GATEWAY_PORT]	= { .type = NLA_U16 },
 	[IFLA_AMT_LINK]		= { .type = NLA_U32 },
-	[IFLA_AMT_LOCAL_IP]	= NLA_POLICY_EXACT_LEN(sizeof(__be32)),
+	[IFLA_AMT_LOCAL_IP]	= { .len = sizeof_field(struct iphdr, daddr) },
 	[IFLA_AMT_REMOTE_IP]	= { .len = sizeof_field(struct iphdr, daddr) },
-	[IFLA_AMT_DISCOVERY_IP]	= NLA_POLICY_EXACT_LEN(sizeof(__be32)),
+	[IFLA_AMT_DISCOVERY_IP]	= { .len = sizeof_field(struct iphdr, daddr) },
 	[IFLA_AMT_MAX_TUNNELS]	= { .type = NLA_U32 },
 };
 
@@ -3601,7 +3216,6 @@ static int amt_newlink(struct net_device *dev,
 		amt->max_tunnels = AMT_MAX_TUNNELS;
 
 	spin_lock_init(&amt->lock);
-	seqcount_spinlock_init(&amt->key_seq, &amt->lock);
 	amt->max_groups = AMT_MAX_GROUP;
 	amt->max_sources = AMT_MAX_SOURCE;
 	amt->hash_buckets = AMT_HSIZE;
@@ -3660,7 +3274,7 @@ static int amt_newlink(struct net_device *dev,
 					    "gateway port must not be 0");
 			goto err;
 		}
-		WRITE_ONCE(amt->remote_ip, 0);
+		amt->remote_ip = 0;
 		amt->discovery_ip = nla_get_in_addr(data[IFLA_AMT_DISCOVERY_IP]);
 		if (ipv4_is_loopback(amt->discovery_ip) ||
 		    ipv4_is_zeronet(amt->discovery_ip) ||
@@ -3726,10 +3340,8 @@ static size_t amt_get_size(const struct net_device *dev)
 
 static int amt_fill_info(struct sk_buff *skb, const struct net_device *dev)
 {
-	const struct amt_dev *amt = netdev_priv(dev);
-	__be32 remote_ip;
+	struct amt_dev *amt = netdev_priv(dev);
 
-	rcu_read_lock();
 	if (nla_put_u32(skb, IFLA_AMT_MODE, amt->mode))
 		goto nla_put_failure;
 	if (nla_put_be16(skb, IFLA_AMT_RELAY_PORT, amt->relay_port))
@@ -3742,19 +3354,15 @@ static int amt_fill_info(struct sk_buff *skb, const struct net_device *dev)
 		goto nla_put_failure;
 	if (nla_put_in_addr(skb, IFLA_AMT_DISCOVERY_IP, amt->discovery_ip))
 		goto nla_put_failure;
-
-	remote_ip = READ_ONCE(amt->remote_ip);
-	if (remote_ip)
-		if (nla_put_in_addr(skb, IFLA_AMT_REMOTE_IP, remote_ip))
+	if (amt->remote_ip)
+		if (nla_put_in_addr(skb, IFLA_AMT_REMOTE_IP, amt->remote_ip))
 			goto nla_put_failure;
 	if (nla_put_u32(skb, IFLA_AMT_MAX_TUNNELS, amt->max_tunnels))
 		goto nla_put_failure;
 
-	rcu_read_unlock();
 	return 0;
 
 nla_put_failure:
-	rcu_read_unlock();
 	return -EMSGSIZE;
 }
 
@@ -3771,6 +3379,22 @@ static struct rtnl_link_ops amt_link_ops __read_mostly = {
 	.fill_info      = amt_fill_info,
 };
 
+static struct net_device *amt_lookup_upper_dev(struct net_device *dev)
+{
+	struct net_device *upper_dev;
+	struct amt_dev *amt;
+
+	for_each_netdev(dev_net(dev), upper_dev) {
+		if (netif_is_amt(upper_dev)) {
+			amt = netdev_priv(upper_dev);
+			if (amt->stream_dev == dev)
+				return upper_dev;
+		}
+	}
+
+	return NULL;
+}
+
 static int amt_device_event(struct notifier_block *unused,
 			    unsigned long event, void *ptr)
 {
@@ -3780,33 +3404,25 @@ static int amt_device_event(struct notifier_block *unused,
 	LIST_HEAD(list);
 	int new_mtu;
 
-	/* amt_dellink() leaves each device on the netns device list until
-	 * unregister_netdevice_many(), so the walk stays valid.
-	 */
-	for_each_netdev(dev_net(dev), upper_dev) {
-		if (!netif_is_amt(upper_dev))
-			continue;
-		amt = netdev_priv(upper_dev);
-		if (amt->stream_dev != dev)
-			continue;
+	upper_dev = amt_lookup_upper_dev(dev);
+	if (!upper_dev)
+		return NOTIFY_DONE;
+	amt = netdev_priv(upper_dev);
 
-		switch (event) {
-		case NETDEV_UNREGISTER:
-			amt_dellink(amt->dev, &list);
-			break;
-		case NETDEV_CHANGEMTU:
-			if (amt->mode == AMT_MODE_RELAY)
-				new_mtu = dev->mtu - AMT_RELAY_HLEN;
-			else
-				new_mtu = dev->mtu - AMT_GW_HLEN;
-
-			dev_set_mtu(amt->dev, new_mtu);
-			break;
-		}
-	}
-
-	if (event == NETDEV_UNREGISTER)
+	switch (event) {
+	case NETDEV_UNREGISTER:
+		amt_dellink(amt->dev, &list);
 		unregister_netdevice_many(&list);
+		break;
+	case NETDEV_CHANGEMTU:
+		if (amt->mode == AMT_MODE_RELAY)
+			new_mtu = dev->mtu - AMT_RELAY_HLEN;
+		else
+			new_mtu = dev->mtu - AMT_GW_HLEN;
+
+		dev_set_mtu(amt->dev, new_mtu);
+		break;
+	}
 
 	return NOTIFY_DONE;
 }
@@ -3838,9 +3454,6 @@ static int __init amt_init(void)
 	INIT_DELAYED_WORK(&source_gc_wq, amt_source_gc_work);
 	mod_delayed_work(amt_wq, &source_gc_wq,
 			 msecs_to_jiffies(AMT_GC_INTERVAL));
-	INIT_DELAYED_WORK(&group_gc_wq, amt_group_gc_work);
-	mod_delayed_work(amt_wq, &group_gc_wq,
-			 msecs_to_jiffies(AMT_GC_INTERVAL));
 	spin_unlock_bh(&source_gc_lock);
 
 	return 0;
@@ -3861,8 +3474,6 @@ static void __exit amt_fini(void)
 	unregister_netdevice_notifier(&amt_notifier_block);
 	cancel_delayed_work_sync(&source_gc_wq);
 	__amt_source_gc_work();
-	cancel_delayed_work_sync(&group_gc_wq);
-	__amt_group_gc_work();
 	destroy_workqueue(amt_wq);
 }
 module_exit(amt_fini);

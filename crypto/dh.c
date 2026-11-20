@@ -227,10 +227,36 @@ static int dh_compute_value(struct kpp_request *req)
 
 		/* SP800-56A rev 3 5.6.2.1.3 key check */
 		} else {
+			MPI val_pct;
+
 			if (dh_is_pubkey_valid(ctx, val)) {
 				ret = -EAGAIN;
-				goto err_free_val;
+				goto panic_on_fail;
 			}
+
+			/*
+			 * SP800-56Arev3, 5.6.2.1.4: ("Owner Assurance
+			 * of Pair-wise Consistency"): recompute the
+			 * public key and check if the results match.
+			 */
+			val_pct = mpi_alloc(0);
+			if (!val_pct) {
+				ret = -ENOMEM;
+				goto panic_on_fail;
+			}
+
+			ret = _compute_val(ctx, base, val_pct);
+			if (ret) {
+				mpi_free(val_pct);
+				goto panic_on_fail;
+			}
+
+			if (mpi_cmp(val, val_pct) != 0) {
+				ret = -EINVAL;
+				mpi_free(val_pct);
+				goto panic_on_fail;
+			}
+			mpi_free(val_pct);
 		}
 	}
 
@@ -246,6 +272,10 @@ err_free_base:
 err_free_val:
 	mpi_free(val);
 	return ret;
+panic_on_fail:
+	mpi_free(val);
+	fips_fail_notify();
+	panic("dh: failed to verify pair-wise consistency test (PCT)");
 }
 
 static unsigned int dh_max_size(struct crypto_kpp *tfm)

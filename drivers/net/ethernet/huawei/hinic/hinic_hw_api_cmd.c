@@ -825,8 +825,8 @@ static int api_chain_init(struct hinic_api_cmd_chain *chain,
 
 	sema_init(&chain->sem, 1);
 
-	chain->cell_ctxt = devm_kzalloc_objs(&pdev->dev, *chain->cell_ctxt,
-					     chain->num_cells);
+	chain->cell_ctxt = devm_kcalloc(&pdev->dev, chain->num_cells,
+					sizeof(*chain->cell_ctxt), GFP_KERNEL);
 	if (!chain->cell_ctxt)
 		return -ENOMEM;
 
@@ -874,7 +874,7 @@ static struct hinic_api_cmd_chain *
 		return ERR_PTR(-EINVAL);
 	}
 
-	chain = devm_kzalloc_obj(&pdev->dev, *chain);
+	chain = devm_kzalloc(&pdev->dev, sizeof(*chain), GFP_KERNEL);
 	if (!chain)
 		return ERR_PTR(-ENOMEM);
 

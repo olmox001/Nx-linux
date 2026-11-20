@@ -115,7 +115,11 @@ char *__build_path_from_dentry_optional_prefix(struct dentry *direntry, void *pa
 	}
 	if (dirsep != '/') {
 		/* BB test paths to Windows with '/' in the midst of prepath */
-		strreplace(s, '/', dirsep);
+		char *p;
+
+		for (p = s; *p; p++)
+			if (*p == '/')
+				*p = dirsep;
 	}
 	if (dfsplen) {
 		s -= dfsplen;
@@ -419,6 +423,7 @@ retry_open:
 		 * BB implement mode setting via Windows security
 		 * descriptors e.g.
 		 */
+		/* CIFSSMBWinSetPerms(xid,tcon,path,mode,-1,-1,nls);*/
 
 		/* Could set r/o dos attribute if mode & 0222 == 0 */
 	}
@@ -663,8 +668,8 @@ out_free_xid:
  * The initial dentry state is hashed-negative.  On success, dentry will become
  * hashed-positive by calling d_instantiate().
  */
-int cifs_create(const struct mnt_idmap *idmap, struct inode *dir,
-		struct dentry *direntry, umode_t mode)
+int cifs_create(struct mnt_idmap *idmap, struct inode *dir,
+		struct dentry *direntry, umode_t mode, bool excl)
 {
 	struct cifs_sb_info *cifs_sb = CIFS_SB(dir);
 	int rc;
@@ -720,7 +725,7 @@ out_free_xid:
 	return rc;
 }
 
-int cifs_mknod(const struct mnt_idmap *idmap, struct inode *inode,
+int cifs_mknod(struct mnt_idmap *idmap, struct inode *inode,
 	       struct dentry *direntry, umode_t mode, dev_t device_number)
 {
 	int rc = -EPERM;
@@ -1083,7 +1088,7 @@ static int set_tmpfile_attr(const unsigned int xid, unsigned int oflags,
  * The initial dentry state is unhashed-negative.  On success, dentry will
  * become unhashed-positive by calling d_instantiate().
  */
-int cifs_tmpfile(const struct mnt_idmap *idmap, struct inode *dir,
+int cifs_tmpfile(struct mnt_idmap *idmap, struct inode *dir,
 		 struct file *file, umode_t mode)
 {
 	struct dentry *dentry = file->f_path.dentry;

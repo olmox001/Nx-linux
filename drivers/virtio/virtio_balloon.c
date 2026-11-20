@@ -185,18 +185,16 @@ static void tell_host(struct virtio_balloon *vb, struct virtqueue *vq)
 {
 	struct scatterlist sg;
 	unsigned int len;
-	int err;
 
 	sg_init_one(&sg, vb->pfns, sizeof(vb->pfns[0]) * vb->num_pfns);
 
 	/* We should always be able to add one buffer to an empty queue. */
-	err = virtqueue_add_outbuf(vq, &sg, 1, vb, GFP_KERNEL);
-	if (WARN_ON_ONCE(err))
-		return;
+	virtqueue_add_outbuf(vq, &sg, 1, vb, GFP_KERNEL);
 	virtqueue_kick(vq);
 
 	/* When host has read buffer, this completes via balloon_ack */
 	wait_event(vb->acked, virtqueue_get_buf(vq, &len));
+
 }
 
 static int virtballoon_free_page_report(struct page_reporting_dev_info *pr_dev_info,
@@ -446,7 +444,6 @@ static void stats_handle_request(struct virtio_balloon *vb)
 	struct virtqueue *vq;
 	struct scatterlist sg;
 	unsigned int len, num_stats;
-	int err;
 
 	num_stats = update_balloon_stats(vb);
 
@@ -454,9 +451,7 @@ static void stats_handle_request(struct virtio_balloon *vb)
 	if (!virtqueue_get_buf(vq, &len))
 		return;
 	sg_init_one(&sg, vb->stats, sizeof(vb->stats[0]) * num_stats);
-	err = virtqueue_add_outbuf(vq, &sg, 1, vb, GFP_KERNEL);
-	if (WARN_ON_ONCE(err))
-		return;
+	virtqueue_add_outbuf(vq, &sg, 1, vb, GFP_KERNEL);
 	virtqueue_kick(vq);
 }
 
@@ -942,7 +937,6 @@ static int virtballoon_probe(struct virtio_device *vdev)
 	INIT_WORK(&vb->update_balloon_stats_work, update_balloon_stats_func);
 	INIT_WORK(&vb->update_balloon_size_work, update_balloon_size_func);
 	spin_lock_init(&vb->stop_update_lock);
-	spin_lock_init(&vb->wakeup_lock);
 	mutex_init(&vb->balloon_lock);
 	init_waitqueue_head(&vb->acked);
 	vb->vdev = vdev;
@@ -1049,6 +1043,8 @@ static int virtballoon_probe(struct virtio_device *vdev)
 		if (err)
 			goto out_unregister_oom;
 	}
+
+	spin_lock_init(&vb->wakeup_lock);
 
 	/*
 	 * The virtio balloon itself can't wake up the device, but it is

@@ -259,6 +259,7 @@ enum {
 	BTRFS_MOUNT_NOSSD			= (1ULL << 9),
 	BTRFS_MOUNT_DISCARD_SYNC		= (1ULL << 10),
 	BTRFS_MOUNT_FORCE_COMPRESS		= (1ULL << 11),
+	BTRFS_MOUNT_SPACE_CACHE			= (1ULL << 12),
 	BTRFS_MOUNT_CLEAR_CACHE			= (1ULL << 13),
 	BTRFS_MOUNT_USER_SUBVOL_RM_ALLOWED	= (1ULL << 14),
 	BTRFS_MOUNT_ENOSPC_DEBUG		= (1ULL << 15),
@@ -288,8 +289,7 @@ enum {
 	 BTRFS_MOUNT_IGNOREBADROOTS |		\
 	 BTRFS_MOUNT_IGNOREDATACSUMS |		\
 	 BTRFS_MOUNT_IGNOREMETACSUMS |		\
-	 BTRFS_MOUNT_IGNORESUPERFLAGS |		\
-	 BTRFS_MOUNT_USEBACKUPROOT)
+	 BTRFS_MOUNT_IGNORESUPERFLAGS)
 
 /*
  * Compat flags that we support.  If any incompat flags are set other than the
@@ -711,6 +711,7 @@ struct btrfs_fs_info {
 	struct workqueue_struct *endio_meta_workers;
 	struct workqueue_struct *rmw_workers;
 	struct btrfs_workqueue *endio_write_workers;
+	struct btrfs_workqueue *endio_freespace_worker;
 	struct btrfs_workqueue *caching_workers;
 
 	struct workqueue_struct *fixup_workers;
@@ -809,7 +810,7 @@ struct btrfs_fs_info {
 	struct btrfs_discard_ctl discard_ctl;
 
 	/* Is qgroup tracking in a consistent state? */
-	unsigned long qgroup_flags;
+	u64 qgroup_flags;
 
 	/* Holds configuration and tracking. Protected by qgroup_lock. */
 	struct rb_root qgroup_tree;
@@ -855,7 +856,6 @@ struct btrfs_fs_info {
 
 	/* Next backup root to be overwritten */
 	int backup_root_index;
-	int use_backup_slot;
 
 	/* Device replace state */
 	struct btrfs_dev_replace dev_replace;
@@ -890,6 +890,7 @@ struct btrfs_fs_info {
 	u32 sectorsize_bits;
 	u32 block_min_order;
 	u32 block_max_order;
+	u32 stripesize;
 	u32 writeback_bio_size;
 	u32 csum_size;
 	u32 csums_per_leaf;
@@ -1058,6 +1059,8 @@ static inline u64 btrfs_calc_metadata_size(const struct btrfs_fs_info *fs_info,
 
 #define BTRFS_MAX_EXTENT_ITEM_SIZE(r) ((BTRFS_LEAF_DATA_SIZE(r->fs_info) >> 4) - \
 					sizeof(struct btrfs_item))
+
+#define BTRFS_BYTES_TO_BLKS(fs_info, bytes) ((bytes) >> (fs_info)->sectorsize_bits)
 
 static inline bool btrfs_is_zoned(const struct btrfs_fs_info *fs_info)
 {

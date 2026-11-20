@@ -62,10 +62,10 @@ EXPORT_SYMBOL(udp_sock_create4);
 static bool sk_saddr_any(struct sock *sk)
 {
 #if IS_ENABLED(CONFIG_IPV6)
-	if (sk->sk_family == AF_INET6)
-		return ipv6_addr_any(&sk->sk_v6_rcv_saddr);
-#endif
+	return ipv6_addr_any(&sk->sk_v6_rcv_saddr);
+#else
 	return !sk->sk_rcv_saddr;
+#endif
 }
 
 void setup_udp_tunnel_sock(struct net *net, struct sock *sk,
@@ -178,7 +178,7 @@ void udp_tunnel_xmit_skb(struct rtable *rt, struct sock *sk, struct sk_buff *skb
 
 	uh->dest = dst_port;
 	uh->source = src_port;
-	udp_set_len(uh, skb->len);
+	uh->len = htons(skb->len);
 
 	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
 

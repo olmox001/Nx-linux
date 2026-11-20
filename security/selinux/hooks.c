@@ -94,7 +94,6 @@
 #include <linux/io_uring/cmd.h>
 #include <uapi/linux/lsm.h>
 #include <linux/memfd.h>
-#include <uapi/linux/inet_diag.h>
 
 #include "initcalls.h"
 #include "avc.h"
@@ -107,7 +106,6 @@
 #include "netlabel.h"
 #include "audit.h"
 #include "avc_ss.h"
-#include "ima.h"
 
 #define SELINUX_INODE_INIT_XATTRS 1
 
@@ -1345,11 +1343,11 @@ static int selinux_genfs_get_sid(struct dentry *dentry,
 	struct super_block *sb = dentry->d_sb;
 	char *buffer, *path;
 
-	buffer = kmalloc(PATH_MAX, GFP_KERNEL);
+	buffer = (char *)__get_free_page(GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 
-	path = dentry_path_raw(dentry, buffer, PATH_MAX);
+	path = dentry_path_raw(dentry, buffer, PAGE_SIZE);
 	if (IS_ERR(path))
 		rc = PTR_ERR(path);
 	else {
@@ -1370,7 +1368,7 @@ static int selinux_genfs_get_sid(struct dentry *dentry,
 			rc = 0;
 		}
 	}
-	kfree(buffer);
+	free_page((unsigned long)buffer);
 	return rc;
 }
 
@@ -3087,14 +3085,12 @@ static int selinux_inode_init_security_anon(struct inode *inode,
 			    &ad);
 }
 
-static int selinux_inode_create(const struct mnt_idmap *idmap, struct inode *dir,
-				struct dentry *dentry, umode_t mode)
+static int selinux_inode_create(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
 	return may_create(dir, dentry, SECCLASS_FILE);
 }
 
-static int selinux_inode_link(const struct mnt_idmap *idmap, struct dentry *old_dentry,
-			      struct inode *dir, struct dentry *new_dentry)
+static int selinux_inode_link(struct dentry *old_dentry, struct inode *dir, struct dentry *new_dentry)
 {
 	return may_link(dir, old_dentry, MAY_LINK);
 }
@@ -3104,14 +3100,12 @@ static int selinux_inode_unlink(struct inode *dir, struct dentry *dentry)
 	return may_link(dir, dentry, MAY_UNLINK);
 }
 
-static int selinux_inode_symlink(const struct mnt_idmap *idmap, struct inode *dir,
-				 struct dentry *dentry, const char *name)
+static int selinux_inode_symlink(struct inode *dir, struct dentry *dentry, const char *name)
 {
 	return may_create(dir, dentry, SECCLASS_LNK_FILE);
 }
 
-static int selinux_inode_mkdir(const struct mnt_idmap *idmap, struct inode *dir,
-			       struct dentry *dentry, umode_t mask)
+static int selinux_inode_mkdir(struct inode *dir, struct dentry *dentry, umode_t mask)
 {
 	return may_create(dir, dentry, SECCLASS_DIR);
 }
@@ -3121,8 +3115,7 @@ static int selinux_inode_rmdir(struct inode *dir, struct dentry *dentry)
 	return may_link(dir, dentry, MAY_RMDIR);
 }
 
-static int selinux_inode_mknod(const struct mnt_idmap *idmap, struct inode *dir,
-			       struct dentry *dentry, umode_t mode, dev_t dev)
+static int selinux_inode_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
 {
 	return may_create(dir, dentry, inode_mode_to_security_class(mode));
 }
@@ -3254,15 +3247,13 @@ static inline void task_avdcache_update(struct task_security_struct *tsec,
 
 /**
  * selinux_inode_permission - Check if the current task can access an inode
- * @idmap: idmap of the mount
  * @inode: the inode that is being accessed
  * @requested: the accesses being requested
  *
  * Check if the current task is allowed to access @inode according to
  * @requested.  Returns 0 if allowed, negative values otherwise.
  */
-static int selinux_inode_permission(const struct mnt_idmap *idmap,
-				    struct inode *inode, int requested)
+static int selinux_inode_permission(struct inode *inode, int requested)
 {
 	int mask;
 	u32 perms;
@@ -3317,7 +3308,7 @@ static int selinux_inode_permission(const struct mnt_idmap *idmap,
 	return rc;
 }
 
-static int selinux_inode_setattr(const struct mnt_idmap *idmap, struct dentry *dentry,
+static int selinux_inode_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 				 struct iattr *iattr)
 {
 	const struct cred *cred = current_cred();
@@ -3387,7 +3378,7 @@ static int selinux_inode_xattr_skipcap(const char *name)
 	return !strcmp(name, XATTR_NAME_SELINUX);
 }
 
-static int selinux_inode_setxattr(const struct mnt_idmap *idmap,
+static int selinux_inode_setxattr(struct mnt_idmap *idmap,
 				  struct dentry *dentry, const char *name,
 				  const void *value, size_t size, int flags)
 {
@@ -3473,20 +3464,20 @@ static int selinux_inode_setxattr(const struct mnt_idmap *idmap,
 			    &ad);
 }
 
-static int selinux_inode_set_acl(const struct mnt_idmap *idmap,
+static int selinux_inode_set_acl(struct mnt_idmap *idmap,
 				 struct dentry *dentry, const char *acl_name,
 				 struct posix_acl *kacl)
 {
 	return dentry_has_perm(current_cred(), dentry, FILE__SETATTR);
 }
 
-static int selinux_inode_get_acl(const struct mnt_idmap *idmap,
+static int selinux_inode_get_acl(struct mnt_idmap *idmap,
 				 struct dentry *dentry, const char *acl_name)
 {
 	return dentry_has_perm(current_cred(), dentry, FILE__GETATTR);
 }
 
-static int selinux_inode_remove_acl(const struct mnt_idmap *idmap,
+static int selinux_inode_remove_acl(struct mnt_idmap *idmap,
 				    struct dentry *dentry, const char *acl_name)
 {
 	return dentry_has_perm(current_cred(), dentry, FILE__SETATTR);
@@ -3546,7 +3537,7 @@ static int selinux_inode_listxattr(struct dentry *dentry)
 	return dentry_has_perm(cred, dentry, FILE__GETATTR);
 }
 
-static int selinux_inode_removexattr(const struct mnt_idmap *idmap,
+static int selinux_inode_removexattr(struct mnt_idmap *idmap,
 				     struct dentry *dentry, const char *name)
 {
 	/* if not a selinux xattr, only check the ordinary setattr perm */
@@ -3626,7 +3617,7 @@ static int selinux_path_notify(const struct path *path, u64 mask,
  *
  * Permission check is handled by selinux_inode_getxattr hook.
  */
-static int selinux_inode_getsecurity(const struct mnt_idmap *idmap,
+static int selinux_inode_getsecurity(struct mnt_idmap *idmap,
 				     struct inode *inode, const char *name,
 				     void **buffer, bool alloc)
 {
@@ -3894,7 +3885,8 @@ static int selinux_backing_file_alloc(struct file *backing_file,
 	 * mappings would have to be serialized.  Size it dynamically: erofs
 	 * inode sharing adds a backing file without bumping s_stack_depth.
 	 */
-	bfsec->layers = kmalloc_objs(*bfsec->layers, ubfsec->layer_count + 1);
+	bfsec->layers = kmalloc_array(ubfsec->layer_count + 1,
+				      sizeof(*bfsec->layers), GFP_KERNEL);
 	if (!bfsec->layers)
 		return -ENOMEM;
 
@@ -3935,7 +3927,7 @@ static void selinux_backing_file_free(struct file *backing_file)
  * operation to an inode.
  */
 static int ioctl_has_perm(const struct cred *cred, struct file *file,
-		u32 requested, unsigned int cmd)
+		u32 requested, u16 cmd)
 {
 	struct common_audit_data ad;
 	struct file_security_struct *fsec = selinux_file(file);
@@ -4006,14 +3998,14 @@ static int selinux_file_ioctl(struct file *file, unsigned int cmd,
 	case FIOCLEX:
 	case FIONCLEX:
 		if (!selinux_policycap_ioctl_skip_cloexec())
-			error = ioctl_has_perm(cred, file, FILE__IOCTL, cmd);
+			error = ioctl_has_perm(cred, file, FILE__IOCTL, (u16) cmd);
 		break;
 
 	/* default case assumes that the command will go
 	 * to the file's ioctl() function.
 	 */
 	default:
-		error = ioctl_has_perm(cred, file, FILE__IOCTL, cmd);
+		error = ioctl_has_perm(cred, file, FILE__IOCTL, (u16) cmd);
 	}
 	return error;
 }
@@ -4179,11 +4171,8 @@ static int selinux_mmap_file(struct file *file,
 			     unsigned long reqprot __always_unused,
 			     unsigned long prot, unsigned long flags)
 {
-	const unsigned long map_type = (flags & MAP_TYPE);
-
 	return selinux_mmap_file_common(file, prot,
-					(map_type == MAP_SHARED ||
-					 map_type == MAP_SHARED_VALIDATE),
+					(flags & MAP_TYPE) == MAP_SHARED,
 					false);
 }
 
@@ -6429,17 +6418,12 @@ static int selinux_netlink_send(struct sock *sk, struct sk_buff *skb)
 				return rc;
 		} else if (rc == -EINVAL) {
 			/* -EINVAL is a missing msg/perm mapping */
-			if (sclass == SECCLASS_NETLINK_TCPDIAG_SOCKET &&
-			    nlh->nlmsg_type == DCCPDIAG_GETSOCK)
-				pr_warn_once("SELinux: DCCP has been removed, pid=%d comm=%s\n",
-					     task_pid_nr(current), current->comm);
-			else
-				pr_warn_ratelimited("SELinux: unrecognized netlink"
-					" message: protocol=%hu nlmsg_type=%hu sclass=%s"
-					" pid=%d comm=%s\n",
-					sk->sk_protocol, nlh->nlmsg_type,
-					secclass_map[sclass - 1].name,
-					task_pid_nr(current), current->comm);
+			pr_warn_ratelimited("SELinux: unrecognized netlink"
+				" message: protocol=%hu nlmsg_type=%hu sclass=%s"
+				" pid=%d comm=%s\n",
+				sk->sk_protocol, nlh->nlmsg_type,
+				secclass_map[sclass - 1].name,
+				task_pid_nr(current), current->comm);
 			if (enforcing_enabled() &&
 			    !security_get_allow_unknown())
 				return rc;
@@ -7996,8 +7980,6 @@ static __init int selinux_init(void)
 	ebitmap_cache_init();
 
 	hashtab_cache_init();
-
-	selinux_ima_config_len_init();
 
 	security_add_hooks(selinux_hooks, ARRAY_SIZE(selinux_hooks),
 			   &selinux_lsmid);

@@ -184,7 +184,8 @@ static int create_sysfs_entry(struct hidma_mgmt_dev *dev, char *name, int mode)
 	struct device_attribute *attrs;
 	char *name_copy;
 
-	attrs = devm_kmalloc_obj(&dev->pdev->dev, struct device_attribute);
+	attrs = devm_kmalloc(&dev->pdev->dev,
+			     sizeof(struct device_attribute), GFP_KERNEL);
 	if (!attrs)
 		return -ENOMEM;
 
@@ -208,7 +209,7 @@ static int create_sysfs_entry_channel(struct hidma_mgmt_dev *mdev, char *name,
 	struct hidma_chan_attr *chattr;
 	char *name_copy;
 
-	chattr = devm_kmalloc_obj(&mdev->pdev->dev, *chattr);
+	chattr = devm_kmalloc(&mdev->pdev->dev, sizeof(*chattr), GFP_KERNEL);
 	if (!chattr)
 		return -ENOMEM;
 

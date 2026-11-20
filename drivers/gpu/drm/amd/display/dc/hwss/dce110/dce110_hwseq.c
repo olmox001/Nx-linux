@@ -283,10 +283,11 @@ static void dce110_prescale_params(struct ipp_prescale_params *prescale_params,
 }
 
 static bool
-dce110_set_input_transfer_func(struct set_input_transfer_func_params *params)
+dce110_set_input_transfer_func(struct dc *dc, struct pipe_ctx *pipe_ctx,
+			       const struct dc_plane_state *plane_state)
 {
-	struct input_pixel_processor *ipp = params->ipp;
-	struct dc_plane_state *plane_state = params->plane_state;
+	(void)dc;
+	struct input_pixel_processor *ipp = pipe_ctx->plane_res.ipp;
 	const struct dc_transfer_func *tf = NULL;
 	struct ipp_prescale_params prescale_params = { 0 };
 	bool result = true;
@@ -606,10 +607,11 @@ dce110_translate_regamma_to_hw_format(const struct dc_transfer_func *output_tf,
 }
 
 static bool
-dce110_set_output_transfer_func(struct set_output_transfer_func_params *params)
+dce110_set_output_transfer_func(struct dc *dc, struct pipe_ctx *pipe_ctx,
+				const struct dc_stream_state *stream)
 {
-	struct transform *xfm = params->xfm;
-	const struct dc_stream_state *stream = params->stream;
+	(void)dc;
+	struct transform *xfm = pipe_ctx->plane_res.xfm;
 
 	xfm->funcs->opp_power_on_regamma_lut(xfm, true);
 	xfm->regamma_params.hw_points_num = GAMMA_HW_POINTS_NUM;
@@ -1285,8 +1287,6 @@ void dce110_blank_stream(struct pipe_ctx *pipe_ctx)
 		return;
 
 	if (link->local_sink && link->local_sink->sink_signal == SIGNAL_TYPE_EDP) {
-		if (link->forced_psr_active)
-			return;
 		if (!link->skip_implict_edp_power_control && hws)
 			hws->funcs.edp_backlight_control(link, false);
 		link->dc->hwss.set_abm_immediate_disable(pipe_ctx);
@@ -1815,9 +1815,7 @@ enum dc_status dce110_apply_single_controller_ctx_to_hw(
 			dc->link_srv->set_dsc_enable(pipe_ctx, true);
 	}
 
-	if (!stream->dpms_off &&
-	    !(link->connector_signal == SIGNAL_TYPE_EDP &&
-	      link->forced_psr_active))
+	if (!stream->dpms_off)
 		dc->link_srv->set_dpms_on(context, pipe_ctx);
 
 	/* DCN3.1 FPGA Workaround
@@ -1836,9 +1834,7 @@ enum dc_status dce110_apply_single_controller_ctx_to_hw(
 	 * is constructed with the same sink). Make sure not to override
 	 * and link programming on the main.
 	 */
-	if (dc_state_get_pipe_subvp_type(context, pipe_ctx) != SUBVP_PHANTOM &&
-	    !(link->connector_signal == SIGNAL_TYPE_EDP &&
-	      link->forced_psr_active)) {
+	if (dc_state_get_pipe_subvp_type(context, pipe_ctx) != SUBVP_PHANTOM) {
 		pipe_ctx->stream->link->psr_settings.psr_feature_enabled = false;
 		pipe_ctx->stream->link->replay_settings.replay_feature_enabled = false;
 	}
@@ -2830,26 +2826,23 @@ static void program_surface_visibility(const struct dc *dc,
 
 }
 
-static void program_gamut_remap(struct program_gamut_remap_params *params)
+static void program_gamut_remap(struct pipe_ctx *pipe_ctx)
 {
-	struct transform *xfm = params->xfm;
-	const struct dc_stream_state *stream = params->stream;
 	int i = 0;
 	struct xfm_grph_csc_adjustment adjust;
-
 	memset(&adjust, 0, sizeof(adjust));
 	adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_BYPASS;
 
 
-	if (stream->gamut_remap_matrix.enable_remap == true) {
+	if (pipe_ctx->stream->gamut_remap_matrix.enable_remap == true) {
 		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
 
 		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
 			adjust.temperature_matrix[i] =
-				stream->gamut_remap_matrix.matrix[i];
+				pipe_ctx->stream->gamut_remap_matrix.matrix[i];
 	}
 
-	xfm->funcs->transform_set_gamut_remap(xfm, &adjust);
+	pipe_ctx->plane_res.xfm->funcs->transform_set_gamut_remap(pipe_ctx->plane_res.xfm, &adjust);
 }
 static void update_plane_addr(const struct dc *dc,
 		struct pipe_ctx *pipe_ctx)
@@ -3139,6 +3132,7 @@ static void dce110_program_front_end_for_pipe(
 	struct xfm_grph_csc_adjustment adjust;
 	struct out_csc_color_matrix tbl_entry;
 	unsigned int i;
+	struct dce_hwseq *hws = dc->hwseq;
 
 	memset(&tbl_entry, 0, sizeof(tbl_entry));
 
@@ -3194,13 +3188,13 @@ static void dce110_program_front_end_for_pipe(
 				plane_state->rotation);
 
 	/* Moved programming gamma from dc to hwss */
-	if (pipe_ctx->plane_state->update_bits.full_update ||
-			pipe_ctx->plane_state->update_bits.in_transfer_func_change ||
-			pipe_ctx->plane_state->update_bits.gamma_change)
-		hwss_set_input_transfer_func(dc, pipe_ctx);
+	if (pipe_ctx->plane_state->update_flags.bits.full_update ||
+			pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
+			pipe_ctx->plane_state->update_flags.bits.gamma_change)
+		hws->funcs.set_input_transfer_func(dc, pipe_ctx, pipe_ctx->plane_state);
 
-	if (pipe_ctx->plane_state->update_bits.full_update)
-		hwss_set_output_transfer_func(dc, pipe_ctx);
+	if (pipe_ctx->plane_state->update_flags.bits.full_update)
+		hws->funcs.set_output_transfer_func(dc, pipe_ctx, pipe_ctx->stream);
 
 	DC_LOG_SURFACE(
 			"Pipe:%d %p: addr hi:0x%x, "
@@ -3487,10 +3481,6 @@ void dce110_enable_tmds_link_output(struct dc_link *link,
 		uint32_t pixel_clock)
 {
 	(void)link_res;
-
-	if (!link->link_enc)
-		return;
-
 	link->link_enc->funcs->enable_tmds_output(
 			link->link_enc,
 			clock_source,
@@ -3498,17 +3488,6 @@ void dce110_enable_tmds_link_output(struct dc_link *link,
 			signal,
 			pixel_clock);
 	link->phy_state.symclk_state = SYMCLK_ON_TX_ON;
-
-	// For dongle Type 2 with no I2C support on board, setup sw mode of Ri/Pj check with proper aux instance
-	if (link->force_to_use_aux) {
-		if (link->link_enc->funcs->setup_ri_pj_check_in_sw_or_hw_mode)
-			link->link_enc->funcs->setup_ri_pj_check_in_sw_or_hw_mode(link->link_enc,
-				link->aux_hw_inst, true);
-	} else
-		// For HDMI setup hw mode of Ri/Pj check with proper ddc pin instance
-		if (link->link_enc->funcs->setup_ri_pj_check_in_sw_or_hw_mode)
-			link->link_enc->funcs->setup_ri_pj_check_in_sw_or_hw_mode(link->link_enc,
-				link->ddc_hw_inst, false);
 }
 
 static void dce110_enable_analog_link_output(
@@ -3607,11 +3586,8 @@ void dce110_disable_link_output(struct dc_link *link,
 	else if (dmcu != NULL && dmcu->funcs->lock_phy)
 		dmcu->funcs->lock_phy(dmcu);
 
-	if (!(signal == SIGNAL_TYPE_EDP &&
-			link->forced_psr_active)) {
-		link_hwss->disable_link_output(link, link_res, signal);
-		link->phy_state.symclk_state = SYMCLK_OFF_TX_OFF;
-	}
+	link_hwss->disable_link_output(link, link_res, signal);
+	link->phy_state.symclk_state = SYMCLK_OFF_TX_OFF;
 	/*
 	 * Add the logic to extract BOTH power up and power down sequences
 	 * from enable/disable link output and only call edp panel control
@@ -3643,10 +3619,9 @@ static const struct hw_sequencer_funcs dce110_funcs = {
 	.enable_audio_stream = dce110_enable_audio_stream,
 	.disable_audio_stream = dce110_disable_audio_stream,
 	.disable_plane = dce110_power_down_fe,
-	.build_pipe_control_lock_sequence = dce_build_pipe_control_lock_sequence,
-	.tg_lock = dce_tg_lock,
+	.pipe_control_lock = dce_pipe_control_lock,
 	.interdependent_update_lock = NULL,
-	.cursor_lock = hwss_pipe_control_lock,
+	.cursor_lock = dce_pipe_control_lock,
 	.prepare_bandwidth = dce110_prepare_bandwidth,
 	.optimize_bandwidth = dce110_optimize_bandwidth,
 	.set_drr = set_drr,
@@ -3658,7 +3633,7 @@ static const struct hw_sequencer_funcs dce110_funcs = {
 	.edp_backlight_control = dce110_edp_backlight_control,
 	.edp_power_control = dce110_edp_power_control,
 	.edp_wait_for_hpd_ready = dce110_edp_wait_for_hpd_ready,
-	.set_cursor_position_legacy = dce110_set_cursor_position,
+	.set_cursor_position = dce110_set_cursor_position,
 	.set_cursor_attribute = dce110_set_cursor_attribute,
 	.set_backlight_level = dce110_set_backlight_level,
 	.set_abm_immediate_disable = dce110_set_abm_immediate_disable,
@@ -3688,8 +3663,7 @@ static const struct hwseq_private_funcs dce110_private_funcs = {
 
 void dce110_hw_sequencer_construct(struct dc *dc)
 {
-	if (IS_ENABLED(CONFIG_DRM_AMD_DC_DCE)) {
-		dc->hwss = dce110_funcs;
-		dc->hwseq->funcs = dce110_private_funcs;
-	}
+	dc->hwss = dce110_funcs;
+	dc->hwseq->funcs = dce110_private_funcs;
 }
+

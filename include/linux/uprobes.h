@@ -25,7 +25,6 @@ struct mm_struct;
 struct inode;
 struct notifier_block;
 struct page;
-struct srcu_ctr;
 
 /*
  * Allowed return values from uprobe consumer's handler callback
@@ -107,7 +106,7 @@ enum hprobe_state {
  *     underlying uprobe is not guaranteed anymore. __UPROBE_DEAD is just an
  *     internal marker and is handled transparently by hprobe_fetch() helper.
  *
- * When uprobe is SRCU-protected, we also record srcu_scp value, necessary for
+ * When uprobe is SRCU-protected, we also record srcu_idx value, necessary for
  * SRCU unlocking.
  *
  * See hprobe_expire() and hprobe_fetch() for details of race-free uprobe
@@ -116,7 +115,7 @@ enum hprobe_state {
  */
 struct hprobe {
 	enum hprobe_state state;
-	struct srcu_ctr __percpu *srcu_scp;
+	int srcu_idx;
 	struct uprobe *uprobe;
 };
 

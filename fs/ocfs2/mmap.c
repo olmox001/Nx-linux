@@ -103,17 +103,7 @@ static vm_fault_t __ocfs2_page_mkwrite(struct file *file,
 		goto out;
 	}
 	err = ocfs2_write_end_nolock(mapping, pos, len, len, fsdata);
-	if (err != len) {
-		/*
-		 * ocfs2_write_end_nolock() keeps the mmap folio locked so
-		 * that it can be returned to the VM with VM_FAULT_LOCKED.
-		 * On failure nobody else will unlock it, so do it here.
-		 */
-		folio_unlock(locked_folio);
-		mlog_errno(err);
-		ret = vmf_error(err);
-		goto out;
-	}
+	BUG_ON(err != len);
 	ret = VM_FAULT_LOCKED;
 out:
 	return ret;

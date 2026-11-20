@@ -540,11 +540,11 @@ int rsnd_ssiu_probe(struct rsnd_priv *priv)
 	if (!nr)
 		return -EINVAL;
 
-	ssiu	= devm_kzalloc_objs(dev, *ssiu, nr);
+	ssiu	= devm_kcalloc(dev, nr, sizeof(*ssiu), GFP_KERNEL);
 	if (!ssiu)
 		return -ENOMEM;
 
-	ctrl = devm_kzalloc_obj(dev, *ctrl);
+	ctrl = devm_kzalloc(dev, sizeof(*ctrl), GFP_KERNEL);
 	if (!ctrl)
 		return -ENOMEM;
 

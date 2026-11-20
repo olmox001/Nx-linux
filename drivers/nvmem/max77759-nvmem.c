@@ -103,7 +103,7 @@ static int max77759_nvmem_probe(struct platform_device *pdev)
 	};
 	struct max77759_nvmem *nvmem;
 
-	nvmem = devm_kzalloc_obj(&pdev->dev, *nvmem);
+	nvmem = devm_kzalloc(&pdev->dev, sizeof(*nvmem), GFP_KERNEL);
 	if (!nvmem)
 		return -ENOMEM;
 

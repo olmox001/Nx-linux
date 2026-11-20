@@ -249,7 +249,7 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	enum mtk_vcodec_fw_type fw_type;
 	int ret;
 
-	dev = devm_kzalloc_obj(&pdev->dev, *dev);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 

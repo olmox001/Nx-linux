@@ -55,7 +55,6 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
-#include <linux/stringify.h>
 
 
 /* enable support for minutes as units? */
@@ -612,4 +611,4 @@ MODULE_PARM_DESC(timeout, "range is 1-255 units, default is 60");
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
-				__stringify(WATCHDOG_NOWAYOUT) ")");
+				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");

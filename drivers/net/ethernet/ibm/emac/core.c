@@ -1114,11 +1114,8 @@ static int emac_change_mtu(struct net_device *ndev, int new_mtu)
 	DBG(dev, "change_mtu(%d)" NL, new_mtu);
 
 	if (netif_running(ndev)) {
-		/* Check if we really need to reinitialize RX ring. The
-		 * jumbo frame settings are only updated by a resize.
-		 */
-		if (emac_rx_skb_size(ndev->mtu) != emac_rx_skb_size(new_mtu) ||
-		    ndev->mtu > ETH_DATA_LEN || new_mtu > ETH_DATA_LEN)
+		/* Check if we really need to reinitialize RX ring */
+		if (emac_rx_skb_size(ndev->mtu) != emac_rx_skb_size(new_mtu))
 			ret = emac_resize_rx_ring(dev, new_mtu);
 	}
 
@@ -2601,7 +2598,8 @@ static int emac_dt_phy_connect(struct emac_instance *dev,
 {
 	struct phy_device *phy_dev;
 
-	dev->phy.def = devm_kzalloc_obj(&dev->ofdev->dev, *dev->phy.def);
+	dev->phy.def = devm_kzalloc(&dev->ofdev->dev, sizeof(*dev->phy.def),
+				    GFP_KERNEL);
 	if (!dev->phy.def)
 		return -ENOMEM;
 

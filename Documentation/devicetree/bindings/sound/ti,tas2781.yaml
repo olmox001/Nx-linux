@@ -219,7 +219,9 @@ allOf:
   - if:
       properties:
         compatible:
-          const: ti,tas2781
+          contains:
+            enum:
+              - ti,tas2781
     then:
       properties:
         reg:

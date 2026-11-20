@@ -402,8 +402,9 @@ static int dev_dax_probe(struct dev_dax *dev_dax)
 			return -EINVAL;
 		}
 
-		pgmap = devm_kzalloc_flex(dev, *pgmap, ranges,
-					  dev_dax->nr_range - 1);
+		pgmap = devm_kzalloc(dev,
+                       struct_size(pgmap, ranges, dev_dax->nr_range - 1),
+                       GFP_KERNEL);
 		if (!pgmap)
 			return -ENOMEM;
 

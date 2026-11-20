@@ -381,7 +381,8 @@ static struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
 
 	*chip_id  = (unsigned long)device_get_match_data(&client->dev);
 
-	board_info = devm_kzalloc_obj(&client->dev, *board_info);
+	board_info = devm_kzalloc(&client->dev, sizeof(*board_info),
+			GFP_KERNEL);
 	if (!board_info)
 		return NULL;
 
@@ -456,11 +457,11 @@ static int tps65910_i2c_probe(struct i2c_client *i2c)
 	if (!pmic_plat_data)
 		return -EINVAL;
 
-	init_data = devm_kzalloc_obj(&i2c->dev, *init_data);
+	init_data = devm_kzalloc(&i2c->dev, sizeof(*init_data), GFP_KERNEL);
 	if (init_data == NULL)
 		return -ENOMEM;
 
-	tps65910 = devm_kzalloc_obj(&i2c->dev, *tps65910);
+	tps65910 = devm_kzalloc(&i2c->dev, sizeof(*tps65910), GFP_KERNEL);
 	if (tps65910 == NULL)
 		return -ENOMEM;
 

@@ -1039,11 +1039,13 @@ static int ab8500_gpadc_parse_channels(struct ab8500_gpadc *gpadc,
 	}
 	dev_info(gpadc->dev, "found %d ADC channels\n", nchans);
 
-	iio_chans = devm_kzalloc_objs(gpadc->dev, *iio_chans, nchans);
+	iio_chans = devm_kcalloc(gpadc->dev, nchans,
+				 sizeof(*iio_chans), GFP_KERNEL);
 	if (!iio_chans)
 		return -ENOMEM;
 
-	gpadc->chans = devm_kzalloc_objs(gpadc->dev, *gpadc->chans, nchans);
+	gpadc->chans = devm_kcalloc(gpadc->dev, nchans,
+				    sizeof(*gpadc->chans), GFP_KERNEL);
 	if (!gpadc->chans)
 		return -ENOMEM;
 

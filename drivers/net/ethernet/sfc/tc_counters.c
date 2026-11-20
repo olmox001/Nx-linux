@@ -103,19 +103,18 @@ static void efx_tc_counter_work(struct work_struct *work)
 			continue;
 		if (time_after_eq(encap->neigh->used, touched))
 			continue;
-
 		encap->neigh->used = touched;
-
 		/* We have passed traffic using this ARP entry, so
 		 * indicate to the ARP cache that it's still active
 		 */
 		if (encap->neigh->dst_ip)
-			n = ipv4_neigh_lookup(encap->neigh->egdev,
-					      &encap->neigh->dst_ip);
+			n = neigh_lookup(&arp_tbl, &encap->neigh->dst_ip,
+					 encap->neigh->egdev);
 		else
 #if IS_ENABLED(CONFIG_IPV6)
-			n = ipv6_neigh_lookup(encap->neigh->egdev,
-					      &encap->neigh->dst_ip6);
+			n = neigh_lookup(&nd_tbl,
+					 &encap->neigh->dst_ip6,
+					 encap->neigh->egdev);
 #else
 			n = NULL;
 #endif

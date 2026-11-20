@@ -557,7 +557,7 @@ static int phy_mdm6600_probe(struct platform_device *pdev)
 	struct phy_mdm6600 *ddata;
 	int error;
 
-	ddata = devm_kzalloc_obj(&pdev->dev, *ddata);
+	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
 		return -ENOMEM;
 

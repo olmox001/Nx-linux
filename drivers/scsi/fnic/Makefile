@@ -1,7 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0
-
-CONTEXT_ANALYSIS := y
-
 obj-$(CONFIG_FCOE_FNIC) += fnic.o
 
 fnic-y	:= \
@@ -9,7 +6,6 @@ fnic-y	:= \
 	fnic_attrs.o \
 	fnic_isr.o \
 	fnic_main.o \
-	fnic_nvme.o \
 	fnic_res.o \
 	fnic_fcs.o \
 	fdls_disc.o \

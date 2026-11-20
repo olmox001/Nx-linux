@@ -66,7 +66,7 @@ static int gpio_ir_recv_probe(struct platform_device *pdev)
 	if (!np)
 		return -ENODEV;
 
-	gpio_dev = devm_kzalloc_obj(dev, *gpio_dev);
+	gpio_dev = devm_kzalloc(dev, sizeof(*gpio_dev), GFP_KERNEL);
 	if (!gpio_dev)
 		return -ENOMEM;
 

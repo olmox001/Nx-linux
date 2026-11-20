@@ -8,11 +8,10 @@
 #define PMD_ORDER	(PMD_SHIFT - PAGE_SHIFT)
 #define PUD_ORDER	(PUD_SHIFT - PAGE_SHIFT)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #ifdef CONFIG_MMU
 
 #include <linux/mm_types.h>
-#include <linux/minmax.h>
 #include <linux/bug.h>
 #include <linux/errno.h>
 #include <asm-generic/pgtable_uffd.h>
@@ -491,35 +490,35 @@ static inline int pudp_set_access_flags(struct vm_area_struct *vma,
 #endif
 
 #ifndef ptep_get
-static inline pte_t ptep_get(const pte_t *ptep)
+static inline pte_t ptep_get(pte_t *ptep)
 {
 	return READ_ONCE(*ptep);
 }
 #endif
 
 #ifndef pmdp_get
-static inline pmd_t pmdp_get(const pmd_t *pmdp)
+static inline pmd_t pmdp_get(pmd_t *pmdp)
 {
 	return READ_ONCE(*pmdp);
 }
 #endif
 
 #ifndef pudp_get
-static inline pud_t pudp_get(const pud_t *pudp)
+static inline pud_t pudp_get(pud_t *pudp)
 {
 	return READ_ONCE(*pudp);
 }
 #endif
 
 #ifndef p4dp_get
-static inline p4d_t p4dp_get(const p4d_t *p4dp)
+static inline p4d_t p4dp_get(p4d_t *p4dp)
 {
 	return READ_ONCE(*p4dp);
 }
 #endif
 
 #ifndef pgdp_get
-static inline pgd_t pgdp_get(const pgd_t *pgdp)
+static inline pgd_t pgdp_get(pgd_t *pgdp)
 {
 	return READ_ONCE(*pgdp);
 }
@@ -989,30 +988,49 @@ static inline void update_mmu_tlb(struct vm_area_struct *vma,
 	update_mmu_tlb_range(vma, address, ptep, 1);
 }
 
+/*
+ * Some architectures may be able to avoid expensive synchronization
+ * primitives when modifications are made to PTE's which are already
+ * not present, or in the process of an address space destruction.
+ */
+#ifndef __HAVE_ARCH_PTE_CLEAR_NOT_PRESENT_FULL
+static inline void pte_clear_not_present_full(struct mm_struct *mm,
+					      unsigned long address,
+					      pte_t *ptep,
+					      int full)
+{
+	pte_clear(mm, address, ptep);
+}
+#endif
+
+#ifndef clear_not_present_full_ptes
 /**
- * clear_nonpresent_ptes - Clear multiple non-present PTEs which are
- *			    consecutive in the pgtable.
+ * clear_not_present_full_ptes - Clear multiple not present PTEs which are
+ *				 consecutive in the pgtable.
  * @mm: Address space the ptes represent.
  * @addr: Address of the first pte.
  * @ptep: Page table pointer for the first entry.
  * @nr: Number of entries to clear.
+ * @full: Whether we are clearing a full mm.
+ *
+ * May be overridden by the architecture; otherwise, implemented as a simple
+ * loop over pte_clear_not_present_full().
  *
  * Context: The caller holds the page table lock.  The PTEs are all not present.
  * The PTEs are all in the same PMD.
  */
-static inline void clear_nonpresent_ptes(struct mm_struct *mm,
-		unsigned long addr, pte_t *ptep, unsigned int nr)
+static inline void clear_not_present_full_ptes(struct mm_struct *mm,
+		unsigned long addr, pte_t *ptep, unsigned int nr, int full)
 {
-	(void)addr;
-
 	for (;;) {
-		pte_clear(mm, addr, ptep);
+		pte_clear_not_present_full(mm, addr, ptep, full);
 		if (--nr == 0)
 			break;
 		ptep++;
 		addr += PAGE_SIZE;
 	}
 }
+#endif
 
 #ifndef __HAVE_ARCH_PTEP_CLEAR_FLUSH
 extern pte_t ptep_clear_flush(struct vm_area_struct *vma,
@@ -1519,29 +1537,6 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 })
 #endif
 
-/**
- * pte_table_clamped_end() - Limit a range to a single PTE table.
- * @addr: Start address.
- * @end: Exclusive end address.
- *
- * Only use pmd_addr_end() when traversing page tables, in a pattern like::
- *
- *     next = pmd_addr_end(addr, end);
- *
- * Higher levels already bound the range when PMDs are folded. Use this
- * helper elsewhere to clamp the range regardless of PMD folding.
- *
- * Return: The exclusive end of the PTE table containing @addr, capped at @end.
- */
-static inline unsigned long pte_table_clamped_end(unsigned long addr,
-		unsigned long end)
-{
-	const unsigned long pmd_end = (addr & PMD_MASK) + PMD_SIZE;
-
-	/* Compare inclusive ends to avoid wraparounds. */
-	return min(pmd_end - 1, end - 1) + 1;
-}
-
 /*
  * When walking page tables, we usually want to skip any p?d_none entries;
  * and any p?d_bad entries - reporting the error before resetting to none.
@@ -1863,7 +1858,7 @@ static inline pgprot_t pgprot_modify(pgprot_t oldprot, pgprot_t newprot)
 #endif
 
 #ifdef CONFIG_HAVE_ARCH_SOFT_DIRTY
-#ifndef CONFIG_ARCH_HAS_PMD_SOFTLEAVES
+#ifndef CONFIG_ARCH_ENABLE_THP_MIGRATION
 static inline pmd_t pmd_swp_mksoft_dirty(pmd_t pmd)
 {
 	return pmd;
@@ -2134,26 +2129,18 @@ static inline int pud_trans_unstable(pud_t *pud)
 	return 0;
 }
 
-#ifndef CONFIG_ARCH_HAS_PTE_PROTNONE
+#ifndef CONFIG_NUMA_BALANCING
 /*
- * In an inaccessible (PROT_NONE) VMA, pte_protnone() may indicate "yes". It
- * is perfectly valid to indicate "no" in that case, which is why our
- * default implementation defaults to "always no".
+ * In an inaccessible (PROT_NONE) VMA, pte_protnone() may indicate "yes". It is
+ * perfectly valid to indicate "no" in that case, which is why our default
+ * implementation defaults to "always no".
  *
- * In an accessible VMA, pte_protnone() reliably indicates a present
- * PROT_NONE page protection. Today the kernel uses such PTEs for two
- * purposes: NUMA hinting faults, and userfaultfd RWP tracking on
- * VM_UFFD_RWP VMAs. The two are distinguished by the uffd PTE bit and
- * the VMA flag; see include/linux/userfaultfd_k.h.
+ * In an accessible VMA, however, pte_protnone() reliably indicates PROT_NONE
+ * page protection due to NUMA hinting. NUMA hinting faults only apply in
+ * accessible VMAs.
  *
- * So, to reliably identify PROT_NONE PTEs that require kernel handling,
- * looking at the VMA accessibility (and the uffd bit on RWP VMAs) is
- * sufficient.
- *
- * Architectures without CONFIG_ARCH_HAS_PTE_PROTNONE get the always-zero
- * stubs below; PAGE_NONE references that survive to runtime fire the
- * BUILD_BUG() fallback, since callers should have folded such paths to
- * dead code via IS_ENABLED(CONFIG_ARCH_HAS_PTE_PROTNONE).
+ * So, to reliably identify PROT_NONE PTEs that require a NUMA hinting fault,
+ * looking at the VMA accessibility is sufficient.
  */
 static inline int pte_protnone(pte_t pte)
 {
@@ -2164,11 +2151,7 @@ static inline int pmd_protnone(pmd_t pmd)
 {
 	return 0;
 }
-
-#ifndef PAGE_NONE
-#define PAGE_NONE ({ BUILD_BUG(); (pgprot_t){0}; })
-#endif
-#endif /* CONFIG_ARCH_HAS_PTE_PROTNONE */
+#endif /* CONFIG_NUMA_BALANCING */
 
 #endif /* CONFIG_MMU */
 
@@ -2337,21 +2320,7 @@ static inline const char *pgtable_level_to_str(enum pgtable_level level)
 	}
 }
 
-void ptval_bytes_to_hex_str(char *buf, size_t buf_size, const void *entry, size_t entry_size);
-
-#define ptval_to_str(buf, val)								\
-	do {										\
-		auto __val = (val);							\
-											\
-		ptval_bytes_to_hex_str((buf), sizeof(buf), &__val, sizeof(__val));	\
-	} while (0)
-
-#if defined(__SIZEOF_INT128__)
-#define PTVAL_STR_MAX	(32 + 1) /* Max 128-bit value in hex + NUL */
-#else
-#define PTVAL_STR_MAX	(16 + 1) /* Max 64-bit value in hex + NUL */
-#endif
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #if !defined(MAX_POSSIBLE_PHYSMEM_BITS) && !defined(CONFIG_64BIT)
 #ifdef CONFIG_PHYS_ADDR_T_64BIT

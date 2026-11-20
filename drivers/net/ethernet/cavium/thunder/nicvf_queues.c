@@ -511,7 +511,7 @@ static int nicvf_init_snd_queue(struct nicvf *nic,
 		return err;
 
 	sq->desc = sq->dmem.base;
-	sq->skbuff = kzalloc_objs(u64, q_len);
+	sq->skbuff = kcalloc(q_len, sizeof(u64), GFP_KERNEL);
 	if (!sq->skbuff)
 		return -ENOMEM;
 
@@ -524,7 +524,7 @@ static int nicvf_init_snd_queue(struct nicvf *nic,
 		qidx += ((nic->sqs_id + 1) * MAX_SND_QUEUES_PER_QS);
 	if (qidx < nic->pnicvf->xdp_tx_queues) {
 		/* Alloc memory to save page pointers for XDP_TX */
-		sq->xdp_page = kzalloc_objs(u64, q_len);
+		sq->xdp_page = kcalloc(q_len, sizeof(u64), GFP_KERNEL);
 		if (!sq->xdp_page)
 			return -ENOMEM;
 		sq->xdp_desc_cnt = 0;
@@ -1037,7 +1037,7 @@ int nicvf_set_qset_resources(struct nicvf *nic)
 {
 	struct queue_set *qs;
 
-	qs = devm_kzalloc_obj(&nic->pdev->dev, *qs);
+	qs = devm_kzalloc(&nic->pdev->dev, sizeof(*qs), GFP_KERNEL);
 	if (!qs)
 		return -ENOMEM;
 	nic->qs = qs;

@@ -105,11 +105,11 @@ static int dw_plat_pcie_probe(struct platform_device *pdev)
 
 	mode = (enum dw_pcie_device_mode)data->mode;
 
-	dw_plat_pcie = devm_kzalloc_obj(dev, *dw_plat_pcie);
+	dw_plat_pcie = devm_kzalloc(dev, sizeof(*dw_plat_pcie), GFP_KERNEL);
 	if (!dw_plat_pcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc_obj(dev, *pci);
+	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
 	if (!pci)
 		return -ENOMEM;
 

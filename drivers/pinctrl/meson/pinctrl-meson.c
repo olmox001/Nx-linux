@@ -252,11 +252,11 @@ static int meson_pinconf_set_output_drive(struct meson_pinctrl *pc,
 {
 	int ret;
 
-	ret = meson_pinconf_set_drive(pc, pin, high);
+	ret = meson_pinconf_set_output(pc, pin, true);
 	if (ret)
 		return ret;
 
-	return meson_pinconf_set_output(pc, pin, true);
+	return meson_pinconf_set_drive(pc, pin, high);
 }
 
 static int meson_pinconf_disable_bias(struct meson_pinctrl *pc,
@@ -498,9 +498,9 @@ static int meson_pinconf_get(struct pinctrl_dev *pcdev, unsigned int pin,
 		break;
 	case PIN_CONFIG_OUTPUT_ENABLE:
 		ret = meson_pinconf_get_output(pc, pin);
-		if (ret < 0)
+		if (ret <= 0)
 			return -EINVAL;
-		arg = ret;
+		arg = 1;
 		break;
 	case PIN_CONFIG_LEVEL:
 		ret = meson_pinconf_get_output(pc, pin);
@@ -739,7 +739,7 @@ int meson_pinctrl_probe(struct platform_device *pdev)
 	struct meson_pinctrl *pc;
 	int ret;
 
-	pc = devm_kzalloc_obj(dev, struct meson_pinctrl);
+	pc = devm_kzalloc(dev, sizeof(struct meson_pinctrl), GFP_KERNEL);
 	if (!pc)
 		return -ENOMEM;
 

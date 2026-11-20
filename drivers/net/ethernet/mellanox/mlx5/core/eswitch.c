@@ -1241,11 +1241,6 @@ static int mlx5_esw_host_functions_enabled_query(struct mlx5_eswitch *esw)
 	struct mlx5_esw_pf_info host_pf_info;
 	const u32 *query_host_out;
 
-	if (!mlx5_core_is_pf(esw->dev)) {
-		esw->esw_funcs.host_funcs_disabled = true;
-		return 0;
-	}
-
 	if (!mlx5_core_is_ecpf_esw_manager(esw->dev))
 		return 0;
 
@@ -1514,8 +1509,12 @@ int mlx5_esw_pf_enable_hca(struct mlx5_core_dev *dev, u16 vport_num)
 	struct mlx5_vport *vport;
 	int err;
 
-	if (!mlx5_core_is_ecpf(dev))
+	if (!mlx5_core_is_ecpf(dev) || !mlx5_esw_allowed(esw))
 		return 0;
+
+	vport = mlx5_eswitch_get_vport(esw, vport_num);
+	if (IS_ERR(vport))
+		return PTR_ERR(vport);
 
 	/* Once vport and representor are ready, take the PF out of
 	 * initializing state. Enabling HCA clears the iser->initializing
@@ -1525,11 +1524,7 @@ int mlx5_esw_pf_enable_hca(struct mlx5_core_dev *dev, u16 vport_num)
 	if (err)
 		return err;
 
-	if (mlx5_esw_allowed(esw)) {
-		vport = mlx5_eswitch_get_vport(esw, vport_num);
-		if (!IS_ERR(vport))
-			vport->pf_activated = true;
-	}
+	vport->pf_activated = true;
 
 	return 0;
 }
@@ -1540,18 +1535,18 @@ int mlx5_esw_pf_disable_hca(struct mlx5_core_dev *dev, u16 vport_num)
 	struct mlx5_vport *vport;
 	int err;
 
-	if (!mlx5_core_is_ecpf(dev))
+	if (!mlx5_core_is_ecpf(dev) || !mlx5_esw_allowed(esw))
 		return 0;
+
+	vport = mlx5_eswitch_get_vport(esw, vport_num);
+	if (IS_ERR(vport))
+		return PTR_ERR(vport);
 
 	err = mlx5_cmd_pf_disable_hca(dev, vport_num);
 	if (err)
 		return err;
 
-	if (mlx5_esw_allowed(esw)) {
-		vport = mlx5_eswitch_get_vport(esw, vport_num);
-		if (!IS_ERR(vport))
-			vport->pf_activated = false;
-	}
+	vport->pf_activated = false;
 
 	return 0;
 }
@@ -1896,6 +1891,10 @@ int mlx5_eswitch_enable_locked(struct mlx5_eswitch *esw, int num_vfs)
 	MLX5_NB_INIT(&esw->nb, eswitch_vport_event, NIC_VPORT_CHANGE);
 	mlx5_eq_notifier_register(esw->dev, &esw->nb);
 
+	err = mlx5_esw_qos_init(esw);
+	if (err)
+		goto err_esw_init;
+
 	if (esw->mode == MLX5_ESWITCH_LEGACY) {
 		err = esw_legacy_enable(esw);
 	} else {
@@ -1997,13 +1996,6 @@ void mlx5_eswitch_disable_sriov(struct mlx5_eswitch *esw, bool clear_vf)
 		 esw->esw_funcs.num_vfs, esw->esw_funcs.num_ec_vfs, esw->enabled_vports);
 
 	mlx5_eswitch_invalidate_wq(esw);
-
-	if (esw->mode == MLX5_ESWITCH_OFFLOADS) {
-		struct devlink *devlink = priv_to_devlink(esw->dev);
-
-		devl_rate_nodes_destroy(devlink);
-	}
-
 	mlx5_esw_reps_block(esw);
 
 	if (!mlx5_core_is_ecpf(esw->dev)) {
@@ -2017,6 +2009,12 @@ void mlx5_eswitch_disable_sriov(struct mlx5_eswitch *esw, bool clear_vf)
 	}
 
 	mlx5_esw_reps_unblock(esw);
+
+	if (esw->mode == MLX5_ESWITCH_OFFLOADS) {
+		struct devlink *devlink = priv_to_devlink(esw->dev);
+
+		devl_rate_nodes_destroy(devlink);
+	}
 	/* Destroy legacy fdb when disabling sriov in legacy mode. */
 	if (esw->mode == MLX5_ESWITCH_LEGACY)
 		mlx5_eswitch_disable_locked(esw);
@@ -2047,9 +2045,6 @@ void mlx5_eswitch_disable_locked(struct mlx5_eswitch *esw)
 		 esw->mode == MLX5_ESWITCH_LEGACY ? "LEGACY" : "OFFLOADS",
 		 esw->esw_funcs.num_vfs, esw->esw_funcs.num_ec_vfs, esw->enabled_vports);
 
-	if (esw->mode == MLX5_ESWITCH_OFFLOADS)
-		devl_rate_nodes_destroy(devlink);
-
 	if (esw->fdb_table.flags & MLX5_ESW_FDB_CREATED) {
 		esw->fdb_table.flags &= ~MLX5_ESW_FDB_CREATED;
 		if (esw->mode == MLX5_ESWITCH_OFFLOADS)
@@ -2058,6 +2053,9 @@ void mlx5_eswitch_disable_locked(struct mlx5_eswitch *esw)
 			esw_legacy_disable(esw);
 		mlx5_esw_acls_ns_cleanup(esw);
 	}
+
+	if (esw->mode == MLX5_ESWITCH_OFFLOADS)
+		devl_rate_nodes_destroy(devlink);
 }
 
 void mlx5_eswitch_disable(struct mlx5_eswitch *esw)
@@ -2299,7 +2297,8 @@ static int mlx5_esw_spfs_init(struct mlx5_eswitch *esw)
 	if (!num_entries)
 		goto out_free;
 
-	esw_funcs->spfs = kzalloc_objs(*esw_funcs->spfs, num_entries);
+	esw_funcs->spfs = kcalloc(num_entries, sizeof(*esw_funcs->spfs),
+				  GFP_KERNEL);
 	if (!esw_funcs->spfs) {
 		err = -ENOMEM;
 		goto out_free;
@@ -2465,20 +2464,13 @@ static int mlx5_esw_vports_init(struct mlx5_eswitch *esw)
 		}
 	}
 
-	if (mlx5_ecpf_vport_exists(dev)) {
+	if (mlx5_ecpf_vport_exists(dev) ||
+	    mlx5_core_is_ecpf_esw_manager(dev)) {
 		err = mlx5_esw_vport_alloc(esw, idx, MLX5_VPORT_ECPF);
 		if (err)
 			goto err;
 		idx++;
 	}
-
-	if (!xa_load(&esw->vports, esw->manager_vport)) {
-		err = mlx5_esw_vport_alloc(esw, idx, esw->manager_vport);
-		if (err)
-			goto err;
-		idx++;
-	}
-
 	err = mlx5_esw_vport_alloc(esw, idx, MLX5_VPORT_UPLINK);
 	if (err)
 		goto err;
@@ -2568,6 +2560,9 @@ int mlx5_eswitch_init(struct mlx5_core_dev *dev)
 		goto reps_err;
 
 	esw->mode = MLX5_ESWITCH_LEGACY;
+	err = mlx5_esw_qos_init(esw);
+	if (err)
+		goto reps_err;
 
 	mutex_init(&esw->offloads.encap_tbl_lock);
 	hash_init(esw->offloads.encap_tbl);
@@ -2622,6 +2617,7 @@ void mlx5_eswitch_cleanup(struct mlx5_eswitch *esw)
 
 	mlx5_eswitch_invalidate_wq(esw);
 	destroy_workqueue(esw->work_queue);
+	mlx5_esw_qos_cleanup(esw);
 	WARN_ON(refcount_read(&esw->qos.refcnt));
 	mutex_destroy(&esw->state_lock);
 	WARN_ON(!xa_empty(&esw->offloads.vhca_map));
@@ -2963,7 +2959,7 @@ bool mlx5_esw_hold(struct mlx5_core_dev *mdev)
 {
 	struct mlx5_eswitch *esw = mdev->priv.eswitch;
 
-	/* Not an eswitch manager, so there is no mode lock to take */
+	/* e.g. VF doesn't have eswitch so nothing to do */
 	if (!mlx5_esw_allowed(esw))
 		return true;
 
@@ -3051,36 +3047,12 @@ int mlx5_esw_lock(struct mlx5_eswitch *esw)
 	return 0;
 }
 
-static void esw_mode_lock(struct mlx5_eswitch *esw)
-{
-	down_write(&esw->mode_lock);
-}
-
-static void esw_mode_unlock(struct mlx5_eswitch *esw)
-{
-	up_write(&esw->mode_lock);
-}
-
-/* Lock the eswitch and wait for an operation in progress to finish. */
-void mlx5_esw_lock_wait(struct mlx5_eswitch *esw)
-{
-	down_write(&esw->mode_lock);
-	wait_var_event_any_lock(&esw->eswitch_operation_in_progress,
-				!esw->eswitch_operation_in_progress,
-				esw, esw_mode, TASK_UNINTERRUPTIBLE);
-}
-
 /**
  * mlx5_esw_unlock() - Release write lock on esw mode lock
  * @esw: eswitch device.
- *
- * Also wakes up mlx5_esw_lock_wait() waiters, so it must be used to release
- * mode_lock after clearing eswitch_operation_in_progress.
  */
 void mlx5_esw_unlock(struct mlx5_eswitch *esw)
 {
-	wake_up_var_locked(&esw->eswitch_operation_in_progress,
-			   &esw->mode_lock);
 	up_write(&esw->mode_lock);
 }
 
@@ -3135,7 +3107,7 @@ void mlx5_eswitch_unblock_ipsec(struct mlx5_core_dev *dev)
 	struct mlx5_eswitch *esw = dev->priv.eswitch;
 
 	if (!mlx5_esw_allowed(esw))
-		/* Not an eswitch manager, so nothing was blocked */
+		/* Failure means no eswitch => core dev is not a PF */
 		return;
 
 	mutex_lock(&esw->state_lock);

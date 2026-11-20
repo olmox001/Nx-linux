@@ -15,7 +15,6 @@
 #include <linux/syscalls.h>
 #include <linux/prctl.h>
 #include <asm/csr.h>
-#include <asm/switch_to.h>
 #include <asm/usercfi.h>
 
 unsigned long riscv_nousercfi __read_mostly;
@@ -67,7 +66,12 @@ void set_shstk_status(struct task_struct *task, bool enable)
 
 	task->thread_info.user_cfi_state.ubcfi_en = enable ? 1 : 0;
 
-	envcfg_update_bits(task, ENVCFG_SSE, enable ? ENVCFG_SSE : 0);
+	if (enable)
+		task->thread.envcfg |= ENVCFG_SSE;
+	else
+		task->thread.envcfg &= ~ENVCFG_SSE;
+
+	csr_write(CSR_ENVCFG, task->thread.envcfg);
 }
 
 void set_shstk_lock(struct task_struct *task, bool lock)
@@ -92,7 +96,12 @@ void set_indir_lp_status(struct task_struct *task, bool enable)
 
 	task->thread_info.user_cfi_state.ufcfi_en = enable ? 1 : 0;
 
-	envcfg_update_bits(task, ENVCFG_LPE, enable ? ENVCFG_LPE : 0);
+	if (enable)
+		task->thread.envcfg |= ENVCFG_LPE;
+	else
+		task->thread.envcfg &= ~ENVCFG_LPE;
+
+	csr_write(CSR_ENVCFG, task->thread.envcfg);
 }
 
 void set_indir_lp_lock(struct task_struct *task, bool lock)
@@ -101,7 +110,7 @@ void set_indir_lp_lock(struct task_struct *task, bool lock)
 }
 /*
  * The shadow stack only stores the return address and not any variables
- * 512M should be more than sufficient for most applications.
+ * this should be more than sufficient for most applications.
  * Else PAGE_ALIGN it and return back
  */
 static unsigned long calc_shstk_size(unsigned long size)
@@ -109,7 +118,7 @@ static unsigned long calc_shstk_size(unsigned long size)
 	if (size)
 		return PAGE_ALIGN(size);
 
-	return PAGE_ALIGN(min(rlimit(RLIMIT_STACK) / 8, SZ_512M));
+	return PAGE_ALIGN(min(rlimit(RLIMIT_STACK) / 2, SZ_2G));
 }
 
 /*
@@ -197,13 +206,10 @@ int save_user_shstk(struct task_struct *tsk, unsigned long *saved_shstk_ptr)
  */
 int restore_user_shstk(struct task_struct *tsk, unsigned long shstk_ptr)
 {
-	unsigned long __user *token_ptr = (unsigned long __user *)shstk_ptr;
 	unsigned long token = 0;
 
-	if (!access_ok(token_ptr, sizeof(token)))
-		return -EFAULT;
+	token = amo_user_shstk((unsigned long __user *)shstk_ptr, 0);
 
-	token = amo_user_shstk(token_ptr, 0);
 	if (token == -1)
 		return -EFAULT;
 
@@ -519,8 +525,9 @@ static int __init setup_global_riscv_enable(char *str)
 
 	if (riscv_nousercfi)
 		pr_info("RISC-V user CFI disabled via cmdline - shadow stack status : %s, landing pad status : %s\n",
-			str_disabled_enabled(riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_BCFI),
-			str_disabled_enabled(riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_FCFI));
+			(riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_BCFI) ? "disabled" :
+			"enabled", (riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_FCFI) ?
+			"disabled" : "enabled");
 
 	return 1;
 }

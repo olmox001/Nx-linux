@@ -521,7 +521,8 @@ static int allocate_flows(struct sun8i_ss_dev *ss)
 {
 	int i, j, err;
 
-	ss->flows = devm_kzalloc_objs(ss->dev, struct sun8i_ss_flow, MAXFLOW);
+	ss->flows = devm_kcalloc(ss->dev, MAXFLOW, sizeof(struct sun8i_ss_flow),
+				 GFP_KERNEL);
 	if (!ss->flows)
 		return -ENOMEM;
 
@@ -782,7 +783,7 @@ static int sun8i_ss_probe(struct platform_device *pdev)
 	int err, irq;
 	u32 v;
 
-	ss = devm_kzalloc_obj(&pdev->dev, *ss);
+	ss = devm_kzalloc(&pdev->dev, sizeof(*ss), GFP_KERNEL);
 	if (!ss)
 		return -ENOMEM;
 
@@ -823,8 +824,10 @@ static int sun8i_ss_probe(struct platform_device *pdev)
 		goto error_pm;
 
 	err = devm_request_irq(&pdev->dev, irq, ss_irq_handler, 0, "sun8i-ss", ss);
-	if (err)
+	if (err) {
+		dev_err(ss->dev, "Cannot request SecuritySystem IRQ (err=%d)\n", err);
 		goto error_irq;
+	}
 
 	err = sun8i_ss_register_algs(ss);
 	if (err)

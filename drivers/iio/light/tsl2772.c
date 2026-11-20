@@ -13,7 +13,6 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
-#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/property.h>
@@ -952,9 +951,8 @@ static ssize_t in_illuminance0_target_input_store(struct device *dev,
 	u16 value;
 	int ret;
 
-	ret = kstrtou16(buf, 0, &value);
-	if (ret)
-		return ret;
+	if (kstrtou16(buf, 0, &value))
+		return -EINVAL;
 
 	chip->settings.als_cal_target = value;
 	ret = tsl2772_invoke_change(indio_dev);
@@ -972,10 +970,7 @@ static ssize_t in_illuminance0_calibrate_store(struct device *dev,
 	bool value;
 	int ret;
 
-	ret = kstrtobool(buf, &value);
-	if (ret)
-		return ret;
-	if (!value)
+	if (kstrtobool(buf, &value) || !value)
 		return -EINVAL;
 
 	ret = tsl2772_als_calibrate(indio_dev);
@@ -1066,10 +1061,7 @@ static ssize_t in_proximity0_calibrate_store(struct device *dev,
 	bool value;
 	int ret;
 
-	ret = kstrtobool(buf, &value);
-	if (ret)
-		return ret;
-	if (!value)
+	if (kstrtobool(buf, &value) || !value)
 		return -EINVAL;
 
 	ret = tsl2772_prox_cal(indio_dev);
@@ -1857,8 +1849,11 @@ static int tsl2772_probe(struct i2c_client *clientp)
 						IRQF_ONESHOT,
 						"TSL2772_event",
 						indio_dev);
-		if (ret)
+		if (ret) {
+			dev_err(&clientp->dev,
+				"%s: irq request failed\n", __func__);
 			return ret;
+		}
 	} else {
 		indio_dev->channels = chip->chip_info->channel_without_events;
 	}

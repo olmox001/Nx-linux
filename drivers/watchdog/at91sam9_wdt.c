@@ -32,7 +32,6 @@
 #include <linux/uaccess.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
-#include <linux/stringify.h>
 
 #include "at91sam9_wdt.h"
 
@@ -71,12 +70,12 @@
 static int heartbeat;
 module_param(heartbeat, int, 0);
 MODULE_PARM_DESC(heartbeat, "Watchdog heartbeats in seconds. "
-	"(default = " __stringify(WDT_HEARTBEAT) ")");
+	"(default = " __MODULE_STRING(WDT_HEARTBEAT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started "
-	"(default=" __stringify(WATCHDOG_NOWAYOUT) ")");
+	"(default=" __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 #define to_wdt(wdd) container_of(wdd, struct at91wdt, wdd)
 struct at91wdt {
@@ -330,7 +329,7 @@ static int at91wdt_probe(struct platform_device *pdev)
 	int err;
 	struct at91wdt *wdt;
 
-	wdt = devm_kzalloc_obj(&pdev->dev, *wdt);
+	wdt = devm_kzalloc(&pdev->dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
 

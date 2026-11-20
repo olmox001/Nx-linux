@@ -21,10 +21,7 @@
    :maxdepth: 1
 
    msg_zerocopy
-   driver
-   ipv6
    napi
-   secid
    vxlan
    netif-msg
    xfrm_proc
@@ -32,8 +29,6 @@
    alias
    mptcp-sysctl
    generic-hdlc
-   sriov
-   team
    timestamping
 
 Todolist:
@@ -79,6 +74,7 @@ Todolist:
 *   dctcp
 *   devmem
 *   dns_resolver
+*   driver
 *   eql
 *   fib_trie
 *   filter
@@ -91,6 +87,7 @@ Todolist:
 *   ip_dynaddr
 *   ipsec
 *   ip-sysctl
+*   ipv6
 *   ipvlan
 *   ipvs-sysctl
 *   kcm
@@ -127,8 +124,10 @@ Todolist:
 *   representors
 *   rxrpc
 *   sctp
+*   secid
 *   seg6-sysctl
 *   smc-sysctl
+*   sriov
 *   statistics
 *   strparser
 *   switchdev
@@ -137,6 +136,7 @@ Todolist:
 *   tc-queue-filters
 *   tcp_ao
 *   tcp-thin
+*   team
 *   tipc
 *   tproxy
 *   tuntap

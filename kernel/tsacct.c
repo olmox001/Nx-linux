@@ -24,7 +24,7 @@ void bacct_add_tsk(struct user_namespace *user_ns,
 	const struct cred *tcred;
 	u64 utime, stime, utimescaled, stimescaled;
 	u64 now_ns, delta;
-	struct timespec64 btime;
+	time64_t btime;
 
 	BUILD_BUG_ON(TS_COMM_LEN < TASK_COMM_LEN);
 
@@ -39,11 +39,9 @@ void bacct_add_tsk(struct user_namespace *user_ns,
 	do_div(delta, NSEC_PER_USEC);
 	stats->ac_etime = delta;
 	/* Convert to seconds for btime (note y2106 limit) */
-	getboottime64(&btime);
-	btime = timespec64_add(btime, ns_to_timespec64(tsk->start_boottime));
-	stats->ac_btime = clamp_t(time64_t, btime.tv_sec, 0, U32_MAX);
-	/* Setting the clock back after suspend can make btime negative. */
-	stats->ac_btime64 = max_t(time64_t, btime.tv_sec, 0);
+	btime = ktime_get_real_seconds() - div_u64(delta, USEC_PER_SEC);
+	stats->ac_btime = clamp_t(time64_t, btime, 0, U32_MAX);
+	stats->ac_btime64 = btime;
 
 	if (tsk->flags & PF_EXITING)
 		stats->ac_exitcode = tsk->exit_code;

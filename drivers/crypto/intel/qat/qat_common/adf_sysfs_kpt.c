@@ -31,7 +31,6 @@ static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 	struct adf_hw_device_data *hw_data;
 	struct adf_accel_dev *accel_dev;
 	bool enable;
-	int svc;
 	int ret;
 
 	accel_dev = adf_devmgr_pci_to_accel_dev(to_pci_dev(dev));
@@ -39,25 +38,14 @@ static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	if (adf_dev_started(accel_dev)) {
-		dev_info(dev, "Device qat_dev%d must be down before changing KPT state\n",
+		dev_info(dev, "Device qat_dev%d must be down before enabling KPT\n",
 			 accel_dev->accel_id);
 		return -EINVAL;
 	}
 
-	ret = kstrtobool(buf, &enable);
-	if (ret)
-		return ret;
-
-	if (enable) {
-		svc = adf_get_service_enabled(accel_dev);
-		if (svc < 0)
-			return svc;
-
-		if (svc != SVC_ASYM) {
-			dev_info(dev,
-				 "KPT can only be enabled when the asymmetric crypto service is enabled\n");
-			return -EINVAL;
-		}
+	if (adf_get_service_enabled(accel_dev) != SVC_ASYM) {
+		dev_info(dev, "KPT can only be enabled when the asymmetric service is enabled\n");
+		return -EINVAL;
 	}
 
 	hw_data = GET_HW_DATA(accel_dev);
@@ -70,6 +58,10 @@ static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 	hw_data->accel_capabilities_mask = hw_data->get_accel_cap(accel_dev);
 	if (!hw_data->accel_capabilities_mask)
 		return -EINVAL;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
 
 	user_data = GET_KPT_USER_DATA(accel_dev);
 	user_data->enable = enable;

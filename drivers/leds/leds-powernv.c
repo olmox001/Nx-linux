@@ -253,7 +253,8 @@ static int powernv_led_classdev(struct platform_device *pdev,
 		p = of_find_property(np, "led-types", NULL);
 
 		while ((cur = of_prop_next_string(p, cur)) != NULL) {
-			powernv_led = devm_kzalloc_obj(dev, *powernv_led);
+			powernv_led = devm_kzalloc(dev, sizeof(*powernv_led),
+						   GFP_KERNEL);
 			if (!powernv_led)
 				return -ENOMEM;
 
@@ -284,7 +285,8 @@ static int powernv_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	powernv_led_common = devm_kzalloc_obj(dev, *powernv_led_common);
+	powernv_led_common = devm_kzalloc(dev, sizeof(*powernv_led_common),
+					  GFP_KERNEL);
 	if (!powernv_led_common)
 		return -ENOMEM;
 

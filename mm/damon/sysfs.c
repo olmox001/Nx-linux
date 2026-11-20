@@ -3,6 +3,7 @@
  * DAMON sysfs Interface
  */
 
+#include <linux/pid.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 
@@ -750,222 +751,6 @@ static const struct kobj_type damon_sysfs_intervals_ktype = {
 };
 
 /*
- * prep directory
- */
-
-struct damon_sysfs_prep {
-	struct kobject kobj;
-	enum damon_prep_action action;
-};
-
-static struct damon_sysfs_prep *damon_sysfs_prep_alloc(void)
-{
-	struct damon_sysfs_prep *prep;
-
-	prep = kzalloc_obj(struct damon_sysfs_prep);
-	if (!prep)
-		return prep;
-	prep->action = DAMON_PREP_SET_PGIDLE;
-	return prep;
-}
-
-struct damon_sysfs_prep_action_name {
-	const enum damon_prep_action action;
-	const char *name;
-};
-
-static const struct damon_sysfs_prep_action_name
-damon_sysfs_prep_action_names[] = {
-	{
-		.action = DAMON_PREP_SET_PGIDLE,
-		.name = "set_pgidle",
-	},
-};
-
-static ssize_t prep_action_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
-{
-	struct damon_sysfs_prep *prep = container_of(kobj,
-			struct damon_sysfs_prep, kobj);
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(damon_sysfs_prep_action_names); i++) {
-		const struct damon_sysfs_prep_action_name *action_name;
-
-		action_name = &damon_sysfs_prep_action_names[i];
-		if (action_name->action == prep->action)
-			return sysfs_emit(buf, "%s\n", action_name->name);
-	}
-	return -EINVAL;
-}
-
-static ssize_t prep_action_store(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	struct damon_sysfs_prep *prep = container_of(kobj,
-			struct damon_sysfs_prep, kobj);
-	ssize_t ret = -EINVAL;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(damon_sysfs_prep_action_names); i++) {
-		const struct damon_sysfs_prep_action_name *action_name;
-
-		action_name = &damon_sysfs_prep_action_names[i];
-		if (sysfs_streq(buf, action_name->name)) {
-			if (!mutex_trylock(&damon_sysfs_lock))
-				return -EBUSY;
-			prep->action = action_name->action;
-			mutex_unlock(&damon_sysfs_lock);
-			ret = count;
-			break;
-		}
-	}
-	return ret;
-}
-
-static void damon_sysfs_prep_release(struct kobject *kobj)
-{
-	struct damon_sysfs_prep *prep = container_of(kobj,
-			struct damon_sysfs_prep, kobj);
-
-	kfree(prep);
-}
-
-static struct kobj_attribute damon_sysfs_prep_prep_action_attr =
-		__ATTR_RW_MODE(prep_action, 0600);
-
-static struct attribute *damon_sysfs_prep_attrs[] = {
-	&damon_sysfs_prep_prep_action_attr.attr,
-	NULL,
-};
-ATTRIBUTE_GROUPS(damon_sysfs_prep);
-
-static const struct kobj_type damon_sysfs_prep_ktype = {
-	.release = damon_sysfs_prep_release,
-	.sysfs_ops = &kobj_sysfs_ops,
-	.default_groups = damon_sysfs_prep_groups,
-};
-
-/*
- * preps directory
- */
-
-struct damon_sysfs_preps {
-	struct kobject kobj;
-	struct damon_sysfs_prep **preps_arr;
-	int nr;
-};
-
-static struct damon_sysfs_preps *damon_sysfs_preps_alloc(void)
-{
-	return kzalloc_obj(struct damon_sysfs_preps);
-}
-
-static void damon_sysfs_preps_rm_dirs(struct damon_sysfs_preps *preps)
-{
-	struct damon_sysfs_prep **preps_arr = preps->preps_arr;
-	int i;
-
-	for (i = 0; i < preps->nr; i++) {
-		kobject_del(&preps_arr[i]->kobj);
-		kobject_put(&preps_arr[i]->kobj);
-	}
-	preps->nr = 0;
-	kfree(preps_arr);
-	preps->preps_arr = NULL;
-}
-
-static int damon_sysfs_preps_add_dirs(struct damon_sysfs_preps *preps,
-		int nr_preps)
-{
-	struct damon_sysfs_prep **preps_arr, *prep;
-	int err, i;
-
-	damon_sysfs_preps_rm_dirs(preps);
-	if (!nr_preps)
-		return 0;
-
-	preps_arr = kmalloc_objs(*preps_arr, nr_preps,
-				   GFP_KERNEL | __GFP_NOWARN);
-	if (!preps_arr)
-		return -ENOMEM;
-	preps->preps_arr = preps_arr;
-
-	for (i = 0; i < nr_preps; i++) {
-		prep = damon_sysfs_prep_alloc();
-		if (!prep) {
-			damon_sysfs_preps_rm_dirs(preps);
-			return -ENOMEM;
-		}
-
-		err = kobject_init_and_add(&prep->kobj,
-				&damon_sysfs_prep_ktype, &preps->kobj, "%d",
-				i);
-		if (err) {
-			kobject_put(&prep->kobj);
-			damon_sysfs_preps_rm_dirs(preps);
-			return err;
-		}
-
-		preps_arr[i] = prep;
-		preps->nr++;
-	}
-	return 0;
-}
-
-static ssize_t nr_preps_show(struct kobject *kobj, struct kobj_attribute *attr,
-		char *buf)
-{
-	struct damon_sysfs_preps *preps = container_of(kobj,
-			struct damon_sysfs_preps, kobj);
-
-	return sysfs_emit(buf, "%d\n", preps->nr);
-}
-
-static ssize_t nr_preps_store(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	struct damon_sysfs_preps *preps;
-	int nr, err = kstrtoint(buf, 0, &nr);
-
-	if (err)
-		return err;
-	if (nr < 0)
-		return -EINVAL;
-
-	preps = container_of(kobj, struct damon_sysfs_preps, kobj);
-
-	if (!mutex_trylock(&damon_sysfs_lock))
-		return -EBUSY;
-	err = damon_sysfs_preps_add_dirs(preps, nr);
-	mutex_unlock(&damon_sysfs_lock);
-	if (err)
-		return err;
-
-	return count;
-}
-
-static void damon_sysfs_preps_release(struct kobject *kobj)
-{
-	kfree(container_of(kobj, struct damon_sysfs_preps, kobj));
-}
-
-static struct kobj_attribute damon_sysfs_preps_nr_attr =
-		__ATTR_RW_MODE(nr_preps, 0600);
-
-static struct attribute *damon_sysfs_preps_attrs[] = {
-	&damon_sysfs_preps_nr_attr.attr,
-	NULL,
-};
-ATTRIBUTE_GROUPS(damon_sysfs_preps);
-
-static const struct kobj_type damon_sysfs_preps_ktype = {
-	.release = damon_sysfs_preps_release,
-	.sysfs_ops = &kobj_sysfs_ops,
-	.default_groups = damon_sysfs_preps_groups,
-};
-
-/*
  * filter directory
  */
 
@@ -975,8 +760,6 @@ struct damon_sysfs_filter {
 	bool matching;
 	bool allow;
 	char *path;
-	unsigned long range_min;
-	unsigned long range_max;
 };
 
 static struct damon_sysfs_filter *damon_sysfs_filter_alloc(void)
@@ -998,18 +781,6 @@ damon_sysfs_filter_type_names[] = {
 	{
 		.type = DAMON_FILTER_TYPE_MEMCG,
 		.name = "memcg",
-	},
-	{
-		.type = DAMON_FILTER_TYPE_PGIDLE_UNSET,
-		.name = "pgidle_unset",
-	},
-	{
-		.type = DAMON_FILTER_TYPE_PGIDLE_SET,
-		.name = "pgidle_set",
-	},
-	{
-		.type = DAMON_FILTER_TYPE_HUGEPAGE_SIZE,
-		.name = "hugepage_size",
 	},
 };
 
@@ -1133,44 +904,6 @@ static ssize_t path_store(struct kobject *kobj,
 	return count;
 }
 
-static ssize_t min_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
-{
-	struct damon_sysfs_filter *filter = container_of(kobj,
-			struct damon_sysfs_filter, kobj);
-
-	return sysfs_emit(buf, "%lu\n", filter->range_min);
-}
-
-static ssize_t min_store(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	struct damon_sysfs_filter *filter = container_of(kobj,
-			struct damon_sysfs_filter, kobj);
-	int err = kstrtoul(buf, 0, &filter->range_min);
-
-	return err ? err : count;
-}
-
-static ssize_t max_show(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
-{
-	struct damon_sysfs_filter *filter = container_of(kobj,
-			struct damon_sysfs_filter, kobj);
-
-	return sysfs_emit(buf, "%lu\n", filter->range_max);
-}
-
-static ssize_t max_store(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	struct damon_sysfs_filter *filter = container_of(kobj,
-			struct damon_sysfs_filter, kobj);
-	int err = kstrtoul(buf, 0, &filter->range_max);
-
-	return err ? err : count;
-}
-
 static void damon_sysfs_filter_release(struct kobject *kobj)
 {
 	struct damon_sysfs_filter *filter = container_of(kobj,
@@ -1192,19 +925,11 @@ static struct kobj_attribute damon_sysfs_filter_allow_attr =
 static struct kobj_attribute damon_sysfs_filter_path_attr =
 		__ATTR_RW_MODE(path, 0600);
 
-static struct kobj_attribute damon_sysfs_filter_min_attr =
-		__ATTR_RW_MODE(min, 0600);
-
-static struct kobj_attribute damon_sysfs_filter_max_attr =
-		__ATTR_RW_MODE(max, 0600);
-
 static struct attribute *damon_sysfs_filter_attrs[] = {
 	&damon_sysfs_filter_type_attr.attr,
 	&damon_sysfs_filter_matching_attr.attr,
 	&damon_sysfs_filter_allow_attr.attr,
 	&damon_sysfs_filter_path_attr.attr,
-	&damon_sysfs_filter_min_attr.attr,
-	&damon_sysfs_filter_max_attr.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(damon_sysfs_filter);
@@ -1235,10 +960,8 @@ static void damon_sysfs_filters_rm_dirs(struct damon_sysfs_filters *filters)
 	struct damon_sysfs_filter **filters_arr = filters->filters_arr;
 	int i;
 
-	for (i = 0; i < filters->nr; i++) {
-		kobject_del(&filters_arr[i]->kobj);
+	for (i = 0; i < filters->nr; i++)
 		kobject_put(&filters_arr[i]->kobj);
-	}
 	filters->nr = 0;
 	kfree(filters_arr);
 	filters->filters_arr = NULL;
@@ -1340,8 +1063,6 @@ static const struct kobj_type damon_sysfs_filters_ktype = {
 
 struct damon_sysfs_probe {
 	struct kobject kobj;
-	unsigned int weight;
-	struct damon_sysfs_preps *preps;
 	struct damon_sysfs_filters *filters;
 };
 
@@ -1350,75 +1071,31 @@ static struct damon_sysfs_probe *damon_sysfs_probe_alloc(void)
 	return kzalloc_obj(struct damon_sysfs_probe);
 }
 
-static int damon_sysfs_probe_add_dirs(struct damon_sysfs_probe *probe)
+static int damon_sysfs_probe_add_dirs(struct damon_sysfs_probe *attr)
 {
-	struct damon_sysfs_preps *preps;
 	struct damon_sysfs_filters *filters;
 	int err;
 
-	preps = damon_sysfs_preps_alloc();
-	if (!preps)
-		return -ENOMEM;
-	probe->preps = preps;
-
-	err = kobject_init_and_add(&preps->kobj, &damon_sysfs_preps_ktype,
-			&probe->kobj, "preps");
-	if (err)
-		goto put_preps_out;
-
 	filters = damon_sysfs_filters_alloc();
-	if (!filters) {
-		err = -ENOMEM;
-		goto del_preps_out;
-	}
-	probe->filters = filters;
+	if (!filters)
+		return -ENOMEM;
+	attr->filters = filters;
 
 	err = kobject_init_and_add(&filters->kobj, &damon_sysfs_filters_ktype,
-			&probe->kobj, "filters");
-	if (err)
-		goto put_filters_out;
-	return err;
-
-put_filters_out:
-	kobject_put(&filters->kobj);
-	probe->filters = NULL;
-del_preps_out:
-	kobject_del(&preps->kobj);
-put_preps_out:
-	kobject_put(&preps->kobj);
-	probe->preps = NULL;
+			&attr->kobj, "filters");
+	if (err) {
+		kobject_put(&filters->kobj);
+		attr->filters = NULL;
+	}
 	return err;
 }
 
-static void damon_sysfs_probe_rm_dirs(struct damon_sysfs_probe *probe)
+static void damon_sysfs_probe_rm_dirs(struct damon_sysfs_probe *attr)
 {
-	if (probe->preps) {
-		damon_sysfs_preps_rm_dirs(probe->preps);
-		kobject_put(&probe->preps->kobj);
+	if (attr->filters) {
+		damon_sysfs_filters_rm_dirs(attr->filters);
+		kobject_put(&attr->filters->kobj);
 	}
-	if (probe->filters) {
-		damon_sysfs_filters_rm_dirs(probe->filters);
-		kobject_put(&probe->filters->kobj);
-	}
-}
-
-static ssize_t weight_show(struct kobject *kobj, struct kobj_attribute *attr,
-		char *buf)
-{
-	struct damon_sysfs_probe *probe = container_of(kobj,
-			struct damon_sysfs_probe, kobj);
-
-	return sysfs_emit(buf, "%u\n", probe->weight);
-}
-
-static ssize_t weight_store(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	struct damon_sysfs_probe *probe = container_of(kobj,
-			struct damon_sysfs_probe, kobj);
-	int err = kstrtouint(buf, 0, &probe->weight);
-
-	return err ? err : count;
 }
 
 static void damon_sysfs_probe_release(struct kobject *kobj)
@@ -1426,11 +1103,7 @@ static void damon_sysfs_probe_release(struct kobject *kobj)
 	kfree(container_of(kobj, struct damon_sysfs_probe, kobj));
 }
 
-static struct kobj_attribute damon_sysfs_probe_weight_attr =
-		__ATTR_RW_MODE(weight, 0600);
-
 static struct attribute *damon_sysfs_probe_attrs[] = {
-	&damon_sysfs_probe_weight_attr.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(damon_sysfs_probe);
@@ -1464,7 +1137,6 @@ static void damon_sysfs_probes_rm_dirs(
 
 	for (i = 0; i < probes->nr; i++) {
 		damon_sysfs_probe_rm_dirs(probes_arr[i]);
-		kobject_del(&probes_arr[i]->kobj);
 		kobject_put(&probes_arr[i]->kobj);
 	}
 	probes->nr = 0;
@@ -1506,7 +1178,6 @@ static int damon_sysfs_probes_add_dirs(
 
 		err = damon_sysfs_probe_add_dirs(probe);
 		if (err) {
-			kobject_del(&probe->kobj);
 			kobject_put(&probe->kobj);
 			damon_sysfs_probes_rm_dirs(probes);
 			return err;
@@ -1535,7 +1206,7 @@ static ssize_t nr_probes_store(struct kobject *kobj,
 
 	if (err)
 		return err;
-	if (nr < 0)
+	if (nr < 0 || nr > DAMON_MAX_PROBES)
 		return -EINVAL;
 
 	probes = container_of(kobj, struct damon_sysfs_probes, kobj);
@@ -2090,7 +1761,6 @@ struct damon_sysfs_kdamond {
 	struct damon_sysfs_contexts *contexts;
 	struct damon_ctx *damon_ctx;
 	unsigned int refresh_ms;
-	unsigned long next_refresh_jiffies;
 };
 
 static struct damon_sysfs_kdamond *damon_sysfs_kdamond_alloc(void)
@@ -2235,94 +1905,47 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
 	return damon_set_attrs(ctx, &attrs);
 }
 
-static int damon_sysfs_set_preps(struct damon_probe *probe,
-		struct damon_sysfs_preps *sys_preps)
-{
-	int i;
-
-	for (i = 0; i < sys_preps->nr; i++) {
-		struct damon_sysfs_prep *sys_prep = sys_preps->preps_arr[i];
-		struct damon_prep *prep;
-
-		prep = damon_new_prep(sys_prep->action);
-		if (!prep)
-			return -ENOMEM;
-		damon_add_prep(probe, prep);
-	}
-	return 0;
-}
-
-static int damon_sysfs_set_filters(struct damon_probe *probe,
-		struct damon_sysfs_filters *sys_filters)
-{
-	int i;
-
-	for (i = 0; i < sys_filters->nr; i++) {
-		struct damon_sysfs_filter *sys_filter =
-			sys_filters->filters_arr[i];
-		struct damon_filter *filter;
-
-		filter = damon_new_filter(sys_filter->type,
-				sys_filter->matching,
-				sys_filter->allow);
-		if (!filter)
-			return -ENOMEM;
-		if (filter->type == DAMON_FILTER_TYPE_MEMCG) {
-			int err;
-
-			err = damon_sysfs_memcg_path_to_id(
-					sys_filter->path,
-					&filter->memcg_id);
-			if (err) {
-				damon_destroy_filter(filter);
-				return err;
-			}
-		} else if (filter->type == DAMON_FILTER_TYPE_HUGEPAGE_SIZE) {
-			filter->range_min = sys_filter->range_min;
-			filter->range_max = sys_filter->range_max;
-		}
-		damon_add_filter(probe, filter);
-	}
-	return 0;
-}
-
-static int damon_sysfs_set_probe(struct damon_probe *probe,
-		struct damon_sysfs_probe *sys_probe)
-{
-	struct damon_sysfs_filters *sys_filters;
-	struct damon_sysfs_preps *sys_preps;
-	int err;
-
-	sys_preps = sys_probe->preps;
-	if (sys_preps) {
-		err = damon_sysfs_set_preps(probe, sys_preps);
-		if (err)
-			return err;
-	}
-	sys_filters = sys_probe->filters;
-	if (!sys_filters)
-		return 0;
-	return damon_sysfs_set_filters(probe, sys_filters);
-}
-
 static int damon_sysfs_set_probes(struct damon_ctx *ctx,
 		struct damon_sysfs_probes *sys_probes)
 {
-	int i, err;
+	int i;
 
 	for (i = 0; i < sys_probes->nr; i++) {
-		struct damon_sysfs_probe *sys_probe;
-		struct damon_probe *p;
+		struct damon_sysfs_filters *sys_filters =
+			sys_probes->probes_arr[i]->filters;
+		struct damon_probe *c;
+		int j;
 
-		p = damon_new_probe();
-		if (!p)
+		if (!sys_filters)
+			continue;
+		c = damon_new_probe();
+		if (!c)
 			return -ENOMEM;
-		damon_add_probe(ctx, p);
-		sys_probe = sys_probes->probes_arr[i];
-		p->weight = sys_probe->weight;
-		err = damon_sysfs_set_probe(p, sys_probe);
-		if (err)
-			return err;
+		damon_add_probe(ctx, c);
+
+		for (j = 0; j < sys_filters->nr; j++) {
+			struct damon_sysfs_filter *sys_filter =
+				sys_filters->filters_arr[j];
+			struct damon_filter *filter;
+
+			filter = damon_new_filter(sys_filter->type,
+					sys_filter->matching,
+					sys_filter->allow);
+			if (!filter)
+				return -ENOMEM;
+			if (filter->type == DAMON_FILTER_TYPE_MEMCG) {
+				int err;
+
+				err = damon_sysfs_memcg_path_to_id(
+						sys_filter->path,
+						&filter->memcg_id);
+				if (err) {
+					damon_destroy_filter(filter);
+					return err;
+				}
+			}
+			damon_add_filter(c, filter);
+		}
 	}
 	return 0;
 }
@@ -2341,6 +1964,9 @@ static int damon_sysfs_set_regions(struct damon_target *t,
 	for (i = 0; i < sysfs_regions->nr; i++) {
 		struct damon_sysfs_region *sys_region =
 			sysfs_regions->regions_arr[i];
+
+		if (sys_region->ar.start > sys_region->ar.end)
+			goto out;
 
 		ranges[i].start = sys_region->ar.start;
 		ranges[i].end = sys_region->ar.end;
@@ -2365,8 +1991,9 @@ static int damon_sysfs_add_target(struct damon_sysfs_target *sys_target,
 		return -ENOMEM;
 	damon_add_target(ctx, t);
 	if (damon_target_has_pid(ctx)) {
-		/* caller will destroy targets */
-		if (damon_set_target_pid(t, sys_target->pid))
+		t->pid = find_get_pid(sys_target->pid);
+		if (!t->pid)
+			/* caller will destroy targets */
 			return -EINVAL;
 	}
 	t->obsolete = sys_target->obsolete;
@@ -2380,7 +2007,7 @@ static int damon_sysfs_add_targets(struct damon_ctx *ctx,
 	int i, err;
 
 	/* Multiple physical address space monitoring targets makes no sense */
-	if (!damon_target_has_pid(ctx) && sysfs_targets->nr > 1)
+	if (ctx->ops.id == DAMON_OPS_PADDR && sysfs_targets->nr > 1)
 		return -EINVAL;
 
 	for (i = 0; i < sysfs_targets->nr; i++) {
@@ -2452,6 +2079,26 @@ static struct damon_ctx *damon_sysfs_build_ctx(
 		struct damon_sysfs_context *sys_ctx);
 
 /*
+ * Return a new damon_ctx for testing new parameters to commit.
+ */
+static struct damon_ctx *damon_sysfs_new_test_ctx(
+		struct damon_ctx *running_ctx)
+{
+	struct damon_ctx *test_ctx;
+	int err;
+
+	test_ctx = damon_new_ctx();
+	if (!test_ctx)
+		return NULL;
+	err = damon_commit_ctx(test_ctx, running_ctx);
+	if (err) {
+		damon_destroy_ctx(test_ctx);
+		return NULL;
+	}
+	return test_ctx;
+}
+
+/*
  * damon_sysfs_commit_input() - Commit user inputs to a running kdamond.
  * @kdamond:	The kobject wrapper for the associated kdamond.
  *
@@ -2460,7 +2107,7 @@ static struct damon_ctx *damon_sysfs_build_ctx(
 static int damon_sysfs_commit_input(void *data)
 {
 	struct damon_sysfs_kdamond *kdamond = data;
-	struct damon_ctx *param_ctx;
+	struct damon_ctx *param_ctx, *test_ctx;
 	int err;
 
 	if (!damon_sysfs_kdamond_running(kdamond))
@@ -2472,7 +2119,17 @@ static int damon_sysfs_commit_input(void *data)
 	param_ctx = damon_sysfs_build_ctx(kdamond->contexts->contexts_arr[0]);
 	if (IS_ERR(param_ctx))
 		return PTR_ERR(param_ctx);
+	test_ctx = damon_sysfs_new_test_ctx(kdamond->damon_ctx);
+	if (!test_ctx) {
+		damon_destroy_ctx(param_ctx);
+		return -ENOMEM;
+	}
+	err = damon_commit_ctx(test_ctx, param_ctx);
+	if (err)
+		goto out;
 	err = damon_commit_ctx(kdamond->damon_ctx, param_ctx);
+out:
+	damon_destroy_ctx(test_ctx);
 	damon_destroy_ctx(param_ctx);
 	return err;
 }
@@ -2544,15 +2201,17 @@ static struct damon_ctx *damon_sysfs_build_ctx(
 	return ctx;
 }
 
+static unsigned long damon_sysfs_next_update_jiffies;
+
 static int damon_sysfs_repeat_call_fn(void *data)
 {
 	struct damon_sysfs_kdamond *sysfs_kdamond = data;
 
 	if (!sysfs_kdamond->refresh_ms)
 		return 0;
-	if (time_before(jiffies, sysfs_kdamond->next_refresh_jiffies))
+	if (time_before(jiffies, damon_sysfs_next_update_jiffies))
 		return 0;
-	sysfs_kdamond->next_refresh_jiffies = jiffies +
+	damon_sysfs_next_update_jiffies = jiffies +
 		msecs_to_jiffies(sysfs_kdamond->refresh_ms);
 
 	if (!mutex_trylock(&damon_sysfs_lock))
@@ -2565,6 +2224,20 @@ static int damon_sysfs_repeat_call_fn(void *data)
 out:
 	mutex_unlock(&damon_sysfs_lock);
 	return 0;
+}
+
+static bool damon_sysfs_valid_start_ctx(struct damon_ctx *ctx)
+{
+	struct damos *s;
+	struct damos_quota_goal *g;
+
+	damon_for_each_scheme(s, ctx) {
+		damos_for_each_quota_goal(g, &s->quota) {
+			if (!g->target_value)
+				return false;
+		}
+	}
+	return true;
 }
 
 static int damon_sysfs_turn_damon_on(struct damon_sysfs_kdamond *kdamond)
@@ -2592,6 +2265,11 @@ static int damon_sysfs_turn_damon_on(struct damon_sysfs_kdamond *kdamond)
 		kfree(repeat_call_control);
 		return PTR_ERR(ctx);
 	}
+	if (!damon_sysfs_valid_start_ctx(ctx)) {
+		kfree(repeat_call_control);
+		damon_destroy_ctx(ctx);
+		return -EINVAL;
+	}
 	err = damon_start(&ctx, 1, false);
 	if (err) {
 		kfree(repeat_call_control);
@@ -2600,15 +2278,14 @@ static int damon_sysfs_turn_damon_on(struct damon_sysfs_kdamond *kdamond)
 	}
 	kdamond->damon_ctx = ctx;
 
-	kdamond->next_refresh_jiffies = jiffies +
-		msecs_to_jiffies(kdamond->refresh_ms);
+	damon_sysfs_next_update_jiffies =
+		jiffies + msecs_to_jiffies(kdamond->refresh_ms);
 
 	repeat_call_control->fn = damon_sysfs_repeat_call_fn;
 	repeat_call_control->data = kdamond;
 	repeat_call_control->repeat = true;
 	repeat_call_control->dealloc_on_cancel = true;
-	err = damon_call(ctx, repeat_call_control);
-	if (err)
+	if (damon_call(ctx, repeat_call_control))
 		kfree(repeat_call_control);
 	return err;
 }
@@ -2617,13 +2294,12 @@ static int damon_sysfs_turn_damon_off(struct damon_sysfs_kdamond *kdamond)
 {
 	if (!kdamond->damon_ctx)
 		return -EINVAL;
-	damon_stop(&kdamond->damon_ctx, 1);
+	return damon_stop(&kdamond->damon_ctx, 1);
 	/*
 	 * To allow users show final monitoring results of already turned-off
 	 * DAMON, we free kdamond->damon_ctx in next
 	 * damon_sysfs_turn_damon_on(), or kdamonds_nr_store()
 	 */
-	return 0;
 }
 
 static int damon_sysfs_damon_call(int (*fn)(void *data),

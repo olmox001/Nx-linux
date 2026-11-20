@@ -35,7 +35,6 @@ enum prs_errcode {
 	PERR_HKEEPING,
 	PERR_ACCESS,
 	PERR_REMOTE,
-	PERR_ISOPARENT,
 };
 
 /* bits in struct cpuset flags field */
@@ -147,9 +146,10 @@ struct cpuset {
 	nodemask_t old_mems_allowed;
 
 	/*
-	 * For linking impacted cpusets during an attach operation.
+	 * Tasks are being attached to this cpuset.  Used to prevent
+	 * zeroing cpus/mems_allowed between ->can_attach() and ->attach().
 	 */
-	struct llist_node attach_node;
+	int attach_in_progress;
 
 	/* partition root state */
 	int partition_root_state;
@@ -160,11 +160,6 @@ struct cpuset {
 	 * to a list if we need to iterate over the remote partitions.
 	 */
 	bool remote_partition;
-
-	/*
-	 * Set to true when a remote partition is undergoing update.
-	 */
-	bool remote_partition_updating;
 
 	/*
 	 * number of SCHED_DEADLINE tasks attached to this cpuset, so that we
@@ -274,7 +269,10 @@ static inline int nr_cpusets(void)
 static inline bool cpuset_is_populated(struct cpuset *cs)
 {
 	lockdep_assert_cpuset_lock_held();
-	return cgroup_is_populated(cs->css.cgroup);
+
+	/* Cpusets in the process of attaching should be considered as populated */
+	return cgroup_is_populated(cs->css.cgroup) ||
+		cs->attach_in_progress;
 }
 
 /**
@@ -310,9 +308,7 @@ void cpuset_callback_lock_irq(void);
 void cpuset_callback_unlock_irq(void);
 void cpuset_update_tasks_cpumask(struct cpuset *cs, struct cpumask *new_cpus);
 void cpuset_update_tasks_nodemask(struct cpuset *cs);
-struct cpuset *dup_or_alloc_cpuset(struct cpuset *cs);
-void free_cpuset(struct cpuset *cs);
-int validate_change(struct cpuset *cur, struct cpuset *trial);
+int cpuset_update_flag(cpuset_flagbits_t bit, struct cpuset *cs, int turning_on);
 ssize_t cpuset_write_resmask(struct kernfs_open_file *of,
 				    char *buf, size_t nbytes, loff_t off);
 int cpuset_common_seq_show(struct seq_file *sf, void *v);
@@ -326,6 +322,7 @@ void cpuset_full_unlock(void);
 extern struct cftype cpuset1_files[];
 void cpuset1_update_task_spread_flags(struct cpuset *cs,
 					struct task_struct *tsk);
+void cpuset1_update_tasks_flags(struct cpuset *cs);
 void cpuset1_hotplug_update_tasks(struct cpuset *cs,
 			    struct cpumask *new_cpus, nodemask_t *new_mems,
 			    bool cpus_updated, bool mems_updated);
@@ -335,11 +332,11 @@ void cpuset1_init(struct cpuset *cs);
 void cpuset1_online_css(struct cgroup_subsys_state *css);
 int cpuset1_generate_sched_domains(cpumask_var_t **domains,
 			struct sched_domain_attr **attributes);
-void cpuset1_offline_css(struct cpuset *cs);
 
 #else
 static inline void cpuset1_update_task_spread_flags(struct cpuset *cs,
 					struct task_struct *tsk) {}
+static inline void cpuset1_update_tasks_flags(struct cpuset *cs) {}
 static inline void cpuset1_hotplug_update_tasks(struct cpuset *cs,
 			    struct cpumask *new_cpus, nodemask_t *new_mems,
 			    bool cpus_updated, bool mems_updated) {}
@@ -351,7 +348,6 @@ static inline void cpuset1_init(struct cpuset *cs) {}
 static inline void cpuset1_online_css(struct cgroup_subsys_state *css) {}
 static inline int cpuset1_generate_sched_domains(cpumask_var_t **domains,
 			struct sched_domain_attr **attributes) { return 0; };
-static inline void cpuset1_offline_css(struct cpuset *cs) {}
 
 #endif /* CONFIG_CPUSETS_V1 */
 

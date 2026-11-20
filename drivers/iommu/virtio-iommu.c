@@ -1130,7 +1130,8 @@ static int viommu_fill_evtq(struct viommu_dev *viommu)
 	struct virtqueue *vq = viommu->vqs[VIOMMU_EVENT_VQ];
 	size_t nr_evts = vq->num_free;
 
-	viommu->evts = evts = devm_kmalloc_objs(viommu->dev, *evts, nr_evts);
+	viommu->evts = evts = devm_kmalloc_array(viommu->dev, nr_evts,
+						 sizeof(*evts), GFP_KERNEL);
 	if (!evts)
 		return -ENOMEM;
 
@@ -1157,7 +1158,7 @@ static int viommu_probe(struct virtio_device *vdev)
 	    !virtio_has_feature(vdev, VIRTIO_IOMMU_F_MAP_UNMAP))
 		return -ENODEV;
 
-	viommu = devm_kzalloc_obj(dev, *viommu);
+	viommu = devm_kzalloc(dev, sizeof(*viommu), GFP_KERNEL);
 	if (!viommu)
 		return -ENOMEM;
 
@@ -1226,12 +1227,12 @@ static int viommu_probe(struct virtio_device *vdev)
 	/* Populate the event queue with buffers */
 	ret = viommu_fill_evtq(viommu);
 	if (ret)
-		goto err_reset_vdev;
+		goto err_free_vqs;
 
 	ret = iommu_device_sysfs_add(&viommu->iommu, dev, NULL, "%s",
 				     virtio_bus_name(vdev));
 	if (ret)
-		goto err_reset_vdev;
+		goto err_free_vqs;
 
 	vdev->priv = viommu;
 
@@ -1243,8 +1244,6 @@ static int viommu_probe(struct virtio_device *vdev)
 
 	return 0;
 
-err_reset_vdev:
-	virtio_reset_device(vdev);
 err_free_vqs:
 	vdev->config->del_vqs(vdev);
 

@@ -36,13 +36,12 @@ struct fuse_args {
 	bool user_pages:1;
 	bool out_argvar:1;
 	bool page_zeroing:1;
+	bool page_replace:1;
 	bool may_block:1;
 	bool is_ext:1;
 	bool is_pinned:1;
 	bool invalidate_vmap:1;
 	bool abort_on_kill:1;
-	/* server requested io-uring zero-copy for this op */
-	bool zero_copy:1;
 	struct fuse_in_arg in_args[4];
 	struct fuse_arg out_args[2];
 	void (*end)(struct fuse_args *args, int error);

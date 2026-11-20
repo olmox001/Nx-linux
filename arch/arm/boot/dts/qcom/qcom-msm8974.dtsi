@@ -10,7 +10,6 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/power/qcom-rpmpd.h>
 #include <dt-bindings/reset/qcom,gcc-msm8974.h>
-#include <dt-bindings/reset/qcom,mmcc-msm8974.h>
 
 / {
 	#address-cells = <1>;
@@ -1867,7 +1866,7 @@
 				};
 			};
 
-			spi8_default: spi8-default-state {
+			spi8_default: spi8_default-state {
 				mosi-pins {
 					pins = "gpio45";
 					function = "blsp_spi8";
@@ -1935,8 +1934,6 @@
 
 			interrupt-controller;
 			#interrupt-cells = <1>;
-
-			resets = <&mmcc MDSS_RESET>;
 
 			status = "disabled";
 

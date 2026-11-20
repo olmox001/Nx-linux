@@ -14,7 +14,6 @@
 #include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/device.h>
-#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -74,7 +73,7 @@ struct ni16550_device_info {
 };
 
 struct ni16550_data {
-	struct uart_8250_port *uport;
+	int line;
 	struct clk *clk;
 };
 
@@ -289,7 +288,7 @@ static int ni16550_probe(struct platform_device *pdev)
 	if (!uart)
 		return -ENOMEM;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -384,9 +383,10 @@ static int ni16550_probe(struct platform_device *pdev)
 		ni16550_rs485_setup(&uart->port);
 	}
 
-	data->uport = serial8250_register_8250_port(uart);
-	if (IS_ERR(data->uport))
-		return PTR_ERR(data->uport);
+	ret = serial8250_register_8250_port(uart);
+	if (ret < 0)
+		return ret;
+	data->line = ret;
 
 	platform_set_drvdata(pdev, data);
 	return 0;
@@ -396,7 +396,7 @@ static void ni16550_remove(struct platform_device *pdev)
 {
 	struct ni16550_data *data = platform_get_drvdata(pdev);
 
-	serial8250_unregister_port(data->uport);
+	serial8250_unregister_port(data->line);
 }
 
 /* NI 16550 RS-485 Interface */

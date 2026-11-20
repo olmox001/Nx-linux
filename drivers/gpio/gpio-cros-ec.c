@@ -107,7 +107,7 @@ static int cros_ec_gpio_init_names(struct cros_ec_device *cros_ec, struct gpio_c
 	const char **names;
 	char *str;
 
-	names = devm_kzalloc_objs(gc->parent, *names, gc->ngpio);
+	names = devm_kcalloc(gc->parent, gc->ngpio, sizeof(*names), GFP_KERNEL);
 	if (!names)
 		return -ENOMEM;
 	gc->names = names;
@@ -174,7 +174,7 @@ static int cros_ec_gpio_probe(struct platform_device *pdev)
 		return ngpios;
 	}
 
-	gc = devm_kzalloc_obj(dev, *gc);
+	gc = devm_kzalloc(dev, sizeof(*gc), GFP_KERNEL);
 	if (!gc)
 		return -ENOMEM;
 

@@ -492,7 +492,8 @@ static int uniphier_xdmac_probe(struct platform_device *pdev)
 	if (nr_chans > XDMAC_MAX_CHANS)
 		nr_chans = XDMAC_MAX_CHANS;
 
-	xdev = devm_kzalloc_flex(dev, *xdev, channels, nr_chans);
+	xdev = devm_kzalloc(dev, struct_size(xdev, channels, nr_chans),
+			    GFP_KERNEL);
 	if (!xdev)
 		return -ENOMEM;
 

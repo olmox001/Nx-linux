@@ -18,10 +18,6 @@ properties:
     oneOf:
       - items:
           - enum:
-              - qcom,maili-qmp-usb3-dp-phy
-          - const: qcom,hawi-qmp-usb3-dp-phy
-      - items:
-          - enum:
               - qcom,eliza-qmp-usb3-dp-phy
           - const: qcom,sm8650-qmp-usb3-dp-phy
       - items:
@@ -30,8 +26,6 @@ properties:
           - const: qcom,sm8750-qmp-usb3-dp-phy
       - enum:
           - qcom,glymur-qmp-usb3-dp-phy
-          - qcom,hawi-qmp-usb3-dp-phy
-          - qcom,nord-qmp-usb3-dp-phy
           - qcom,sar2130p-qmp-usb3-dp-phy
           - qcom,sc7180-qmp-usb3-dp-phy
           - qcom,sc7280-qmp-usb3-dp-phy
@@ -43,7 +37,6 @@ properties:
           - qcom,sm8250-qmp-usb3-dp-phy
           - qcom,sm8350-qmp-usb3-dp-phy
           - qcom,sm8450-qmp-usb3-dp-phy
-          - qcom,sm8475-qmp-usb3-dp-phy
           - qcom,sm8550-qmp-usb3-dp-phy
           - qcom,sm8650-qmp-usb3-dp-phy
           - qcom,sm8750-qmp-usb3-dp-phy
@@ -58,7 +51,12 @@ properties:
 
   clock-names:
     minItems: 4
-    maxItems: 5
+    items:
+      - const: aux
+      - const: ref
+      - const: com_aux
+      - const: usb3_pipe
+      - const: cfg_ahb
 
   power-domains:
     maxItems: 1
@@ -189,59 +187,21 @@ allOf:
   - if:
       properties:
         compatible:
-          contains:
-            enum:
-              - qcom,x1e80100-qmp-usb3-dp-phy
+          enum:
+            - qcom,sc7180-qmp-usb3-dp-phy
+            - qcom,sdm845-qmp-usb3-dp-phy
     then:
       properties:
         clocks:
           maxItems: 5
         clock-names:
-          items:
-            - const: aux
-            - const: ref
-            - const: com_aux
-            - const: usb3_pipe
-            - const: p2rr2p_pipe
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - qcom,sc7180-qmp-usb3-dp-phy
-              - qcom,sdm845-qmp-usb3-dp-phy
-    then:
-      properties:
-        clocks:
           maxItems: 5
-        clock-names:
-          items:
-            - const: aux
-            - const: ref
-            - const: com_aux
-            - const: usb3_pipe
-            - const: cfg_ahb
-
-  - if:
-      not:
-        properties:
-          compatible:
-            contains:
-              enum:
-                - qcom,x1e80100-qmp-usb3-dp-phy
-                - qcom,sc7180-qmp-usb3-dp-phy
-                - qcom,sdm845-qmp-usb3-dp-phy
-    then:
+    else:
       properties:
         clocks:
           maxItems: 4
         clock-names:
-          items:
-            - const: aux
-            - const: ref
-            - const: com_aux
-            - const: usb3_pipe
+          maxItems: 4
 
   - if:
       properties:
@@ -249,8 +209,6 @@ allOf:
           contains:
             enum:
               - qcom,glymur-qmp-usb3-dp-phy
-              - qcom,hawi-qmp-usb3-dp-phy
-              - qcom,nord-qmp-usb3-dp-phy
               - qcom,sar2130p-qmp-usb3-dp-phy
               - qcom,sc8280xp-qmp-usb43dp-phy
               - qcom,sm6350-qmp-usb3-dp-phy

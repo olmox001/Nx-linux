@@ -253,8 +253,7 @@ do_tur:
 	 * (ASC 0x3a).
 	 */
 	cd->media_present = scsi_status_is_good(ret) ||
-		(scsi_sense_valid(&sshdr) &&
-		 scsi_sense_asc(&sshdr) != ASC_MEDIUM_NOT_PRESENT);
+		(scsi_sense_valid(&sshdr) && sshdr.asc != 0x3a);
 
 	if (last_present != cd->media_present)
 		cd->device->changed = 1;

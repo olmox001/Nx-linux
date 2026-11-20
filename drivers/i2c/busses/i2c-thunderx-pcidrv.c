@@ -160,7 +160,7 @@ static int thunder_i2c_probe_pci(struct pci_dev *pdev,
 	struct octeon_i2c *i2c;
 	int ret;
 
-	i2c = devm_kzalloc_obj(dev, *i2c);
+	i2c = devm_kzalloc(dev, sizeof(*i2c), GFP_KERNEL);
 	if (!i2c)
 		return -ENOMEM;
 

@@ -15,7 +15,6 @@
 #ifndef __UM_HOST__
 #include <linux/types.h>
 #else
-#include <stdbool.h>
 #include <sys/types.h>
 #endif
 
@@ -197,9 +196,6 @@ extern int create_mem_file(unsigned long long len);
 /* tlb.c */
 extern void report_enomem(void);
 
-/* main.c */
-extern void __noreturn os_exit(bool reboot);
-
 /* process.c */
 pid_t os_reap_child(void);
 extern void os_alarm_process(int pid);
@@ -299,7 +295,7 @@ extern int start_userspace(struct mm_id *mm_id);
 extern void userspace(struct uml_pt_regs *regs);
 extern void new_thread(void *stack, jmp_buf *buf, void (*handler)(void));
 extern void switch_threads(jmp_buf *me, jmp_buf *you);
-extern void __noreturn start_idle_thread(void *stack, jmp_buf *switch_buf);
+extern int start_idle_thread(void *stack, jmp_buf *switch_buf);
 extern void initial_thread_cb_skas(void (*proc)(void *),
 				 void *arg);
 extern void halt_skas(void);

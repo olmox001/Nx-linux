@@ -786,11 +786,6 @@ static int drm_atomic_colorop_set_property(struct drm_colorop *colorop,
 		return drm_atomic_color_set_data_property(colorop, state,
 							  property, val,
 							  replaced);
-	} else if (property == colorop->fixed_matrix_type_property) {
-		if (state->fixed_matrix_type != val) {
-			state->fixed_matrix_type = val;
-			*replaced = true;
-		}
 	} else {
 		drm_dbg_atomic(colorop->dev,
 			       "[COLOROP:%d:%d] unknown property [PROP:%d:%s]\n",
@@ -823,8 +818,6 @@ drm_atomic_colorop_get_property(struct drm_colorop *colorop,
 		*val = state->lut3d_interpolation;
 	else if (property == colorop->data_property)
 		*val = (state->data) ? state->data->base.id : 0;
-	else if (property == colorop->fixed_matrix_type_property)
-		*val = state->fixed_matrix_type;
 	else
 		return -EINVAL;
 
@@ -967,8 +960,6 @@ static int drm_atomic_connector_set_property(struct drm_connector *connector,
 		state->privacy_screen_sw_state = val;
 	} else if (property == connector->broadcast_rgb_property) {
 		state->hdmi.broadcast_rgb = val;
-	} else if (property == connector->color_format_property) {
-		state->color_format = val;
 	} else if (connector->funcs->atomic_set_property) {
 		return connector->funcs->atomic_set_property(connector,
 				state, property, val);
@@ -1054,8 +1045,6 @@ drm_atomic_connector_get_property(struct drm_connector *connector,
 		*val = state->privacy_screen_sw_state;
 	} else if (property == connector->broadcast_rgb_property) {
 		*val = state->hdmi.broadcast_rgb;
-	} else if (property == connector->color_format_property) {
-		*val = state->color_format;
 	} else if (connector->funcs->atomic_get_property) {
 		return connector->funcs->atomic_get_property(connector,
 				state, property, val);
@@ -1455,6 +1444,9 @@ static int prepare_signaling(struct drm_device *dev,
 
 		if (arg->flags & DRM_MODE_PAGE_FLIP_EVENT) {
 			struct drm_pending_vblank_event *e = crtc_state->event;
+
+			if (!file_priv)
+				continue;
 
 			ret = drm_event_reserve_init(dev, file_priv, &e->base,
 						     &e->event.base);

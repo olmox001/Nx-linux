@@ -187,10 +187,6 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
 	}
 
 merge:
-	/* skb_segment() cannot split the linear part of a frag_list member. */
-	if (unlikely(headlen > offset + skb_shinfo(p)->gso_size))
-		return -E2BIG;
-
 	/* sk ownership - if any - completely transferred to the aggregated packet */
 	skb->destructor = NULL;
 	skb->sk = NULL;
@@ -238,14 +234,6 @@ int skb_gro_receive_list(struct sk_buff *p, struct sk_buff *skb)
 		     NAPI_GRO_CB(skb)->flush))
 		return -E2BIG;
 
-	/* Fraglist members keep their own headers. Their checksum can not
-	 * be right both for a forwarded packet and for a decapsulated one,
-	 * if remote checksum offload adjusted it.
-	 */
-	if (unlikely(skb->remcsum_offload))
-		return -EINVAL;
-
-	skb_gro_frag0_invalidate(skb);
 	if (!pskb_may_pull(skb, skb_gro_offset(skb))) {
 		NAPI_GRO_CB(skb)->flush = 1;
 		return -ENOMEM;
@@ -382,7 +370,6 @@ static void gro_list_prepare(const struct list_head *head,
 		}
 
 		diffs = (unsigned long)p->dev ^ (unsigned long)skb->dev;
-		diffs |= p->protocol != skb->protocol;
 		diffs |= p->vlan_all ^ skb->vlan_all;
 		diffs |= skb_metadata_differs(p, skb);
 		if (maclen == ETH_HLEN)
@@ -422,8 +409,7 @@ static inline void skb_gro_reset_offset(struct sk_buff *skb, u32 nhoff)
 	headlen = skb_headlen(skb);
 	NAPI_GRO_CB(skb)->frag0 = skb->data;
 	NAPI_GRO_CB(skb)->frag0_len = headlen;
-	/* Shared fragments must be pulled into the linear head before parsing. */
-	if (headlen || skb_has_shared_frag(skb))
+	if (headlen)
 		return;
 
 	pinfo = skb_shinfo(skb);
@@ -460,19 +446,12 @@ static void gro_pull_from_frag0(struct sk_buff *skb, int grow)
 	}
 }
 
-static bool gro_try_pull_from_frag0(struct sk_buff *skb)
+static void gro_try_pull_from_frag0(struct sk_buff *skb)
 {
 	int grow = skb_gro_offset(skb) - skb_headlen(skb);
 
-	if (grow <= 0)
-		return true;
-
-	/* frag0 can only be used if no pull happened. */
-	if (likely(NAPI_GRO_CB(skb)->frag0_len)) {
+	if (grow > 0)
 		gro_pull_from_frag0(skb, grow);
-		return true;
-	}
-	return pskb_may_pull(skb, skb_gro_offset(skb));
 }
 
 static void gro_flush_oldest(struct gro_node *gro, struct list_head *head)
@@ -530,10 +509,9 @@ found_ptype:
 	NAPI_GRO_CB(skb)->count = 1;
 	if (unlikely(skb_is_gso(skb))) {
 		NAPI_GRO_CB(skb)->count = skb_shinfo(skb)->gso_segs;
-		/* Only support TCP and non DODGY users, with a sane gso_segs. */
+		/* Only support TCP and non DODGY users. */
 		if (!skb_is_gso_tcp(skb) ||
-		    (skb_shinfo(skb)->gso_type & SKB_GSO_DODGY) ||
-		    !NAPI_GRO_CB(skb)->count)
+		    (skb_shinfo(skb)->gso_type & SKB_GSO_DODGY))
 			NAPI_GRO_CB(skb)->flush = 1;
 	}
 
@@ -574,17 +552,13 @@ found_ptype:
 	if (NAPI_GRO_CB(skb)->flush)
 		goto normal;
 
-	/* Must be called before setting NAPI_GRO_CB(skb)->{age|last}.
-	 * A held packet must have its headers in the linear part.
-	 */
-	if (unlikely(!gro_try_pull_from_frag0(skb)))
-		goto normal;
-
 	if (unlikely(gro_list->count >= MAX_GRO_SKBS))
 		gro_flush_oldest(gro, &gro_list->list);
 	else
 		gro_list->count++;
 
+	/* Must be called before setting NAPI_GRO_CB(skb)->{age|last} */
+	gro_try_pull_from_frag0(skb);
 	NAPI_GRO_CB(skb)->age = jiffies;
 	NAPI_GRO_CB(skb)->last = skb;
 	if (!skb_is_gso(skb))

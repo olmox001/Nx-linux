@@ -398,7 +398,8 @@ static int da9052_regulator_probe(struct platform_device *pdev)
 	struct da9052 *da9052;
 	struct da9052_pdata *pdata;
 
-	regulator = devm_kzalloc_obj(&pdev->dev, struct da9052_regulator);
+	regulator = devm_kzalloc(&pdev->dev, sizeof(struct da9052_regulator),
+				 GFP_KERNEL);
 	if (!regulator)
 		return -ENOMEM;
 

@@ -1740,8 +1740,10 @@ static int rfcomm_recv_msc(struct rfcomm_session *s, int cr, struct sk_buff *skb
 		return 0;
 
 	if (cr) {
-		assign_bit(RFCOMM_TX_THROTTLED, &d->flags,
-			   msc->v24_sig & RFCOMM_V24_FC && !d->cfc);
+		if (msc->v24_sig & RFCOMM_V24_FC && !d->cfc)
+			set_bit(RFCOMM_TX_THROTTLED, &d->flags);
+		else
+			clear_bit(RFCOMM_TX_THROTTLED, &d->flags);
 
 		rfcomm_dlc_lock(d);
 
@@ -2237,10 +2239,8 @@ static void rfcomm_kill_listener(void)
 
 	BT_DBG("");
 
-	rfcomm_lock();
 	list_for_each_entry_safe(s, n, &session_list, list)
 		rfcomm_session_del(s);
-	rfcomm_unlock();
 }
 
 static int rfcomm_run(void *unused)

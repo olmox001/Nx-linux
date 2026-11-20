@@ -124,11 +124,11 @@ static int sercos3_pci_probe(struct pci_dev *dev,
 	struct sercos3_priv *priv;
 	int i;
 
-	info = devm_kzalloc_obj(&dev->dev, struct uio_info);
+	info = devm_kzalloc(&dev->dev, sizeof(struct uio_info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
-	priv = devm_kzalloc_obj(&dev->dev, struct sercos3_priv);
+	priv = devm_kzalloc(&dev->dev, sizeof(struct sercos3_priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -212,7 +212,6 @@ static const struct pci_device_id sercos3_pci_ids[] = {
 	},
 	{ 0, }
 };
-MODULE_DEVICE_TABLE(pci, sercos3_pci_ids);
 
 static struct pci_driver sercos3_pci_driver = {
 	.name = "sercos3",

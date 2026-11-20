@@ -101,7 +101,7 @@ static int imx_iim_probe(struct platform_device *pdev)
 	struct nvmem_config cfg = {};
 	const struct imx_iim_drvdata *drvdata = NULL;
 
-	iim = devm_kzalloc_obj(dev, *iim);
+	iim = devm_kzalloc(dev, sizeof(*iim), GFP_KERNEL);
 	if (!iim)
 		return -ENOMEM;
 

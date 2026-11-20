@@ -127,13 +127,7 @@ static void __fwnode_link_cycle(struct fwnode_link *link)
 {
 	pr_debug("%pfwf: cycle: depends on %pfwf\n",
 		 link->consumer, link->supplier);
-
-	if (link->flags & FWLINK_FLAG_CYCLE)
-		return;
-
 	link->flags |= FWLINK_FLAG_CYCLE;
-	pr_info("%pfwf: Fixed dependency cycle(s) with %pfwf\n",
-		link->consumer, link->supplier);
 }
 
 /**
@@ -2212,6 +2206,8 @@ static int fw_devlink_create_devlink(struct device *con,
 	if (__fw_devlink_relax_cycles(link->consumer, sup_handle)) {
 		__fwnode_link_cycle(link);
 		pr_debug("----- cycle: end -----\n");
+		pr_info("%pfwf: Fixed dependency cycle(s) with %pfwf\n",
+			link->consumer, sup_handle);
 	}
 	device_links_write_unlock();
 
@@ -2517,13 +2513,13 @@ static const struct sysfs_ops dev_sysfs_ops = {
 	.store	= dev_attr_store,
 };
 
-#define to_ext_attr(x) container_of_const(x, struct dev_ext_attribute, attr)
+#define to_ext_attr(x) container_of(x, struct dev_ext_attribute, attr)
 
 ssize_t device_store_ulong(struct device *dev,
-			   const struct device_attribute *attr,
+			   struct device_attribute *attr,
 			   const char *buf, size_t size)
 {
-	const struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
 	int ret;
 	unsigned long new;
 
@@ -2537,19 +2533,19 @@ ssize_t device_store_ulong(struct device *dev,
 EXPORT_SYMBOL_GPL(device_store_ulong);
 
 ssize_t device_show_ulong(struct device *dev,
-			  const struct device_attribute *attr,
+			  struct device_attribute *attr,
 			  char *buf)
 {
-	const struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
 	return sysfs_emit(buf, "%lx\n", *(unsigned long *)(ea->var));
 }
 EXPORT_SYMBOL_GPL(device_show_ulong);
 
 ssize_t device_store_int(struct device *dev,
-			 const struct device_attribute *attr,
+			 struct device_attribute *attr,
 			 const char *buf, size_t size)
 {
-	const struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
 	int ret;
 	long new;
 
@@ -2566,19 +2562,19 @@ ssize_t device_store_int(struct device *dev,
 EXPORT_SYMBOL_GPL(device_store_int);
 
 ssize_t device_show_int(struct device *dev,
-			const struct device_attribute *attr,
+			struct device_attribute *attr,
 			char *buf)
 {
-	const struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
 
 	return sysfs_emit(buf, "%d\n", *(int *)(ea->var));
 }
 EXPORT_SYMBOL_GPL(device_show_int);
 
-ssize_t device_store_bool(struct device *dev, const struct device_attribute *attr,
+ssize_t device_store_bool(struct device *dev, struct device_attribute *attr,
 			  const char *buf, size_t size)
 {
-	const struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
 
 	if (kstrtobool(buf, ea->var) < 0)
 		return -EINVAL;
@@ -2587,19 +2583,19 @@ ssize_t device_store_bool(struct device *dev, const struct device_attribute *att
 }
 EXPORT_SYMBOL_GPL(device_store_bool);
 
-ssize_t device_show_bool(struct device *dev, const struct device_attribute *attr,
+ssize_t device_show_bool(struct device *dev, struct device_attribute *attr,
 			 char *buf)
 {
-	const struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
 
 	return sysfs_emit(buf, "%d\n", *(bool *)(ea->var));
 }
 EXPORT_SYMBOL_GPL(device_show_bool);
 
 ssize_t device_show_string(struct device *dev,
-			   const struct device_attribute *attr, char *buf)
+			   struct device_attribute *attr, char *buf)
 {
-	const struct dev_ext_attribute *ea = to_ext_attr(attr);
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
 
 	return sysfs_emit(buf, "%s\n", (char *)ea->var);
 }
@@ -2847,9 +2843,7 @@ static ssize_t uevent_store(struct device *dev, const struct device_attribute *a
 	rc = kobject_synth_uevent(&dev->kobj, buf, count);
 
 	if (rc) {
-		dev_err_ratelimited(dev,
-				    "uevent: failed to send synthetic uevent: %d\n",
-				    rc);
+		dev_err(dev, "uevent: failed to send synthetic uevent: %d\n", rc);
 		return rc;
 	}
 

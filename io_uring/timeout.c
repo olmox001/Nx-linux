@@ -370,9 +370,6 @@ int io_timeout_cancel(struct io_ring_ctx *ctx, struct io_cancel_data *cd)
 
 	raw_spin_lock_irq(&ctx->timeout_lock);
 	req = io_timeout_extract(ctx, cd);
-	if (!IS_ERR(req))
-		atomic_set(&ctx->cq_timeouts,
-			   atomic_read(&ctx->cq_timeouts) + 1);
 	raw_spin_unlock_irq(&ctx->timeout_lock);
 
 	if (IS_ERR(req))
@@ -788,24 +785,6 @@ static bool io_match_task(struct io_kiocb *head, struct io_uring_task *tctx,
 			return true;
 	}
 	return false;
-}
-
-__cold unsigned int io_timeouts_armed(struct io_ring_ctx *ctx,
-				      struct io_uring_task *tctx)
-{
-	struct io_timeout *timeout;
-	unsigned int nr = 0;
-
-	guard(mutex)(&ctx->uring_lock);
-	raw_spin_lock_irq(&ctx->timeout_lock);
-	list_for_each_entry(timeout, &ctx->timeout_list, list) {
-		struct io_kiocb *req = cmd_to_io_kiocb(timeout);
-
-		if (req->tctx == tctx)
-			nr += io_linked_nr(req);
-	}
-	raw_spin_unlock_irq(&ctx->timeout_lock);
-	return nr;
 }
 
 /* Returns true if we found and killed one or more timeouts */

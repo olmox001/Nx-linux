@@ -57,7 +57,7 @@ static int max77650_onkey_probe(struct platform_device *pdev)
 	if (!map)
 		return -ENODEV;
 
-	onkey = devm_kzalloc_obj(dev, *onkey);
+	onkey = devm_kzalloc(dev, sizeof(*onkey), GFP_KERNEL);
 	if (!onkey)
 		return -ENOMEM;
 

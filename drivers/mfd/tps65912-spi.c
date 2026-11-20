@@ -25,7 +25,7 @@ static int tps65912_spi_probe(struct spi_device *spi)
 {
 	struct tps65912 *tps;
 
-	tps = devm_kzalloc_obj(&spi->dev, *tps);
+	tps = devm_kzalloc(&spi->dev, sizeof(*tps), GFP_KERNEL);
 	if (!tps)
 		return -ENOMEM;
 
@@ -43,7 +43,7 @@ static int tps65912_spi_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id tps65912_spi_id_table[] = {
-	{ .name = "tps65912" },
+	{ "tps65912", 0 },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(spi, tps65912_spi_id_table);

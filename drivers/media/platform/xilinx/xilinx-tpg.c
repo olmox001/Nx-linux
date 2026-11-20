@@ -278,7 +278,6 @@ static int xtpg_get_format(struct v4l2_subdev *subdev,
 }
 
 static int xtpg_set_format(struct v4l2_subdev *subdev,
-			   const struct v4l2_subdev_client_info *ci,
 			   struct v4l2_subdev_state *sd_state,
 			   struct v4l2_subdev_format *fmt)
 {
@@ -764,7 +763,7 @@ static int xtpg_probe(struct platform_device *pdev)
 	u32 i, bayer_phase;
 	int ret;
 
-	xtpg = devm_kzalloc_obj(&pdev->dev, *xtpg);
+	xtpg = devm_kzalloc(&pdev->dev, sizeof(*xtpg), GFP_KERNEL);
 	if (!xtpg)
 		return -ENOMEM;
 

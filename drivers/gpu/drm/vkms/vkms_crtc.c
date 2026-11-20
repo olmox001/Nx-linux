@@ -86,24 +86,22 @@ static void vkms_atomic_crtc_destroy_state(struct drm_crtc *crtc,
 	kfree(vkms_state);
 }
 
-static struct drm_crtc_state *vkms_atomic_crtc_create_state(struct drm_crtc *crtc)
+static void vkms_atomic_crtc_reset(struct drm_crtc *crtc)
 {
-	struct vkms_crtc_state *vkms_state;
+	struct vkms_crtc_state *vkms_state = kzalloc_obj(*vkms_state);
 
-	vkms_state = kzalloc_obj(*vkms_state);
-	if (!vkms_state)
-		return ERR_PTR(-ENOMEM);
+	if (crtc->state)
+		vkms_atomic_crtc_destroy_state(crtc, crtc->state);
 
-	__drm_atomic_helper_crtc_state_init(&vkms_state->base, crtc);
-	INIT_WORK(&vkms_state->composer_work, vkms_composer_worker);
-
-	return &vkms_state->base;
+	__drm_atomic_helper_crtc_reset(crtc, &vkms_state->base);
+	if (vkms_state)
+		INIT_WORK(&vkms_state->composer_work, vkms_composer_worker);
 }
 
 static const struct drm_crtc_funcs vkms_crtc_funcs = {
 	.set_config             = drm_atomic_helper_set_config,
 	.page_flip              = drm_atomic_helper_page_flip,
-	.atomic_create_state = vkms_atomic_crtc_create_state,
+	.reset                  = vkms_atomic_crtc_reset,
 	.atomic_duplicate_state = vkms_atomic_crtc_duplicate_state,
 	.atomic_destroy_state   = vkms_atomic_crtc_destroy_state,
 	DRM_CRTC_VBLANK_TIMER_FUNCS,

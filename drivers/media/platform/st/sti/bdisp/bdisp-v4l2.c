@@ -1287,7 +1287,7 @@ static int bdisp_probe(struct platform_device *pdev)
 
 	dev_dbg(dev, "%s\n", __func__);
 
-	bdisp = devm_kzalloc_obj(dev, struct bdisp_dev);
+	bdisp = devm_kzalloc(dev, sizeof(struct bdisp_dev), GFP_KERNEL);
 	if (!bdisp)
 		return -ENOMEM;
 

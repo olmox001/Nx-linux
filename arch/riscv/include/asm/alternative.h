@@ -10,6 +10,8 @@
 
 #ifndef __ASSEMBLER__
 
+#ifdef CONFIG_RISCV_ALTERNATIVE
+
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -33,7 +35,7 @@ void __init apply_early_boot_alternatives(void);
 void apply_module_alternatives(void *start, size_t length);
 
 void riscv_alternative_fix_offsets(void *alt_ptr, unsigned int len,
-				   int patch_offset, bool early);
+				   int patch_offset);
 
 struct alt_entry {
 	s32 old_offset;		/* offset relative to original instruction or data  */
@@ -58,6 +60,14 @@ void thead_errata_patch_func(struct alt_entry *begin, struct alt_entry *end,
 
 void riscv_cpufeature_patch_func(struct alt_entry *begin, struct alt_entry *end,
 				 unsigned int stage);
+
+#else /* CONFIG_RISCV_ALTERNATIVE */
+
+static inline void apply_boot_alternatives(void) { }
+static inline void apply_early_boot_alternatives(void) { }
+static inline void apply_module_alternatives(void *start, size_t length) { }
+
+#endif /* CONFIG_RISCV_ALTERNATIVE */
 
 #endif
 #endif

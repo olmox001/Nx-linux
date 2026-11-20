@@ -267,7 +267,10 @@ void led_blink_set_oneshot(struct led_classdev *led_cdev,
 	set_bit(LED_BLINK_ONESHOT, &led_cdev->work_flags);
 	clear_bit(LED_BLINK_ONESHOT_STOP, &led_cdev->work_flags);
 
-	assign_bit(LED_BLINK_INVERT, &led_cdev->work_flags, invert);
+	if (invert)
+		set_bit(LED_BLINK_INVERT, &led_cdev->work_flags);
+	else
+		clear_bit(LED_BLINK_INVERT, &led_cdev->work_flags);
 
 	led_blink_setup(led_cdev, delay_on, delay_off);
 }
@@ -443,7 +446,7 @@ u32 *led_get_default_pattern(struct led_classdev *led_cdev, unsigned int *size)
 	if (count < 0)
 		return NULL;
 
-	pattern = kzalloc_objs(*pattern, count);
+	pattern = kcalloc(count, sizeof(*pattern), GFP_KERNEL);
 	if (!pattern)
 		return NULL;
 

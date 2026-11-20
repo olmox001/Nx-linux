@@ -838,18 +838,13 @@ static int pca953x_irq_set_wake(struct irq_data *d, unsigned int on)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct pca953x_chip *chip = gpiochip_get_data(gc);
-	int ret;
-
-	ret = irq_set_irq_wake(chip->client->irq, on);
-	if (ret)
-		return ret;
 
 	if (on)
 		atomic_inc(&chip->wakeup_path);
 	else
 		atomic_dec(&chip->wakeup_path);
 
-	return 0;
+	return irq_set_irq_wake(chip->client->irq, on);
 }
 
 static void pca953x_irq_bus_lock(struct irq_data *d)
@@ -867,7 +862,6 @@ static void pca953x_irq_bus_sync_unlock(struct irq_data *d)
 	DECLARE_BITMAP(irq_mask, MAX_LINE);
 	DECLARE_BITMAP(reg_direction, MAX_LINE);
 	int level;
-	int ret;
 
 	guard(mutex)(&chip->i2c_lock);
 
@@ -886,9 +880,7 @@ static void pca953x_irq_bus_sync_unlock(struct irq_data *d)
 	}
 
 	/* Switch direction to input if needed */
-	ret = pca953x_read_regs(chip, chip->regs->direction, reg_direction);
-	if (ret)
-		goto out;
+	pca953x_read_regs(chip, chip->regs->direction, reg_direction);
 
 	bitmap_or(irq_mask, chip->irq_trig_fall, chip->irq_trig_raise, gc->ngpio);
 	bitmap_or(irq_mask, irq_mask, chip->irq_trig_level_high, gc->ngpio);
@@ -898,7 +890,6 @@ static void pca953x_irq_bus_sync_unlock(struct irq_data *d)
 	for_each_andnot_bit(level, irq_mask, reg_direction, gc->ngpio)
 		pca953x_gpio_direction_input_unlocked(&chip->gpio_chip, level);
 
-out:
 	mutex_unlock(&chip->irq_lock);
 }
 
@@ -993,9 +984,7 @@ static bool pca953x_irq_pending(struct pca953x_chip *chip, unsigned long *pendin
 	}
 
 	/* Remove output pins from the equation */
-	ret = pca953x_read_regs(chip, chip->regs->direction, reg_direction);
-	if (ret)
-		return false;
+	pca953x_read_regs(chip, chip->regs->direction, reg_direction);
 
 	bitmap_copy(old_stat, chip->irq_stat, gc->ngpio);
 
@@ -1095,9 +1084,7 @@ static int pca953x_irq_setup(struct pca953x_chip *chip, int irq_base)
 	 * interrupt.  We have to rely on the previous read for
 	 * this purpose.
 	 */
-	ret = pca953x_read_regs(chip, chip->regs->direction, reg_direction);
-	if (ret)
-		return ret;
+	pca953x_read_regs(chip, chip->regs->direction, reg_direction);
 	bitmap_and(chip->irq_stat, irq_stat, reg_direction, gc->ngpio);
 	mutex_init(&chip->irq_lock);
 
@@ -1211,7 +1198,7 @@ static int pca953x_probe(struct i2c_client *client)
 	int ret;
 	const struct regmap_config *regmap_config;
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (chip == NULL)
 		return -ENOMEM;
 

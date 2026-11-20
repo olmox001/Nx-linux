@@ -722,12 +722,13 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 		return -EINVAL;
 	}
 
-	channels = devm_kzalloc_objs(&st->spi->dev, *channels, num_channels);
+	channels = devm_kcalloc(&st->spi->dev, num_channels,
+		sizeof(*channels), GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
 
-	channel_config = devm_kzalloc_objs(&st->spi->dev, *channel_config,
-					   num_channels);
+	channel_config = devm_kcalloc(&st->spi->dev, num_channels,
+		sizeof(*channel_config), GFP_KERNEL);
 	if (!channel_config)
 		return -ENOMEM;
 
@@ -916,9 +917,9 @@ static const struct of_device_id ads131e08_of_match[] = {
 MODULE_DEVICE_TABLE(of, ads131e08_of_match);
 
 static const struct spi_device_id ads131e08_ids[] = {
-	{ .name = "ads131e04", .driver_data = (kernel_ulong_t)&ads131e08_info_tbl[ads131e04] },
-	{ .name = "ads131e06", .driver_data = (kernel_ulong_t)&ads131e08_info_tbl[ads131e06] },
-	{ .name = "ads131e08", .driver_data = (kernel_ulong_t)&ads131e08_info_tbl[ads131e08] },
+	{ "ads131e04", (kernel_ulong_t)&ads131e08_info_tbl[ads131e04] },
+	{ "ads131e06", (kernel_ulong_t)&ads131e08_info_tbl[ads131e06] },
+	{ "ads131e08", (kernel_ulong_t)&ads131e08_info_tbl[ads131e08] },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, ads131e08_ids);

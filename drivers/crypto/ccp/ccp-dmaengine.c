@@ -675,8 +675,9 @@ int ccp_dmaengine_register(struct ccp_device *ccp)
 	if (!dmaengine)
 		return 0;
 
-	ccp->ccp_dma_chan = devm_kzalloc_objs(ccp->dev, *(ccp->ccp_dma_chan),
-					      ccp->cmd_q_count);
+	ccp->ccp_dma_chan = devm_kcalloc(ccp->dev, ccp->cmd_q_count,
+					 sizeof(*(ccp->ccp_dma_chan)),
+					 GFP_KERNEL);
 	if (!ccp->ccp_dma_chan)
 		return -ENOMEM;
 

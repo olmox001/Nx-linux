@@ -1881,11 +1881,13 @@ static int npc_alloc_kpu_cam2_n_action2(struct rvu *rvu, int kpu_num,
 
 	kpu = &adapter->kpu[kpu_num];
 
-	kpu->cam2 = devm_kzalloc_objs(rvu->dev, *kpu->cam2, num_entries);
+	kpu->cam2 = devm_kcalloc(rvu->dev, num_entries,
+				 sizeof(*kpu->cam2), GFP_KERNEL);
 	if (!kpu->cam2)
 		return -ENOMEM;
 
-	kpu->action2 = devm_kzalloc_objs(rvu->dev, *kpu->action2, num_entries);
+	kpu->action2 = devm_kcalloc(rvu->dev, num_entries,
+				    sizeof(*kpu->action2), GFP_KERNEL);
 	if (!kpu->action2)
 		return -ENOMEM;
 
@@ -1957,8 +1959,9 @@ static int npc_apply_custom_kpu_from_fs(struct rvu *rvu,
 	fw = rvu->kpu_fwdata;
 
 	/* Binary blob contains ikpu actions entries at start of data[0] */
-	profile->ikpu2 = devm_kzalloc_objs(rvu->dev, *profile->ikpu2,
-					   ARRAY_SIZE(ikpu_action_entries));
+	profile->ikpu2 = devm_kcalloc(rvu->dev, 1,
+				      sizeof(ikpu_action_entries),
+				      GFP_KERNEL);
 	if (!profile->ikpu2)
 		return -ENOMEM;
 
@@ -2084,7 +2087,7 @@ static int npc_apply_custom_kpu(struct rvu *rvu,
 
 	*fw_kpus = fw->kpus;
 
-	sfw = devm_kzalloc_objs(rvu->dev, *sfw, 1);
+	sfw = devm_kcalloc(rvu->dev, 1, sizeof(*sfw), GFP_KERNEL);
 	if (!sfw)
 		return -ENOMEM;
 
@@ -2439,7 +2442,8 @@ int npc_mcam_rsrcs_init(struct rvu *rvu, int blkaddr)
 	mcam->bmap_fcnt = mcam->bmap_entries;
 
 	/* Alloc memory for saving entry to RVU PFFUNC allocation mapping */
-	mcam->entry2pfvf_map = kzalloc_objs(u16, mcam->bmap_entries);
+	mcam->entry2pfvf_map = kcalloc(mcam->bmap_entries, sizeof(u16),
+				       GFP_KERNEL);
 
 	if (!mcam->entry2pfvf_map)
 		goto free_bmap_reverse;
@@ -2465,23 +2469,27 @@ int npc_mcam_rsrcs_init(struct rvu *rvu, int blkaddr)
 	if (err)
 		goto free_entry_map;
 
-	mcam->cntr2pfvf_map = kzalloc_objs(u16, mcam->counters.max);
+	mcam->cntr2pfvf_map = kcalloc(mcam->counters.max, sizeof(u16),
+				      GFP_KERNEL);
 	if (!mcam->cntr2pfvf_map)
 		goto free_cntr_bmap;
 
 	/* Alloc memory for MCAM entry to counter mapping and for tracking
 	 * counter's reference count.
 	 */
-	mcam->entry2cntr_map = kzalloc_objs(u16, mcam->total_entries);
+	mcam->entry2cntr_map = kcalloc(mcam->total_entries, sizeof(u16),
+				       GFP_KERNEL);
 	if (!mcam->entry2cntr_map)
 		goto free_cntr_map;
 
-	mcam->cntr_refcnt = kzalloc_objs(u16, mcam->counters.max);
+	mcam->cntr_refcnt = kcalloc(mcam->counters.max, sizeof(u16),
+				    GFP_KERNEL);
 	if (!mcam->cntr_refcnt)
 		goto free_entry_cntr_map;
 
 	/* Alloc memory for saving target device of mcam rule */
-	mcam->entry2target_pffunc = kzalloc_objs(u16, mcam->total_entries);
+	mcam->entry2target_pffunc = kcalloc(mcam->total_entries,
+					    sizeof(u16), GFP_KERNEL);
 	if (!mcam->entry2target_pffunc)
 		goto free_cntr_refcnt;
 
@@ -2695,7 +2703,8 @@ int rvu_npc_init(struct rvu *rvu)
 	rvu_alloc_rsrc(&pkind->rsrc);
 
 	/* Allocate mem for pkind to PF and channel mapping info */
-	pkind->pfchan_map = devm_kzalloc_objs(rvu->dev, u32, pkind->rsrc.max);
+	pkind->pfchan_map = devm_kcalloc(rvu->dev, pkind->rsrc.max,
+					 sizeof(u32), GFP_KERNEL);
 	if (!pkind->pfchan_map)
 		return -ENOMEM;
 
@@ -4185,40 +4194,10 @@ npc_set_var_len_offset_pkind(struct rvu *rvu, u16 pcifunc, u64 pkind,
 	return 0;
 }
 
-static int npc_set_skip_size_pkind(struct rvu *rvu, u16 pcifunc, u64 pkind,
-				   u8 skip_size)
-{
-	struct npc_kpu_action0 *act0;
-	int blkaddr;
-	u64 val;
-
-	blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NPC, pcifunc);
-	if (blkaddr < 0) {
-		dev_err(rvu->dev, "%s: NPC block not implemented\n", __func__);
-		return -EINVAL;
-	}
-
-	val = rvu_read64(rvu, blkaddr, NPC_AF_PKINDX_ACTION0(pkind));
-	act0 = (struct npc_kpu_action0 *)&val;
-	act0->ptr_advance = skip_size;
-	rvu_write64(rvu, blkaddr, NPC_AF_PKINDX_ACTION0(pkind), val);
-
-	/* Update CPT_HR new PKIND */
-	val = rvu_read64(rvu, blkaddr, NPC_AF_PKINDX_ACTION0(pkind + 4));
-	act0 = (struct npc_kpu_action0 *)&val;
-	act0->ptr_advance = (skip_size + 40);
-	act0->next_state = NPC_S_KPU1_CPT_HDR;
-	act0->var_len_offset = (skip_size + 6);
-	act0->var_len_mask = 0xe0;
-	act0->var_len_shift = 0x5;
-	act0->var_len_right = 0x1;
-	rvu_write64(rvu, blkaddr, NPC_AF_PKINDX_ACTION0(pkind + 4), val);
-	return 0;
-}
-
 int rvu_npc_set_parse_mode(struct rvu *rvu, u16 pcifunc, u64 mode, u8 dir,
 			   u64 pkind, u8 var_len_off, u8 var_len_off_mask,
-			   u8 shift_dir, u8 skip_size)
+			   u8 shift_dir)
+
 {
 	struct rvu_pfvf *pfvf = rvu_get_pfvf(rvu, pcifunc);
 	int pf = rvu_get_pf(rvu->pdev, pcifunc);
@@ -4238,12 +4217,6 @@ int rvu_npc_set_parse_mode(struct rvu *rvu, u16 pcifunc, u64 mode, u8 dir,
 							  var_len_off,
 							  var_len_off_mask,
 							  shift_dir);
-			if (rc)
-				return rc;
-		} else if (pkind >= NPC_RX_SKIP_SIZE_PKIND &&
-			   pkind <= NPC_RX_SKIP_SIZE_PKIND + 3) {
-			rc = npc_set_skip_size_pkind(rvu, pcifunc, pkind,
-						     skip_size);
 			if (rc)
 				return rc;
 		}
@@ -4289,45 +4262,7 @@ int rvu_mbox_handler_npc_set_pkind(struct rvu *rvu, struct npc_set_pkind *req,
 {
 	return rvu_npc_set_parse_mode(rvu, req->hdr.pcifunc, req->mode,
 				      req->dir, req->pkind, req->var_len_off,
-				      req->var_len_off_mask, req->shift_dir,
-				      req->skip_size);
-}
-
-int rvu_mbox_handler_npc_read_default_rule(struct rvu *rvu,
-					   struct msg_req *req,
-					   struct npc_mcam_read_base_rule_rsp *rsp)
-{
-	struct npc_mcam *mcam = &rvu->hw->mcam;
-	int index, blkaddr, nixlf, rc;
-	u16 pcifunc = req->hdr.pcifunc;
-	u8 intf, enable;
-
-	if (is_cn20k(rvu->pdev))
-		return NPC_MCAM_INVALID_REQ;
-
-	blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NPC, 0);
-	if (blkaddr < 0)
-		return NPC_MCAM_INVALID_REQ;
-
-	rc = nix_get_nixlf(rvu, pcifunc, &nixlf, NULL);
-	if (rc < 0)
-		return rc;
-
-	/* Read the default ucast entry */
-	mutex_lock(&mcam->lock);
-	index = npc_get_nixlf_mcam_index(mcam, pcifunc, nixlf,
-					 NIXLF_UCAST_ENTRY);
-	if (index < 0) {
-		mutex_unlock(&mcam->lock);
-		return NIX_AF_ERR_AF_LF_INVALID;
-	}
-
-	/* Read the mcam entry */
-	npc_read_mcam_entry(rvu, mcam, blkaddr, index, &rsp->entry, &intf,
-			    &enable);
-	mutex_unlock(&mcam->lock);
-
-	return 0;
+				      req->var_len_off_mask, req->shift_dir);
 }
 
 int rvu_mbox_handler_npc_read_base_steer_rule(struct rvu *rvu,

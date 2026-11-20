@@ -240,7 +240,7 @@ noinline int smb_lz77_compress(const void *src, const u32 slen,
 	dstp += sizeof(u32);
 	nib = NULL;
 
-	htable = kvzalloc_objs(*htable, LZ77_HASH_SIZE);
+	htable = kvcalloc(LZ77_HASH_SIZE, sizeof(*htable), GFP_KERNEL);
 	if (!htable)
 		return -ENOMEM;
 

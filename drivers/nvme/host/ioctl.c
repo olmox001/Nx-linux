@@ -343,7 +343,7 @@ static int nvme_user_cmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	c.common.cdw14 = cpu_to_le32(cmd.cdw14);
 	c.common.cdw15 = cpu_to_le32(cmd.cdw15);
 
-	if (!nvme_cmd_allowed(ctrl, ns, &c, flags, open_for_write))
+	if (!nvme_cmd_allowed(ctrl, ns, &c, 0, open_for_write))
 		return -EACCES;
 
 	if (cmd.timeout_ms)
@@ -423,6 +423,8 @@ struct nvme_uring_data {
 struct nvme_uring_cmd_pdu {
 	struct request *req;
 	struct bio *bio;
+	u64 result;
+	int status;
 };
 
 static inline struct nvme_uring_cmd_pdu *nvme_uring_cmd_pdu(
@@ -438,7 +440,8 @@ static void nvme_uring_task_cb(struct io_tw_req tw_req, io_tw_token_t tw)
 
 	if (pdu->bio)
 		blk_rq_unmap_user(pdu->bio);
-	__io_uring_cmd_done(ioucmd, IO_URING_CMD_TASK_WORK_ISSUE_FLAGS);
+	io_uring_cmd_done32(ioucmd, pdu->status, pdu->result,
+			    IO_URING_CMD_TASK_WORK_ISSUE_FLAGS);
 }
 
 static enum rq_end_io_ret nvme_uring_cmd_end_io(struct request *req,
@@ -447,17 +450,15 @@ static enum rq_end_io_ret nvme_uring_cmd_end_io(struct request *req,
 {
 	struct io_uring_cmd *ioucmd = req->end_io_data;
 	struct nvme_uring_cmd_pdu *pdu = nvme_uring_cmd_pdu(ioucmd);
-	u64 result = le64_to_cpu(nvme_req(req)->result.u64);
-	int status;
 
 	if (nvme_req(req)->flags & NVME_REQ_CANCELLED) {
-		status = -EINTR;
+		pdu->status = -EINTR;
 	} else {
-		status = nvme_req(req)->status;
-		if (!status)
-			status = blk_status_to_errno(err);
+		pdu->status = nvme_req(req)->status;
+		if (!pdu->status)
+			pdu->status = blk_status_to_errno(err);
 	}
-	io_uring_cmd_set_res32(ioucmd, status, result);
+	pdu->result = le64_to_cpu(nvme_req(req)->result.u64);
 
 	/*
 	 * For IOPOLL, check if this completion is happening in the context
@@ -470,7 +471,7 @@ static enum rq_end_io_ret nvme_uring_cmd_end_io(struct request *req,
 	    iob->poll_ctx == io_uring_cmd_ctx_handle(ioucmd)) {
 		if (pdu->bio)
 			blk_rq_unmap_user(pdu->bio);
-		__io_uring_cmd_done(ioucmd, 0);
+		io_uring_cmd_done32(ioucmd, pdu->status, pdu->result, 0);
 	} else {
 		io_uring_cmd_do_in_task_lazy(ioucmd, nvme_uring_task_cb);
 	}
@@ -728,14 +729,14 @@ int nvme_ns_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
 static int nvme_ns_head_ctrl_ioctl(struct nvme_ns *ns, unsigned int cmd,
 		void __user *argp, struct nvme_ns_head *head, int srcu_idx,
 		bool open_for_write)
-	__releases_shared(&head->srcu)
+	__releases(&head->srcu)
 {
 	struct nvme_ctrl *ctrl = ns->ctrl;
 	int ret;
 
 	nvme_get_ctrl(ns->ctrl);
 	srcu_read_unlock(&head->srcu, srcu_idx);
-	ret = nvme_ctrl_ioctl(ctrl, cmd, argp, open_for_write);
+	ret = nvme_ctrl_ioctl(ns->ctrl, cmd, argp, open_for_write);
 
 	nvme_put_ctrl(ctrl);
 	return ret;

@@ -60,7 +60,7 @@ void verr(int eval, const char *fmt, va_list args)
 static __attribute__((noreturn, unused))
 void verrx(int eval, const char *fmt, va_list args)
 {
-	vwarnx(fmt, args);
+	warnx(fmt, args);
 	exit(eval);
 }
 

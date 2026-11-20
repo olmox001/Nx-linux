@@ -1510,7 +1510,7 @@ static int fsl_micfil_probe(struct platform_device *pdev)
 	void __iomem *regs;
 	int ret, i;
 
-	micfil = devm_kzalloc_obj(&pdev->dev, *micfil);
+	micfil = devm_kzalloc(&pdev->dev, sizeof(*micfil), GFP_KERNEL);
 	if (!micfil)
 		return -ENOMEM;
 

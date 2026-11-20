@@ -34,7 +34,6 @@
 #include <asm/ptrace.h>
 #include <asm/rwonce.h>
 #include <asm/fpu.h>
-#include <asm/syscall.h>
 
 #include "entry.h"
 
@@ -346,9 +345,11 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 				return -EINVAL;
 		}
 
-		if (addr == offsetof(struct user, regs.gprs[2])) {
-			if (test_pt_regs_flag(regs, PIF_SYSCALL))
-				syscall_set_nr(child, regs, data);
+		if (test_pt_regs_flag(regs, PIF_SYSCALL) &&
+			addr == offsetof(struct user, regs.gprs[2])) {
+			struct pt_regs *regs = task_pt_regs(child);
+
+			regs->int_code = 0x20000 | (data & 0xffff);
 		}
 		*(addr_t *)((addr_t) &regs->psw + addr) = data;
 	} else if (addr < offsetof(struct user, regs.orig_gpr2)) {
@@ -539,7 +540,7 @@ static int s390_regs_set(struct task_struct *target,
 		const unsigned long  __user *u = ubuf;
 		while (count > 0 && !rc) {
 			unsigned long word;
-			rc = get_user(word, u++);
+			rc = __get_user(word, u++);
 			if (rc)
 				break;
 			rc = __poke_user(target, pos, word);

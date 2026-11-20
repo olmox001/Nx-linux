@@ -238,32 +238,29 @@ EXPORT_SYMBOL(scsi_print_command);
 
 static size_t
 scsi_format_extd_sense(char *buffer, size_t buf_len,
-		       const struct scsi_sense_hdr *sshdr)
+		       unsigned char asc, unsigned char ascq)
 {
 	size_t off = 0;
 	const char *extd_sense_fmt = NULL;
-	const char *extd_sense_str =
-		scsi_extd_sense_format(sshdr, &extd_sense_fmt);
+	const char *extd_sense_str = scsi_extd_sense_format(asc, ascq,
+							    &extd_sense_fmt);
 
 	if (extd_sense_str) {
 		off = scnprintf(buffer, buf_len, "Add. Sense: %s",
 				extd_sense_str);
 		if (extd_sense_fmt)
 			off += scnprintf(buffer + off, buf_len - off,
-					 "(%s%x)", extd_sense_fmt,
-					 scsi_sense_ascq(sshdr));
+					 "(%s%x)", extd_sense_fmt, ascq);
 	} else {
-		if (scsi_sense_asc(sshdr) >= 0x80)
+		if (asc >= 0x80)
 			off = scnprintf(buffer, buf_len, "<<vendor>>");
 		off += scnprintf(buffer + off, buf_len - off,
-				 "ASC=0x%x ",
-				 scsi_sense_asc(sshdr));
-		if (scsi_sense_ascq(sshdr) >= 0x80)
+				 "ASC=0x%x ", asc);
+		if (ascq >= 0x80)
 			off += scnprintf(buffer + off, buf_len - off,
 					 "<<vendor>>");
 		off += scnprintf(buffer + off, buf_len - off,
-				 "ASCQ=0x%x ",
-				 scsi_sense_ascq(sshdr));
+				 "ASCQ=0x%x ", ascq);
 	}
 	return off;
 }
@@ -336,7 +333,8 @@ scsi_log_print_sense_hdr(const struct scsi_device *sdev, const char *name,
 	if (!logbuf)
 		return;
 	off = sdev_format_header(logbuf, logbuf_len, name, tag);
-	off += scsi_format_extd_sense(logbuf + off, logbuf_len - off, sshdr);
+	off += scsi_format_extd_sense(logbuf + off, logbuf_len - off,
+				      sshdr->asc, sshdr->ascq);
 	dev_printk(KERN_INFO, &sdev->sdev_gendev, "%s", logbuf);
 	scsi_log_release_buffer(logbuf);
 }

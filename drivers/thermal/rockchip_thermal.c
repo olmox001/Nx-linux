@@ -1702,7 +1702,8 @@ static int rockchip_thermal_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return -EINVAL;
 
-	thermal = devm_kzalloc_obj(&pdev->dev, struct rockchip_thermal_data);
+	thermal = devm_kzalloc(&pdev->dev, sizeof(struct rockchip_thermal_data),
+			       GFP_KERNEL);
 	if (!thermal)
 		return -ENOMEM;
 
@@ -1712,8 +1713,8 @@ static int rockchip_thermal_probe(struct platform_device *pdev)
 	if (!thermal->chip)
 		return -EINVAL;
 
-	thermal->sensors = devm_kzalloc_objs(&pdev->dev, *thermal->sensors,
-					     thermal->chip->chn_num);
+	thermal->sensors = devm_kcalloc(&pdev->dev, thermal->chip->chn_num,
+					sizeof(*thermal->sensors), GFP_KERNEL);
 	if (!thermal->sensors)
 		return -ENOMEM;
 
@@ -1772,7 +1773,8 @@ static int rockchip_thermal_probe(struct platform_device *pdev)
 					  IRQF_ONESHOT,
 					  "rockchip_thermal", thermal);
 	if (error)
-		return error;
+		return dev_err_probe(&pdev->dev, error,
+				     "failed to request tsadc irq.\n");
 
 	thermal->chip->control(thermal->regs, true);
 

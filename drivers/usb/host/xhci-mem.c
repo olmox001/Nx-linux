@@ -14,7 +14,6 @@
 #include <linux/slab.h>
 #include <linux/dmapool.h>
 #include <linux/dma-mapping.h>
-#include <linux/bitfield.h>
 
 #include "xhci.h"
 #include "xhci-trace.h"
@@ -1002,6 +1001,7 @@ int xhci_alloc_virt_device(struct xhci_hcd *xhci, int slot_id,
 	for (i = 0; i < 31; i++) {
 		dev->eps[i].ep_index = i;
 		dev->eps[i].vdev = dev;
+		dev->eps[i].xhci = xhci;
 		INIT_LIST_HEAD(&dev->eps[i].cancelled_td_list);
 		INIT_LIST_HEAD(&dev->eps[i].bw_endpoint_list);
 	}
@@ -1493,7 +1493,6 @@ int xhci_endpoint_init(struct xhci_hcd *xhci,
 		return -ENOMEM;
 
 	virt_dev->eps[ep_index].skip = false;
-	virt_dev->eps[ep_index].next_uframe = -1;
 	ep_ring = virt_dev->eps[ep_index].new_ring;
 	xhci_ring_init(xhci, ep_ring);
 
@@ -1903,38 +1902,24 @@ EXPORT_SYMBOL_GPL(xhci_remove_secondary_interrupter);
 void xhci_rh_bw_cleanup(struct xhci_hcd *xhci)
 {
 	struct xhci_root_port_bw_info *rh_bw;
-	struct xhci_interval_bw_table *bw_table;
-	struct xhci_interval_bw *interval_bw;
 	struct xhci_tt_bw_info *tt_info, *tt_next;
 	struct list_head *eps, *ep, *ep_next;
 
 	for (int i = 0; i < xhci->max_ports; i++) {
 		rh_bw = &xhci->rh_bw[i];
 
-		rh_bw->num_active_tts = 0;
 		/* Clear and free all TT bandwidth entries */
 		list_for_each_entry_safe(tt_info, tt_next, &rh_bw->tts, tt_list) {
 			list_del(&tt_info->tt_list);
 			kfree(tt_info);
 		}
 
-		bw_table = &rh_bw->bw_table;
-		bw_table->interval0_esit_payload = 0;
-		bw_table->bw_used = 0;
-		bw_table->ss_bw_in = 0;
-		bw_table->ss_bw_out = 0;
-
 		/* Clear per-interval endpoint lists */
 		for (int j = 0; j < XHCI_MAX_INTERVAL; j++) {
-			interval_bw = &bw_table->interval_bw[j];
-			eps = &interval_bw->endpoints;
+			eps = &rh_bw->bw_table.interval_bw[j].endpoints;
 
-			interval_bw->num_packets = 0;
 			list_for_each_safe(ep, ep_next, eps)
 				list_del_init(ep);
-			interval_bw->overhead[LS_OVERHEAD_TYPE] = 0;
-			interval_bw->overhead[FS_OVERHEAD_TYPE] = 0;
-			interval_bw->overhead[HS_OVERHEAD_TYPE] = 0;
 		}
 	}
 }
@@ -2098,7 +2083,7 @@ static void xhci_add_in_port(struct xhci_hcd *xhci, unsigned int num_ports,
 		       addr, port_offset, port_count, major_revision);
 	/* Port count includes the current port offset */
 	if (port_offset == 0 || (port_offset + port_count - 1) > num_ports)
-		/* WTF? "Valid values are '1' to MaxPorts" */
+		/* WTF? "Valid values are ‘1’ to MaxPorts" */
 		return;
 
 	port_cap = &xhci->port_caps[xhci->num_port_caps++];
@@ -2315,7 +2300,7 @@ xhci_alloc_interrupter(struct xhci_hcd *xhci, unsigned int segs, gfp_t flags)
 	if (!segs)
 		segs = ERST_DEFAULT_SEGS;
 
-	max_segs = BIT(FIELD_GET(HCS_ERST_MAX, xhci->hcs_params2));
+	max_segs = BIT(HCS_ERST_MAX(xhci->hcs_params2));
 	segs = min(segs, max_segs);
 
 	ir = kzalloc_node(sizeof(*ir), flags, dev_to_node(dev));

@@ -807,7 +807,6 @@ static int pl35x_nfc_setup_interface(struct nand_chip *chip, int cs,
 	 * macro to convert from one to the other.
 	 */
 	period_ns = NSEC_PER_SEC / clk_get_rate(mclk);
-	clk_put(mclk);
 
 	/*
 	 * PL35X SMC needs one extra read cycle in SDR Mode 5. This is not
@@ -863,11 +862,8 @@ static int pl35x_nfc_setup_interface(struct nand_chip *chip, int cs,
 			  PL35X_SMC_NAND_TAR_CYCLES(tmgs.t_ar) |
 			  PL35X_SMC_NAND_TRR_CYCLES(tmgs.t_rr);
 
-	/*
-	 * Reset nfc->selected_chip so the next command will cause the timing
-	 * registers to be updated in ->*_select_target().
-	 */
-	nfc->selected_chip = NULL;
+	writel(plnand->timings, nfc->conf_regs + PL35X_SMC_CYCLES);
+	pl35x_smc_update_regs(nfc);
 
 	return 0;
 }
@@ -1057,7 +1053,7 @@ static int pl35x_nand_chip_init(struct pl35x_nandc *nfc,
 	struct mtd_info *mtd;
 	int cs, ret;
 
-	plnand = devm_kzalloc_obj(nfc->dev, *plnand);
+	plnand = devm_kzalloc(nfc->dev, sizeof(*plnand), GFP_KERNEL);
 	if (!plnand)
 		return -ENOMEM;
 
@@ -1153,7 +1149,7 @@ static int pl35x_nand_probe(struct platform_device *pdev)
 	struct pl35x_nandc *nfc;
 	int ret;
 
-	nfc = devm_kzalloc_obj(&pdev->dev, *nfc);
+	nfc = devm_kzalloc(&pdev->dev, sizeof(*nfc), GFP_KERNEL);
 	if (!nfc)
 		return -ENOMEM;
 

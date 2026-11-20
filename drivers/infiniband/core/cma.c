@@ -17,6 +17,9 @@
 #include <linux/inetdevice.h>
 #include <linux/slab.h>
 #include <linux/module.h>
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#include <linux/sysctl.h>
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 #include <net/route.h>
 
 #include <net/net_namespace.h>
@@ -44,10 +47,54 @@ MODULE_AUTHOR("Sean Hefty");
 MODULE_DESCRIPTION("Generic RDMA CM Agent");
 MODULE_LICENSE("Dual BSD/GPL");
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 #define CMA_CM_RESPONSE_TIMEOUT 20
 #define CMA_MAX_CM_RETRIES 15
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 #define CMA_IBOE_PACKET_LIFETIME 16
 #define CMA_PREFERRED_ROCE_GID_TYPE IB_GID_TYPE_ROCE_UDP_ENCAP
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#define CMA_DFLT_CM_RESPONSE_TIMEOUT 20
+static int cma_cm_response_timeout = CMA_DFLT_CM_RESPONSE_TIMEOUT;
+static int cma_cm_response_timeout_min = 8;
+static int cma_cm_response_timeout_max = 31;
+#undef CMA_DFLT_CM_RESPONSE_TIMEOUT
+
+#define CMA_DFLT_MAX_CM_RETRIES 15
+static int cma_max_cm_retries = CMA_DFLT_MAX_CM_RETRIES;
+static int cma_max_cm_retries_min = 1;
+static int cma_max_cm_retries_max = 100;
+#undef CMA_DFLT_MAX_CM_RETRIES
+
+static struct ctl_table_header *cma_ctl_table_hdr;
+static struct ctl_table cma_ctl_table[] = {
+	{
+		.procname	= "cma_cm_response_timeout",
+		.data	       = &cma_cm_response_timeout,
+		.maxlen	       = sizeof(cma_cm_response_timeout),
+		.mode	       = 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1	       = &cma_cm_response_timeout_min,
+		.extra2	       = &cma_cm_response_timeout_max,
+	},
+	{
+		.procname	= "cma_max_cm_retries",
+		.data	       = &cma_max_cm_retries,
+		.maxlen	       = sizeof(cma_max_cm_retries),
+		.mode	       = 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1	       = &cma_max_cm_retries_min,
+		.extra2	       = &cma_max_cm_retries_max,
+	},
+};
+
+#define cma_pr(priv, format, arg...) \
+	pr_debug("CMA: %p: " format, ((struct rdma_id_priv *) priv), ## arg)
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
+static bool match_net_dev_ignore_port = true;
+module_param(match_net_dev_ignore_port, bool, 0644);
 
 static const char * const cma_events[] = {
 	[RDMA_CM_EVENT_ADDR_RESOLVED]	 = "address resolved",
@@ -162,6 +209,9 @@ static struct rb_root id_table = RB_ROOT;
 /* Serialize operations of id_table tree */
 static DEFINE_SPINLOCK(id_table_lock);
 static struct workqueue_struct *cma_wq;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static struct workqueue_struct *cma_free_wq;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 static unsigned int cma_pernet_id;
 
 struct cma_pernet {
@@ -200,6 +250,9 @@ struct id_table_entry {
 	struct rb_node rb_node;
 };
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#define CMA_MAX_TOS_MAP	       8
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 struct cma_device {
 	struct list_head	list;
 	struct ib_device	*device;
@@ -208,6 +261,9 @@ struct cma_device {
 	struct list_head	id_list;
 	enum ib_gid_type	*default_gid_type;
 	u8			*default_roce_tos;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	u8			tos_map[CMA_MAX_TOS_MAP];
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 };
 
 struct rdma_bind_list {
@@ -327,6 +383,27 @@ int cma_set_default_roce_tos(struct cma_device *cma_dev, u32 port,
 
 	return 0;
 }
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+u8 cma_get_tos_map(struct cma_device *cma_dev, u8 index)
+{
+	return cma_dev->tos_map[index];
+}
+
+void cma_set_tos_map(struct cma_device *cma_dev, u8 index, u8 value)
+{
+	cma_dev->tos_map[index] = value;
+}
+
+u8 cma_read_tos_for_tos(struct cma_device *dev, u8 tos_or_index)
+{
+	if (tos_or_index >= CMA_MAX_TOS_MAP)
+		return tos_or_index;
+	else
+		return cma_get_tos_map(dev, tos_or_index);
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 struct ib_device *cma_get_ib_dev(struct cma_device *cma_dev)
 {
 	return cma_dev->device;
@@ -1783,10 +1860,12 @@ static bool cma_match_net_dev(const struct rdma_cm_id *id,
 			      const struct cma_req_info *req)
 {
 	const struct rdma_addr *addr = &id->route.addr;
+	bool same_ns, same_if, ib_netw_and_match;
 
 	if (!net_dev)
 		/* This request is an AF_IB request */
-		return (!id->port_num || id->port_num == req->port) &&
+		return (match_net_dev_ignore_port ||
+			!id->port_num || id->port_num == req->port) &&
 		       (addr->src_addr.ss_family == AF_IB);
 
 	/*
@@ -1797,14 +1876,15 @@ static bool cma_match_net_dev(const struct rdma_cm_id *id,
 		return true;
 	/*
 	 * Net namespaces must match, and if the listner is listening
-	 * on a specific netdevice than netdevice must match as well.
+	 * on a specific netdevice then netdevice must match as well,
+	 * unless match_net_dev_ignore_port is set and we are on an
+	 * IB network.
 	 */
-	if (net_eq(dev_net(net_dev), addr->dev_addr.net) &&
-	    (!!addr->dev_addr.bound_dev_if ==
-	     (addr->dev_addr.bound_dev_if == net_dev->ifindex)))
-		return true;
-	else
-		return false;
+	same_ns = net_eq(dev_net(net_dev), addr->dev_addr.net);
+	same_if = !!addr->dev_addr.bound_dev_if == (addr->dev_addr.bound_dev_if == net_dev->ifindex);
+	ib_netw_and_match = match_net_dev_ignore_port && (addr->dev_addr.network == RDMA_NETWORK_IB);
+
+	return same_ns && (same_if || ib_netw_and_match);
 }
 
 static struct rdma_id_private *cma_find_listener(
@@ -1989,14 +2069,30 @@ static void cma_cancel_operation(struct rdma_id_private *id_priv,
 
 static void cma_release_port(struct rdma_id_private *id_priv)
 {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	struct rdma_bind_list *bind_list = id_priv->bind_list;
+#else
+	struct rdma_bind_list *bind_list;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	struct net *net = id_priv->id.route.addr.dev_addr.net;
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	if (!bind_list)
 		return;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 	mutex_lock(&lock);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	bind_list = id_priv->bind_list;
+	if (!bind_list) {
+		mutex_unlock(&lock);
+		return;
+	}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	hlist_del(&id_priv->node);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	id_priv->bind_list = NULL;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	if (hlist_empty(&bind_list->owners)) {
 		cma_ps_remove(net, bind_list->ps, bind_list->port);
 		kfree(bind_list);
@@ -2054,6 +2150,29 @@ static void cma_leave_mc_groups(struct rdma_id_private *id_priv)
 	}
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static void __rdma_free(struct work_struct *work)
+{
+	struct rdma_id_private *id_priv;
+
+	id_priv = container_of(work, struct rdma_id_private, work);
+
+	wait_for_completion(&id_priv->comp);
+
+	if (id_priv->internal_id)
+		cma_id_put(id_priv->id.context);
+
+	kfree(id_priv->id.route.path_rec);
+
+	if (id_priv->id.route.addr.dev_addr.sgid_attr)
+		rdma_put_gid_attr(id_priv->id.route.addr.dev_addr.sgid_attr);
+
+	put_net(id_priv->id.route.addr.dev_addr.net);
+	kfree(id_priv);
+
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static void _destroy_id(struct rdma_id_private *id_priv,
 			enum rdma_cm_state state)
 {
@@ -2075,6 +2194,7 @@ static void _destroy_id(struct rdma_id_private *id_priv,
 
 	cma_release_port(id_priv);
 	cma_id_put(id_priv);
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	wait_for_completion(&id_priv->comp);
 
 	if (id_priv->internal_id)
@@ -2087,6 +2207,10 @@ static void _destroy_id(struct rdma_id_private *id_priv,
 
 	put_net(id_priv->id.route.addr.dev_addr.net);
 	kfree(id_priv);
+#else
+	INIT_WORK(&id_priv->work, __rdma_free);
+	queue_work(cma_free_wq, &id_priv->work);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 }
 
 /*
@@ -2104,7 +2228,7 @@ static void destroy_id_handler_unlock(struct rdma_id_private *id_priv)
 	/*
 	 * Setting the state to destroyed under the handler mutex provides a
 	 * fence against calling handler callbacks. If this is invoked due to
-	 * the failure of a handler callback then it guarantees that no future
+	 * the failure of a handler callback then it guarentees that no future
 	 * handlers will be called.
 	 */
 	lockdep_assert_held(&id_priv->handler_mutex);
@@ -2139,6 +2263,11 @@ static int cma_rep_recv(struct rdma_id_private *id_priv)
 		goto reject;
 
 	trace_cm_send_rtu(id_priv);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_pr(id_priv, "sending RTU local_id=%u remote_id=%u\n",
+	       id_priv->cm_id.ib->local_id,
+	       id_priv->cm_id.ib->remote_id);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	ret = ib_send_cm_rtu(id_priv->cm_id.ib, NULL, 0);
 	if (ret)
 		goto reject;
@@ -2148,6 +2277,9 @@ reject:
 	pr_debug_ratelimited("RDMA CM: CONNECT_ERROR: failed to handle reply. status %d\n", ret);
 	cma_modify_qp_err(id_priv);
 	trace_cm_send_rej(id_priv);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_pr(id_priv, "sending REJ\n");
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	ib_send_cm_rej(id_priv->cm_id.ib, IB_CM_REJ_CONSUMER_DEFINED,
 		       NULL, 0, NULL, 0);
 	return ret;
@@ -2183,6 +2315,33 @@ static int cma_cm_event_handler(struct rdma_id_private *id_priv,
 	return ret;
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static const char *cm_event_str(enum ib_cm_event_type event)
+{
+	switch (event) {
+	case IB_CM_REQ_ERROR: return "IB_CM_REQ_ERROR";
+	case IB_CM_REQ_RECEIVED: return "IB_CM_REQ_RECEIVED";
+	case IB_CM_REP_ERROR: return "IB_CM_REP_ERROR";
+	case IB_CM_REP_RECEIVED: return "IB_CM_REP_RECEIVED";
+	case IB_CM_RTU_RECEIVED: return "IB_CM_RTU_RECEIVED";
+	case IB_CM_USER_ESTABLISHED: return "IB_CM_USER_ESTABLISHED";
+	case IB_CM_DREQ_ERROR: return "IB_CM_DREQ_ERROR";
+	case IB_CM_DREQ_RECEIVED: return "IB_CM_DREQ_RECEIVED";
+	case IB_CM_DREP_RECEIVED: return "IB_CM_DREP_RECEIVED";
+	case IB_CM_TIMEWAIT_EXIT: return "IB_CM_TIMEWAIT_EXIT";
+	case IB_CM_MRA_RECEIVED: return "IB_CM_MRA_RECEIVED";
+	case IB_CM_REJ_RECEIVED: return "IB_CM_REJ_RECEIVED";
+	case IB_CM_LAP_ERROR: return "IB_CM_LAP_ERROR";
+	case IB_CM_LAP_RECEIVED: return "IB_CM_LAP_RECEIVED";
+	case IB_CM_APR_RECEIVED: return "IB_CM_APR_RECEIVED";
+	case IB_CM_SIDR_REQ_ERROR: return "IB_CM_SIDR_REQ_ERROR";
+	case IB_CM_SIDR_REQ_RECEIVED: return "IB_CM_SIDR_REQ_RECEIVED";
+	case IB_CM_SIDR_REP_RECEIVED: return "IB_CM_SIDR_REP_RECEIVED";
+	default: return "unknown CM event";
+	}
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static int cma_ib_handler(struct ib_cm_id *cm_id,
 			  const struct ib_cm_event *ib_event)
 {
@@ -2190,6 +2349,12 @@ static int cma_ib_handler(struct ib_cm_id *cm_id,
 	struct rdma_cm_event event = {};
 	enum rdma_cm_state state;
 	int ret;
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_pr(id_priv, "received %s local_id=%u remote_id=%u\n",
+	       cm_event_str(ib_event->event),
+	       cm_id->local_id, cm_id->remote_id);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	mutex_lock(&id_priv->handler_mutex);
 	state = READ_ONCE(id_priv->state);
@@ -2209,6 +2374,9 @@ static int cma_ib_handler(struct ib_cm_id *cm_id,
 		if (state == RDMA_CM_CONNECT &&
 		    (id_priv->id.qp_type != IB_QPT_UD)) {
 			trace_cm_prepare_mra(id_priv);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+			cma_pr(id_priv, "preparing MRA\n");
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 			ib_prepare_cm_mra(cm_id);
 		}
 		if (id_priv->id.qp) {
@@ -3167,6 +3335,10 @@ int rdma_set_ib_path(struct rdma_cm_id *id,
 	struct rdma_id_private *id_priv;
 	struct net_device *ndev;
 	int ret;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	u8 default_roce_tos;
+	u8 tos;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	id_priv = container_of(id, struct rdma_id_private, id);
 	if (!cma_comp_exch(id_priv, RDMA_CM_ADDR_RESOLVED,
@@ -3179,6 +3351,23 @@ int rdma_set_ib_path(struct rdma_cm_id *id,
 		ret = -ENOMEM;
 		goto err;
 	}
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	if (!id_priv->cma_dev) {
+		ret = -ENODEV;
+		goto err_free;
+	}
+	default_roce_tos =
+		id_priv->cma_dev->default_roce_tos[id_priv->id.port_num -
+				rdma_start_port(id_priv->cma_dev->device)];
+
+	if (id_priv->tos_set)
+		tos = cma_read_tos_for_tos(id_priv->cma_dev, id_priv->tos);
+	else
+		tos = default_roce_tos;
+
+	id->route.path_rec->traffic_class = tos;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	if (rdma_protocol_roce(id->device, id->port_num)) {
 		ndev = cma_iboe_set_path_rec_l2_fields(id_priv);
@@ -3309,7 +3498,14 @@ static int cma_resolve_iboe_route(struct rdma_id_private *id_priv)
 	u8 tos;
 
 	mutex_lock(&id_priv->qp_mutex);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	if (id_priv->tos_set)
+		tos = cma_read_tos_for_tos(id_priv->cma_dev, id_priv->tos);
+	else
+		tos = default_roce_tos;
+#else
 	tos = id_priv->tos_set ? id_priv->tos : default_roce_tos;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	mutex_unlock(&id_priv->qp_mutex);
 
 	work = kzalloc_obj(*work);
@@ -3532,7 +3728,7 @@ static void addr_handler(int status, struct sockaddr *src_addr,
 			pr_debug_ratelimited("RDMA CM: ADDR_ERROR: failed to acquire device. status %d\n",
 					     status);
 		} else {
-			rdma_restrack_add(&id_priv->res);
+		rdma_restrack_add(&id_priv->res);
 		}
 	} else if (status) {
 		pr_debug_ratelimited("RDMA CM: ADDR_ERROR: failed to resolve IP. status %d\n", status);
@@ -3627,6 +3823,67 @@ int rdma_set_reuseaddr(struct rdma_cm_id *id, int reuse)
 	return ret;
 }
 EXPORT_SYMBOL(rdma_set_reuseaddr);
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static inline bool _sockaddr_eq(struct sockaddr *a, struct sockaddr *b)
+{
+	if (a->sa_family != b->sa_family)
+		return false;
+
+	switch (a->sa_family) {
+	case AF_INET:
+		if (((struct sockaddr_in *)a)->sin_addr.s_addr !=
+		    ((struct sockaddr_in *)b)->sin_addr.s_addr)
+			return false;
+		break;
+
+	case AF_INET6:
+		if (!ipv6_addr_equal(&((struct sockaddr_in6 *)a)->sin6_addr,
+				     &((struct sockaddr_in6 *)b)->sin6_addr))
+			return false;
+		break;
+
+	default:
+		return false;
+	}
+
+	return true;
+}
+
+int rdma_notify_addr_change(struct sockaddr *addr)
+{
+	struct cma_device *cma_dev;
+	struct rdma_id_private *id_priv;
+	struct sockaddr *src_addr;
+	struct cma_work *work;
+	int ret = 0;
+
+	mutex_lock(&lock);
+	list_for_each_entry(cma_dev, &dev_list, list) {
+		list_for_each_entry(id_priv, &cma_dev->id_list, device_item) {
+			src_addr =
+			   (struct sockaddr *) &id_priv->id.route.addr.src_addr;
+			if (_sockaddr_eq(addr, src_addr)) {
+				work = kzalloc(sizeof(*work), GFP_ATOMIC);
+				if (!work) {
+					ret = -ENOMEM;
+					goto out;
+				}
+
+				INIT_WORK(&work->work, cma_work_handler);
+				work->id = id_priv;
+				work->event.event = RDMA_CM_EVENT_ADDR_CHANGE;
+				cma_id_get(id_priv);
+				queue_work(cma_wq, &work->work);
+			}
+		}
+	}
+out:
+	mutex_unlock(&lock);
+	return ret;
+}
+EXPORT_SYMBOL(rdma_notify_addr_change);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 int rdma_set_afonly(struct rdma_cm_id *id, int afonly)
 {
@@ -4358,9 +4615,15 @@ static int cma_resolve_ib_udp(struct rdma_id_private *id_priv,
 	req.path = id_priv->id.route.path_rec;
 	req.sgid_attr = id_priv->id.route.addr.dev_addr.sgid_attr;
 	req.service_id = rdma_get_service_id(&id_priv->id, cma_dst_addr(id_priv));
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	req.timeout_ms = 1 << (CMA_CM_RESPONSE_TIMEOUT - 8);
 	req.max_cm_retries = CMA_MAX_CM_RETRIES;
+#else
+	req.timeout_ms = 1 << (cma_cm_response_timeout - 8);
+	req.max_cm_retries = cma_max_cm_retries;
 
+	cma_pr(id_priv, "sending SIDR\n");
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	trace_cm_send_sidr_req(id_priv);
 	ret = ib_send_cm_sidr_req(id_priv->cm_id.ib, &req);
 	if (ret) {
@@ -4431,14 +4694,27 @@ static int cma_connect_ib(struct rdma_id_private *id_priv,
 	req.flow_control = conn_param->flow_control;
 	req.retry_count = min_t(u8, 7, conn_param->retry_count);
 	req.rnr_retry_count = min_t(u8, 7, conn_param->rnr_retry_count);
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	req.remote_cm_response_timeout = CMA_CM_RESPONSE_TIMEOUT;
 	req.local_cm_response_timeout = CMA_CM_RESPONSE_TIMEOUT;
 	req.max_cm_retries = CMA_MAX_CM_RETRIES;
+#else
+	req.remote_cm_response_timeout = cma_cm_response_timeout;
+	req.local_cm_response_timeout = cma_cm_response_timeout;
+	req.max_cm_retries = cma_max_cm_retries;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
+
 	req.srq = id_priv->srq ? 1 : 0;
 	req.ece.vendor_id = id_priv->ece.vendor_id;
 	req.ece.attr_mod = id_priv->ece.attr_mod;
 
 	trace_cm_send_req(id_priv);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_pr(id_priv, "sending REQ local_id=%u remote_id=%u qp_num=%u\n",
+	       id_priv->cm_id.ib->local_id,
+	       id_priv->cm_id.ib->remote_id,
+	       id_priv->qp_num);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	ret = ib_send_cm_req(id_priv->cm_id.ib, &req);
 out:
 	if (ret && !IS_ERR(id)) {
@@ -4615,6 +4891,12 @@ static int cma_accept_ib(struct rdma_id_private *id_priv,
 	rep.ece.attr_mod = id_priv->ece.attr_mod;
 
 	trace_cm_send_rep(id_priv);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_pr(id_priv, "sending REP local_id=%u remote_id=%u qp_num=%u\n",
+	       id_priv->cm_id.ib->local_id,
+	       id_priv->cm_id.ib->remote_id,
+	       id_priv->qp_num);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	ret = ib_send_cm_rep(id_priv->cm_id.ib, &rep);
 out:
 	return ret;
@@ -4672,6 +4954,9 @@ static int cma_send_sidr_rep(struct rdma_id_private *id_priv,
 	rep.private_data_len = private_data_len;
 
 	trace_cm_send_sidr_rep(id_priv);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_pr(id_priv, "sending SIDR\n");
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	return ib_send_cm_sidr_rep(id_priv->cm_id.ib, &rep);
 }
 
@@ -4809,6 +5094,11 @@ int rdma_reject(struct rdma_cm_id *id, const void *private_data,
 						private_data, private_data_len);
 		} else {
 			trace_cm_send_rej(id_priv);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+			cma_pr(id_priv, "sending REJ local_id=%u remote_id=%u\n",
+			       id_priv->cm_id.ib->local_id,
+			       id_priv->cm_id.ib->remote_id);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 			ret = ib_send_cm_rej(id_priv->cm_id.ib, reason, NULL, 0,
 					     private_data, private_data_len);
 		}
@@ -4822,29 +5112,6 @@ int rdma_reject(struct rdma_cm_id *id, const void *private_data,
 	return ret;
 }
 EXPORT_SYMBOL(rdma_reject);
-
-static int cma_force_disconnect(struct rdma_id_private *id_priv)
-{
-	struct cma_work *work;
-
-	work = kzalloc_obj(*work);
-	if (!work)
-		return -ENOMEM;
-
-	INIT_WORK(&work->work, cma_work_handler);
-	work->old_state = RDMA_CM_CONNECT;
-	work->new_state = RDMA_CM_DISCONNECT;
-	work->event.event = RDMA_CM_EVENT_DISCONNECTED;
-	work->event.status = -ECONNABORTED;
-
-	cma_id_get(id_priv);
-	work->id = id_priv;
-
-	trace_cm_force_disconnect(id_priv);
-
-	queue_work(cma_wq, &work->work);
-	return 0;
-}
 
 int rdma_disconnect(struct rdma_cm_id *id)
 {
@@ -4861,15 +5128,25 @@ int rdma_disconnect(struct rdma_cm_id *id)
 			goto out;
 		/* Initiate or respond to a disconnect. */
 		trace_cm_disconnect(id_priv);
-		if (!ib_send_cm_dreq(id_priv->cm_id.ib, NULL, 0)) {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
+		if (ib_send_cm_dreq(id_priv->cm_id.ib, NULL, 0)) {
+			if (!ib_send_cm_drep(id_priv->cm_id.ib, NULL, 0))
+				trace_cm_sent_drep(id_priv);
+		} else {
 			trace_cm_sent_dreq(id_priv);
-			goto out;
 		}
-		if (!ib_send_cm_drep(id_priv->cm_id.ib, NULL, 0)) {
-			trace_cm_sent_drep(id_priv);
-			goto out;
+#else
+		cma_pr(id_priv, "attempt disconnect\n");
+		if (ib_send_cm_dreq(id_priv->cm_id.ib, NULL, 0)) {
+			if (!ib_send_cm_drep(id_priv->cm_id.ib, NULL, 0)) {
+				trace_cm_sent_drep(id_priv);
+				cma_pr(id_priv, "DREP sent\n");
+			}
+		} else {
+			trace_cm_sent_dreq(id_priv);
+			cma_pr(id_priv, "DREQ sent\n");
 		}
-		ret = cma_force_disconnect(id_priv);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	} else if (rdma_cap_iw_cm(id->device, id->port_num)) {
 		ret = iw_cm_disconnect(id_priv->cm_id.iw, 0);
 	} else
@@ -4897,6 +5174,14 @@ static void cma_make_mc_event(int status, struct rdma_id_private *id_priv,
 	event->param.ud.private_data = mc->context;
 	if (status) {
 		event->event = RDMA_CM_EVENT_MULTICAST_ERROR;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		/* mark that the cached record is no longer valid */
+		if (status != -ENETRESET && status != -EAGAIN) {
+			spin_lock(&id_priv->lock);
+			id_priv->is_valid_rec = 0;
+			spin_unlock(&id_priv->lock);
+		}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		return;
 	}
 
@@ -4984,14 +5269,33 @@ static int cma_join_ib_multicast(struct rdma_id_private *id_priv,
 	struct ib_sa_mcmember_rec rec;
 	struct rdma_dev_addr *dev_addr = &id_priv->id.route.addr.dev_addr;
 	ib_sa_comp_mask comp_mask;
-	int ret;
+	int ret = 0;
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	ib_addr_get_mgid(dev_addr, &rec.mgid);
 	ret = ib_sa_get_mcmember_rec(id_priv->id.device, id_priv->id.port_num,
 				     &rec.mgid, &rec);
 	if (ret)
 		return ret;
+#else
+	ib_addr_get_mgid(dev_addr, &id_priv->rec.mgid);
 
+	/* cache ipoib bc record */
+	spin_lock(&id_priv->lock);
+	if (!id_priv->is_valid_rec)
+		ret = ib_sa_get_mcmember_rec(id_priv->id.device,
+					    id_priv->id.port_num,
+					    &id_priv->rec.mgid,
+					    &id_priv->rec);
+	if (ret) {
+		id_priv->is_valid_rec = 0;
+		spin_unlock(&id_priv->lock);
+		return ret;
+	}
+	rec = id_priv->rec;
+	id_priv->is_valid_rec = 1;
+	spin_unlock(&id_priv->lock);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	if (!id_priv->qkey) {
 		ret = cma_set_default_qkey(id_priv);
 		if (ret)
@@ -5434,6 +5738,12 @@ static int cma_add_one(struct ib_device *device)
 		cma_dev->default_roce_tos[i - rdma_start_port(device)] = 0;
 	}
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	/* Initialize it to default same as user value */
+	for (i = 0; i < CMA_MAX_TOS_MAP; i++)
+		cma_dev->tos_map[i] = i;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	init_completion(&cma_dev->comp);
 	refcount_set(&cma_dev->refcount, 1);
 	INIT_LIST_HEAD(&cma_dev->id_list);
@@ -5513,7 +5823,11 @@ static struct pernet_operations cma_pernet_operations = {
 
 static int __init cma_init(void)
 {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	int ret;
+#else
+	int ret = -ENOMEM;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 	/*
 	 * There is a rare lock ordering dependency in cma_netdev_callback()
@@ -5532,9 +5846,19 @@ static int __init cma_init(void)
 	if (!cma_wq)
 		return -ENOMEM;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_free_wq = alloc_ordered_workqueue("rdma_cm_fr", WQ_MEM_RECLAIM);
+	if (!cma_free_wq)
+		goto err_wq;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	ret = register_pernet_subsys(&cma_pernet_operations);
 	if (ret)
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		goto err_wq;
+#else
+		goto err_free_wq;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 	ib_sa_register_client(&sa_client);
 	register_netdevice_notifier(&cma_nb);
@@ -5548,6 +5872,12 @@ static int __init cma_init(void)
 	if (ret)
 		goto err_ib;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	cma_ctl_table_hdr = register_net_sysctl(&init_net, "net/rdma_cm", cma_ctl_table);
+	if (!cma_ctl_table_hdr)
+		pr_warn("rdma_cm: couldn't register sysctl path, using default values\n");
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	return 0;
 
 err_ib:
@@ -5557,6 +5887,10 @@ err:
 	unregister_netdevice_notifier(&cma_nb);
 	ib_sa_unregister_client(&sa_client);
 	unregister_pernet_subsys(&cma_pernet_operations);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+err_free_wq:
+	destroy_workqueue(cma_free_wq);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 err_wq:
 	destroy_workqueue(cma_wq);
 	return ret;
@@ -5564,12 +5898,19 @@ err_wq:
 
 static void __exit cma_cleanup(void)
 {
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	unregister_net_sysctl_table(cma_ctl_table_hdr);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	cma_configfs_exit();
 	ib_unregister_client(&cma_client);
 	unregister_netevent_notifier(&cma_netevent_cb);
 	unregister_netdevice_notifier(&cma_nb);
 	ib_sa_unregister_client(&sa_client);
 	unregister_pernet_subsys(&cma_pernet_operations);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	flush_workqueue(cma_free_wq);
+	destroy_workqueue(cma_free_wq);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	destroy_workqueue(cma_wq);
 }
 

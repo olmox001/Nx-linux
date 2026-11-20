@@ -607,7 +607,7 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 
 	dev = &i2c->dev;
 
-	chg = devm_kzalloc_obj(dev, *chg);
+	chg = devm_kzalloc(dev, sizeof(*chg), GFP_KERNEL);
 	if (!chg)
 		return -ENOMEM;
 

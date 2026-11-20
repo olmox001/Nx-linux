@@ -398,7 +398,7 @@ static int rzt2h_icu_request_irqs(struct platform_device *pdev, struct irq_domai
 		ret = devm_request_irq(dev, virq, handler, 0, dev_name(dev),
 				       data ?: (void *)(uintptr_t)offset);
 		if (ret)
-			return ret;
+			return dev_err_probe(dev, ret, "Failed to request IRQ %u\n", offset);
 	}
 
 	return 0;
@@ -485,7 +485,7 @@ static int rzt2h_icu_init(struct platform_device *pdev, struct device_node *pare
 	if (!parent_domain)
 		return dev_err_probe(dev, -ENODEV, "cannot find parent domain\n");
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

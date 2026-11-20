@@ -154,6 +154,7 @@ static struct luo_session *luo_session_alloc(const char *name)
 		return ERR_PTR(-ENOMEM);
 
 	strscpy(session->name, name, sizeof(session->name));
+	INIT_LIST_HEAD(&session->file_set.files_list);
 	luo_file_set_init(&session->file_set);
 	INIT_LIST_HEAD(&session->list);
 	mutex_init(&session->mutex);
@@ -177,17 +178,6 @@ static int luo_session_insert(struct luo_session_header *sh,
 	guard(rwsem_write)(&sh->rwsem);
 
 	/*
-	 * For small number of sessions this loop won't hurt performance
-	 * but if we ever start using a lot of sessions, this might
-	 * become a bottle neck during deserialization time, as it would
-	 * cause O(n*n) complexity.
-	 */
-	list_for_each_entry(it, &sh->list, list) {
-		if (!strncmp(it->name, session->name, sizeof(it->name)))
-			return -EEXIST;
-	}
-
-	/*
 	 * For outgoing we should make sure there is room in serialization array
 	 * for new session.
 	 */
@@ -197,6 +187,16 @@ static int luo_session_insert(struct luo_session_header *sh,
 			return err;
 	}
 
+	/*
+	 * For small number of sessions this loop won't hurt performance
+	 * but if we ever start using a lot of sessions, this might
+	 * become a bottle neck during deserialization time, as it would
+	 * cause O(n*n) complexity.
+	 */
+	list_for_each_entry(it, &sh->list, list) {
+		if (!strncmp(it->name, session->name, sizeof(it->name)))
+			return -EEXIST;
+	}
 	list_add_tail(&session->list, &sh->list);
 	sh->count++;
 

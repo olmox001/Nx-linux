@@ -628,8 +628,8 @@ static int rvu_setup_msix_resources(struct rvu *rvu)
 			return err;
 
 		/* Allocate memory for MSIX vector to RVU block LF mapping */
-		pfvf->msix_lfmap = devm_kzalloc_objs(rvu->dev, u16,
-						     pfvf->msix.max);
+		pfvf->msix_lfmap = devm_kcalloc(rvu->dev, pfvf->msix.max,
+						sizeof(u16), GFP_KERNEL);
 		if (!pfvf->msix_lfmap)
 			return -ENOMEM;
 
@@ -665,7 +665,8 @@ setup_vfmsix:
 				return err;
 
 			pfvf->msix_lfmap =
-				devm_kzalloc_objs(rvu->dev, u16, pfvf->msix.max);
+				devm_kcalloc(rvu->dev, pfvf->msix.max,
+					     sizeof(u16), GFP_KERNEL);
 			if (!pfvf->msix_lfmap)
 				return -ENOMEM;
 
@@ -1094,14 +1095,16 @@ cpt:
 	}
 
 	/* Allocate memory for PFVF data */
-	rvu->pf = devm_kzalloc_objs(rvu->dev, struct rvu_pfvf, hw->total_pfs);
+	rvu->pf = devm_kcalloc(rvu->dev, hw->total_pfs,
+			       sizeof(struct rvu_pfvf), GFP_KERNEL);
 	if (!rvu->pf) {
 		dev_err(rvu->dev,
 			"%s: Failed to allocate memory for PF's rvu_pfvf struct\n", __func__);
 		return -ENOMEM;
 	}
 
-	rvu->hwvf = devm_kzalloc_objs(rvu->dev, struct rvu_pfvf, hw->total_vfs);
+	rvu->hwvf = devm_kcalloc(rvu->dev, hw->total_vfs,
+				 sizeof(struct rvu_pfvf), GFP_KERNEL);
 	if (!rvu->hwvf) {
 		dev_err(rvu->dev,
 			"%s: Failed to allocate memory for VF's rvu_pfvf struct\n", __func__);
@@ -1125,7 +1128,8 @@ cpt:
 			continue;
 
 		/* Allocate memory for block LF/slot to pcifunc mapping info */
-		block->fn_map = devm_kzalloc_objs(rvu->dev, u16, block->lf.max);
+		block->fn_map = devm_kcalloc(rvu->dev, block->lf.max,
+					     sizeof(u16), GFP_KERNEL);
 		if (!block->fn_map) {
 			err = -ENOMEM;
 			goto msix_err;
@@ -1235,7 +1239,7 @@ int rvu_aq_alloc(struct rvu *rvu, struct admin_queue **ad_queue,
 	struct admin_queue *aq;
 	int err;
 
-	*ad_queue = devm_kzalloc_obj(rvu->dev, *aq);
+	*ad_queue = devm_kzalloc(rvu->dev, sizeof(*aq), GFP_KERNEL);
 	if (!*ad_queue)
 		return -ENOMEM;
 	aq = *ad_queue;
@@ -2595,7 +2599,7 @@ static int rvu_mbox_init(struct rvu *rvu, struct mbox_wq_info *mw,
 	}
 
 	if (!rvu->ng_rvu) {
-		ng_rvu_mbox = devm_kzalloc_obj(rvu->dev, *ng_rvu_mbox);
+		ng_rvu_mbox = devm_kzalloc(rvu->dev, sizeof(*ng_rvu_mbox), GFP_KERNEL);
 		if (!ng_rvu_mbox) {
 			err = -ENOMEM;
 			goto free_bitmap;
@@ -2649,13 +2653,15 @@ static int rvu_mbox_init(struct rvu *rvu, struct mbox_wq_info *mw,
 		goto unmap_regions;
 	}
 
-	mw->mbox_wrk = devm_kzalloc_objs(rvu->dev, struct rvu_work, num);
+	mw->mbox_wrk = devm_kcalloc(rvu->dev, num,
+				    sizeof(struct rvu_work), GFP_KERNEL);
 	if (!mw->mbox_wrk) {
 		err = -ENOMEM;
 		goto exit;
 	}
 
-	mw->mbox_wrk_up = devm_kzalloc_objs(rvu->dev, struct rvu_work, num);
+	mw->mbox_wrk_up = devm_kcalloc(rvu->dev, num,
+				       sizeof(struct rvu_work), GFP_KERNEL);
 	if (!mw->mbox_wrk_up) {
 		err = -ENOMEM;
 		goto exit;
@@ -3147,7 +3153,8 @@ static int rvu_register_interrupts(struct rvu *rvu)
 	if (!rvu->irq_name)
 		return -ENOMEM;
 
-	rvu->irq_allocated = devm_kzalloc_objs(rvu->dev, bool, rvu->num_vec);
+	rvu->irq_allocated = devm_kcalloc(rvu->dev, rvu->num_vec,
+					  sizeof(bool), GFP_KERNEL);
 	if (!rvu->irq_allocated)
 		return -ENOMEM;
 
@@ -3364,12 +3371,13 @@ static int rvu_flr_init(struct rvu *rvu)
 	}
 
 	rvu->flr_wq = alloc_workqueue("rvu_afpf_flr",
-				      WQ_HIGHPRI | WQ_MEM_RECLAIM | WQ_PERCPU, 0);
+				      WQ_HIGHPRI | WQ_MEM_RECLAIM, 0);
 	if (!rvu->flr_wq)
 		return -ENOMEM;
 
 	num_devs = rvu->hw->total_pfs + pci_sriov_get_totalvfs(rvu->pdev);
-	rvu->flr_wrk = devm_kzalloc_objs(rvu->dev, struct rvu_work, num_devs);
+	rvu->flr_wrk = devm_kcalloc(rvu->dev, num_devs,
+				    sizeof(struct rvu_work), GFP_KERNEL);
 	if (!rvu->flr_wrk) {
 		destroy_workqueue(rvu->flr_wq);
 		return -ENOMEM;
@@ -3459,6 +3467,8 @@ err_put:
 err:
 	return ret;
 }
+
+#define PCI_DEVID_OCTEONTX2_RVU_AFVF	0xA0F8
 
 static int rvu_enable_sriov(struct rvu *rvu)
 {
@@ -3556,13 +3566,13 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return -EBUSY;
 	}
 
-	rvu = devm_kzalloc_obj(dev, *rvu);
+	rvu = devm_kzalloc(dev, sizeof(*rvu), GFP_KERNEL);
 	if (!rvu) {
 		atomic_set(&device_bound, 0);
 		return -ENOMEM;
 	}
 
-	rvu->hw = devm_kzalloc_obj(dev, struct rvu_hwinfo);
+	rvu->hw = devm_kzalloc(dev, sizeof(struct rvu_hwinfo), GFP_KERNEL);
 	if (!rvu->hw) {
 		devm_kfree(dev, rvu);
 		atomic_set(&device_bound, 0);

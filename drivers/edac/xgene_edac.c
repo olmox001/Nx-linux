@@ -1847,7 +1847,7 @@ static int xgene_edac_probe(struct platform_device *pdev)
 	struct resource *res;
 	int rc;
 
-	edac = devm_kzalloc_obj(&pdev->dev, *edac);
+	edac = devm_kzalloc(&pdev->dev, sizeof(*edac), GFP_KERNEL);
 	if (!edac)
 		return -ENOMEM;
 
@@ -1924,8 +1924,11 @@ static int xgene_edac_probe(struct platform_device *pdev)
 			rc = devm_request_irq(&pdev->dev, irq,
 					      xgene_edac_isr, IRQF_SHARED,
 					      dev_name(&pdev->dev), edac);
-			if (rc)
+			if (rc) {
+				dev_err(&pdev->dev,
+					"Could not request IRQ %d\n", irq);
 				goto out_err;
+			}
 		}
 	}
 

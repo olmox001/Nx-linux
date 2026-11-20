@@ -88,8 +88,9 @@ static unsigned long direct_pages_count[PG_LEVEL_NUM];
 void update_page_count(int level, unsigned long pages)
 {
 	/* Protect against CPA */
-	guard(spinlock)(&pgd_lock);
+	spin_lock(&pgd_lock);
 	direct_pages_count[level] += pages;
+	spin_unlock(&pgd_lock);
 }
 
 static void split_page_count(int level)
@@ -419,7 +420,7 @@ static void __cpa_collapse_large_pages(struct cpa_data *cpa)
 	int collapsed = 0;
 	int i;
 
-	guard(spinlock)(&cpa_lock);
+	spin_lock(&cpa_lock);
 
 	if (cpa->flags & (CPA_PAGES_ARRAY | CPA_ARRAY)) {
 		for (i = 0; i < cpa->numpages; i++)
@@ -434,8 +435,10 @@ static void __cpa_collapse_large_pages(struct cpa_data *cpa)
 			collapsed += collapse_large_pages(addr, &pgtables);
 	}
 
-	if (!collapsed)
+	if (!collapsed) {
+		spin_unlock(&cpa_lock);
 		return;
+	}
 
 	flush_tlb_all();
 
@@ -451,6 +454,8 @@ static void __cpa_collapse_large_pages(struct cpa_data *cpa)
 		else
 			pagetable_free(ptdesc);
 	}
+
+	spin_unlock(&cpa_lock);
 }
 
 static void cpa_collapse_large_pages(struct cpa_data *cpa)
@@ -471,7 +476,7 @@ static void cpa_flush(struct cpa_data *cpa, int cache)
 
 	BUG_ON(irqs_disabled() && !early_boot_irqs_disabled);
 
-	if (cache && !cpu_feature_enabled(X86_FEATURE_CLFLUSH)) {
+	if (cache && !static_cpu_has(X86_FEATURE_CLFLUSH)) {
 		cpa_flush_all(cache);
 		goto collapse_large_pages;
 	}
@@ -719,21 +724,6 @@ static inline pgprot_t verify_rwx(pgprot_t old, pgprot_t new, unsigned long star
 		return new;
 
 	end = start + npg * PAGE_SIZE - 1;
-
-	/*
-	 * If the kernel text is still RWX, gently complain, this could be a
-	 * false positive.
-	 * Once debug_checkwx() becomes mandatory for CONFIG_STRICT_KERNEL_RWX,
-	 * the warning can be removed completely.
-	 */
-	if (!kernel_set_to_readonly) {
-		pr_warn_once("CPA detected W^X violation: %016llx -> %016llx range: 0x%016lx - 0x%016lx PFN %lx\n",
-		  (unsigned long long)pgprot_val(old),
-		  (unsigned long long)pgprot_val(new),
-		  start, end, pfn);
-		return new;
-	}
-
 	WARN_ONCE(1, "CPA detected W^X violation: %016llx -> %016llx range: 0x%016lx - 0x%016lx PFN %lx\n",
 		  (unsigned long long)pgprot_val(old),
 		  (unsigned long long)pgprot_val(new),
@@ -769,7 +759,7 @@ pte_t *lookup_address_in_pgd_attr(pgd_t *pgd, unsigned long address,
 
 	*level = PG_LEVEL_512G;
 	*nx |= pgd_flags(*pgd) & _PAGE_NX;
-	*rw &= !!(pgd_flags(*pgd) & _PAGE_RW);
+	*rw &= pgd_flags(*pgd) & _PAGE_RW;
 
 	p4d = p4d_offset(pgd, address);
 	if (p4d_none(*p4d))
@@ -780,7 +770,7 @@ pte_t *lookup_address_in_pgd_attr(pgd_t *pgd, unsigned long address,
 
 	*level = PG_LEVEL_1G;
 	*nx |= p4d_flags(*p4d) & _PAGE_NX;
-	*rw &= !!(p4d_flags(*p4d) & _PAGE_RW);
+	*rw &= p4d_flags(*p4d) & _PAGE_RW;
 
 	pud = pud_offset(p4d, address);
 	if (pud_none(*pud))
@@ -791,7 +781,7 @@ pte_t *lookup_address_in_pgd_attr(pgd_t *pgd, unsigned long address,
 
 	*level = PG_LEVEL_2M;
 	*nx |= pud_flags(*pud) & _PAGE_NX;
-	*rw &= !!(pud_flags(*pud) & _PAGE_RW);
+	*rw &= pud_flags(*pud) & _PAGE_RW;
 
 	pmd = pmd_offset(pud, address);
 	if (pmd_none(*pmd))
@@ -802,7 +792,7 @@ pte_t *lookup_address_in_pgd_attr(pgd_t *pgd, unsigned long address,
 
 	*level = PG_LEVEL_4K;
 	*nx |= pmd_flags(*pmd) & _PAGE_NX;
-	*rw &= !!(pmd_flags(*pmd) & _PAGE_RW);
+	*rw &= pmd_flags(*pmd) & _PAGE_RW;
 
 	return pte_offset_kernel(pmd, address);
 }
@@ -926,23 +916,24 @@ static void __set_pmd_pte(pte_t *kpte, unsigned long address, pte_t pte)
 {
 	/* change init_mm */
 	set_pte_atomic(kpte, pte);
+#ifdef CONFIG_X86_32
+	{
+		struct page *page;
 
-	if (IS_ENABLED(CONFIG_X86_32)) {
-		struct ptdesc *ptdesc;
-
-		list_for_each_entry(ptdesc, &pgd_list, pt_list) {
+		list_for_each_entry(page, &pgd_list, lru) {
 			pgd_t *pgd;
 			p4d_t *p4d;
 			pud_t *pud;
 			pmd_t *pmd;
 
-			pgd = (pgd_t *)ptdesc_address(ptdesc) + pgd_index(address);
+			pgd = (pgd_t *)page_address(page) + pgd_index(address);
 			p4d = p4d_offset(pgd, address);
 			pud = pud_offset(p4d, address);
 			pmd = pmd_offset(pud, address);
 			set_pte_atomic((pte_t *)pmd, pte);
 		}
 	}
+#endif
 }
 
 static pgprot_t pgprot_clear_protnone_bits(pgprot_t prot)
@@ -1112,11 +1103,16 @@ static int __should_split_large_page(pte_t *kpte, unsigned long address,
 static int should_split_large_page(pte_t *kpte, unsigned long address,
 				   struct cpa_data *cpa)
 {
+	int do_split;
+
 	if (cpa->force_split)
 		return 1;
 
-	guard(spinlock)(&pgd_lock);
-	return __should_split_large_page(kpte, address, cpa);
+	spin_lock(&pgd_lock);
+	do_split = __should_split_large_page(kpte, address, cpa);
+	spin_unlock(&pgd_lock);
+
+	return do_split;
 }
 
 static void split_set_pte(struct cpa_data *cpa, pte_t *pte, unsigned long pfn,
@@ -1166,14 +1162,16 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 	bool nx, rw;
 	pte_t *tmp;
 
-	guard(spinlock)(&pgd_lock);
+	spin_lock(&pgd_lock);
 	/*
 	 * Check for races, another CPU might have split this page
 	 * up for us already:
 	 */
 	tmp = _lookup_address_cpa(cpa, address, &level, &nx, &rw);
-	if (tmp != kpte)
+	if (tmp != kpte) {
+		spin_unlock(&pgd_lock);
 		return 1;
+	}
 
 	paravirt_alloc_pte(&init_mm, page_to_pfn(base));
 
@@ -1206,6 +1204,7 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 		break;
 
 	default:
+		spin_unlock(&pgd_lock);
 		return 1;
 	}
 
@@ -1253,6 +1252,7 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 	 * just split large page entry.
 	 */
 	flush_tlb_all();
+	spin_unlock(&pgd_lock);
 
 	return 0;
 }
@@ -1327,11 +1327,11 @@ static int collapse_pmd_page(pmd_t *pmd, unsigned long addr,
 	list_add(&page_ptdesc(pmd_page(old_pmd))->pt_list, pgtables);
 
 	if (IS_ENABLED(CONFIG_X86_32)) {
-		struct ptdesc *ptdesc;
+		struct page *page;
 
 		/* Update all PGD tables to use the same large page */
-		list_for_each_entry(ptdesc, &pgd_list, pt_list) {
-			pgd_t *pgd = (pgd_t *)ptdesc_address(ptdesc) + pgd_index(addr);
+		list_for_each_entry(page, &pgd_list, lru) {
+			pgd_t *pgd = (pgd_t *)page_address(page) + pgd_index(addr);
 			p4d_t *p4d = p4d_offset(pgd, addr);
 			pud_t *pud = pud_offset(p4d, addr);
 			pmd_t *pmd = pmd_offset(pud, addr);
@@ -1405,7 +1405,7 @@ static int collapse_pud_page(pud_t *pud, unsigned long addr,
  */
 static int collapse_large_pages(unsigned long addr, struct list_head *pgtables)
 {
-	int collapsed;
+	int collapsed = 0;
 	pgd_t *pgd;
 	p4d_t *p4d;
 	pud_t *pud;
@@ -1413,24 +1413,26 @@ static int collapse_large_pages(unsigned long addr, struct list_head *pgtables)
 
 	addr &= PMD_MASK;
 
-	guard(spinlock)(&pgd_lock);
+	spin_lock(&pgd_lock);
 	pgd = pgd_offset_k(addr);
 	if (pgd_none(*pgd))
-		return 0;
+		goto out;
 	p4d = p4d_offset(pgd, addr);
 	if (p4d_none(*p4d))
-		return 0;
+		goto out;
 	pud = pud_offset(p4d, addr);
 	if (!pud_present(*pud) || pud_leaf(*pud))
-		return 0;
+		goto out;
 	pmd = pmd_offset(pud, addr);
 	if (!pmd_present(*pmd) || pmd_leaf(*pmd))
-		return 0;
+		goto out;
 
 	collapsed = collapse_pmd_page(pmd, addr, pgtables);
 	if (collapsed)
 		collapsed += collapse_pud_page(pud, addr, pgtables);
 
+out:
+	spin_unlock(&pgd_lock);
 	return collapsed;
 }
 
@@ -2700,14 +2702,22 @@ static int __set_pages_np(struct page *page, int numpages, unsigned int cpa_flag
 	return __change_page_attr_set_clr(&cpa, 1);
 }
 
-int set_direct_map_invalid_noflush(struct page *page, unsigned int nr)
+int set_direct_map_invalid_noflush(struct page *page)
 {
-	return __set_pages_np(page, nr, 0);
+	return __set_pages_np(page, 1, 0);
 }
 
-int set_direct_map_default_noflush(struct page *page, unsigned int nr)
+int set_direct_map_default_noflush(struct page *page)
 {
-	return __set_pages_p(page, nr, 0);
+	return __set_pages_p(page, 1, 0);
+}
+
+int set_direct_map_valid_noflush(struct page *page, unsigned nr, bool valid)
+{
+	if (valid)
+		return __set_pages_p(page, nr, 0);
+
+	return __set_pages_np(page, nr, 0);
 }
 
 #ifdef CONFIG_DEBUG_PAGEALLOC

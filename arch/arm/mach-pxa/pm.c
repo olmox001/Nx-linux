@@ -102,7 +102,9 @@ static int __init pxa_pm_init(void)
 		return -EINVAL;
 	}
 
-	sleep_save = kmalloc_objs(*sleep_save, pxa_cpu_pm_fns->save_count);
+	sleep_save = kmalloc_array(pxa_cpu_pm_fns->save_count,
+				   sizeof(*sleep_save),
+				   GFP_KERNEL);
 	if (!sleep_save)
 		return -ENOMEM;
 

@@ -494,7 +494,8 @@ static int s3c64xx_eint_gpio_init(struct samsung_pinctrl_drv_data *d)
 		++nr_domains;
 	}
 
-	data = devm_kzalloc_flex(dev, *data, domains, nr_domains);
+	data = devm_kzalloc(dev, struct_size(data, domains, nr_domains),
+			    GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 	data->drvdata = d;
@@ -712,7 +713,7 @@ static int s3c64xx_eint_eint0_init(struct samsung_pinctrl_drv_data *d)
 	if (!eint0_np)
 		return -ENODEV;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data) {
 		of_node_put(eint0_np);
 		return -ENOMEM;

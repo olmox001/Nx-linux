@@ -1471,9 +1471,8 @@ static int keembay_gpiochip_probe(struct keembay_pinctrl *kpc,
 	girq->chip		= &keembay_gpio_irqchip;
 	girq->parent_handler	= keembay_gpio_irq_handler;
 	girq->num_parents	= KEEMBAY_GPIO_NUM_IRQ;
-	girq->parents		= devm_kzalloc_objs(kpc->dev,
-							 *girq->parents,
-							 girq->num_parents);
+	girq->parents		= devm_kcalloc(kpc->dev, girq->num_parents,
+					       sizeof(*girq->parents), GFP_KERNEL);
 
 	if (!girq->parents)
 		return -ENOMEM;
@@ -1528,7 +1527,7 @@ static int keembay_build_groups(struct keembay_pinctrl *kpc)
 	unsigned int i;
 
 	kpc->ngroups = kpc->npins;
-	grp = devm_kzalloc_objs(kpc->dev, *grp, kpc->ngroups);
+	grp = devm_kcalloc(kpc->dev, kpc->ngroups, sizeof(*grp), GFP_KERNEL);
 	if (!grp)
 		return -ENOMEM;
 
@@ -1573,8 +1572,8 @@ static int keembay_add_functions(struct keembay_pinctrl *kpc,
 		unsigned int grp_idx = 0;
 		int j;
 
-		group_names = devm_kzalloc_objs(kpc->dev, *group_names,
-						func->func.ngroups);
+		group_names = devm_kcalloc(kpc->dev, func->func.ngroups,
+					   sizeof(*group_names), GFP_KERNEL);
 		if (!group_names)
 			return -ENOMEM;
 
@@ -1609,8 +1608,8 @@ static int keembay_build_functions(struct keembay_pinctrl *kpc)
 	 * being part of 8 (hw maximum) globally unique muxes.
 	 */
 	kpc->nfuncs = 0;
-	keembay_funcs = devm_kzalloc_objs(kpc->dev, *keembay_funcs,
-					  kpc->npins * 8);
+	keembay_funcs = devm_kcalloc(kpc->dev, kpc->npins * 8,
+				     sizeof(*keembay_funcs), GFP_KERNEL);
 	if (!keembay_funcs)
 		return -ENOMEM;
 
@@ -1666,7 +1665,7 @@ static int keembay_pinctrl_probe(struct platform_device *pdev)
 	struct keembay_pinctrl *kpc;
 	int ret;
 
-	kpc = devm_kzalloc_obj(dev, *kpc);
+	kpc = devm_kzalloc(dev, sizeof(*kpc), GFP_KERNEL);
 	if (!kpc)
 		return -ENOMEM;
 

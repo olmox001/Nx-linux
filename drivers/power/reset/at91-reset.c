@@ -343,7 +343,7 @@ static int at91_reset_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret, idx = 0;
 
-	reset = devm_kzalloc_obj(&pdev->dev, *reset);
+	reset = devm_kzalloc(&pdev->dev, sizeof(*reset), GFP_KERNEL);
 	if (!reset)
 		return -ENOMEM;
 

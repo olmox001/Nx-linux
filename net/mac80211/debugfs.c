@@ -96,8 +96,8 @@ static ssize_t aqm_read(struct file *file,
 			"RW fq_quantum %u\n",
 			fq->flows_cnt,
 			fq->backlog,
-			fq->overlimit,
 			fq->overmemory,
+			fq->overlimit,
 			fq->collisions,
 			fq->memory_usage,
 			fq->memory_limit,
@@ -171,10 +171,23 @@ static ssize_t airtime_flags_write(struct file *file,
 				   size_t count, loff_t *ppos)
 {
 	struct ieee80211_local *local = file->private_data;
-	int ret;
+	char buf[16];
 
-	ret = kstrtou16_from_user(user_buf, count, 0, &local->airtime_flags);
-	return ret ? : count;
+	if (count >= sizeof(buf))
+		return -EINVAL;
+
+	if (copy_from_user(buf, user_buf, count))
+		return -EFAULT;
+
+	if (count && buf[count - 1] == '\n')
+		buf[count - 1] = '\0';
+	else
+		buf[count] = '\0';
+
+	if (kstrtou16(buf, 0, &local->airtime_flags))
+		return -EINVAL;
+
+	return count;
 }
 
 static const struct debugfs_short_fops airtime_flags_ops = {
@@ -529,7 +542,6 @@ static ssize_t hwflags_write(struct file *file, const char __user *user_buf,
 }
 
 static const struct file_operations hwflags_ops = {
-	.owner = THIS_MODULE,
 	.open = simple_open,
 	.read = hwflags_read,
 	.write = hwflags_write,

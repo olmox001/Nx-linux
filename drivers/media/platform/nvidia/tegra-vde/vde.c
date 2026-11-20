@@ -229,7 +229,7 @@ static int tegra_vde_probe(struct platform_device *pdev)
 	struct tegra_vde *vde;
 	int irq, err;
 
-	vde = devm_kzalloc_obj(dev, *vde);
+	vde = devm_kzalloc(dev, sizeof(*vde), GFP_KERNEL);
 	if (!vde)
 		return -ENOMEM;
 

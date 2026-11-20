@@ -25,17 +25,17 @@ definitions:
       -
         name: loopback
       -
-        name: pointopoint
+        name: point-to-point
       -
-        name: notrailers
+        name: no-trailers
       -
         name: running
       -
-        name: noarp
+        name: no-arp
       -
         name: promisc
       -
-        name: allmulti
+        name: all-multi
       -
         name: master
       -
@@ -45,7 +45,7 @@ definitions:
       -
         name: portsel
       -
-        name: automedia
+        name: auto-media
       -
         name: dynamic
       -
@@ -309,7 +309,6 @@ definitions:
     entries:
       -
         name: forwarding
-        value: 1
       -
         name: mc-forwarding
       -
@@ -495,10 +494,6 @@ definitions:
         name: ndisc-evict-nocarrier
       -
         name: accept-untracked-na
-      -
-        name: accept-ra-min-lft
-      -
-        name: force-forwarding
   -
     name: ifla-icmp6-stats
     enum-name:
@@ -532,21 +527,11 @@ definitions:
       -
         name: indelivers
       -
-        name: noectpkts
-      -
-        name: ect1pkts
-      -
-        name: ect0pkts
-      -
-        name: cepkts
-      -
-        name: outrequests
+        name: outforwdatagrams
       -
         name: outpkts
       -
         name: outoctets
-      -
-        name: outforwdatagrams
       -
         name: inhdrerrors
       -
@@ -597,6 +582,14 @@ definitions:
         name: outbcastoctets
       -
         name: csumerrors
+      -
+        name: noectpkts
+      -
+        name: ect1-pkts
+      -
+        name: ect0-pkts
+      -
+        name: cepkts
       -
         name: reasm-overlaps
   - name: br-boolopt-multi
@@ -842,7 +835,7 @@ definitions:
   -
     name: ovpn-mode
     enum-name: ovpn-mode
-    name-prefix: ovpn-mode-
+    name-prefix: ovpn-mode
     type: enum
     entries:
       - p2p
@@ -937,11 +930,6 @@ attribute-sets:
         name: vfinfo-list
         type: nest
         nested-attributes: vfinfo-list-attrs
-        doc: |
-          Per-VF details. The list holds at most 256 VFs, or 128 when
-          statistics are included, because it is one attribute and has to fit
-          in a u16 length. A device with more VFs than that reports a
-          truncated list; num-vf still carries the real count.
       -
         name: stats64
         type: binary
@@ -1094,10 +1082,6 @@ attribute-sets:
       -
         name: tailroom
         type: u16
-      -
-        name: pacing-offload
-        type: u32
-        doc: Enable EDT pacing offload (0 - disabled, 1 - enabled).
   -
     name: prop-list-link-attrs
     subset-of: link-attrs
@@ -2231,7 +2215,7 @@ attribute-sets:
         name: conf
         type: binary
         sub-type: u32
-        doc: u32 indexed by ipv6-devconf on output, input is not yet implemented
+        doc: u32 indexed by ipv6-devconf - 1 on output, on input it's a nest
       -
         name: stats
         type: binary
@@ -2566,7 +2550,6 @@ operations:
             - devlink-port
             - gso-ipv4-max-size
             - gro-ipv4-max-size
-            - pacing-offload
       dump:
         request:
           value: 18

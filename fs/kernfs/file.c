@@ -525,31 +525,18 @@ out_unlock:
 static int kernfs_get_open_node(struct kernfs_node *kn,
 				struct kernfs_open_file *of)
 {
-	struct kernfs_open_node *on, *new_on = NULL;
+	struct kernfs_open_node *on;
 	struct mutex *mutex;
-
-	/*
-	 * Peek without the mutex: if nothing has this open, we will need a
-	 * node and can allocate before taking a mutex shared by every node
-	 * hashing to it.
-	 */
-	if (!rcu_access_pointer(kn->attr.open))
-		new_on = kzalloc_obj(*new_on);
 
 	mutex = kernfs_open_file_mutex_lock(kn);
 	on = kernfs_deref_open_node_locked(kn);
 
 	if (!on) {
 		/* not there, initialize a new one */
-		on = new_on;
-		new_on = NULL;
+		on = kzalloc_obj(*on);
 		if (!on) {
-			/* the peek raced; rare, so allocate here */
-			on = kzalloc_obj(*on);
-			if (!on) {
-				mutex_unlock(mutex);
-				return -ENOMEM;
-			}
+			mutex_unlock(mutex);
+			return -ENOMEM;
 		}
 		atomic_set(&on->event, 1);
 		init_waitqueue_head(&on->poll);
@@ -562,7 +549,6 @@ static int kernfs_get_open_node(struct kernfs_node *kn,
 		on->nr_to_release++;
 
 	mutex_unlock(mutex);
-	kfree(new_on);
 	return 0;
 }
 
@@ -918,12 +904,9 @@ static loff_t kernfs_fop_llseek(struct file *file, loff_t offset, int whence)
 
 static void kernfs_notify_workfn(struct work_struct *work)
 {
-	char name_buf[NAME_MAX + 1];
-	struct kernfs_super_info *info;
 	struct kernfs_node *kn;
+	struct kernfs_super_info *info;
 	struct kernfs_root *root;
-	struct qstr name;
-	bool have_name;
 repeat:
 	/* pop one off the notify_list */
 	spin_lock_irq(&kernfs_notify_lock);
@@ -939,20 +922,14 @@ repeat:
 	root = kernfs_root(kn);
 	/* kick fsnotify */
 
-	/*
-	 * Sample the name once so kernfs_rwsem need not be held across the
-	 * loop.  A name that does not fit is reported without one; fsnotify()
-	 * takes the name as optional, so a watcher loses the name and not the
-	 * event.
-	 */
-	have_name = kernfs_name(kn, name_buf, sizeof(name_buf)) >= 0;
-	name = QSTR(name_buf);
-
 	down_read(&root->kernfs_supers_rwsem);
-	list_for_each_entry(info, &root->supers, node) {
+	down_read(&root->kernfs_rwsem);
+	list_for_each_entry(info, &kernfs_root(kn)->supers, node) {
 		struct kernfs_node *parent;
 		struct inode *p_inode = NULL;
+		const char *kn_name;
 		struct inode *inode;
+		struct qstr name;
 
 		/*
 		 * We want fsnotify_modify() on @kn but as the
@@ -964,14 +941,15 @@ repeat:
 		if (!inode)
 			continue;
 
+		kn_name = kernfs_rcu_name(kn);
+		name = QSTR(kn_name);
 		parent = kernfs_get_parent(kn);
 		if (parent) {
 			p_inode = ilookup(info->sb, kernfs_ino(parent));
 			if (p_inode) {
 				fsnotify(FS_MODIFY | FS_EVENT_ON_CHILD,
 					 inode, FSNOTIFY_EVENT_INODE,
-					 p_inode, have_name ? &name : NULL,
-					 inode, 0);
+					 p_inode, &name, inode, 0);
 				iput(p_inode);
 			}
 
@@ -984,6 +962,7 @@ repeat:
 		iput(inode);
 	}
 
+	up_read(&root->kernfs_rwsem);
 	up_read(&root->kernfs_supers_rwsem);
 	kernfs_put(kn);
 	goto repeat;

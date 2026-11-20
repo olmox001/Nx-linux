@@ -2,8 +2,6 @@
 #ifndef __MMU_H
 #define __MMU_H
 
-#define MAX_PHYSMEM_BITS	32
-
 /*
  * Privileged Space Mapping Buffer (PMB) definitions
  */

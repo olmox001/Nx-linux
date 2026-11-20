@@ -77,12 +77,13 @@
 			"MIC3R", "Microphone Jack",
 			"Microphone Jack", "Mic Bias";
 
-		dailink_master: simple-audio-card,cpu {
+		simple-audio-card,cpu {
 			sound-dai = <&sai2>;
 		};
 
-		simple-audio-card,codec {
+		dailink_master: simple-audio-card,codec {
 			sound-dai = <&codec>;
+			clocks = <&clk IMX8MP_CLK_SAI2>;
 		};
 	};
 };

@@ -179,7 +179,7 @@ static int sti_compositor_probe(struct platform_device *pdev)
 	struct sti_compositor *compo;
 	unsigned int i;
 
-	compo = devm_kzalloc_obj(dev, *compo);
+	compo = devm_kzalloc(dev, sizeof(*compo), GFP_KERNEL);
 	if (!compo) {
 		DRM_ERROR("Failed to allocate compositor context\n");
 		return -ENOMEM;

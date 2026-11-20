@@ -930,7 +930,7 @@ int ipu_cpmem_init(struct ipu_soc *ipu, struct device *dev, unsigned long base)
 {
 	struct ipu_cpmem *cpmem;
 
-	cpmem = devm_kzalloc_obj(dev, *cpmem);
+	cpmem = devm_kzalloc(dev, sizeof(*cpmem), GFP_KERNEL);
 	if (!cpmem)
 		return -ENOMEM;
 

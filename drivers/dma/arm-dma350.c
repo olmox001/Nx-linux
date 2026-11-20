@@ -13,11 +13,6 @@
 #include "dmaengine.h"
 #include "virt-dma.h"
 
-#define DMANSECCTRL		0x200
-
-#define NSEC_CTRL		0x0c
-#define INTREN_ANYCHINTR_EN	BIT(0)
-
 #define DMAINFO			0x0f00
 
 #define DMA_BUILDCFG0		0xb0
@@ -512,7 +507,7 @@ static int d350_alloc_chan_resources(struct dma_chan *chan)
 {
 	struct d350_chan *dch = to_d350_chan(chan);
 	int ret = request_irq(dch->irq, d350_irq, IRQF_SHARED,
-			      vchan_chan_name(&dch->vc), dch);
+			      dev_name(&dch->vc.chan.dev->device), dch);
 	if (!ret)
 		writel_relaxed(CH_INTREN_DONE | CH_INTREN_ERR, dch->base + CH_INTREN);
 
@@ -556,7 +551,7 @@ static int d350_probe(struct platform_device *pdev)
 	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(aw));
 	coherent = device_get_dma_attr(dev) == DEV_DMA_COHERENT;
 
-	dmac = devm_kzalloc_flex(dev, *dmac, channels, nchan);
+	dmac = devm_kzalloc(dev, struct_size(dmac, channels, nchan), GFP_KERNEL);
 	if (!dmac)
 		return -ENOMEM;
 
@@ -586,10 +581,6 @@ static int d350_probe(struct platform_device *pdev)
 	dmac->dma.device_tx_status = d350_tx_status;
 	dmac->dma.device_issue_pending = d350_issue_pending;
 	INIT_LIST_HEAD(&dmac->dma.channels);
-
-	reg = readl_relaxed(base + DMANSECCTRL + NSEC_CTRL);
-	writel_relaxed(reg | INTREN_ANYCHINTR_EN,
-		       base + DMANSECCTRL + NSEC_CTRL);
 
 	/* Would be nice to have per-channel caps for this... */
 	memset = true;

@@ -8,7 +8,6 @@
 #include <asm/hypervisor.h>
 #include <asm/e820/api.h>
 #include <asm/x86_init.h>
-#include <asm/string.h>
 
 #include <asm/xen/interface.h>
 
@@ -79,9 +78,7 @@ static void __init init_pvh_bootparams(bool xen_guest)
 		struct hvm_modlist_entry *modaddr =
 			__va(pvh_start_info.modlist_paddr);
 		pvh_bootparams.hdr.ramdisk_image = modaddr->paddr;
-		pvh_bootparams.ext_ramdisk_image = modaddr->paddr >> 32;
 		pvh_bootparams.hdr.ramdisk_size = modaddr->size;
-		pvh_bootparams.ext_ramdisk_size = modaddr->size >> 32;
 	}
 
 	/*
@@ -132,7 +129,7 @@ void __init xen_prepare_pvh(void)
 	 * This must not compile to "call memset" because memset() may be
 	 * instrumented.
 	 */
-	__inline_memset(&pvh_bootparams, 0, sizeof(pvh_bootparams));
+	__builtin_memset(&pvh_bootparams, 0, sizeof(pvh_bootparams));
 
 	hypervisor_specific_init(xen_guest);
 

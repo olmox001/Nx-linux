@@ -217,7 +217,7 @@ static int rpi_exp_gpio_probe(struct platform_device *pdev)
 	if (!fw)
 		return -EPROBE_DEFER;
 
-	rpi_gpio = devm_kzalloc_obj(dev, *rpi_gpio);
+	rpi_gpio = devm_kzalloc(dev, sizeof(*rpi_gpio), GFP_KERNEL);
 	if (!rpi_gpio)
 		return -ENOMEM;
 

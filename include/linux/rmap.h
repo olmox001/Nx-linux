@@ -571,6 +571,7 @@ static __always_inline int __folio_try_dup_anon_rmap(struct folio *folio,
 	const int orig_nr_pages = nr_pages;
 	bool maybe_pinned;
 	int i;
+	bool is_exec_keep = vma_test_single_mask(dst_vma, VMA_EXEC_KEEP);
 
 	VM_WARN_ON_FOLIO(!folio_test_anon(folio), folio);
 	__folio_rmap_sanity_checks(folio, page, nr_pages, level);
@@ -592,21 +593,21 @@ static __always_inline int __folio_try_dup_anon_rmap(struct folio *folio,
 	 */
 	switch (level) {
 	case PGTABLE_LEVEL_PTE:
-		if (unlikely(maybe_pinned)) {
+		if (unlikely(maybe_pinned && !is_exec_keep)) {
 			for (i = 0; i < nr_pages; i++)
 				if (PageAnonExclusive(page + i))
 					return -EBUSY;
 		}
 
 		if (!folio_test_large(folio)) {
-			if (PageAnonExclusive(page))
+			if (PageAnonExclusive(page) && !is_exec_keep)
 				ClearPageAnonExclusive(page);
 			atomic_inc(&folio->_mapcount);
 			break;
 		}
 
 		do {
-			if (PageAnonExclusive(page))
+			if (PageAnonExclusive(page) && !is_exec_keep)
 				ClearPageAnonExclusive(page);
 			if (IS_ENABLED(CONFIG_PAGE_MAPCOUNT))
 				atomic_inc(&page->_mapcount);
@@ -615,7 +616,7 @@ static __always_inline int __folio_try_dup_anon_rmap(struct folio *folio,
 		break;
 	case PGTABLE_LEVEL_PMD:
 	case PGTABLE_LEVEL_PUD:
-		if (PageAnonExclusive(page)) {
+		if (PageAnonExclusive(page) && !is_exec_keep) {
 			if (unlikely(maybe_pinned))
 				return -EBUSY;
 			ClearPageAnonExclusive(page);
@@ -843,7 +844,7 @@ static inline int folio_try_share_anon_rmap_pmd(struct folio *folio,
  * Called from mm/vmscan.c to handle paging out
  */
 int folio_referenced(struct folio *, int is_locked,
-		struct mem_cgroup *memcg, vma_flags_t *vma_flags);
+			struct mem_cgroup *memcg, vm_flags_t *vm_flags);
 
 void try_to_migrate(struct folio *folio, enum ttu_flags flags);
 void try_to_unmap(struct folio *, enum ttu_flags flags);
@@ -864,14 +865,13 @@ struct page *make_device_exclusive(struct mm_struct *mm, unsigned long addr,
 struct page_vma_mapped_walk {
 	unsigned long pfn;
 	unsigned long nr_pages;
-	pgoff_t pgoff;	/* Only meaningful if nr_pages > 1 and not a KSM walk */
+	pgoff_t pgoff;
 	struct vm_area_struct *vma;
 	unsigned long address;
 	pmd_t *pmd;
 	pte_t *pte;
 	spinlock_t *ptl;
 	unsigned int flags;
-	bool pgoff_is_anon : 1;
 };
 
 #define DEFINE_FOLIO_VMA_WALK(name, _folio, _vma, _address, _flags)	\
@@ -882,13 +882,12 @@ struct page_vma_mapped_walk {
 		.vma = _vma,						\
 		.address = _address,					\
 		.flags = _flags,					\
-		.pgoff_is_anon = folio_test_anon(_folio),		\
 	}
 
 static inline void page_vma_mapped_walk_done(struct page_vma_mapped_walk *pvmw)
 {
 	/* HugeTLB pte is set to the relevant page table entry without pte_mapped. */
-	if (pvmw->pte && !vma_is_hugetlb(pvmw->vma))
+	if (pvmw->pte && !is_vm_hugetlb_page(pvmw->vma))
 		pte_unmap(pvmw->pte);
 	if (pvmw->ptl)
 		spin_unlock(pvmw->ptl);
@@ -977,9 +976,10 @@ struct anon_vma *folio_lock_anon_vma_read(const struct folio *folio,
 #define anon_vma_prepare(vma)	(0)
 
 static inline int folio_referenced(struct folio *folio, int is_locked,
-		struct mem_cgroup *memcg, vma_flags_t *vma_flags)
+				  struct mem_cgroup *memcg,
+				  vm_flags_t *vm_flags)
 {
-	vma_flags_clear_all(vma_flags);
+	*vm_flags = 0;
 	return 0;
 }
 

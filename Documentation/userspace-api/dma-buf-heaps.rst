@@ -36,7 +36,7 @@ following heaps:
  - A heap will be created for each reusable region in the device tree
    with the ``shared-dma-pool`` compatible, using the full device tree
    node name as its name. The buffer semantics are identical to
-   ``default_cma_region``.
+   ``default-cma-region``.
 
 Naming Convention
 =================

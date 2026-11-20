@@ -2615,6 +2615,7 @@ static int ocfs2_block_group_clear_bits(handle_t *handle,
 	u16 contig_bits;
 	struct ocfs2_group_desc *undo_bg = NULL;
 	struct journal_head *jh;
+	unsigned int bits_cleared = 0;
 
 	/* The caller got this descriptor from
 	 * ocfs2_read_group_descriptor().  Any corruption is a code bug. */
@@ -2642,13 +2643,26 @@ static int ocfs2_block_group_clear_bits(handle_t *handle,
 
 	tmp = num_bits;
 	while(tmp--) {
-		ocfs2_clear_bit((bit_off + tmp),
-				(unsigned long *) bg->bg_bitmap);
+		if (ocfs2_test_bit((bit_off + tmp),
+				   (unsigned long *) bg->bg_bitmap)) {
+			ocfs2_clear_bit((bit_off + tmp),
+					(unsigned long *) bg->bg_bitmap);
+			bits_cleared++;
+		}
 		if (undo_fn)
 			undo_fn(bit_off + tmp,
 				(unsigned long *) undo_bg->bg_bitmap);
 	}
-	le16_add_cpu(&bg->bg_free_bits_count, num_bits);
+	le16_add_cpu(&bg->bg_free_bits_count, bits_cleared);
+
+	if (num_bits != bits_cleared) {
+		printk(KERN_NOTICE "ocfs2: Trying to clear %u bits at "
+		       "offset %u in group descriptor # %llu (device %s), "
+		       "needed to clear %u bits\n", num_bits, bit_off,
+		       (unsigned long long)le64_to_cpu(bg->bg_blkno),
+		       alloc_inode->i_sb->s_id, bits_cleared);
+	}
+
 	if (le16_to_cpu(bg->bg_free_bits_count) > le16_to_cpu(bg->bg_bits)) {
 		if (undo_fn)
 			spin_unlock(&jh->b_state_lock);
@@ -2687,24 +2701,16 @@ bail:
  * cleanup rec/alloc_inode job, then switches to the main bitmap
  * to reclaim released space.
  *
- * Callers must hold inode_lock() and ocfs2_inode_lock() on
- * main_bm_inode, i.e. the global bitmap inode locks must be taken
- * before starting the transaction.
- *
  * handle: The transaction handle
  * alloc_inode: The suballoc inode
  * alloc_bh: The buffer_head of suballoc inode
  * group_bh: The group descriptor buffer_head of suballocator managed.
- *           This function takes ownership of it and will release it.
- * main_bm_inode: The global bitmap inode
- * main_bm_bh: The buffer_head of the global bitmap inode
+ *           Caller should release the input group_bh.
  */
 static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 			struct inode *alloc_inode,
 			struct buffer_head *alloc_bh,
-			struct buffer_head *group_bh,
-			struct inode *main_bm_inode,
-			struct buffer_head *main_bm_bh)
+			struct buffer_head *group_bh)
 {
 	int idx, status = 0;
 	int i, next_free_rec, len = 0;
@@ -2714,6 +2720,8 @@ static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 	u64 bg_blkno, start_blk;
 	unsigned int count;
 	struct ocfs2_chain_rec *rec;
+	struct buffer_head *main_bm_bh = NULL;
+	struct inode *main_bm_inode = NULL;
 	struct ocfs2_super *osb = OCFS2_SB(alloc_inode->i_sb);
 	struct ocfs2_dinode *fe = (struct ocfs2_dinode *) alloc_bh->b_data;
 	struct ocfs2_chain_list *cl = &fe->id2.i_chain;
@@ -2800,12 +2808,24 @@ static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 	ocfs2_remove_from_cache(INODE_CACHE(alloc_inode), group_bh);
 	memset(group, 0, sizeof(struct ocfs2_group_desc));
 
+	/* prepare job for reclaim clusters */
+	main_bm_inode = ocfs2_get_system_file_inode(osb,
+						    GLOBAL_BITMAP_SYSTEM_INODE,
+						    OCFS2_INVALID_SLOT);
+	if (!main_bm_inode)
+		goto bail; /* ignore the error in reclaim path */
+
+	inode_lock(main_bm_inode);
+
+	status = ocfs2_inode_lock(main_bm_inode, &main_bm_bh, 1);
+	if (status < 0)
+		goto free_bm_inode; /* ignore the error in reclaim path */
+
 	ocfs2_block_to_cluster_group(main_bm_inode, start_blk, &bg_blkno,
 				     &start_bit);
 	fe = (struct ocfs2_dinode *) main_bm_bh->b_data;
 	cl = &fe->id2.i_chain;
-	/* release the suballocator group descriptor before reuse */
-	brelse(group_bh);
+	/* reuse group_bh, caller will release the input group_bh */
 	group_bh = NULL;
 
 	/* reclaim clusters to global_bitmap */
@@ -2813,7 +2833,7 @@ static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 					     &group_bh);
 	if (status < 0) {
 		mlog_errno(status);
-		goto bail;
+		goto free_bm_bh;
 	}
 	group = (struct ocfs2_group_desc *) group_bh->b_data;
 
@@ -2821,7 +2841,7 @@ static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 		ocfs2_error(alloc_inode->i_sb,
 			"reclaim length (%d) beyands block group length (%d)",
 			count + start_bit, le16_to_cpu(group->bg_bits));
-		goto bail;
+		goto free_group_bh;
 	}
 
 	old_bg_contig_free_bits = group->bg_contig_free_bits;
@@ -2831,7 +2851,7 @@ static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 					      _ocfs2_clear_bit);
 	if (status < 0) {
 		mlog_errno(status);
-		goto bail;
+		goto free_group_bh;
 	}
 
 	status = ocfs2_journal_access_di(handle, INODE_CACHE(main_bm_inode),
@@ -2841,7 +2861,7 @@ static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 		ocfs2_block_group_set_bits(handle, main_bm_inode, group, group_bh,
 				start_bit, count,
 				le16_to_cpu(old_bg_contig_free_bits), 1);
-		goto bail;
+		goto free_group_bh;
 	}
 
 	idx = le16_to_cpu(group->bg_chain);
@@ -2852,168 +2872,19 @@ static int _ocfs2_reclaim_suballoc_to_main(handle_t *handle,
 	fe->id1.bitmap1.i_used = cpu_to_le32(tmp_used - count);
 	ocfs2_journal_dirty(handle, main_bm_bh);
 
-bail:
+free_group_bh:
 	brelse(group_bh);
-	return status;
-}
 
-/*
- * When a suballocator block group becomes fully freed, its space is
- * reclaimed back to the global bitmap. Taking the global bitmap inode
- * lock inside the freeing transaction would create a lock dependency
- * of "j_trans_barrier -> global bitmap inode i_rwsem", which forms a
- * circular dependency with paths like ocfs2_shutdown_local_alloc() that
- * take the inode lock before starting a transaction, and can lead to a
- * real deadlock with the ocfs2cmt journal commit thread. So queue the
- * reclaim to the workqueue and let it run outside the freeing
- * transaction.
- */
-struct ocfs2_suballoc_reclaim_work {
-	struct list_head list;
-	struct inode *alloc_inode;
-	u64 bg_blkno;
-};
-
-static void ocfs2_queue_suballoc_reclaim(struct ocfs2_super *osb,
-					 struct inode *alloc_inode,
-					 u64 bg_blkno)
-{
-	struct ocfs2_suballoc_reclaim_work *reclaim_work;
-
-	reclaim_work = kmalloc_obj(*reclaim_work, GFP_NOFS);
-	if (!reclaim_work) {
-		/*
-		 * Reclaim is only a space return optimization. If we can't
-		 * queue it, the freed block group just stays owned by the
-		 * suballocator.
-		 */
-		return;
-	}
-
-	igrab(alloc_inode);
-	reclaim_work->alloc_inode = alloc_inode;
-	reclaim_work->bg_blkno = bg_blkno;
-
-	spin_lock(&osb->os_suballoc_reclaim_lock);
-	list_add_tail(&reclaim_work->list, &osb->os_suballoc_reclaim_list);
-	spin_unlock(&osb->os_suballoc_reclaim_lock);
-
-	queue_work(osb->ocfs2_wq, &osb->os_suballoc_reclaim_work);
-}
-
-static void ocfs2_do_suballoc_reclaim(struct ocfs2_super *osb,
-				struct ocfs2_suballoc_reclaim_work *reclaim_work)
-{
-	int status, i;
-	handle_t *handle;
-	struct inode *alloc_inode = reclaim_work->alloc_inode;
-	struct inode *main_bm_inode;
-	struct buffer_head *alloc_bh = NULL, *group_bh = NULL;
-	struct buffer_head *main_bm_bh = NULL;
-	struct ocfs2_dinode *fe;
-	struct ocfs2_chain_list *cl;
-	struct ocfs2_chain_rec *rec;
-
-	/* journal already gone, e.g. during dismount cleanup */
-	if (!osb->journal)
-		return;
-
-	inode_lock(alloc_inode);
-	status = ocfs2_inode_lock(alloc_inode, &alloc_bh, 1);
-	if (status < 0)
-		goto out_alloc;
-
-	fe = (struct ocfs2_dinode *) alloc_bh->b_data;
-	cl = &fe->id2.i_chain;
-
-	/*
-	 * The block group may have been allocated from again since the
-	 * reclaim work was queued, re-check that it is still fully freed.
-	 * A stale work item can also reference a group that is no longer
-	 * chained, whose descriptor would fail validation and trigger a
-	 * spurious ocfs2_error(), so verify chain membership first.
-	 */
-	for (i = 0; i < le16_to_cpu(cl->cl_next_free_rec); i++) {
-		rec = &cl->cl_recs[i];
-		if (le64_to_cpu(rec->c_blkno) == reclaim_work->bg_blkno)
-			break;
-	}
-	if (i == le16_to_cpu(cl->cl_next_free_rec) ||
-	    ocfs2_is_cluster_bitmap(alloc_inode) ||
-	    (le32_to_cpu(rec->c_free) != (le32_to_cpu(rec->c_total) - 1)) ||
-	    (le16_to_cpu(cl->cl_next_free_rec) == 1))
-		goto out_alloc_unlock;
-
-	status = ocfs2_read_group_descriptor(alloc_inode, fe,
-					     reclaim_work->bg_blkno, &group_bh);
-	if (status < 0)
-		goto out_alloc_unlock;
-
-	main_bm_inode = ocfs2_get_system_file_inode(osb,
-						    GLOBAL_BITMAP_SYSTEM_INODE,
-						    OCFS2_INVALID_SLOT);
-	if (!main_bm_inode)
-		goto out_group;
-
-	inode_lock(main_bm_inode);
-	status = ocfs2_inode_lock(main_bm_inode, &main_bm_bh, 1);
-	if (status < 0)
-		goto out_main;
-
-	handle = ocfs2_start_trans(osb, OCFS2_SUBALLOC_FREE);
-	if (IS_ERR(handle)) {
-		status = PTR_ERR(handle);
-		mlog_errno(status);
-		goto out_main_unlock;
-	}
-
-	status = _ocfs2_reclaim_suballoc_to_main(handle, alloc_inode,
-						 alloc_bh, group_bh,
-						 main_bm_inode, main_bm_bh);
-	/* group_bh ownership passed to _ocfs2_reclaim_suballoc_to_main() */
-	group_bh = NULL;
-	if (status < 0)
-		mlog_errno(status);
-
-	ocfs2_commit_trans(osb, handle);
-
-out_main_unlock:
+free_bm_bh:
 	ocfs2_inode_unlock(main_bm_inode, 1);
 	brelse(main_bm_bh);
-out_main:
+
+free_bm_inode:
 	inode_unlock(main_bm_inode);
 	iput(main_bm_inode);
-out_group:
-	brelse(group_bh);
-out_alloc_unlock:
-	ocfs2_inode_unlock(alloc_inode, 1);
-	brelse(alloc_bh);
-out_alloc:
-	inode_unlock(alloc_inode);
-}
 
-void ocfs2_suballoc_reclaim_worker(struct work_struct *work)
-{
-	struct ocfs2_super *osb = container_of(work, struct ocfs2_super,
-					       os_suballoc_reclaim_work);
-	struct ocfs2_suballoc_reclaim_work *reclaim_work;
-
-	while (1) {
-		spin_lock(&osb->os_suballoc_reclaim_lock);
-		if (list_empty(&osb->os_suballoc_reclaim_list)) {
-			spin_unlock(&osb->os_suballoc_reclaim_lock);
-			break;
-		}
-		reclaim_work = list_first_entry(&osb->os_suballoc_reclaim_list,
-					struct ocfs2_suballoc_reclaim_work,
-					list);
-		list_del(&reclaim_work->list);
-		spin_unlock(&osb->os_suballoc_reclaim_lock);
-
-		ocfs2_do_suballoc_reclaim(osb, reclaim_work);
-		iput(reclaim_work->alloc_inode);
-		kfree(reclaim_work);
-	}
+bail:
+	return status;
 }
 
 /*
@@ -3040,22 +2911,10 @@ static int _ocfs2_free_suballoc_bits(handle_t *handle,
 	/* The alloc_bh comes from ocfs2_free_dinode() or
 	 * ocfs2_free_clusters().  The callers have all locked the
 	 * allocator and gotten alloc_bh from the lock call.  This
-	 * validates the dinode buffer. */
+	 * validates the dinode buffer.  Any corruption that has happened
+	 * is a code bug. */
 	BUG_ON(!OCFS2_IS_VALID_DINODE(fe));
-
-	/*
-	 * ocfs2_bits_per_group() is derived from cl_cpg and cl_bpc of the
-	 * allocator dinode, which are not validated against the volume
-	 * geometry.  A corrupted image can carry a suballoc bit beyond it,
-	 * so error out instead of crashing.
-	 */
-	if ((count + start_bit) > ocfs2_bits_per_group(cl)) {
-		return ocfs2_error(alloc_inode->i_sb,
-				   "Allocator #%llu: freeing bits %u+%u exceeds bits per group %u\n",
-				   (unsigned long long)le64_to_cpu(fe->i_blkno),
-				   count, start_bit,
-				   ocfs2_bits_per_group(cl));
-	}
+	BUG_ON((count + start_bit) > ocfs2_bits_per_group(cl));
 
 	trace_ocfs2_free_suballoc_bits(
 		(unsigned long long)OCFS2_I(alloc_inode)->ip_blkno,
@@ -3070,20 +2929,7 @@ static int _ocfs2_free_suballoc_bits(handle_t *handle,
 	}
 	group = (struct ocfs2_group_desc *) group_bh->b_data;
 
-	/*
-	 * Group descriptor validation only guarantees bg_bits within the
-	 * physical bitmap size, so double check the freeing range here.
-	 * Otherwise ocfs2_block_group_clear_bits() would clear bits beyond
-	 * bg_bitmap.
-	 */
-	if ((count + start_bit) > le16_to_cpu(group->bg_bits)) {
-		status = ocfs2_error(alloc_inode->i_sb,
-				     "Group descriptor #%llu has %u bits, cannot free bits %u+%u\n",
-				     (unsigned long long)le64_to_cpu(group->bg_blkno),
-				     le16_to_cpu(group->bg_bits),
-				     count, start_bit);
-		goto bail;
-	}
+	BUG_ON((count + start_bit) > le16_to_cpu(group->bg_bits));
 
 	if (ocfs2_is_cluster_bitmap(alloc_inode))
 		old_bg_contig_free_bits = group->bg_contig_free_bits;
@@ -3123,8 +2969,7 @@ static int _ocfs2_free_suballoc_bits(handle_t *handle,
 		goto bail;
 	}
 
-	ocfs2_queue_suballoc_reclaim(OCFS2_SB(alloc_inode->i_sb), alloc_inode,
-				     bg_blkno);
+	_ocfs2_reclaim_suballoc_to_main(handle, alloc_inode, alloc_bh, group_bh);
 
 bail:
 	brelse(group_bh);

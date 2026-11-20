@@ -1073,7 +1073,6 @@ void usb_enable_intel_xhci_ports(struct pci_dev *xhci_pdev)
 		if (companion->class == PCI_CLASS_SERIAL_USB_EHCI &&
 		    companion->vendor == PCI_VENDOR_ID_INTEL) {
 			ehci_found = true;
-			pci_dev_put(companion);
 			break;
 		}
 	}
@@ -1189,17 +1188,15 @@ static void quirk_usb_handoff_xhci(struct pci_dev *pdev)
 	val = readl(base + ext_cap_offset);
 
 	/* Auto handoff never worked for these devices. Force it and continue */
-	if ((pdev->vendor == PCI_VENDOR_ID_TI &&
-	     pdev->device == PCI_DEVICE_ID_TI_TUSB73X0) ||
+	if ((pdev->vendor == PCI_VENDOR_ID_TI && pdev->device == 0x8241) ||
 			(pdev->vendor == PCI_VENDOR_ID_RENESAS
 			 && pdev->device == 0x0014)) {
 		val = (val | XHCI_HC_OS_OWNED) & ~XHCI_HC_BIOS_OWNED;
 		writel(val, base + ext_cap_offset);
-	} else {
-		/*
-		 * Perform the standard handoff and leave OS ownership set to
-		 * keep the BIOS at bay during subsequent suspends.
-		 */
+	}
+
+	/* If the BIOS owns the HC, signal that the OS wants it, and wait */
+	if (val & XHCI_HC_BIOS_OWNED) {
 		writel(val | XHCI_HC_OS_OWNED, base + ext_cap_offset);
 
 		/* Wait for 1 second with 10 microsecond polling interval */
@@ -1211,9 +1208,7 @@ static void quirk_usb_handoff_xhci(struct pci_dev *pdev)
 			dev_warn(&pdev->dev,
 				 "xHCI BIOS handoff failed (BIOS bug ?) %08x\n",
 				 val);
-			writel((val | XHCI_HC_OS_OWNED) &
-			       ~XHCI_HC_BIOS_OWNED,
-			       base + ext_cap_offset);
+			writel(val & ~XHCI_HC_BIOS_OWNED, base + ext_cap_offset);
 		}
 	}
 

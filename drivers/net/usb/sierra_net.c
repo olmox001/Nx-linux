@@ -637,7 +637,7 @@ static int sierra_net_get_fw_attr(struct usbnet *dev, u16 *datap)
 				sizeof(attrdata)	/* __u16 size */
 				);
 
-	if (result != sizeof(attrdata))
+	if (result < 0)
 		return -EIO;
 
 	*datap = le16_to_cpu(attrdata);

@@ -75,14 +75,15 @@
 		reset-gpios = <&gpio4 17 GPIO_ACTIVE_LOW>;
 	};
 
-	sd2_vmmc: regulator-sd2-vmmc {
-		compatible = "regulator-fixed";
+	sd2_vmmc: gpio-regulator {
+		compatible = "regulator-gpio";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_sd2_vmmc>;
 		regulator-name = "vmmc";
+		states = <3300000 0>;
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
-		gpio = <&gpio4 12 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&gpio4 12 GPIO_ACTIVE_LOW>;
 		startup-delay-us = <100000>;
 	};
 };

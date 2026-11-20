@@ -19,7 +19,8 @@
 
 static int acp_hw_init_ops(struct acp7x_dev_data *adata, struct pci_dev *pci)
 {
-	adata->hw_ops = devm_kzalloc_obj(&pci->dev, struct acp_hw_ops);
+	adata->hw_ops = devm_kzalloc(&pci->dev, sizeof(struct acp_hw_ops),
+				     GFP_KERNEL);
 	if (!adata->hw_ops)
 		return -ENOMEM;
 
@@ -66,7 +67,8 @@ static int snd_acp7x_probe(struct pci_dev *pci,
 		dev_err(&pci->dev, "pci_request_regions failed\n");
 		goto disable_pci;
 	}
-	adata = devm_kzalloc_obj(&pci->dev, struct acp7x_dev_data);
+	adata = devm_kzalloc(&pci->dev, sizeof(struct acp7x_dev_data),
+			     GFP_KERNEL);
 	if (!adata) {
 		ret = -ENOMEM;
 		goto release_regions;

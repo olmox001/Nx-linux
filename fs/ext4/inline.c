@@ -22,7 +22,8 @@
 
 
 static int ext4_da_convert_inline_data_to_extent(struct address_space *mapping,
-						 struct inode *inode);
+						 struct inode *inode,
+						 void **fsdata);
 
 static int ext4_get_inline_size(struct inode *inode)
 {
@@ -696,7 +697,7 @@ int ext4_generic_write_inline_data(struct address_space *mapping,
 					  struct inode *inode,
 					  loff_t pos, unsigned len,
 					  struct folio **foliop,
-					  bool da)
+					  void **fsdata, bool da)
 {
 	int ret;
 	handle_t *handle;
@@ -727,7 +728,7 @@ retry_journal:
 			return ext4_convert_inline_data_to_extent(mapping, inode);
 		}
 
-		ret = ext4_da_convert_inline_data_to_extent(mapping, inode);
+		ret = ext4_da_convert_inline_data_to_extent(mapping, inode, fsdata);
 		if (ret == -ENOSPC &&
 		    ext4_should_retry_alloc(inode->i_sb, &retries))
 			goto retry_journal;
@@ -787,7 +788,7 @@ int ext4_try_to_write_inline_data(struct address_space *mapping,
 	if (pos + len > ext4_get_max_inline_size(inode))
 		return ext4_convert_inline_data_to_extent(mapping, inode);
 	return ext4_generic_write_inline_data(mapping, inode, pos, len,
-					      foliop, false);
+					      foliop, NULL, false);
 }
 
 int ext4_write_inline_data_end(struct inode *inode, loff_t pos, unsigned len,
@@ -894,7 +895,8 @@ out:
  *    need to start the journal since the file's metadata isn't changed now.
  */
 static int ext4_da_convert_inline_data_to_extent(struct address_space *mapping,
-						 struct inode *inode)
+						 struct inode *inode,
+						 void **fsdata)
 {
 	int ret = 0, inline_size;
 	struct folio *folio;
@@ -932,6 +934,7 @@ static int ext4_da_convert_inline_data_to_extent(struct address_space *mapping,
 	folio_mark_dirty(folio);
 	folio_mark_uptodate(folio);
 	ext4_clear_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA);
+	*fsdata = (void *)CONVERT_INLINE_DATA;
 
 out:
 	up_read(&EXT4_I(inode)->xattr_sem);

@@ -208,7 +208,7 @@ static struct clk_hw *lan966x_gck_clk_register(struct device *dev, int i)
 	struct lan966x_gck *priv;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return ERR_PTR(-ENOMEM);
 
@@ -260,7 +260,8 @@ static int lan966x_clk_probe(struct platform_device *pdev)
 	if (!data)
 		return -EINVAL;
 
-	hw_data = devm_kzalloc_flex(dev, *hw_data, hws, data->num_total_clks);
+	hw_data = devm_kzalloc(dev, struct_size(hw_data, hws, data->num_total_clks),
+			       GFP_KERNEL);
 	if (!hw_data)
 		return -ENOMEM;
 

@@ -27,7 +27,7 @@ static bool ntfs_check_restart_page_header(struct inode *vi,
 		struct restart_page_header *rp, s64 pos)
 {
 	u32 logfile_system_page_size, logfile_log_page_size;
-	u32 ra_ofs, usa_count, usa_ofs, usa_end = 0;
+	u16 ra_ofs, usa_count, usa_ofs, usa_end = 0;
 	bool have_usa = true;
 
 	ntfs_debug("Entering.");
@@ -457,7 +457,7 @@ bool ntfs_check_logfile(struct inode *log_vi, struct restart_page_header **rp)
 	struct ntfs_volume *vol = NTFS_SB(log_vi->i_sb);
 	struct address_space *mapping = log_vi->i_mapping;
 	struct folio *folio = NULL;
-	u8 *kaddr = NULL, *kbase = NULL;
+	u8 *kaddr = NULL;
 	struct restart_page_header *rstr1_ph = NULL;
 	struct restart_page_header *rstr2_ph = NULL;
 	int log_page_size, err;
@@ -511,7 +511,7 @@ bool ntfs_check_logfile(struct inode *log_vi, struct restart_page_header **rp)
 
 		if (!folio || folio->index != idx) {
 			if (folio) {
-				kunmap_local(kbase);
+				kunmap_local(kaddr);
 				folio_put(folio);
 			}
 			folio = read_mapping_folio(mapping, idx, NULL);
@@ -520,9 +520,8 @@ bool ntfs_check_logfile(struct inode *log_vi, struct restart_page_header **rp)
 						idx);
 				goto err_out;
 			}
-			kbase = kmap_local_folio(folio, 0);
 		}
-		kaddr = kbase + (pos & ~PAGE_MASK);
+		kaddr = (u8 *)kmap_local_folio(folio, 0) + (pos & ~PAGE_MASK);
 		/*
 		 * A non-empty block means the logfile is not empty while an
 		 * empty block after a non-empty block has been encountered
@@ -575,7 +574,7 @@ bool ntfs_check_logfile(struct inode *log_vi, struct restart_page_header **rp)
 		 * find a valid one further in the file.
 		 */
 		if (err != -EINVAL) {
-			kunmap_local(kbase);
+			kunmap_local(kaddr);
 			folio_put(folio);
 			goto err_out;
 		}
@@ -584,7 +583,7 @@ bool ntfs_check_logfile(struct inode *log_vi, struct restart_page_header **rp)
 			pos = NTFS_BLOCK_SIZE >> 1;
 	}
 	if (folio) {
-		kunmap_local(kbase);
+		kunmap_local(kaddr);
 		folio_put(folio);
 	}
 	if (logfile_is_empty) {
@@ -692,7 +691,7 @@ map_vcn:
 
 	memset(empty_buf, 0xff, vol->cluster_size);
 
-	ra = kzalloc_obj(*ra, GFP_NOFS);
+	ra = kzalloc(sizeof(*ra), GFP_NOFS);
 	if (!ra)
 		goto err;
 

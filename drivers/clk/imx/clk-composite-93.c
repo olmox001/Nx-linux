@@ -43,12 +43,11 @@ static int imx93_clk_composite_wait_ready(struct clk_hw *hw, void __iomem *reg)
 	return ret;
 }
 
-static int imx93_clk_composite_gate_endisable(struct clk_hw *hw, int enable)
+static void imx93_clk_composite_gate_endisable(struct clk_hw *hw, int enable)
 {
 	struct clk_gate *gate = to_clk_gate(hw);
 	unsigned long flags;
 	u32 reg;
-	int ret;
 
 	if (gate->lock)
 		spin_lock_irqsave(gate->lock, flags);
@@ -62,17 +61,17 @@ static int imx93_clk_composite_gate_endisable(struct clk_hw *hw, int enable)
 
 	writel(reg, gate->reg);
 
-	ret = imx93_clk_composite_wait_ready(hw, gate->reg);
+	imx93_clk_composite_wait_ready(hw, gate->reg);
 
 	if (gate->lock)
 		spin_unlock_irqrestore(gate->lock, flags);
-
-	return ret;
 }
 
 static int imx93_clk_composite_gate_enable(struct clk_hw *hw)
 {
-	return imx93_clk_composite_gate_endisable(hw, 1);
+	imx93_clk_composite_gate_endisable(hw, 1);
+
+	return 0;
 }
 
 static void imx93_clk_composite_gate_disable(struct clk_hw *hw)

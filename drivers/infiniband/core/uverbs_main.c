@@ -75,6 +75,13 @@ enum {
 
 static dev_t dynamic_uverbs_dev;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+
+DEFINE_IDR(ib_uverbs_shpd_idr);
+DEFINE_MUTEX(ib_uverbs_shpd_idr_lock);
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static DEFINE_IDA(uverbs_ida);
 static int ib_uverbs_add_one(struct ib_device *device);
 static void ib_uverbs_remove_one(struct ib_device *device, void *client_data);
@@ -1145,6 +1152,13 @@ static int ib_uverbs_create_uapi(struct ib_device *device,
 	return 0;
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+
+static CLASS_ATTR_STRING(uek_abi_version, S_IRUGO,
+			 __stringify(IB_USER_VERBS_UEK_ABI_VERSION));
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static int ib_uverbs_add_one(struct ib_device *device)
 {
 	int devnum;
@@ -1180,6 +1194,9 @@ static int ib_uverbs_add_one(struct ib_device *device)
 	INIT_LIST_HEAD(&uverbs_dev->uverbs_file_list);
 	rcu_assign_pointer(uverbs_dev->ib_dev, device);
 	uverbs_dev->num_comp_vectors = device->num_comp_vectors;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	uverbs_dev->can_balance_comp_vectors = device->can_balance_comp_vectors;
+#endif
 
 	devnum = ida_alloc_max(&uverbs_ida, IB_UVERBS_MAX_DEVICES - 1,
 			       GFP_KERNEL);
@@ -1316,6 +1333,16 @@ static int __init ib_uverbs_init(void)
 		pr_err("user_verbs: couldn't create abi_version attribute\n");
 		goto out_class;
 	}
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+
+	ret = class_create_file(&uverbs_class, &class_attr_uek_abi_version.attr);
+	if (ret) {
+		pr_err("user_verbs: couldn't create uek_abi_version attribute\n");
+		goto out_class;
+	}
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	ret = ib_register_client(&uverbs_client);
 	if (ret) {

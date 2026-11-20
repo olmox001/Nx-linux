@@ -189,7 +189,7 @@ static int ctcu_probe(struct platform_device *pdev)
 	if (!desc.name)
 		return -ENOMEM;
 
-	drvdata = devm_kzalloc_obj(dev, *drvdata);
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 

@@ -85,7 +85,7 @@ static int spi_byte_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	led = devm_kzalloc_obj(dev, *led);
+	led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 

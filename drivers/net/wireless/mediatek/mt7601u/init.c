@@ -555,7 +555,8 @@ mt76_init_sband(struct mt7601u_dev *dev, struct ieee80211_supported_band *sband,
 static int
 mt76_init_sband_2g(struct mt7601u_dev *dev)
 {
-	dev->sband_2g = devm_kzalloc_obj(dev->dev, *dev->sband_2g);
+	dev->sband_2g = devm_kzalloc(dev->dev, sizeof(*dev->sband_2g),
+				     GFP_KERNEL);
 	if (!dev->sband_2g)
 		return -ENOMEM;
 
@@ -582,7 +583,8 @@ int mt7601u_register_device(struct mt7601u_dev *dev)
 	dev->wcid_mask[0] |= 1;
 
 	/* init fake wcid for monitor interfaces */
-	dev->mon_wcid = devm_kmalloc_obj(dev->dev, *dev->mon_wcid);
+	dev->mon_wcid = devm_kmalloc(dev->dev, sizeof(*dev->mon_wcid),
+				     GFP_KERNEL);
 	if (!dev->mon_wcid)
 		return -ENOMEM;
 	dev->mon_wcid->idx = 0xff;

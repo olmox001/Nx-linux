@@ -315,7 +315,8 @@ static int cros_ec_rtc_probe(struct platform_device *pdev)
 	struct rtc_time tm;
 	int ret;
 
-	cros_ec_rtc = devm_kzalloc_obj(&pdev->dev, *cros_ec_rtc);
+	cros_ec_rtc = devm_kzalloc(&pdev->dev, sizeof(*cros_ec_rtc),
+				   GFP_KERNEL);
 	if (!cros_ec_rtc)
 		return -ENOMEM;
 

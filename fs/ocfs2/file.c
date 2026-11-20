@@ -85,17 +85,10 @@ static int ocfs2_file_open(struct inode *inode, struct file *file)
 	int mode = file->f_flags;
 	struct ocfs2_inode_info *oi = OCFS2_I(inode);
 
-	if (trace_ocfs2_file_open_enabled()) {
-		struct dentry *dentry = file->f_path.dentry;
-		struct name_snapshot name;
-
-		take_dentry_name_snapshot(&name, dentry);
-		trace_ocfs2_file_open(inode, file, dentry,
-				      oi->ip_blkno,
-				      name.name.len, name.name.name,
-				      mode);
-		release_dentry_name_snapshot(&name);
-	}
+	trace_ocfs2_file_open(inode, file, file->f_path.dentry,
+			      (unsigned long long)oi->ip_blkno,
+			      file->f_path.dentry->d_name.len,
+			      file->f_path.dentry->d_name.name, mode);
 
 	if (file->f_mode & FMODE_WRITE) {
 		status = dquot_initialize(inode);
@@ -141,25 +134,17 @@ leave:
 static int ocfs2_file_release(struct inode *inode, struct file *file)
 {
 	struct ocfs2_inode_info *oi = OCFS2_I(inode);
-	struct dentry *dentry = file->f_path.dentry;
-	struct name_snapshot name;
-	bool trace_enabled = trace_ocfs2_file_release_enabled();
-
-	if (trace_enabled)
-		take_dentry_name_snapshot(&name, dentry);
 
 	spin_lock(&oi->ip_lock);
 	if (!--oi->ip_open_count)
 		oi->ip_flags &= ~OCFS2_INODE_OPEN_DIRECT;
 
-	if (trace_enabled)
-		trace_ocfs2_file_release(inode, file, dentry,
-					 oi->ip_blkno, name.name.len,
-					 name.name.name, oi->ip_open_count);
+	trace_ocfs2_file_release(inode, file, file->f_path.dentry,
+				 oi->ip_blkno,
+				 file->f_path.dentry->d_name.len,
+				 file->f_path.dentry->d_name.name,
+				 oi->ip_open_count);
 	spin_unlock(&oi->ip_lock);
-
-	if (trace_enabled)
-		release_dentry_name_snapshot(&name);
 
 	ocfs2_free_file_private(inode, file);
 
@@ -189,17 +174,11 @@ static int ocfs2_sync_file(struct file *file, loff_t start, loff_t end,
 	tid_t commit_tid;
 	bool needs_barrier = false;
 
-	if (trace_ocfs2_sync_file_enabled()) {
-		struct dentry *dentry = file->f_path.dentry;
-		struct name_snapshot name;
-
-		take_dentry_name_snapshot(&name, dentry);
-		trace_ocfs2_sync_file(inode, file, dentry,
-				      oi->ip_blkno,
-				      name.name.len, name.name.name,
-				      (unsigned long long)datasync);
-		release_dentry_name_snapshot(&name);
-	}
+	trace_ocfs2_sync_file(inode, file, file->f_path.dentry,
+			      oi->ip_blkno,
+			      file->f_path.dentry->d_name.len,
+			      file->f_path.dentry->d_name.name,
+			      (unsigned long long)datasync);
 
 	if (unlikely(ocfs2_emergency_state(osb)))
 		return -EROFS;
@@ -1138,7 +1117,7 @@ out:
 	return ret;
 }
 
-int ocfs2_setattr(const struct mnt_idmap *idmap, struct dentry *dentry,
+int ocfs2_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		  struct iattr *attr)
 {
 	int status = 0, size_change;
@@ -1153,19 +1132,15 @@ int ocfs2_setattr(const struct mnt_idmap *idmap, struct dentry *dentry,
 	int had_lock;
 	struct ocfs2_lock_holder oh;
 
-	if (trace_ocfs2_setattr_enabled()) {
-		struct name_snapshot name;
-
-		take_dentry_name_snapshot(&name, dentry);
-		trace_ocfs2_setattr(inode, dentry, OCFS2_I(inode)->ip_blkno,
-				    name.name.len, name.name.name, attr->ia_valid,
-				    attr->ia_valid & ATTR_MODE ? attr->ia_mode : 0,
-				    attr->ia_valid & ATTR_UID ?
+	trace_ocfs2_setattr(inode, dentry,
+			    (unsigned long long)OCFS2_I(inode)->ip_blkno,
+			    dentry->d_name.len, dentry->d_name.name,
+			    attr->ia_valid,
+				attr->ia_valid & ATTR_MODE ? attr->ia_mode : 0,
+				attr->ia_valid & ATTR_UID ?
 					from_kuid(&init_user_ns, attr->ia_uid) : 0,
-				    attr->ia_valid & ATTR_GID ?
+				attr->ia_valid & ATTR_GID ?
 					from_kgid(&init_user_ns, attr->ia_gid) : 0);
-		release_dentry_name_snapshot(&name);
-	}
 
 	status = ocfs2_emergency_state(osb);
 	if (unlikely(status)) {
@@ -1342,7 +1317,7 @@ bail:
 	return status;
 }
 
-int ocfs2_getattr(const struct mnt_idmap *idmap, const struct path *path,
+int ocfs2_getattr(struct mnt_idmap *idmap, const struct path *path,
 		  struct kstat *stat, u32 request_mask, unsigned int flags)
 {
 	struct inode *inode = d_inode(path->dentry);
@@ -1374,7 +1349,7 @@ bail:
 	return err;
 }
 
-int ocfs2_permission(const struct mnt_idmap *idmap, struct inode *inode,
+int ocfs2_permission(struct mnt_idmap *idmap, struct inode *inode,
 		     int mask)
 {
 	int ret, had_lock;
@@ -2417,17 +2392,11 @@ static ssize_t ocfs2_file_write_iter(struct kiocb *iocb,
 	int direct_io = iocb->ki_flags & IOCB_DIRECT ? 1 : 0;
 	int nowait = iocb->ki_flags & IOCB_NOWAIT ? 1 : 0;
 
-	if (trace_ocfs2_file_write_iter_enabled()) {
-		struct dentry *dentry = file->f_path.dentry;
-		struct name_snapshot name;
-
-		take_dentry_name_snapshot(&name, dentry);
-		trace_ocfs2_file_write_iter(inode, file, dentry,
-					    OCFS2_I(inode)->ip_blkno,
-					    name.name.len, name.name.name,
-					    (unsigned int)from->nr_segs);
-		release_dentry_name_snapshot(&name);
-	}
+	trace_ocfs2_file_write_iter(inode, file, file->f_path.dentry,
+		(unsigned long long)OCFS2_I(inode)->ip_blkno,
+		file->f_path.dentry->d_name.len,
+		file->f_path.dentry->d_name.name,
+		(unsigned int)from->nr_segs);	/* GRRRRR */
 
 	if (!direct_io && nowait)
 		return -EOPNOTSUPP;
@@ -2500,6 +2469,16 @@ static ssize_t ocfs2_file_write_iter(struct kiocb *iocb,
 
 	if (direct_io && !is_sync_kiocb(iocb) &&
 	    ocfs2_is_io_unaligned(inode, count, iocb->ki_pos)) {
+		static unsigned long unaligned_warn_time;
+		/*
+		 * Warn max once per day. This should be enough to warn users
+		 * about the loss in performance.
+		 */
+		if (printk_timed_ratelimit(&unaligned_warn_time, 24*60*60*1000))
+			printk(KERN_NOTICE "ocfs2: Unaligned AIO/DIO on inode "
+			       "%lld on device %s by %s\n",
+				(unsigned long long)OCFS2_I(inode)->ip_blkno,
+				inode->i_sb->s_id, current->comm);
 		/*
 		 * Make it a sync io if it's an unaligned aio.
 		 */
@@ -2531,9 +2510,17 @@ static ssize_t ocfs2_file_write_iter(struct kiocb *iocb,
 
 	if (((file->f_flags & O_DSYNC) && !direct_io) ||
 	    IS_SYNC(inode)) {
-		ret = filemap_fdatawrite_range(file->f_mapping,
-					       iocb->ki_pos - written,
-					       iocb->ki_pos - 1);
+		/*
+		 * There is an performance issue when we are doing a flush with
+		 * WB_SYNC_ALL flag. block_write_full_page() will transfer it
+		 * to REQ_SYNC flag on bio. And block layer will skip queue if
+		 * that flag is found. It will affect the performance
+		 * significantly if the disk has a poor iops.
+		 * So try to work around by calling filemap_flush(). This is
+		 * safe because following jbd2 force commit will helps to
+		 * ensure data integrity.
+		 */
+		ret = filemap_flush(file->f_mapping);
 		if (ret < 0)
 			written = ret;
 
@@ -2543,10 +2530,16 @@ static ssize_t ocfs2_file_write_iter(struct kiocb *iocb,
 				written = ret;
 		}
 
-		if (!ret)
-			ret = filemap_fdatawait_range(file->f_mapping,
-						      iocb->ki_pos - written,
-						      iocb->ki_pos - 1);
+		/*
+		 * When journal=order, jbd2 will write and wait all dirty
+		 * pages, no need to do it again.
+		 * And to meet the semantics of O_SYNC or O_DIRECT, we need to
+		 * wait on dirty pages that filemap_flush() miss.
+		 */
+		if (!ret && !ocfs2_should_order_data(inode))
+			ret = filemap_write_and_wait_range(file->f_mapping,
+							   iocb->ki_pos - written,
+							   iocb->ki_pos - 1);
 	}
 
 out:
@@ -2573,16 +2566,17 @@ static ssize_t ocfs2_file_read_iter(struct kiocb *iocb,
 	int direct_io = iocb->ki_flags & IOCB_DIRECT ? 1 : 0;
 	int nowait = iocb->ki_flags & IOCB_NOWAIT ? 1 : 0;
 
-	if (trace_ocfs2_file_read_iter_enabled()) {
-		struct dentry *dentry = filp->f_path.dentry;
-		struct name_snapshot name;
+	trace_ocfs2_file_read_iter(inode, filp, filp->f_path.dentry,
+			(unsigned long long)OCFS2_I(inode)->ip_blkno,
+			filp->f_path.dentry->d_name.len,
+			filp->f_path.dentry->d_name.name,
+			to->nr_segs);	/* GRRRRR */
 
-		take_dentry_name_snapshot(&name, dentry);
-		trace_ocfs2_file_read_iter(inode, filp, dentry,
-					   OCFS2_I(inode)->ip_blkno,
-					   name.name.len, name.name.name,
-					   to->nr_segs);
-		release_dentry_name_snapshot(&name);
+
+	if (!inode) {
+		ret = -EINVAL;
+		mlog_errno(ret);
+		goto bail;
 	}
 
 	if (!direct_io && nowait)
@@ -2654,17 +2648,11 @@ static ssize_t ocfs2_file_splice_read(struct file *in, loff_t *ppos,
 	ssize_t ret = 0;
 	int lock_level = 0;
 
-	if (trace_ocfs2_file_splice_read_enabled()) {
-		struct dentry *dentry = in->f_path.dentry;
-		struct name_snapshot name;
-
-		take_dentry_name_snapshot(&name, dentry);
-		trace_ocfs2_file_splice_read(inode, in, dentry,
-					     OCFS2_I(inode)->ip_blkno,
-					     name.name.len, name.name.name,
-					     flags);
-		release_dentry_name_snapshot(&name);
-	}
+	trace_ocfs2_file_splice_read(inode, in, in->f_path.dentry,
+				     (unsigned long long)OCFS2_I(inode)->ip_blkno,
+				     in->f_path.dentry->d_name.len,
+				     in->f_path.dentry->d_name.name,
+				     flags);
 
 	/*
 	 * We're fine letting folks race truncates and extending writes with

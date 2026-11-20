@@ -36,7 +36,7 @@ static int grant_dma_iommu_probe(struct platform_device *pdev)
 	struct grant_dma_iommu_device *mmu;
 	int ret;
 
-	mmu = devm_kzalloc_obj(&pdev->dev, *mmu);
+	mmu = devm_kzalloc(&pdev->dev, sizeof(*mmu), GFP_KERNEL);
 	if (!mmu)
 		return -ENOMEM;
 

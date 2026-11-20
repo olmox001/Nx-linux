@@ -754,7 +754,8 @@ void __mtk_ppe_check_skb(struct mtk_ppe *ppe, struct sk_buff *skb, u16 hash)
 
 	hlist_for_each_entry_safe(entry, n, head, list) {
 		if (entry->type == MTK_FLOW_TYPE_L2_SUBFLOW) {
-			if (entry->hash != hash)
+			if (unlikely(FIELD_GET(MTK_FOE_IB1_STATE, hwe->ib1) ==
+				     MTK_FOE_STATE_BIND))
 				continue;
 
 			entry->hash = 0xffff;
@@ -763,7 +764,7 @@ void __mtk_ppe_check_skb(struct mtk_ppe *ppe, struct sk_buff *skb, u16 hash)
 		}
 
 		if (found || !mtk_flow_entry_match(ppe->eth, entry, hwe)) {
-			if (entry->hash == hash)
+			if (entry->hash != 0xffff)
 				entry->hash = 0xffff;
 			continue;
 		}
@@ -884,7 +885,7 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base, int index)
 	u32 foe_flow_size;
 	void *foe;
 
-	ppe = devm_kzalloc_obj(dev, *ppe);
+	ppe = devm_kzalloc(dev, sizeof(*ppe), GFP_KERNEL);
 	if (!ppe)
 		return NULL;
 

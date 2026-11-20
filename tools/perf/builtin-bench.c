@@ -14,7 +14,6 @@
  *  syscall ... System call performance
  *  mem   ... memory access performance
  *  numa  ... NUMA scheduling and MM performance
- *  atomic ... Atomic operation performance
  *  futex ... Futex performance
  *  epoll ... Event poll performance
  */
@@ -116,13 +115,6 @@ static const struct bench uprobe_benchmarks[] = {
 	{ NULL,	NULL, NULL },
 };
 
-static const struct bench atomic_benchmarks[] = {
-	{ "cas",	"Benchmark CAS (compare-and-swap) operations",	bench_atomic_cas	},
-	{ "inc",	"Benchmark atomic fetch-add operations",	bench_atomic_inc	},
-	{ "all",	"Run all atomic benchmarks",			NULL			},
-	{ NULL,		NULL,						NULL			}
-};
-
 struct collection {
 	const char		*name;
 	const char		*summary;
@@ -136,7 +128,6 @@ static const struct collection collections[] = {
 #ifdef HAVE_LIBNUMA_SUPPORT
 	{ "numa",	"NUMA scheduling and MM benchmarks",		numa_benchmarks		},
 #endif
-	{ "atomic",	"Atomic operation benchmarks",			atomic_benchmarks	},
 	{"futex",       "Futex stressing benchmarks",                   futex_benchmarks        },
 #ifdef HAVE_EVENTFD_SUPPORT
 	{"epoll",       "Epoll stressing benchmarks",                   epoll_benchmarks        },

@@ -1020,11 +1020,11 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 		}
 	}
 
-	i2c = devm_kzalloc_obj(&pdev->dev, struct s3c24xx_i2c);
+	i2c = devm_kzalloc(&pdev->dev, sizeof(struct s3c24xx_i2c), GFP_KERNEL);
 	if (!i2c)
 		return -ENOMEM;
 
-	i2c->pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	i2c->pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!i2c->pdata)
 		return -ENOMEM;
 

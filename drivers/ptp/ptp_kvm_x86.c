@@ -36,7 +36,7 @@ int kvm_arch_ptp_init(void)
 		clock_pair = page_address(p);
 		ret = set_memory_decrypted((unsigned long)clock_pair, 1);
 		if (ret) {
-			/* The page may be left shared, so leak it. */
+			__free_page(p);
 			clock_pair = NULL;
 			goto nofree;
 		}
@@ -68,9 +68,8 @@ nofree:
 void kvm_arch_ptp_exit(void)
 {
 	if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT)) {
-		/* Leak the page if it cannot be made private again. */
-		if (!WARN_ON(set_memory_encrypted((unsigned long)clock_pair, 1)))
-			free_page((unsigned long)clock_pair);
+		WARN_ON(set_memory_encrypted((unsigned long)clock_pair, 1));
+		free_page((unsigned long)clock_pair);
 		clock_pair = NULL;
 	}
 }

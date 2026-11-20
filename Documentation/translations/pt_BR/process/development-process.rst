@@ -1,7 +1,5 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-.. _pt_BR_development_process_main:
-
 Guia para o Processo de Desenvolvimento do Kernel
 =================================================
 
@@ -22,8 +20,3 @@ conhecimento profundo de programação de kernel para ser compreendida.
    1.Intro
    2.Process
    3.Early-stage
-   4.Coding
-   5.Posting
-   6.Followthrough
-   7.AdvancedTopics
-   8.Conclusion

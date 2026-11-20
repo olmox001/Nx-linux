@@ -250,7 +250,7 @@ static int __init imx_rngc_probe(struct platform_device *pdev)
 	u32 ver_id;
 	u8  rng_type;
 
-	rngc = devm_kzalloc_obj(&pdev->dev, *rngc);
+	rngc = devm_kzalloc(&pdev->dev, sizeof(*rngc), GFP_KERNEL);
 	if (!rngc)
 		return -ENOMEM;
 
@@ -258,7 +258,7 @@ static int __init imx_rngc_probe(struct platform_device *pdev)
 	if (IS_ERR(rngc->base))
 		return PTR_ERR(rngc->base);
 
-	rngc->clk = devm_clk_get_optional(&pdev->dev, NULL);
+	rngc->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(rngc->clk))
 		return dev_err_probe(&pdev->dev, PTR_ERR(rngc->clk), "Cannot get rng_clk\n");
 
@@ -266,9 +266,7 @@ static int __init imx_rngc_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	ret = clk_prepare_enable(rngc->clk);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "Cannot enable rng_clk\n");
+	clk_prepare_enable(rngc->clk);
 
 	ver_id = readl(rngc->base + RNGC_VER_ID);
 	rng_type = FIELD_GET(RNG_TYPE, ver_id);
@@ -298,7 +296,7 @@ static int __init imx_rngc_probe(struct platform_device *pdev)
 			irq, imx_rngc_irq, 0, pdev->name, (void *)rngc);
 	if (ret) {
 		clk_disable_unprepare(rngc->clk);
-		return ret;
+		return dev_err_probe(&pdev->dev, ret, "Can't get interrupt working.\n");
 	}
 
 	if (self_test) {
@@ -340,7 +338,9 @@ static int imx_rngc_resume(struct device *dev)
 {
 	struct imx_rngc *rngc = dev_get_drvdata(dev);
 
-	return clk_prepare_enable(rngc->clk);
+	clk_prepare_enable(rngc->clk);
+
+	return 0;
 }
 
 static const struct dev_pm_ops imx_rngc_pm_ops = {
@@ -354,19 +354,12 @@ static const struct of_device_id imx_rngc_dt_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, imx_rngc_dt_ids);
 
-static const struct platform_device_id imx_rngc_devtype[] = {
-	{ .name = "imx-rngc" },
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(platform, imx_rngc_devtype);
-
 static struct platform_driver imx_rngc_driver = {
 	.driver = {
 		.name = KBUILD_MODNAME,
 		.pm = pm_ptr(&imx_rngc_pm_ops),
 		.of_match_table = imx_rngc_dt_ids,
 	},
-	.id_table = imx_rngc_devtype,
 };
 
 module_platform_driver_probe(imx_rngc_driver, imx_rngc_probe);

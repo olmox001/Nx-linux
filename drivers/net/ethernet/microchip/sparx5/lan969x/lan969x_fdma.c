@@ -54,9 +54,10 @@ static void lan969x_fdma_tx_clear_buf(struct sparx5 *sparx5, int weight)
 {
 	struct fdma *fdma = &sparx5->tx.fdma;
 	struct sparx5_tx_buf *db;
+	unsigned long flags;
 	int i;
 
-	spin_lock(&sparx5->tx_lock);
+	spin_lock_irqsave(&sparx5->tx_lock, flags);
 
 	for (i = 0; i < fdma->n_dcbs; ++i) {
 		db = &sparx5->tx.dbs[i];
@@ -82,7 +83,7 @@ static void lan969x_fdma_tx_clear_buf(struct sparx5 *sparx5, int weight)
 		db->used = false;
 	}
 
-	spin_unlock(&sparx5->tx_lock);
+	spin_unlock_irqrestore(&sparx5->tx_lock, flags);
 }
 
 static void lan969x_fdma_free_pages(struct sparx5_rx *rx)
@@ -113,11 +114,8 @@ static struct sk_buff *lan969x_fdma_rx_get_frame(struct sparx5 *sparx5,
 	sparx5_ifh_parse(sparx5, page_address(page), &fi);
 	port = fi.src_port < consts->n_ports ? sparx5->ports[fi.src_port] :
 					       NULL;
-	if (!port) {
-		dev_err_ratelimited(sparx5->dev, "Data on inactive port %d\n",
-				    fi.src_port);
+	if (WARN_ON(!port))
 		goto free_page;
-	}
 
 	skb = build_skb(page_address(page), fdma->db_size);
 	if (unlikely(!skb))
@@ -261,8 +259,10 @@ int lan969x_fdma_napi_poll(struct napi_struct *napi, int weight)
 			break;
 
 		skb = lan969x_fdma_rx_get_frame(sparx5, rx);
-		if (skb)
-			napi_gro_receive(&rx->napi, skb);
+		if (!skb)
+			break;
+
+		napi_gro_receive(&rx->napi, skb);
 
 		fdma_db_advance(fdma);
 		counter++;

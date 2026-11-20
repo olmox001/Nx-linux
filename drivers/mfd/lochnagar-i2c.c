@@ -276,7 +276,7 @@ static int lochnagar_i2c_probe(struct i2c_client *i2c)
 	unsigned int devid, rev;
 	int ret;
 
-	lochnagar = devm_kzalloc_obj(dev, *lochnagar);
+	lochnagar = devm_kzalloc(dev, sizeof(*lochnagar), GFP_KERNEL);
 	if (!lochnagar)
 		return -ENOMEM;
 

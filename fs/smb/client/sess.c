@@ -620,19 +620,18 @@ cifs_ses_add_channel(struct cifs_ses *ses,
 
 	rc = cifs_negotiate_protocol(xid, ses, chan->server);
 	if (!rc)
-		rc = cifs_setup_session(xid, ses, chan->server);
+		rc = cifs_setup_session(xid, ses, chan->server, ses->local_nls);
 
 	mutex_unlock(&ses->session_mutex);
 
 out:
 	if (rc && chan->server) {
-		struct TCP_Server_Info *pserver;
+		cifs_put_tcp_session(chan->server, 0);
 
 		spin_lock(&ses->chan_lock);
-		pserver = chan->server;
 
 		/* we rely on all bits beyond chan_count to be clear */
-		cifs_chan_clear_need_reconnect(ses, pserver);
+		cifs_chan_clear_need_reconnect(ses, chan->server);
 		ses->chan_count--;
 		/*
 		 * chan_count should never reach 0 as at least the primary
@@ -640,7 +639,6 @@ out:
 		 */
 		WARN_ON(ses->chan_count < 1);
 		spin_unlock(&ses->chan_lock);
-		cifs_put_tcp_session(pserver, 0);
 	}
 
 	kfree(ctx->UNC);
@@ -666,8 +664,8 @@ int decode_ntlmssp_challenge(char *bcc_ptr, int blob_len,
 	}
 
 	if (memcmp(pblob->Signature, "NTLMSSP", 8)) {
-		cifs_dbg(VFS, "%s: blob signature incorrect: %8phN\n",
-			 __func__, pblob->Signature);
+		cifs_dbg(VFS, "blob signature incorrect %s\n",
+			 pblob->Signature);
 		return -EINVAL;
 	}
 	if (pblob->MessageType != NtLmChallenge) {
@@ -794,7 +792,8 @@ static inline void cifs_security_buffer_from_str(SECURITY_BUFFER *pbuf,
 int build_ntlmssp_negotiate_blob(unsigned char **pbuffer,
 				 u16 *buflen,
 				 struct cifs_ses *ses,
-				 struct TCP_Server_Info *server)
+				 struct TCP_Server_Info *server,
+				 const struct nls_table *nls_cp)
 {
 	int rc = 0;
 	NEGOTIATE_MESSAGE *sec_blob;
@@ -834,13 +833,13 @@ int build_ntlmssp_negotiate_blob(unsigned char **pbuffer,
 				      NULL,
 				      CIFS_MAX_DOMAINNAME_LEN,
 				      *pbuffer, &tmp,
-				      ses->local_nls);
+				      nls_cp);
 
 	cifs_security_buffer_from_str(&sec_blob->WorkstationName,
 				      NULL,
 				      CIFS_MAX_WORKSTATION_LEN,
 				      *pbuffer, &tmp,
-				      ses->local_nls);
+				      nls_cp);
 
 	*buflen = tmp - *pbuffer;
 setup_ntlm_neg_ret:
@@ -855,7 +854,8 @@ setup_ntlm_neg_ret:
 int build_ntlmssp_smb3_negotiate_blob(unsigned char **pbuffer,
 				 u16 *buflen,
 				 struct cifs_ses *ses,
-				 struct TCP_Server_Info *server)
+				 struct TCP_Server_Info *server,
+				 const struct nls_table *nls_cp)
 {
 	int rc = 0;
 	struct negotiate_message *sec_blob;
@@ -888,7 +888,7 @@ int build_ntlmssp_smb3_negotiate_blob(unsigned char **pbuffer,
 
 	sec_blob->Version.ProductMajorVersion = LINUX_VERSION_MAJOR;
 	sec_blob->Version.ProductMinorVersion = LINUX_VERSION_PATCHLEVEL;
-	sec_blob->Version.ProductBuild = cpu_to_le16(LINUX_VERSION_SUBLEVEL);
+	sec_blob->Version.ProductBuild = cpu_to_le16(SMB3_PRODUCT_BUILD);
 	sec_blob->Version.NTLMRevisionCurrent = NTLMSSP_REVISION_W2K3;
 
 	tmp = *pbuffer + sizeof(struct negotiate_message);
@@ -900,13 +900,13 @@ int build_ntlmssp_smb3_negotiate_blob(unsigned char **pbuffer,
 				      NULL,
 				      CIFS_MAX_DOMAINNAME_LEN,
 				      *pbuffer, &tmp,
-				      ses->local_nls);
+				      nls_cp);
 
 	cifs_security_buffer_from_str(&sec_blob->WorkstationName,
 				      NULL,
 				      CIFS_MAX_WORKSTATION_LEN,
 				      *pbuffer, &tmp,
-				      ses->local_nls);
+				      nls_cp);
 
 	*buflen = tmp - *pbuffer;
 setup_ntlm_smb3_neg_ret:
@@ -918,7 +918,8 @@ setup_ntlm_smb3_neg_ret:
 int build_ntlmssp_auth_blob(unsigned char **pbuffer,
 					u16 *buflen,
 				   struct cifs_ses *ses,
-				   struct TCP_Server_Info *server)
+				   struct TCP_Server_Info *server,
+				   const struct nls_table *nls_cp)
 {
 	int rc;
 	AUTHENTICATE_MESSAGE *sec_blob;
@@ -926,7 +927,7 @@ int build_ntlmssp_auth_blob(unsigned char **pbuffer,
 	unsigned char *tmp;
 	int len;
 
-	rc = setup_ntlmv2_rsp(ses);
+	rc = setup_ntlmv2_rsp(ses, nls_cp);
 	if (rc) {
 		cifs_dbg(VFS, "Error %d during NTLMSSP authentication\n", rc);
 		*buflen = 0;
@@ -953,7 +954,7 @@ int build_ntlmssp_auth_blob(unsigned char **pbuffer,
 
 	sec_blob->Version.ProductMajorVersion = LINUX_VERSION_MAJOR;
 	sec_blob->Version.ProductMinorVersion = LINUX_VERSION_PATCHLEVEL;
-	sec_blob->Version.ProductBuild = cpu_to_le16(LINUX_VERSION_SUBLEVEL);
+	sec_blob->Version.ProductBuild = cpu_to_le16(SMB3_PRODUCT_BUILD);
 	sec_blob->Version.NTLMRevisionCurrent = NTLMSSP_REVISION_W2K3;
 
 	tmp = *pbuffer + sizeof(AUTHENTICATE_MESSAGE);
@@ -987,19 +988,19 @@ int build_ntlmssp_auth_blob(unsigned char **pbuffer,
 				      ses->domainName,
 				      CIFS_MAX_DOMAINNAME_LEN,
 				      *pbuffer, &tmp,
-				      ses->local_nls);
+				      nls_cp);
 
 	cifs_security_buffer_from_str(&sec_blob->UserName,
 				      ses->user_name,
 				      CIFS_MAX_USERNAME_LEN,
 				      *pbuffer, &tmp,
-				      ses->local_nls);
+				      nls_cp);
 
 	cifs_security_buffer_from_str(&sec_blob->WorkstationName,
 				      ses->workstation_name,
 				      ntlmssp_workstation_name_size(ses),
 				      *pbuffer, &tmp,
-				      ses->local_nls);
+				      nls_cp);
 
 	if ((ses->ntlmssp->server_flags & NTLMSSP_NEGOTIATE_KEY_XCH) &&
 	    (!ses->server->session_estab || ses->ntlmssp->sesskey_per_smbsess) &&

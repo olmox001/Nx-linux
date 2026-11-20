@@ -545,7 +545,7 @@ static int i2c_nuvoton_probe(struct i2c_client *client)
 	if (IS_ERR(chip))
 		return PTR_ERR(chip);
 
-	priv = devm_kzalloc_obj(dev, struct priv_data);
+	priv = devm_kzalloc(dev, sizeof(struct priv_data), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -576,6 +576,8 @@ static int i2c_nuvoton_probe(struct i2c_client *client)
 				      dev_name(&chip->dev),
 				      chip);
 		if (rc) {
+			dev_err(dev, "%s() Unable to request irq: %d for use\n",
+				__func__, priv->irq);
 			priv->irq = 0;
 		} else {
 			chip->flags |= TPM_CHIP_FLAG_IRQ;
@@ -640,7 +642,7 @@ static const struct of_device_id i2c_nuvoton_of_match[] = {
 MODULE_DEVICE_TABLE(of, i2c_nuvoton_of_match);
 #endif
 
-static DEFINE_SIMPLE_DEV_PM_OPS(i2c_nuvoton_pm_ops, tpm_pm_suspend, tpm_pm_resume);
+static SIMPLE_DEV_PM_OPS(i2c_nuvoton_pm_ops, tpm_pm_suspend, tpm_pm_resume);
 
 static struct i2c_driver i2c_nuvoton_driver = {
 	.id_table = i2c_nuvoton_id,
@@ -648,7 +650,7 @@ static struct i2c_driver i2c_nuvoton_driver = {
 	.remove = i2c_nuvoton_remove,
 	.driver = {
 		.name = "tpm_i2c_nuvoton",
-		.pm = pm_sleep_ptr(&i2c_nuvoton_pm_ops),
+		.pm = &i2c_nuvoton_pm_ops,
 		.of_match_table = of_match_ptr(i2c_nuvoton_of_match),
 	},
 };

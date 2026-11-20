@@ -192,7 +192,7 @@ ux500_of_probe(struct platform_device *pdev, struct device_node *np)
 	const char *mode;
 	int strlen;
 
-	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return NULL;
 
@@ -236,7 +236,7 @@ static int ux500_probe(struct platform_device *pdev)
 		}
 	}
 
-	glue = devm_kzalloc_obj(&pdev->dev, *glue);
+	glue = devm_kzalloc(&pdev->dev, sizeof(*glue), GFP_KERNEL);
 	if (!glue)
 		goto err0;
 

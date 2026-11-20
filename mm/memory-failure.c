@@ -66,7 +66,6 @@
 #include <trace/events/memory-failure.h>
 
 #include "swap.h"
-#include "page_alloc.h"
 #include "internal.h"
 
 static int sysctl_memory_failure_early_kill __read_mostly;
@@ -75,11 +74,9 @@ static int sysctl_memory_failure_recovery __read_mostly = 1;
 
 static int sysctl_enable_soft_offline __read_mostly = 1;
 
-static int sysctl_panic_on_unrecoverable_mf __read_mostly;
-
 atomic_long_t num_poisoned_pages __read_mostly = ATOMIC_LONG_INIT(0);
 
-static bool hw_memory_failure __read_mostly;
+static bool hw_memory_failure __read_mostly = false;
 
 static DEFINE_MUTEX(mf_mutex);
 
@@ -94,46 +91,6 @@ void num_poisoned_pages_sub(unsigned long pfn, long i)
 	atomic_long_sub(i, &num_poisoned_pages);
 	if (pfn != -1UL)
 		memblk_nr_poison_sub(pfn, i);
-}
-
-/*
- * Return the first or the last hardware-poisoned online page in [start,
- * start + size), or PHYS_ADDR_MAX if the range is clean.
- */
-static phys_addr_t range_hwpoison(phys_addr_t start, unsigned long size,
-				  bool first)
-{
-	phys_addr_t poison = PHYS_ADDR_MAX;
-	unsigned long pfn, end_pfn;
-
-	if (!size || !atomic_long_read(&num_poisoned_pages))
-		return poison;
-
-	end_pfn = PHYS_PFN(start + size - 1);
-	for (pfn = PHYS_PFN(start); pfn <= end_pfn; pfn++) {
-		struct page *page = pfn_to_online_page(pfn);
-
-		if (page && is_page_hwpoison(page)) {
-			if (first)
-				return PFN_PHYS(pfn);
-
-			poison = PFN_PHYS(pfn);
-		}
-
-		cond_resched();
-	}
-
-	return poison;
-}
-
-phys_addr_t range_first_hwpoison(phys_addr_t start, unsigned long size)
-{
-	return range_hwpoison(start, size, true);
-}
-
-phys_addr_t range_last_hwpoison(phys_addr_t start, unsigned long size)
-{
-	return range_hwpoison(start, size, false);
 }
 
 /**
@@ -194,15 +151,6 @@ static const struct ctl_table memory_failure_table[] = {
 		.procname	= "enable_soft_offline",
 		.data		= &sysctl_enable_soft_offline,
 		.maxlen		= sizeof(sysctl_enable_soft_offline),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
-	},
-	{
-		.procname	= "panic_on_unrecoverable_memory_failure",
-		.data		= &sysctl_panic_on_unrecoverable_mf,
-		.maxlen		= sizeof(sysctl_panic_on_unrecoverable_mf),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
@@ -426,6 +374,8 @@ static void __add_to_kill(struct task_struct *tsk, const struct page *p,
 			  unsigned long addr)
 {
 	struct to_kill *tk;
+	const struct folio *folio;
+	struct address_space *mapping;
 
 	tk = kmalloc_obj(struct to_kill, GFP_ATOMIC);
 	if (!tk) {
@@ -436,8 +386,19 @@ static void __add_to_kill(struct task_struct *tsk, const struct page *p,
 	tk->addr = addr;
 	if (is_zone_device_page(p))
 		tk->size_shift = dev_pagemap_mapping_shift(vma, tk->addr);
-	else
-		tk->size_shift = folio_shift(page_folio(p));
+	else {
+		folio = page_folio(p);
+		mapping = folio_mapping(folio);
+		if (mapping && mapping_mf_keep_ue_mapped(mapping))
+			/*
+			 * Let userspace know the radius of HWPoison is
+			 * the size of raw page; accessing other pages
+			 * inside the folio is still ok.
+			 */
+			tk->size_shift = PAGE_SHIFT;
+		else
+			tk->size_shift = folio_shift(folio);
+	}
 
 	/*
 	 * Send SIGKILL if "tk->addr == -EFAULT". Also, as
@@ -604,7 +565,8 @@ static void collect_procs_anon(const struct folio *folio,
 
 		if (!t)
 			continue;
-		anon_rmap_tree_foreach(vmac, av, pgoff, pgoff) {
+		anon_vma_interval_tree_foreach(vmac, &av->rb_root,
+					       pgoff, pgoff) {
 			vma = vmac->vma;
 			if (vma->vm_mm != t->mm)
 				continue;
@@ -637,7 +599,8 @@ static void collect_procs_file(const struct folio *folio,
 
 		if (!t)
 			continue;
-		mapping_rmap_tree_foreach(vma, mapping, pgoff, pgoff) {
+		vma_interval_tree_foreach(vma, &mapping->i_mmap, pgoff,
+				      pgoff) {
 			/*
 			 * Send early kill signal to tasks where a vma covers
 			 * the page but the corrupted page is not necessarily
@@ -660,7 +623,7 @@ static void add_to_kill_fsdax(struct task_struct *tsk, const struct page *p,
 			      struct vm_area_struct *vma,
 			      struct list_head *to_kill, pgoff_t pgoff)
 {
-	unsigned long addr = vma_filebacked_address(vma, pgoff, 1);
+	unsigned long addr = vma_address(vma, pgoff, 1);
 	__add_to_kill(tsk, p, vma, to_kill, addr);
 }
 
@@ -688,7 +651,7 @@ static void collect_procs_fsdax(const struct page *page,
 			t = task_early_kill(tsk, true);
 		if (!t)
 			continue;
-		mapping_rmap_tree_foreach(vma, mapping, pgoff, pgoff) {
+		vma_interval_tree_foreach(vma, &mapping->i_mmap, pgoff, pgoff) {
 			if (vma->vm_mm == t->mm)
 				add_to_kill_fsdax(t, page, vma, to_kill, pgoff);
 		}
@@ -862,6 +825,8 @@ static int kill_accessing_process(struct task_struct *p, unsigned long pfn,
 				  int flags)
 {
 	int ret;
+	struct folio *folio;
+	struct address_space *mapping;
 	struct hwpoison_walk priv = {
 		.pfn = pfn,
 	};
@@ -879,33 +844,44 @@ static int kill_accessing_process(struct task_struct *p, unsigned long pfn,
 	 * ret = 0 when poison page is a clean page and it's dropped, no
 	 * SIGBUS is needed.
 	 */
-	if (ret == 1 && priv.tk.addr)
+	if (ret == 1 && priv.tk.addr) {
+		folio = pfn_folio(pfn);
+		if (folio_test_hugetlb(folio)) {
+			mapping = folio_mapping(folio);
+			if (hugetlb_should_keep_hwpoison_mapped(folio, mapping))
+				/*
+				 * Let userspace know the radius of HWPoison is
+				 * the size of raw page; accessing other pages
+				 * inside the folio is still ok.
+				 */
+				priv.tk.size_shift = PAGE_SHIFT;
+		}
 		kill_proc(&priv.tk, pfn, flags);
+	}
 	mmap_read_unlock(p->mm);
 
 	return ret > 0 ? -EHWPOISON : 0;
 }
 
 /*
- * MF_IGNORED - The m-f() handler marks the page as PG_hwpoison'ed.
+ * MF_IGNORED - The m-f() handler marks the page as PG_hwpoisoned'ed.
  * But it could not do more to isolate the page from being accessed again,
  * nor does it kill the process. This is extremely rare and one of the
  * potential causes is that the page state has been changed due to
  * underlying race condition. This is the most severe outcomes.
  *
- * MF_FAILED - The m-f() handler marks the page as PG_hwpoison'ed.
+ * MF_FAILED - The m-f() handler marks the page as PG_hwpoisoned'ed.
  * It should have killed the process, but it can't isolate the page,
  * due to conditions such as extra pin, unmap failure, etc. Accessing
  * the page again may trigger another MCE and the process will be killed
  * by the m-f() handler immediately.
  *
- * MF_DELAYED - The m-f() handler marks the page as PG_hwpoison'ed.
- * It means the page was unmapped and partially isolated (e.g. removed from
- * file mapping or the LRU) but full cleanup is deferred (e.g. the metadata
- * for the memory, as in struct page/folio, is still referenced). Any
- * further access to the page will result in the process being killed.
+ * MF_DELAYED - The m-f() handler marks the page as PG_hwpoisoned'ed.
+ * The page is unmapped, and is removed from the LRU or file mapping.
+ * An attempt to access the page again will trigger page fault and the
+ * PF handler will kill the process.
  *
- * MF_RECOVERED - The m-f() handler marks the page as PG_hwpoison'ed.
+ * MF_RECOVERED - The m-f() handler marks the page as PG_hwpoisoned'ed.
  * The page has been completely isolated, that is, unmapped, taken out of
  * the buddy system, or hole-punched out of the file mapping.
  */
@@ -979,12 +955,10 @@ static int truncate_error_folio(struct folio *folio, unsigned long pfn,
 	if (mapping->a_ops->error_remove_folio) {
 		int err = mapping->a_ops->error_remove_folio(mapping, folio);
 
-		if (err == MF_DELAYED)
-			ret = err;
-		else if (err != 0)
+		if (err != 0)
 			pr_info("%#lx: Failed to punch page: %d\n", pfn, err);
 		else if (!filemap_release_folio(folio, GFP_NOIO))
-			pr_info("%#lx: Failed to release buffers\n", pfn);
+			pr_info("%#lx: failed to release buffers\n", pfn);
 		else
 			ret = MF_RECOVERED;
 	} else {
@@ -1034,6 +1008,17 @@ static bool has_extra_refcount(struct page_state *ps, struct page *p,
 }
 
 /*
+ * Error hit kernel page.
+ * Do nothing, try to be lucky and not touch this instead. For a few cases we
+ * could be more sophisticated.
+ */
+static int me_kernel(struct page_state *ps, struct page *p)
+{
+	unlock_page(p);
+	return MF_IGNORED;
+}
+
+/*
  * Page in unknown state. Do nothing.
  * This is a catch-all in case we fail to make sense of the page state.
  */
@@ -1080,13 +1065,17 @@ static int me_pagecache_clean(struct page_state *ps, struct page *p)
 	}
 
 	/*
+	 * The shmem page is kept in page cache instead of truncating
+	 * so is expected to have an extra refcount after error-handling.
+	 */
+	extra_pins = shmem_mapping(mapping);
+
+	/*
 	 * Truncation is a bit tricky. Enable it per file system for now.
 	 *
 	 * Open: to take i_rwsem or not for this? Right now we don't.
 	 */
 	ret = truncate_error_folio(folio, page_to_pfn(p), mapping);
-
-	extra_pins = ret == MF_DELAYED;
 	if (has_extra_refcount(ps, p, extra_pins))
 		ret = MF_FAILED;
 
@@ -1212,6 +1201,13 @@ static int me_huge_page(struct page_state *ps, struct page *p)
 		}
 	}
 
+	/*
+	 * MF still needs to hold a refcount for the deferred actions in
+	 * filemap_offline_hwpoison_folio.
+	 */
+	if (hugetlb_should_keep_hwpoison_mapped(folio, mapping))
+		return res;
+
 	if (has_extra_refcount(ps, p, extra_pins))
 		res = MF_FAILED;
 
@@ -1237,8 +1233,10 @@ static int me_huge_page(struct page_state *ps, struct page *p)
 #define mlock		(1UL << PG_mlocked)
 #define lru		(1UL << PG_lru)
 #define head		(1UL << PG_head)
+#define reserved	(1UL << PG_reserved)
 
 static struct page_state error_states[] = {
+	{ reserved,	reserved,	MF_MSG_KERNEL,	me_kernel },
 	/*
 	 * free pages are specially detected outside this table:
 	 * PG_buddy pages only make a small fraction of all free pages.
@@ -1270,6 +1268,7 @@ static struct page_state error_states[] = {
 #undef mlock
 #undef lru
 #undef head
+#undef reserved
 
 static void update_per_node_mf_stats(unsigned long pfn,
 				     enum mf_result result)
@@ -1304,15 +1303,6 @@ static void update_per_node_mf_stats(unsigned long pfn,
 	++mf_stats->total;
 }
 
-static bool panic_on_unrecoverable_mf(enum mf_action_page_type type,
-				      enum mf_result result)
-{
-	if (!sysctl_panic_on_unrecoverable_mf)
-		return false;
-
-	return type == MF_MSG_KERNEL && result == MF_IGNORED;
-}
-
 /*
  * "Dirty/Clean" indication is not 100% accurate due to the possibility of
  * setting PG_dirty outside page lock. See also comment above set_page_dirty().
@@ -1320,18 +1310,15 @@ static bool panic_on_unrecoverable_mf(enum mf_action_page_type type,
 static int action_result(unsigned long pfn, enum mf_action_page_type type,
 			 enum mf_result result)
 {
+	trace_memory_failure_event(pfn, type, result);
+
 	if (type != MF_MSG_ALREADY_POISONED && type != MF_MSG_PFN_MAP) {
 		num_poisoned_pages_inc(pfn);
 		update_per_node_mf_stats(pfn, result);
 	}
 
-	trace_memory_failure_event(pfn, type, result);
-
 	pr_err("%#lx: recovery action for %s: %s\n",
 		pfn, action_page_types[type], action_name[result]);
-
-	if (panic_on_unrecoverable_mf(type, result))
-		panic("Memory failure: %#lx: unrecoverable page", pfn);
 
 	return (result == MF_RECOVERED || result == MF_DELAYED) ? 0 : -EBUSY;
 }
@@ -1386,38 +1373,6 @@ static inline bool HWPoisonHandlable(struct page *page, unsigned long flags)
 	return PageLRU(page) || is_free_buddy_page(page);
 }
 
-/*
- * Positive identification of pages the hwpoison handler cannot recover:
- * pages owned by kernel internals with no userspace mapping to unmap, no
- * file mapping to invalidate, and no migration target.
- */
-static inline bool is_kernel_owned_page(struct page *page)
-{
-	struct page *head;
-	bool kernel_owned;
-
-	/* PG_reserved is a per-page flag, never set on a compound page. */
-	if (PageReserved(page))
-		return true;
-
-	/*
-	 * Page-type bits live only on the head page, so resolve any tail
-	 * first.  The check takes no refcount; recheck the head afterwards
-	 * so a concurrent split or compound free cannot leave us trusting
-	 * a stale view.  A residual free->alloc->free cannot be closed here
-	 * (frozen slab and large-kmalloc pages cannot be pinned), but is
-	 * harmless: where a wrong verdict could panic, memory_failure() has
-	 * already set PageHWPoison, which bars the page from the allocator.
-	 */
-retry:
-	head = compound_head(page);
-	kernel_owned = PageSlab(head) || PageTable(head) ||
-		       PageLargeKmalloc(head);
-	if (head != compound_head(page))
-		goto retry;
-	return kernel_owned;
-}
-
 static int __get_hwpoison_page(struct page *page, unsigned long flags)
 {
 	struct folio *folio = page_folio(page);
@@ -1463,19 +1418,6 @@ static int get_any_page(struct page *p, unsigned long flags)
 
 	if (flags & MF_COUNT_INCREASED)
 		count_increased = true;
-
-	/*
-	 * Page types we know are kernel-owned and cannot be recovered.
-	 * Short-circuit before the shake_page() / retry loop, which
-	 * cannot turn any of these into something HWPoisonHandlable().
-	 * Drop the caller's reference if MF_COUNT_INCREASED took one.
-	 */
-	if (is_kernel_owned_page(p)) {
-		if (count_increased)
-			put_page(p);
-		ret = -ENOTRECOVERABLE;
-		goto out;
-	}
 
 try_again:
 	if (!count_increased) {
@@ -1524,7 +1466,7 @@ try_again:
 		ret = -EIO;
 	}
 out:
-	if (ret == -EIO || ret == -ENOTRECOVERABLE)
+	if (ret == -EIO)
 		pr_err("%#lx: unhandlable page.\n", page_to_pfn(p));
 
 	return ret;
@@ -1581,10 +1523,7 @@ static int __get_unpoison_page(struct page *page)
  *         -EIO for pages on which we can not handle memory errors,
  *         -EBUSY when get_hwpoison_page() has raced with page lifecycle
  *         operations like allocation and free,
- *         -EHWPOISON when the page is hwpoisoned and taken off from buddy,
- *         -ENOTRECOVERABLE for kernel-owned pages identified by
- *         is_kernel_owned_page() (PG_reserved, slab,
- *         page-table, large-kmalloc) that the handler cannot recover.
+ *         -EHWPOISON when the page is hwpoisoned and taken off from buddy.
  */
 static int get_hwpoison_page(struct page *p, unsigned long flags)
 {
@@ -1665,6 +1604,7 @@ static bool hwpoison_user_mappings(struct folio *folio, struct page *p,
 {
 	LIST_HEAD(tokill);
 	bool unmap_success;
+	bool keep_mapped;
 	bool forcekill;
 	bool mlocked = folio_test_mlocked(folio);
 
@@ -1692,8 +1632,12 @@ static bool hwpoison_user_mappings(struct folio *folio, struct page *p,
 	 */
 	collect_procs(folio, p, &tokill, flags & MF_ACTION_REQUIRED);
 
-	unmap_success = !unmap_poisoned_folio(folio, pfn, flags & MF_MUST_KILL);
-	if (!unmap_success)
+	keep_mapped = hugetlb_should_keep_hwpoison_mapped(folio, folio_mapping(folio));
+	if (!keep_mapped)
+		unmap_poisoned_folio(folio, pfn, flags & MF_MUST_KILL);
+
+	unmap_success = !folio_mapped(folio);
+	if (!keep_mapped && !unmap_success)
 		pr_err("%#lx: failed to unmap page (folio mapcount=%d)\n",
 		       pfn, folio_mapcount(folio));
 
@@ -1718,7 +1662,7 @@ static bool hwpoison_user_mappings(struct folio *folio, struct page *p,
 		    !unmap_success;
 	kill_procs(&tokill, forcekill, pfn, flags);
 
-	return unmap_success;
+	return unmap_success || keep_mapped;
 }
 
 static int identify_page_state(unsigned long pfn, struct page *p,
@@ -1742,6 +1686,26 @@ static int identify_page_state(unsigned long pfn, struct page *p,
 			if ((page_flags & ps->mask) == ps->res)
 				break;
 	return page_action(ps, p, pfn);
+}
+
+/*
+ * When 'release' is 'false', it means that if thp split has failed,
+ * there is still more to do, hence the page refcount we took earlier
+ * is still needed.
+ */
+static int try_to_split_thp_page(struct page *page, unsigned int new_order,
+		bool release)
+{
+	int ret;
+
+	lock_page(page);
+	ret = split_huge_page_to_order(page, new_order);
+	unlock_page(page);
+
+	if (ret && release)
+		put_page(page);
+
+	return ret;
 }
 
 static void unmap_and_kill(struct list_head *to_kill, unsigned long pfn,
@@ -2085,6 +2049,30 @@ out_unlock:
 }
 
 /*
+ * We currently drop the poisoned folio without trying to dissolve it,
+ * to avoid a possible race condition: Dissolving currently requires all
+ * pages to return to the buddy allocator but the allocation doesn't test
+ * the poisoned flag anymore, so an allocation may provide a poisoned page,
+ * and crash the system.
+ * Poisoned mapped folios still have an extra reference taken by
+ * try_memory_failure_hugetlb() so such a folio is not going to be freed
+ * and is basically lost until next reboot.
+ */
+void filemap_offline_hwpoison_folio(struct address_space *mapping,
+				    struct folio *folio)
+{
+	WARN_ON_ONCE(!mapping);
+
+	if (!folio_test_hwpoison(folio))
+		return;
+
+	/* Pending MFR currently only exist for hugetlb. */
+	if (hugetlb_should_keep_hwpoison_mapped(folio, mapping))
+		pr_info("%#lx: Dropping poisoned page of size: 0x%lx\n",
+			folio_pfn(folio), folio_size(folio));
+}
+
+/*
  * Taking refcount of hugetlb pages needs extra care about race conditions
  * with basic operations like hugepage allocation/free/demotion.
  * So some of prechecks for hwpoison (pinning, and testing/setting
@@ -2101,9 +2089,10 @@ static int try_memory_failure_hugetlb(unsigned long pfn, int flags)
 {
 	int res, rv;
 	struct page *p = pfn_to_page(pfn);
-	struct folio *folio;
+	struct folio *folio = page_folio(p);
 	unsigned long page_flags;
 	bool migratable_cleared = false;
+	struct address_space *mapping = folio_mapping(folio);
 
 retry:
 	res = get_huge_page_for_hwpoison(pfn, flags, &migratable_cleared);
@@ -2123,15 +2112,17 @@ retry:
 			rv = kill_accessing_process(current, pfn, flags);
 		if (res == MF_HUGETLB_PAGE_PRE_POISONED)
 			action_result(pfn, MF_MSG_ALREADY_POISONED, MF_FAILED);
-		else
+		else {
+			if (hugetlb_should_keep_hwpoison_mapped(folio, mapping))
+				return action_result(pfn, MF_MSG_UNMAP_FAILED, MF_DELAYED);
 			action_result(pfn, MF_MSG_HUGE, MF_FAILED);
+		}
 		return rv;
 	default:
 		WARN_ON((res != MF_HUGETLB_FREED) && (res != MF_HUGETLB_IN_USED));
 		break;
 	}
 
-	folio = page_folio(p);
 	folio_lock(folio);
 
 	if (hwpoison_filter(p)) {
@@ -2284,7 +2275,7 @@ static void add_to_kill_pgoff(struct task_struct *tsk,
 	}
 
 	/* Check for pgoff not backed by struct page */
-	tk->addr = vma_filebacked_address(vma, pgoff, 1);
+	tk->addr = vma_address(vma, pgoff, 1);
 	tk->size_shift = PAGE_SHIFT;
 
 	if (tk->addr == -EFAULT)
@@ -2314,7 +2305,7 @@ static void collect_procs_pfn(struct pfn_address_space *pfn_space,
 		t = task_early_kill(tsk, true);
 		if (!t)
 			continue;
-		mapping_rmap_tree_foreach(vma, mapping, 0, ULONG_MAX) {
+		vma_interval_tree_foreach(vma, &mapping->i_mmap, 0, ULONG_MAX) {
 			pgoff_t pgoff;
 
 			if (vma->vm_mm == t->mm &&
@@ -2477,8 +2468,7 @@ try_again:
 	 * that may make page_ref_freeze()/page_ref_unfreeze() mismatch.
 	 */
 	res = get_hwpoison_page(p, flags);
-	switch (res) {
-	case 0:
+	if (!res) {
 		if (is_free_buddy_page(p)) {
 			if (take_page_off_buddy(p)) {
 				page_ref_inc(p);
@@ -2497,19 +2487,7 @@ try_again:
 			res = action_result(pfn, MF_MSG_KERNEL_HIGH_ORDER, MF_IGNORED);
 		}
 		goto unlock_mutex;
-	case 1:
-		/* Got a refcount on a handlable page. */
-		break;
-	case -ENOTRECOVERABLE:
-		/*
-		 * Stable unhandlable kernel-owned page (PG_reserved,
-		 * slab, page tables, large-kmalloc).
-		 * No recovery possible.
-		 */
-		res = action_result(pfn, MF_MSG_KERNEL, MF_IGNORED);
-		goto unlock_mutex;
-	default:
-		/* Transient lifecycle race with the page allocator. */
+	} else if (res < 0) {
 		res = action_result(pfn, MF_MSG_GET_HWPOISON, MF_IGNORED);
 		goto unlock_mutex;
 	}
@@ -2528,6 +2506,9 @@ try_again:
 	folio_unlock(folio);
 
 	if (folio_test_large(folio)) {
+		const int new_order = min_order_for_split(folio);
+		int err;
+
 		/*
 		 * The flag must be set after the refcount is bumped
 		 * otherwise it may race with THP split.
@@ -2542,25 +2523,24 @@ try_again:
 		 * page is a valid handlable page.
 		 */
 		folio_set_has_hwpoisoned(folio);
-
-		folio_lock(folio);
-		split_huge_page_to_order(p, min_order_for_split(folio));
-		folio = page_folio(p);
-		folio_unlock(folio);
-
+		err = try_to_split_thp_page(p, new_order, /* release= */ false);
 		/*
 		 * If splitting a folio to order-0 fails, kill the process.
 		 * Split the folio regardless to minimize unusable pages.
 		 * Because the memory failure code cannot handle large
 		 * folios, this split is always treated as if it failed.
 		 */
-		if (folio_test_large(folio)) {
+		if (err || new_order) {
+			/* get folio again in case the original one is split */
+			folio = page_folio(p);
 			res = -EHWPOISON;
 			kill_procs_now(p, pfn, flags, folio);
-			folio_put(folio);
+			put_page(p);
 			action_result(pfn, MF_MSG_UNSPLIT_THP, MF_FAILED);
 			goto unlock_mutex;
 		}
+		VM_BUG_ON_PAGE(!page_count(p), p);
+		folio = page_folio(p);
 	}
 
 	/*
@@ -2578,7 +2558,7 @@ try_again:
 	/*
 	 * We're only intended to deal with the non-Compound page here.
 	 * The page cannot become compound pages again as folio has been
-	 * split and extra refcnt is held.
+	 * splited and extra refcnt is held.
 	 */
 	WARN_ON(folio_test_large(folio));
 
@@ -2878,26 +2858,25 @@ static int soft_offline_in_use_page(struct page *page)
 		.reason = MR_MEMORY_FAILURE,
 	};
 
-	folio_lock(folio);
 	if (!huge && folio_test_large(folio)) {
-		/*
-		 * If we cannot split to order-0, do not split the folio at all
-		 * to retain the still accessible large folio.
-		 */
-		if (!min_order_for_split(folio))
-			ret = split_huge_page_to_order(page, 0) ? -EBUSY : 0;
-		else
-			ret = -EBUSY;
-		folio = page_folio(page);
+		const int new_order = min_order_for_split(folio);
 
-		if (ret) {
-			folio_unlock(folio);
-			folio_put(folio);
+		/*
+		 * If new_order (target split order) is not 0, do not split the
+		 * folio at all to retain the still accessible large folio.
+		 * NOTE: if minimizing the number of soft offline pages is
+		 * preferred, split it to non-zero new_order like it is done in
+		 * memory_failure().
+		 */
+		if (new_order || try_to_split_thp_page(page, /* new_order= */ 0,
+						       /* release= */ true)) {
 			pr_info("%#lx: thp split failed\n", pfn);
-			return ret;
+			return -EBUSY;
 		}
+		folio = page_folio(page);
 	}
 
+	folio_lock(folio);
 	if (!huge)
 		folio_wait_writeback(folio);
 	if (PageHWPoison(page)) {

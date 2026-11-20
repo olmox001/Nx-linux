@@ -254,11 +254,10 @@ static int ioam6_do_fill(struct net *net, struct sk_buff *skb)
 }
 
 static int ioam6_do_inline(struct net *net, struct sk_buff *skb,
-			   const struct ioam6_lwt_encap *tuninfo,
+			   struct ioam6_lwt_encap *tuninfo,
 			   struct dst_entry *cache_dst)
 {
 	struct ipv6hdr *oldhdr, *hdr;
-	struct ipv6_opt_hdr *opt_hdr;
 	int hdrlen, err;
 
 	hdrlen = (tuninfo->eh.hdrlen + 1) << 3;
@@ -277,13 +276,12 @@ static int ioam6_do_inline(struct net *net, struct sk_buff *skb,
 
 	hdr = ipv6_hdr(skb);
 	memmove(hdr, oldhdr, sizeof(*oldhdr));
+	tuninfo->eh.nexthdr = hdr->nexthdr;
 
 	skb_set_transport_header(skb, sizeof(*hdr));
 	skb_postpush_rcsum(skb, hdr, sizeof(*hdr) + hdrlen);
 
-	opt_hdr = (struct ipv6_opt_hdr *)skb_transport_header(skb);
-	memcpy(opt_hdr, tuninfo, hdrlen);
-	opt_hdr->nexthdr = hdr->nexthdr;
+	memcpy(skb_transport_header(skb), (u8 *)tuninfo, hdrlen);
 
 	hdr->nexthdr = NEXTHDR_HOP;
 	hdr->payload_len = cpu_to_be16(skb->len - sizeof(*hdr));
@@ -292,7 +290,7 @@ static int ioam6_do_inline(struct net *net, struct sk_buff *skb,
 }
 
 static int ioam6_do_encap(struct net *net, struct sk_buff *skb,
-			  const struct ioam6_lwt_encap *tuninfo,
+			  struct ioam6_lwt_encap *tuninfo,
 			  bool has_tunsrc,
 			  struct in6_addr *tunsrc,
 			  struct in6_addr *tundst,
@@ -300,7 +298,6 @@ static int ioam6_do_encap(struct net *net, struct sk_buff *skb,
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct ipv6hdr *hdr, *inner_hdr;
-	struct ipv6_opt_hdr *opt_hdr;
 	int hdrlen, len, err;
 
 	hdrlen = (tuninfo->eh.hdrlen + 1) << 3;
@@ -317,9 +314,8 @@ static int ioam6_do_encap(struct net *net, struct sk_buff *skb,
 	skb_mac_header_rebuild(skb);
 	skb_set_transport_header(skb, sizeof(*hdr));
 
-	opt_hdr = (struct ipv6_opt_hdr *)skb_transport_header(skb);
-	memcpy(opt_hdr, tuninfo, hdrlen);
-	opt_hdr->nexthdr = NEXTHDR_IPV6;
+	tuninfo->eh.nexthdr = NEXTHDR_IPV6;
+	memcpy(skb_transport_header(skb), (u8 *)tuninfo, hdrlen);
 
 	hdr = ipv6_hdr(skb);
 	memcpy(hdr, inner_hdr, sizeof(*hdr));

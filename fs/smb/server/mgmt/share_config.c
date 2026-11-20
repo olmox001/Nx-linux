@@ -8,9 +8,7 @@
 #include <linux/slab.h>
 #include <linux/rwsem.h>
 #include <linux/parser.h>
-#include <linux/dcache.h>
 #include <linux/namei.h>
-#include <linux/fs_struct.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
 
@@ -49,7 +47,6 @@ static const struct ksmbd_const_name ksmbd_share_flag_names[] = {
 	{KSMBD_SHARE_FLAG_UPDATE, "update"},
 	{KSMBD_SHARE_FLAG_CROSSMNT, "crossmnt"},
 	{KSMBD_SHARE_FLAG_CONTINUOUS_AVAILABILITY, "continuous-availability"},
-	{KSMBD_SHARE_FLAG_ENCRYPT_DATA, "encrypt-data"},
 };
 
 static int proc_show_shares(struct seq_file *m, void *v)
@@ -109,7 +106,6 @@ static void kill_share(struct ksmbd_share_config *share)
 		path_put(&share->vfs_path);
 	kfree(share->name);
 	kfree(share->path);
-	kfree(share->real_path);
 	kfree(share);
 }
 
@@ -182,43 +178,6 @@ static int parse_veto_list(struct ksmbd_share_config *share,
 	}
 
 	return 0;
-}
-
-static int share_config_resolve_path(struct ksmbd_share_config *share)
-{
-	char *buf, *path;
-	int ret;
-
-	ret = kern_path(share->path, 0, &share->vfs_path);
-	if (ret)
-		return ret;
-
-	buf = kmalloc(PATH_MAX, KSMBD_DEFAULT_GFP);
-	if (!buf) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	path = d_path(&share->vfs_path, buf, PATH_MAX);
-	if (IS_ERR(path)) {
-		ret = PTR_ERR(path);
-		goto out_buf;
-	}
-
-	path = kstrdup(path, KSMBD_DEFAULT_GFP);
-	if (!path) {
-		ret = -ENOMEM;
-		goto out_buf;
-	}
-
-	share->real_path = path;
-	share->real_path_sz = strlen(path);
-out_buf:
-	kfree(buf);
-out:
-	if (ret)
-		path_put(&share->vfs_path);
-	return ret;
 }
 
 static struct ksmbd_share_config *share_config_request(struct ksmbd_work *work,
@@ -310,13 +269,12 @@ static struct ksmbd_share_config *share_config_request(struct ksmbd_work *work,
 				goto out;
 			}
 
-			scoped_with_init_fs()
-				ret = share_config_resolve_path(share);
+			ret = kern_path(share->path, 0, &share->vfs_path);
 			ksmbd_revert_fsids(work);
 			if (ret) {
 				ksmbd_debug(SMB, "failed to access '%s'\n",
 					    share->path);
-				/* No path reference is retained on failure. */
+				/* Avoid put_path() */
 				kfree(share->path);
 				share->path = NULL;
 			}

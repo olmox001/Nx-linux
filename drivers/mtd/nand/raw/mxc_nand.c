@@ -1694,7 +1694,8 @@ static int mxcnd_probe(struct platform_device *pdev)
 	int err = 0;
 
 	/* Allocate memory for MTD device structure and private data */
-	host = devm_kzalloc_obj(&pdev->dev, struct mxc_nand_host);
+	host = devm_kzalloc(&pdev->dev, sizeof(struct mxc_nand_host),
+			GFP_KERNEL);
 	if (!host)
 		return -ENOMEM;
 

@@ -235,13 +235,6 @@ static int meson_spicc_dma_map(struct meson_spicc_device *spicc,
 {
 	struct device *dev = spicc->host->dev.parent;
 
-	/*
-	 * Mark the DMA addresses as invalid so that meson_spicc_dma_unmap()
-	 * will not try to unmap a buffer which was not (successfully) mapped.
-	 */
-	t->tx_dma = DMA_MAPPING_ERROR;
-	t->rx_dma = DMA_MAPPING_ERROR;
-
 	if (!(t->tx_buf && t->rx_buf))
 		return -EINVAL;
 
@@ -264,9 +257,9 @@ static void meson_spicc_dma_unmap(struct meson_spicc_device *spicc,
 {
 	struct device *dev = spicc->host->dev.parent;
 
-	if (!dma_mapping_error(dev, t->tx_dma))
+	if (t->tx_dma)
 		dma_unmap_single(dev, t->tx_dma, t->len, DMA_TO_DEVICE);
-	if (!dma_mapping_error(dev, t->rx_dma))
+	if (t->rx_dma)
 		dma_unmap_single(dev, t->rx_dma, t->len, DMA_FROM_DEVICE);
 }
 
@@ -848,7 +841,7 @@ static int meson_spicc_pow2_clk_init(struct meson_spicc_device *spicc)
 
 	/* algorithm for pow2 div: rate = freq / 4 / (2 ^ N) */
 
-	pow2_fixed_div = devm_kzalloc_obj(dev, *pow2_fixed_div);
+	pow2_fixed_div = devm_kzalloc(dev, sizeof(*pow2_fixed_div), GFP_KERNEL);
 	if (!pow2_fixed_div)
 		return -ENOMEM;
 
@@ -914,7 +907,7 @@ static int meson_spicc_enh_clk_init(struct meson_spicc_device *spicc)
 
 	/* algorithm for enh div: rate = freq / 2 / (N + 1) */
 
-	enh_fixed_div = devm_kzalloc_obj(dev, *enh_fixed_div);
+	enh_fixed_div = devm_kzalloc(dev, sizeof(*enh_fixed_div), GFP_KERNEL);
 	if (!enh_fixed_div)
 		return -ENOMEM;
 
@@ -938,7 +931,7 @@ static int meson_spicc_enh_clk_init(struct meson_spicc_device *spicc)
 	if (WARN_ON(IS_ERR(clk)))
 		return PTR_ERR(clk);
 
-	enh_div = devm_kzalloc_obj(dev, *enh_div);
+	enh_div = devm_kzalloc(dev, sizeof(*enh_div), GFP_KERNEL);
 	if (!enh_div)
 		return -ENOMEM;
 
@@ -958,7 +951,7 @@ static int meson_spicc_enh_clk_init(struct meson_spicc_device *spicc)
 	if (WARN_ON(IS_ERR(clk)))
 		return PTR_ERR(clk);
 
-	mux = devm_kzalloc_obj(dev, *mux);
+	mux = devm_kzalloc(dev, sizeof(*mux), GFP_KERNEL);
 	if (!mux)
 		return -ENOMEM;
 

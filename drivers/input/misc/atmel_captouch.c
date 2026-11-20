@@ -177,7 +177,7 @@ static int atmel_captouch_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	capdev = devm_kzalloc_obj(dev, *capdev);
+	capdev = devm_kzalloc(dev, sizeof(*capdev), GFP_KERNEL);
 	if (!capdev)
 		return -ENOMEM;
 

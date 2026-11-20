@@ -284,7 +284,7 @@ static int chv3_i2s_probe(struct platform_device *pdev)
 	int res;
 	int irq;
 
-	i2s = devm_kzalloc_obj(&pdev->dev, *i2s);
+	i2s = devm_kzalloc(&pdev->dev, sizeof(*i2s), GFP_KERNEL);
 	if (!i2s)
 		return -ENOMEM;
 

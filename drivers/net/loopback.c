@@ -70,7 +70,6 @@ EXPORT_SYMBOL(blackhole_netdev);
 static netdev_tx_t loopback_xmit(struct sk_buff *skb,
 				 struct net_device *dev)
 {
-	enum skb_drop_reason reason;
 	int len;
 
 	skb_tx_timestamp(skb);
@@ -85,12 +84,7 @@ static netdev_tx_t loopback_xmit(struct sk_buff *skb,
 	 */
 	skb_dst_force(skb);
 
-	reason = eth_type_trans_careful(skb, dev);
-	if (unlikely(reason)) {
-		dev_core_stats_tx_dropped_inc(dev);
-		kfree_skb_reason(skb, reason);
-		return NETDEV_TX_OK;
-	}
+	skb->protocol = eth_type_trans(skb, dev);
 
 	len = skb->len;
 	if (likely(__netif_rx(skb) == NET_RX_SUCCESS))
@@ -295,4 +289,4 @@ static int __init blackhole_netdev_init(void)
 	return 0;
 }
 
-subsys_initcall_sync(blackhole_netdev_init);
+device_initcall(blackhole_netdev_init);

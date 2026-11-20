@@ -103,7 +103,8 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 	hcd->rsrc_start = res->start;
 	hcd->rsrc_len = resource_size(res);
 
-	priv = devm_kzalloc_obj(&pdev->dev, struct ehci_sh_priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(struct ehci_sh_priv),
+			    GFP_KERNEL);
 	if (!priv) {
 		ret = -ENOMEM;
 		goto fail_request_resource;

@@ -28,8 +28,8 @@
 
 #include "amdgpu.h"
 #include <drm/amdgpu_drm.h>
-#include <drm/clients/drm_fbdev_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_vblank.h>
 #include "amdgpu_uvd.h"
 #include "amdgpu_vce.h"
@@ -47,8 +47,6 @@
 #include "amdgpu_reset.h"
 #include "amd_pcie.h"
 #include "amdgpu_userq.h"
-#include "amdgpu_video_codecs.h"
-#include "amdgpu_ras_mgr.h"
 
 void amdgpu_unregister_gpu_instance(struct amdgpu_device *adev)
 {
@@ -286,10 +284,6 @@ static int amdgpu_firmware_info(struct drm_amdgpu_info_firmware *fw_info,
 		fw_info->ver = adev->pm.fw_version;
 		fw_info->feature = 0;
 		break;
-	case AMDGPU_INFO_FW_MP5:
-		fw_info->ver = adev->pm.mp5_fw_version;
-		fw_info->feature = 0;
-		break;
 	case AMDGPU_INFO_FW_TA:
 		switch (query_fw->index) {
 		case TA_FW_TYPE_PSP_XGMI:
@@ -354,8 +348,8 @@ static int amdgpu_firmware_info(struct drm_amdgpu_info_firmware *fw_info,
 		fw_info->feature = adev->psp.toc.feature_version;
 		break;
 	case AMDGPU_INFO_FW_CAP:
-		fw_info->ver = adev->psp.cap.fw_version;
-		fw_info->feature = adev->psp.cap.feature_version;
+		fw_info->ver = adev->psp.cap_fw_version;
+		fw_info->feature = adev->psp.cap_feature_version;
 		break;
 	case AMDGPU_INFO_FW_MES_KIQ:
 		fw_info->ver = adev->mes.kiq_version & AMDGPU_MES_VERSION_MASK;
@@ -780,16 +774,9 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 
 		return copy_to_user(out, &count, min(size, 4u)) ? -EFAULT : 0;
 	}
-	case AMDGPU_INFO_TIMESTAMP: {
-		PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND(dev->dev, pm);
-
-		ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
-		if (ret)
-			return ret;
-
+	case AMDGPU_INFO_TIMESTAMP:
 		ui64 = amdgpu_gfx_get_gpu_clock_counter(adev);
 		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
-	}
 	case AMDGPU_INFO_FW_VERSION: {
 		struct drm_amdgpu_info_firmware fw_info;
 
@@ -913,13 +900,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		if (info->read_mmr_reg.count > 128)
 			return -EINVAL;
 
-		PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND(dev->dev, pm);
-
-		ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
-		if (ret)
-			return ret;
-
-		regs = kmalloc_objs(*regs, info->read_mmr_reg.count);
+		regs = kmalloc_array(info->read_mmr_reg.count, sizeof(*regs),
+				     GFP_KERNEL);
 		if (!regs)
 			return -ENOMEM;
 
@@ -951,13 +933,6 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		struct drm_amdgpu_info_device *dev_info;
 		uint64_t vm_size;
 		uint32_t pcie_gen_mask, pcie_width_mask;
-
-		/* The clock limits are only available while the SMU is up. */
-		PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND(dev->dev, pm);
-
-		ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
-		if (ret)
-			return ret;
 
 		dev_info = kzalloc_obj(*dev_info);
 		if (!dev_info)
@@ -1186,12 +1161,6 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		}
 	}
 	case AMDGPU_INFO_SENSOR: {
-		PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND(dev->dev, pm);
-
-		ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
-		if (ret)
-			return ret;
-
 		if (!adev->pm.dpm_enabled)
 			return -ENOENT;
 
@@ -1321,11 +1290,7 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 
 		if (!ras)
 			return -EINVAL;
-
-		if (amdgpu_uniras_enabled(adev))
-			ras_mask = amdgpu_uniras_get_ras_caps(adev);
-		else
-			ras_mask = (uint64_t)adev->ras_enabled << 32 | ras->features;
+		ras_mask = (uint64_t)adev->ras_enabled << 32 | ras->features;
 
 		return copy_to_user(out, &ras_mask,
 				min_t(u64, size, sizeof(ras_mask))) ?
@@ -1411,11 +1376,11 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 
 		memset(&gpuvm_fault, 0, sizeof(gpuvm_fault));
 
-		amdgpu_pasid_lock(&flags);
+		xa_lock_irqsave(&adev->vm_manager.pasids, flags);
 		gpuvm_fault.addr = vm->fault_info.addr;
 		gpuvm_fault.status = vm->fault_info.status;
 		gpuvm_fault.vmhub = vm->fault_info.vmhub;
-		amdgpu_pasid_unlock(flags);
+		xa_unlock_irqrestore(&adev->vm_manager.pasids, flags);
 
 		return copy_to_user(out, &gpuvm_fault,
 				    min((size_t)size, sizeof(gpuvm_fault))) ? -EFAULT : 0;
@@ -1460,33 +1425,6 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 }
 
 /**
- * amdgpu_proc_options_ioctl - set per-fd user options
- *
- * @dev: drm dev pointer
- * @data: pointer to struct drm_amdgpu_proc_options
- * @filp: drm file
- *
- * Sets options stored on the per-file amdgpu_fpriv. Currently the only
- * supported option is %AMDGPU_PROC_OPTIONS_OP_KFD_SIGBUS_DELAY which
- * controls how KFD delivers SIGBUS for poison/RAS events to the calling
- * process (immediate, suppressed, or delayed by N milliseconds).
- */
-int amdgpu_proc_options_ioctl(struct drm_device *dev, void *data,
-			      struct drm_file *filp)
-{
-	struct drm_amdgpu_proc_options *args = data;
-
-	switch (args->op) {
-	case AMDGPU_PROC_OPTIONS_OP_KFD_SIGBUS_DELAY:
-		return amdgpu_amdkfd_set_sigbus_delay(current,
-						      args->kfd_sigbus_delay.value);
-	default:
-		DRM_DEBUG_KMS("Invalid user option op %u\n", args->op);
-		return -EINVAL;
-	}
-}
-
-/**
  * amdgpu_driver_open_kms - drm callback for open
  *
  * @dev: drm dev pointer
@@ -1500,7 +1438,7 @@ int amdgpu_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	struct amdgpu_fpriv *fpriv;
 	struct drm_exec exec;
-	int r, pasid = 0;
+	int r, pasid;
 
 	/* Ensure IB tests are run on ring */
 	flush_delayed_work(&adev->delayed_init_work);
@@ -1517,10 +1455,16 @@ int amdgpu_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
 	if (r < 0)
 		goto pm_put;
 
-	fpriv = kzalloc_obj(*fpriv);
+	fpriv = kzalloc(sizeof(*fpriv), GFP_KERNEL);
 	if (unlikely(!fpriv)) {
 		r = -ENOMEM;
 		goto out_suspend;
+	}
+
+	pasid = amdgpu_pasid_alloc(16);
+	if (pasid < 0) {
+		dev_warn(adev->dev, "No more PASIDs available!");
+		pasid = 0;
 	}
 
 	r = amdgpu_xcp_open_device(adev, fpriv, file_priv);
@@ -1529,16 +1473,9 @@ int amdgpu_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
 
 	amdgpu_debugfs_vm_init(file_priv);
 
-	r = amdgpu_vm_init(adev, &fpriv->vm, fpriv->xcp_id);
+	r = amdgpu_vm_init(adev, &fpriv->vm, fpriv->xcp_id, pasid);
 	if (r)
 		goto error_pasid;
-
-	pasid = amdgpu_pasid_alloc(16, fpriv);
-	if (pasid < 0) {
-		dev_warn(adev->dev, "No more PASIDs available!");
-		pasid = 0;
-	}
-	fpriv->vm.pasid = pasid;
 
 	drm_exec_init(&exec, DRM_EXEC_IGNORE_DUPLICATES, 0);
 	drm_exec_until_all_locked(&exec) {
@@ -1568,7 +1505,8 @@ int amdgpu_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
 	if (r)
 		goto error_vm;
 
-	xa_init_flags(&fpriv->bo_list_handles, XA_FLAGS_ALLOC1);
+	mutex_init(&fpriv->bo_list_lock);
+	idr_init_base(&fpriv->bo_list_handles, 1);
 
 	r = amdgpu_userq_mgr_init(&fpriv->userq_mgr, file_priv, adev);
 	if (r)
@@ -1583,14 +1521,12 @@ int amdgpu_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
 	goto out_suspend;
 
 error_vm:
-	if (pasid) {
-		amdgpu_pasid_free(pasid);
-		pasid = 0;
-	}
-
 	amdgpu_vm_fini(adev, &fpriv->vm);
 
 error_pasid:
+	if (pasid)
+		amdgpu_pasid_free(pasid);
+
 	kfree(fpriv);
 
 out_suspend:
@@ -1615,8 +1551,8 @@ void amdgpu_driver_postclose_kms(struct drm_device *dev,
 	struct amdgpu_fpriv *fpriv = file_priv->driver_priv;
 	struct amdgpu_bo_list *list;
 	struct amdgpu_bo *pd;
-	unsigned long handle;
 	u32 pasid;
+	int handle;
 
 	if (!fpriv)
 		return;
@@ -1646,16 +1582,17 @@ void amdgpu_driver_postclose_kms(struct drm_device *dev,
 	}
 
 	amdgpu_ctx_mgr_fini(&fpriv->ctx_mgr);
+	amdgpu_vm_fini(adev, &fpriv->vm);
 
 	if (pasid)
 		amdgpu_pasid_free_delayed(pd->tbo.base.resv, pasid);
-
-	amdgpu_vm_fini(adev, &fpriv->vm);
 	amdgpu_bo_unref(&pd);
 
-	xa_for_each(&fpriv->bo_list_handles, handle, list)
+	idr_for_each_entry(&fpriv->bo_list_handles, list, handle)
 		amdgpu_bo_list_put(list);
-	xa_destroy(&fpriv->bo_list_handles);
+
+	idr_destroy(&fpriv->bo_list_handles);
+	mutex_destroy(&fpriv->bo_list_lock);
 
 	kfree(fpriv);
 	file_priv->driver_priv = NULL;
@@ -1970,14 +1907,6 @@ static int amdgpu_debugfs_firmware_info_show(struct seq_file *m, void *unused)
 	smu_debug = (fw_info.ver >> 0) & 0xff;
 	seq_printf(m, "SMC feature version: %u, program: %d, firmware version: 0x%08x (%d.%d.%d)\n",
 		   fw_info.feature, smu_program, fw_info.ver, smu_major, smu_minor, smu_debug);
-
-	/* MP5 */
-	query_fw.fw_type = AMDGPU_INFO_FW_MP5;
-	ret = amdgpu_firmware_info(&fw_info, &query_fw, adev);
-	if (ret)
-		return ret;
-	seq_printf(m, "MP5 feature version: %u, firmware version: 0x%08x\n",
-		   fw_info.feature, fw_info.ver);
 
 	/* SDMA */
 	query_fw.fw_type = AMDGPU_INFO_FW_SDMA;

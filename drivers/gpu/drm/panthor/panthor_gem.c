@@ -744,9 +744,6 @@ static int panthor_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *v
 	struct panthor_gem_object *bo = to_panthor_bo(obj);
 	int ret;
 
-	if (bo->flags & DRM_PANTHOR_BO_NO_MMAP)
-		return -EINVAL;
-
 	if (drm_gem_is_imported(obj)) {
 		/* Reset both vm_ops and vm_private_data, so we don't end up with
 		 * vm_ops pointing to our implementation if the dma-buf backend
@@ -764,7 +761,7 @@ static int panthor_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *v
 		return ret;
 	}
 
-	if (vma_is_cow_mapping(vma))
+	if (is_cow_mapping(vma->vm_flags))
 		return -EINVAL;
 
 	if (!refcount_inc_not_zero(&bo->cmap.mmap_count)) {
@@ -779,7 +776,7 @@ static int panthor_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *v
 	}
 
 	vm_flags_set(vma, VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
-	vma->vm_page_prot = vma_get_page_prot(vma);
+	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 	if (should_map_wc(bo))
 		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 
@@ -1413,7 +1410,8 @@ panthor_gem_shrinker_count(struct shrinker *shrinker, struct shrink_control *sc)
 	return count ? count : SHRINK_EMPTY;
 }
 
-static bool panthor_gem_try_evict_no_resv_wait(struct drm_gem_object *obj)
+static bool panthor_gem_try_evict_no_resv_wait(struct drm_gem_object *obj,
+					       struct ww_acquire_ctx *ticket)
 {
 	/*
 	 * Track last locked entry for unwinding locks in error and
@@ -1499,7 +1497,8 @@ out_unlock:
 	return ret == 0;
 }
 
-static bool panthor_gem_try_evict(struct drm_gem_object *obj)
+static bool panthor_gem_try_evict(struct drm_gem_object *obj,
+				  struct ww_acquire_ctx *ticket)
 {
 	struct panthor_gem_object *bo = to_panthor_bo(obj);
 
@@ -1507,7 +1506,7 @@ static bool panthor_gem_try_evict(struct drm_gem_object *obj)
 	if (dma_resv_wait_timeout(obj->resv, DMA_RESV_USAGE_BOOKKEEP, false, 10) <= 0)
 		return false;
 
-	return panthor_gem_try_evict_no_resv_wait(&bo->base);
+	return panthor_gem_try_evict_no_resv_wait(&bo->base, ticket);
 }
 
 static unsigned long
@@ -1522,13 +1521,13 @@ panthor_gem_shrinker_scan(struct shrinker *shrinker, struct shrink_control *sc)
 
 	freed += drm_gem_lru_scan(&ptdev->base, &ptdev->reclaim.unused,
 				  sc->nr_to_scan - freed, &remaining,
-				  panthor_gem_try_evict_no_resv_wait);
+				  panthor_gem_try_evict_no_resv_wait, NULL);
 	if (freed >= sc->nr_to_scan)
 		goto out;
 
 	freed += drm_gem_lru_scan(&ptdev->base, &ptdev->reclaim.mmapped,
 				  sc->nr_to_scan - freed, &remaining,
-				  panthor_gem_try_evict_no_resv_wait);
+				  panthor_gem_try_evict_no_resv_wait, NULL);
 	if (freed >= sc->nr_to_scan)
 		goto out;
 
@@ -1542,7 +1541,7 @@ panthor_gem_shrinker_scan(struct shrinker *shrinker, struct shrink_control *sc)
 
 	freed += drm_gem_lru_scan(&ptdev->base, &ptdev->reclaim.gpu_mapped_shared,
 				  sc->nr_to_scan - freed, &remaining,
-				  panthor_gem_try_evict);
+				  panthor_gem_try_evict, NULL);
 
 out:
 #ifdef CONFIG_DEBUG_FS

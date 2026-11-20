@@ -271,20 +271,27 @@
 			ranges;
 			bus-range = <0x5 0xff>;
 
-			dev@0,0 {
+			pci@0,0 {
 				reg = <0x50000 0x0 0x0 0x0 0x0>;
+				#address-cells = <3>;
+				#size-cells = <2>;
+				device_type = "pci";
+				ranges;
 			};
 
-			dev@0,1 {
+			pci@0,1 {
 				reg = <0x50100 0x0 0x0 0x0 0x0>;
+				#address-cells = <3>;
+				#size-cells = <2>;
+				device_type = "pci";
+				ranges;
 			};
 		};
 	};
 };
 
 &serdes1 {
-	vdda-0p9-supply = <&vreg_l4a>;
-	vdda-1p2-supply = <&vreg_l1c>;
+	phy-supply = <&vreg_l5a>;
 
 	status = "okay";
 };

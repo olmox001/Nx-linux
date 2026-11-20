@@ -844,7 +844,7 @@ static int icss_iep_probe(struct platform_device *pdev)
 	struct clk *iep_clk;
 	int ret, irq;
 
-	iep = devm_kzalloc_obj(dev, *iep);
+	iep = devm_kzalloc(dev, sizeof(*iep), GFP_KERNEL);
 	if (!iep)
 		return -ENOMEM;
 

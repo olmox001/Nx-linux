@@ -41,7 +41,8 @@ static int adau7002_component_probe(struct snd_soc_component *component)
 {
 	struct adau7002_priv *adau7002;
 
-	adau7002 = devm_kzalloc_obj(component->dev, *adau7002);
+	adau7002 = devm_kzalloc(component->dev, sizeof(*adau7002),
+				GFP_KERNEL);
 	if (!adau7002)
 		return -ENOMEM;
 

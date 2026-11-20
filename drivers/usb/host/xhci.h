@@ -187,8 +187,6 @@ struct xhci_op_regs {
  * SW does need to pay attention to function wake notifications.
  */
 #define	DEV_NOTE_FWAKE		BIT(1)
-/* Notification Type value carried by a Device Notification Event TRB (6.4.2.7) */
-#define	DEV_NOTE_TYPE_FWAKE	1
 
 /* CRCR - Command Ring Control Register - cmd_ring bitmasks */
 /* bit 0 - Cycle bit indicates the ownership of the command ring */
@@ -291,11 +289,6 @@ struct xhci_run_regs {
 	__le32			rsvd[7];
 	struct xhci_intr_reg	ir_set[1024];
 };
-
-/* Bits [13:3] of the microframe index equals the 1ms frame index */
-#define MFINDEX_TO_FRAME(p)	(((p) >> 3) & 0x7ff)
-#define MAX_FRAMES		2048
-#define MAX_UFRAMES		(MAX_FRAMES * 8)
 
 /**
  * struct doorbell_array
@@ -684,9 +677,9 @@ struct xhci_virt_ep {
 #define EP_SOFT_CLEAR_TOGGLE	BIT(7)
 /* usb_hub_clear_tt_buffer is in progress */
 #define EP_CLEARING_TT		BIT(8)
-#define EP_DROP_PENDING		BIT(9) /* port disconnect or link error, don't restart */
 	/* ----  Related to URB cancellation ---- */
 	struct list_head	cancelled_td_list;
+	struct xhci_hcd		*xhci;
 	/* Dequeue pointer and dequeue segment for a submitted Set TR Dequeue
 	 * command.  We'll need to update the ring's dequeue segment and dequeue
 	 * pointer after the command completes.
@@ -706,7 +699,7 @@ struct xhci_virt_ep {
 	struct list_head	bw_endpoint_list;
 	unsigned long		stop_time;
 	/* Isoch Frame ID checking storage */
-	int			next_uframe;
+	int			next_frame_id;
 	/* Use new Isoch TRB layout needed for extended TBC support */
 	bool			use_extended_tbc;
 	/* set if this endpoint is controlled via sideband access*/
@@ -760,6 +753,14 @@ struct xhci_virt_device {
 	struct xhci_port		*rhub_port;
 	struct xhci_interval_bw_table	*bw_table;
 	struct xhci_tt_bw_info		*tt_info;
+	/*
+	 * flags for state tracking based on events and issued commands.
+	 * Software can not rely on states from output contexts because of
+	 * latency between events and xHC updating output context values.
+	 * See xhci 1.1 section 4.8.3 for more details
+	 */
+	unsigned long			flags;
+#define VDEV_PORT_ERROR			BIT(0) /* Port error, link inactive */
 
 	/* The current max exit latency for the enabled USB3 link states. */
 	u16				current_mel;
@@ -997,9 +998,6 @@ enum xhci_ep_reset_type {
 /* Force Header */
 #define TRB_TO_PACKET_TYPE(p)		((p) & 0x1f)
 #define TRB_TO_ROOTHUB_PORT(p)		(((p) & (0xff << 24)) >> 24)
-
-/* Device Notification Event TRB fields, 6.4.2.7 */
-#define TRB_TO_DEV_NOTE_TYPE(p)		(((p) & (0xf << 4)) >> 4)
 
 enum xhci_setup_dev {
 	SETUP_CONTEXT_ONLY,
@@ -1482,8 +1480,6 @@ struct xhci_port {
 	int			hcd_portnum;
 	struct xhci_hub		*rhub;
 	struct xhci_port_cap	*port_cap;
-	unsigned int		link_inactive:1;
-	unsigned int		connected:1;
 	unsigned int		lpm_incapable:1;
 	unsigned long		resume_timestamp;
 	bool			rexit_active;
@@ -1965,7 +1961,7 @@ unsigned int count_trbs(u64 addr, u64 len);
 unsigned int xhci_num_trbs_free(struct xhci_ring *ring);
 int xhci_stop_endpoint_sync(struct xhci_hcd *xhci, struct xhci_virt_ep *ep,
 			    int suspend, gfp_t gfp_flags);
-void xhci_process_cancelled_tds(struct xhci_hcd *xhci, struct xhci_virt_ep *ep);
+void xhci_process_cancelled_tds(struct xhci_virt_ep *ep);
 void xhci_update_erst_dequeue(struct xhci_hcd *xhci,
 			      struct xhci_interrupter *ir,
 			      bool clear_ehb);

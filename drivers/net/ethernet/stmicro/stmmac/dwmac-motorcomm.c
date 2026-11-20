@@ -214,11 +214,12 @@ motorcomm_default_plat_data(struct pci_dev *pdev)
 	if (!plat)
 		return NULL;
 
-	plat->mdio_bus_data = devm_kzalloc_obj(dev, *plat->mdio_bus_data);
+	plat->mdio_bus_data = devm_kzalloc(dev, sizeof(*plat->mdio_bus_data),
+					   GFP_KERNEL);
 	if (!plat->mdio_bus_data)
 		return NULL;
 
-	plat->axi = devm_kzalloc_obj(dev, *plat->axi);
+	plat->axi = devm_kzalloc(dev, sizeof(*plat->axi), GFP_KERNEL);
 	if (!plat->axi)
 		return NULL;
 
@@ -296,7 +297,7 @@ static int motorcomm_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct stmmac_resources res = {};
 	int ret;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

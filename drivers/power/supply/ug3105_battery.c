@@ -134,7 +134,7 @@ static int ug3105_probe(struct i2c_client *client)
 	struct ug3105_chip *chip;
 	int ret;
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

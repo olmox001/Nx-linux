@@ -339,15 +339,14 @@ static struct btrfs_backref_node *walk_down_backref(
 
 static bool reloc_root_is_dead(const struct btrfs_root *root)
 {
-	if (test_bit(BTRFS_ROOT_DEAD_RELOC_TREE, &root->state))
-		return true;
 	/*
-	 * Pairs with set_bit/clear_bit in clear_reloc_root() and
-	 * btrfs_update_reloc_root(). We need to see the updated bit before
-	 * trying to access root->reloc_root in our callers.
+	 * Pair with set_bit/clear_bit in clean_dirty_subvols and
+	 * btrfs_update_reloc_root. We need to see the updated bit before
+	 * trying to access reloc_root
 	 */
 	smp_rmb();
-
+	if (test_bit(BTRFS_ROOT_DEAD_RELOC_TREE, &root->state))
+		return true;
 	return false;
 }
 
@@ -1675,7 +1674,8 @@ static noinline_for_stack int merge_reloc_root(struct reloc_control *rc,
 	memset(&next_key, 0, sizeof(next_key));
 
 	while (1) {
-		ret = btrfs_block_rsv_refill(rc->block_rsv, min_reserved,
+		ret = btrfs_block_rsv_refill(fs_info, rc->block_rsv,
+					     min_reserved,
 					     BTRFS_RESERVE_FLUSH_LIMIT);
 		if (ret)
 			goto out;
@@ -1794,7 +1794,7 @@ int prepare_to_merge(struct reloc_control *rc, int err)
 again:
 	if (!err) {
 		num_bytes = rc->merging_rsv_size;
-		ret = btrfs_block_rsv_add(rc->block_rsv, num_bytes,
+		ret = btrfs_block_rsv_add(fs_info, rc->block_rsv, num_bytes,
 					  BTRFS_RESERVE_FLUSH_ALL);
 		if (ret)
 			err = ret;
@@ -2273,7 +2273,7 @@ static int refill_metadata_space(struct btrfs_trans_handle *trans,
 	 * If we get an enospc just kick back -EAGAIN so we know to drop the
 	 * transaction and try to refill when we can flush all the things.
 	 */
-	ret = btrfs_block_rsv_refill(rc->block_rsv, num_bytes,
+	ret = btrfs_block_rsv_refill(fs_info, rc->block_rsv, num_bytes,
 				     BTRFS_RESERVE_FLUSH_LIMIT);
 	if (ret) {
 		u64 tmp = fs_info->nodesize * RELOCATION_RESERVED_NODES;
@@ -3356,7 +3356,7 @@ truncate:
 		goto out;
 	}
 
-	ret = btrfs_truncate_free_space_cache(trans, inode);
+	ret = btrfs_truncate_free_space_cache(trans, block_group, inode);
 
 	btrfs_end_transaction(trans);
 	btrfs_btree_balance_dirty(fs_info);
@@ -3583,7 +3583,8 @@ int prepare_to_relocate(struct reloc_control *rc)
 	rc->reserved_bytes = 0;
 	rc->block_rsv->size = rc->extent_root->fs_info->nodesize *
 			      RELOCATION_RESERVED_NODES;
-	ret = btrfs_block_rsv_refill(rc->block_rsv, rc->block_rsv->size,
+	ret = btrfs_block_rsv_refill(rc->extent_root->fs_info,
+				     rc->block_rsv, rc->block_rsv->size,
 				     BTRFS_RESERVE_FLUSH_ALL);
 	if (ret)
 		return ret;
@@ -3635,7 +3636,8 @@ static noinline_for_stack int relocate_block_group(struct reloc_control *rc)
 
 	while (1) {
 		rc->reserved_bytes = 0;
-		ret = btrfs_block_rsv_refill(rc->block_rsv, rc->block_rsv->size,
+		ret = btrfs_block_rsv_refill(fs_info, rc->block_rsv,
+					     rc->block_rsv->size,
 					     BTRFS_RESERVE_FLUSH_ALL);
 		if (ret) {
 			err = ret;
@@ -4149,10 +4151,10 @@ static int copy_remapped_data(struct btrfs_fs_info *fs_info, u64 old_addr,
 			      u64 new_addr, u64 length)
 {
 	int ret;
-	const u64 copy_len = min_t(u64, length, SZ_1M);
+	u64 copy_len = min_t(u64, length, SZ_1M);
 	struct page **pages;
 	struct reloc_io_private priv;
-	const unsigned int nr_pages = DIV_ROUND_UP(copy_len, PAGE_SIZE);
+	unsigned int nr_pages = DIV_ROUND_UP(length, PAGE_SIZE);
 
 	pages = kzalloc_objs(struct page *, nr_pages, GFP_NOFS);
 	if (!pages)

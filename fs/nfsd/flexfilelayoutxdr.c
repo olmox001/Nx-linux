@@ -6,7 +6,6 @@
 #include <linux/nfs4.h>
 
 #include "nfsd.h"
-#include "nfserr.h"
 #include "flexfilelayoutxdr.h"
 
 #define NFSDDBG_FACILITY	NFSDDBG_PNFS
@@ -31,10 +30,10 @@ nfsd4_ff_encode_layoutget(struct xdr_stream *xdr,
 	struct ff_idmap uid;
 	struct ff_idmap gid;
 
-	fh_len = 4 + xdr_align_size(fl->fh.fh_size);
+	fh_len = 4 + xdr_align_size(fl->fh.size);
 
-	uid.len = sprintf(uid.buf, "%u", fl->uid);
-	gid.len = sprintf(gid.buf, "%u", fl->gid);
+	uid.len = sprintf(uid.buf, "%u", from_kuid(&init_user_ns, fl->uid));
+	gid.len = sprintf(gid.buf, "%u", from_kgid(&init_user_ns, fl->gid));
 
 	/* data server entry: deviceid + efficiency + stateid + fh list +
 	 * user + group + flags + stats_collect_hint
@@ -69,7 +68,7 @@ nfsd4_ff_encode_layoutget(struct xdr_stream *xdr,
 				    sizeof(stateid_opaque_t));
 
 	*p++ = cpu_to_be32(1);			/* single file handle */
-	p = xdr_encode_opaque(p, fl->fh.fh_raw, fl->fh.fh_size);
+	p = xdr_encode_opaque(p, fl->fh.data, fl->fh.size);
 
 	p = xdr_encode_opaque(p, uid.buf, uid.len);
 	p = xdr_encode_opaque(p, gid.buf, gid.len);

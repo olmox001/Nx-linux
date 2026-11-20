@@ -161,7 +161,7 @@ static int ncp5623_probe(struct i2c_client *client)
 	u32 reg;
 	int ret;
 
-	ncp = devm_kzalloc_obj(dev, *ncp);
+	ncp = devm_kzalloc(dev, sizeof(*ncp), GFP_KERNEL);
 	if (!ncp)
 		return -ENOMEM;
 
@@ -173,7 +173,7 @@ static int ncp5623_probe(struct i2c_client *client)
 
 	num_subleds = fwnode_get_child_node_count(mc_node);
 
-	subled_info = devm_kzalloc_objs(dev, *subled_info, num_subleds);
+	subled_info = devm_kcalloc(dev, num_subleds, sizeof(*subled_info), GFP_KERNEL);
 	if (!subled_info) {
 		ret = -ENOMEM;
 		goto release_mc_node;

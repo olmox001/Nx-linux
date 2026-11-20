@@ -7,7 +7,6 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_blend.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_print.h>
@@ -230,7 +229,7 @@ static void lsdc_cursor_plane_atomic_async_update(struct drm_plane *plane,
 
 	new_state = drm_atomic_get_new_plane_state(state, plane);
 
-	new_fb = new_state->fb;
+	new_fb = plane->state->fb;
 
 	plane->state->crtc_x = new_state->crtc_x;
 	plane->state->crtc_y = new_state->crtc_y;
@@ -453,7 +452,7 @@ static const struct drm_plane_funcs lsdc_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
 	.destroy = drm_plane_cleanup,
-	.atomic_create_state = drm_atomic_helper_plane_create_state,
+	.reset = drm_atomic_helper_plane_reset,
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
 	.atomic_print_state = lsdc_plane_atomic_print_state,
@@ -766,7 +765,7 @@ int ls7a1000_cursor_plane_init(struct drm_device *ddev,
 
 	drm_plane_helper_add(plane, &ls7a1000_cursor_plane_helper_funcs);
 
-	return drm_plane_create_blend_mode_property(plane, BIT(DRM_MODE_BLEND_COVERAGE));
+	return 0;
 }
 
 int ls7a2000_cursor_plane_init(struct drm_device *ddev,
@@ -791,5 +790,5 @@ int ls7a2000_cursor_plane_init(struct drm_device *ddev,
 
 	drm_plane_helper_add(plane, &ls7a2000_cursor_plane_helper_funcs);
 
-	return drm_plane_create_blend_mode_property(plane, BIT(DRM_MODE_BLEND_COVERAGE));
+	return 0;
 }

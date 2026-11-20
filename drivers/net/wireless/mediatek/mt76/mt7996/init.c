@@ -461,8 +461,6 @@ mt7996_init_wiphy_band(struct ieee80211_hw *hw, struct mt7996_phy *phy)
 	radio->n_freq_range = 1;
 	radio->iface_combinations = &if_comb;
 	radio->n_iface_combinations = 1;
-	memcpy(dev->radio_addrs[n_radios].addr, phy->mt76->macaddr, ETH_ALEN);
-	hw->wiphy->n_addresses++;
 	hw->wiphy->n_radio++;
 
 	wiphy->available_antennas_rx |= phy->mt76->chainmask;
@@ -505,7 +503,6 @@ mt7996_init_wiphy(struct ieee80211_hw *hw, struct mtk_wed_device *wed)
 	wiphy->n_iface_combinations = 1;
 
 	wiphy->radio = dev->radios;
-	wiphy->addresses = dev->radio_addrs;
 
 	wiphy->reg_notifier = mt7996_regd_notifier;
 	wiphy->flags |= WIPHY_FLAG_HAS_CHANNEL_SWITCH |
@@ -525,7 +522,6 @@ mt7996_init_wiphy(struct ieee80211_hw *hw, struct mtk_wed_device *wed)
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_ACK_SIGNAL_SUPPORT);
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_CAN_REPLACE_PTK0);
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_MU_MIMO_AIR_SNIFFER);
-	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_SET_SCAN_DWELL);
 
 	if (mt7996_eeprom_has_background_radar(dev) &&
 	    (!mdev->dev->of_node ||
@@ -541,7 +537,6 @@ mt7996_init_wiphy(struct ieee80211_hw *hw, struct mtk_wed_device *wed)
 	ieee80211_hw_set(hw, SUPPORTS_MULTI_BSSID);
 	ieee80211_hw_set(hw, CHANCTX_STA_CSA);
 	ieee80211_hw_set(hw, CONNECTION_MONITOR);
-	ieee80211_hw_set(hw, SINGLE_SCAN_ON_ALL_BANDS);
 
 	hw->max_tx_fragments = 4;
 	wiphy->txq_memory_limit = 32 << 20; /* 32 MiB */
@@ -562,9 +557,6 @@ static void
 mt7996_mac_init_band(struct mt7996_dev *dev, u8 band)
 {
 	u32 mask, set;
-
-	if (!mt7996_band_valid(dev, band))
-		return;
 
 	/* clear estimated value of EIFS for Rx duration & OBSS time */
 	mt76_wr(dev, MT_WF_RMAC_RSVD0(band), MT_WF_RMAC_RSVD0_EIFS_CLR);
@@ -597,9 +589,6 @@ mt7996_mac_init_band(struct mt7996_dev *dev, u8 band)
 	 * MT_AGG_ACR_PPDU_TXS2H (PPDU format) even though ACR bit is set.
 	 */
 	mt76_set(dev, MT_AGG_ACR4(band), MT_AGG_ACR_PPDU_TXS2H);
-
-	if (!is_mt7996(&dev->mt76))
-		mt7996_mcu_set_bssid_mapping_addr(&dev->mt76, band);
 }
 
 static void mt7996_mac_init_basic_rates(struct mt7996_dev *dev)
@@ -1811,8 +1800,6 @@ error:
 
 void mt7996_unregister_device(struct mt7996_dev *dev)
 {
-	int i;
-
 	cancel_work_sync(&dev->dump_work);
 	cancel_work_sync(&dev->wed_rro.work);
 	cancel_work_sync(&dev->reset_work);
@@ -1823,10 +1810,6 @@ void mt7996_unregister_device(struct mt7996_dev *dev)
 	mt7996_coredump_unregister(dev);
 	mt76_unregister_device(&dev->mt76);
 	mt7996_wed_rro_free(dev);
-	for (i = 0; i < ARRAY_SIZE(dev->mt76.napi); i++) {
-		if (dev->mt76.napi[i].dev)
-			napi_disable(&dev->mt76.napi[i]);
-	}
 	mt7996_mcu_exit(dev);
 	mt7996_tx_token_put(dev);
 	mt7996_dma_cleanup(dev);

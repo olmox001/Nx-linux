@@ -93,6 +93,20 @@ enum pch_phub_type {
 
 /**
  * struct pch_phub_reg - PHUB register structure
+ * @phub_id_reg:			PHUB_ID register val
+ * @q_pri_val_reg:			QUEUE_PRI_VAL register val
+ * @rc_q_maxsize_reg:			RC_QUEUE_MAXSIZE register val
+ * @bri_q_maxsize_reg:			BRI_QUEUE_MAXSIZE register val
+ * @comp_resp_timeout_reg:		COMP_RESP_TIMEOUT register val
+ * @bus_slave_control_reg:		BUS_SLAVE_CONTROL_REG register val
+ * @deadlock_avoid_type_reg:		DEADLOCK_AVOID_TYPE register val
+ * @intpin_reg_wpermit_reg0:		INTPIN_REG_WPERMIT register 0 val
+ * @intpin_reg_wpermit_reg1:		INTPIN_REG_WPERMIT register 1 val
+ * @intpin_reg_wpermit_reg2:		INTPIN_REG_WPERMIT register 2 val
+ * @intpin_reg_wpermit_reg3:		INTPIN_REG_WPERMIT register 3 val
+ * @int_reduce_control_reg:		INT_REDUCE_CONTROL registers val
+ * @clkcfg_reg:				CLK CFG register val
+ * @funcsel_reg:			Function select register value
  * @pch_phub_base_address:		Register base address
  * @pch_phub_extrom_base_address:	external rom base address
  * @pch_mac_start_address:		MAC address area start address
@@ -101,6 +115,20 @@ enum pch_phub_type {
  * @pdev:				pointer to pci device struct
  */
 struct pch_phub_reg {
+	u32 phub_id_reg;
+	u32 q_pri_val_reg;
+	u32 rc_q_maxsize_reg;
+	u32 bri_q_maxsize_reg;
+	u32 comp_resp_timeout_reg;
+	u32 bus_slave_control_reg;
+	u32 deadlock_avoid_type_reg;
+	u32 intpin_reg_wpermit_reg0;
+	u32 intpin_reg_wpermit_reg1;
+	u32 intpin_reg_wpermit_reg2;
+	u32 intpin_reg_wpermit_reg3;
+	u32 int_reduce_control_reg[MAX_NUM_INT_REDUCE_CONTROL_REG];
+	u32 clkcfg_reg;
+	u32 funcsel_reg;
 	void __iomem *pch_phub_base_address;
 	void __iomem *pch_phub_extrom_base_address;
 	u32 pch_mac_start_address;
@@ -324,19 +352,10 @@ static int pch_phub_write_gbe_mac_addr(struct pch_phub_reg *chip, u8 *data)
 	int retval;
 	int i;
 
-	switch (chip->ioh_type) {
-	case PCH_EG20T:
-	case PCH_ML7831:
+	if (chip->ioh_type == PCH_EG20T || chip->ioh_type == PCH_ML7831)
 		retval = pch_phub_gbe_serial_rom_conf(chip);
-		break;
-
-	case PCH_ML7213:
-	case PCH_ML7223M:
-	case PCH_ML7223N:
+	else	/* ML7223 */
 		retval = pch_phub_gbe_serial_rom_conf_mp(chip);
-		break;
-	}
-
 	if (retval)
 		return retval;
 
@@ -705,14 +724,14 @@ static void pch_phub_remove(struct pci_dev *pdev)
 	kfree(chip);
 }
 
-static int pch_phub_suspend(struct device *dev_d)
+static int __maybe_unused pch_phub_suspend(struct device *dev_d)
 {
 	device_wakeup_disable(dev_d);
 
 	return 0;
 }
 
-static int pch_phub_resume(struct device *dev_d)
+static int __maybe_unused pch_phub_resume(struct device *dev_d)
 {
 	device_wakeup_disable(dev_d);
 
@@ -729,14 +748,14 @@ static const struct pci_device_id pch_phub_pcidev_id[] = {
 };
 MODULE_DEVICE_TABLE(pci, pch_phub_pcidev_id);
 
-static DEFINE_SIMPLE_DEV_PM_OPS(pch_phub_pm_ops, pch_phub_suspend, pch_phub_resume);
+static SIMPLE_DEV_PM_OPS(pch_phub_pm_ops, pch_phub_suspend, pch_phub_resume);
 
 static struct pci_driver pch_phub_driver = {
 	.name = "pch_phub",
 	.id_table = pch_phub_pcidev_id,
 	.probe = pch_phub_probe,
 	.remove = pch_phub_remove,
-	.driver.pm = pm_sleep_ptr(&pch_phub_pm_ops),
+	.driver.pm = &pch_phub_pm_ops,
 };
 
 module_pci_driver(pch_phub_driver);

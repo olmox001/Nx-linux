@@ -163,7 +163,7 @@ static int vhost_test_release(struct inode *inode, struct file *f)
 	vhost_test_stop(n, &private);
 	vhost_test_flush(n);
 	vhost_dev_stop(&n->dev);
-	vhost_dev_cleanup(&n->dev, false);
+	vhost_dev_cleanup(&n->dev);
 	kfree(n->dev.vqs);
 	kfree(n);
 	return 0;
@@ -238,7 +238,7 @@ static long vhost_test_reset_owner(struct vhost_test *n)
 	vhost_test_stop(n, &priv);
 	vhost_test_flush(n);
 	vhost_dev_stop(&n->dev);
-	vhost_dev_reset_owner(&n->dev, umem, false);
+	vhost_dev_reset_owner(&n->dev, umem);
 done:
 	mutex_unlock(&n->dev.mutex);
 	return err;
@@ -285,10 +285,6 @@ static long vhost_test_set_backend(struct vhost_test *n, unsigned index, int fd)
 	/* Verify that ring has been setup correctly. */
 	if (!vhost_vq_access_ok(vq)) {
 		r = -EFAULT;
-		goto err_vq;
-	}
-	if (enable && !vq->kick) {
-		r = -EINVAL;
 		goto err_vq;
 	}
 	if (!enable) {

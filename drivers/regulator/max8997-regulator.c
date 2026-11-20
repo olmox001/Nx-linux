@@ -897,7 +897,9 @@ static int max8997_pmic_dt_parse_pdata(struct platform_device *pdev,
 	/* count the number of regulators to be supported in pmic */
 	pdata->num_regulators = of_get_child_count(regulators_np);
 
-	rdata = devm_kzalloc_objs(&pdev->dev, *rdata, pdata->num_regulators);
+	rdata = devm_kcalloc(&pdev->dev,
+			     pdata->num_regulators, sizeof(*rdata),
+			     GFP_KERNEL);
 	if (!rdata)
 		return -ENOMEM;
 
@@ -997,7 +999,8 @@ static int max8997_pmic_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	max8997 = devm_kzalloc_obj(&pdev->dev, struct max8997_data);
+	max8997 = devm_kzalloc(&pdev->dev, sizeof(struct max8997_data),
+			       GFP_KERNEL);
 	if (!max8997)
 		return -ENOMEM;
 

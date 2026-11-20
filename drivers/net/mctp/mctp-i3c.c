@@ -111,7 +111,8 @@ static int mctp_i3c_read(struct mctp_i3c_device *mi)
 			       mi->mrl + sizeof(struct mctp_i3c_internal_hdr));
 	if (!skb) {
 		stats->rx_dropped++;
-		return -ENOMEM;
+		rc = -ENOMEM;
+		goto err;
 	}
 
 	skb->protocol = htons(ETH_P_MCTP);

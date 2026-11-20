@@ -36,11 +36,7 @@
 
 #define CPG_PLLnCR_STC_MASK	GENMASK(30, 24)	/* PLL Circuit Mult. Ratio */
 
-#define CPG_RPCCKCR		0x238	/* RPC-IF Clock Frequency Control Reg */
-#define CPG_RPCCKCR_DIV_RPCSRC	GENMASK(4, 3)	/* RPCSRC divider */
-
-#define CPG_RCKCR_CKSEL		BIT(15)		/* RCLK Clock Source Select */
-#define CPG_RCKCR_DIV		GENMASK(5, 0)	/* RCLK Division Ratio */
+#define CPG_RCKCR_CKSEL	BIT(15)	/* RCLK Clock Source Select */
 
 /* PLL Clocks */
 struct cpg_pll_clk {
@@ -399,7 +395,7 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 		 * the multiplier value.
 		 */
 		value = readl(base + CPG_PLL4CR);
-		mult = (FIELD_GET(CPG_PLLnCR_STC_MASK, value) + 1) * 2;
+		mult = (((value >> 24) & 0x7f) + 1) * 2;
 		break;
 
 	case CLK_TYPE_GEN3_SDH:
@@ -424,7 +420,7 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 			 * RINT is default.
 			 * Only if EXTALR is populated, we switch to it.
 			 */
-			value = readl(csn->reg) & CPG_RCKCR_DIV;
+			value = readl(csn->reg) & 0x3f;
 
 			if (clk_get_rate(clks[cpg_clk_extalr])) {
 				parent = clks[cpg_clk_extalr];
@@ -500,8 +496,9 @@ struct clk * __init rcar_gen3_cpg_clk_register(struct device *dev,
 		 * MD[4:1] pins and CPG_RPCCKCR[4:3] register value for
 		 * which has been set prior to booting the kernel.
 		 */
-		value = readl(base + CPG_RPCCKCR);
-		switch (FIELD_GET(CPG_RPCCKCR_DIV_RPCSRC, value)) {
+		value = (readl(base + CPG_RPCCKCR) & GENMASK(4, 3)) >> 3;
+
+		switch (value) {
 		case 0:
 			div = 5;
 			break;

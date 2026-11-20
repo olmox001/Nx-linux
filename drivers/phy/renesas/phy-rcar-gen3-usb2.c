@@ -941,10 +941,6 @@ static const struct of_device_id rcar_gen3_phy_usb2_match_table[] = {
 		.data = &rz_g3s_phy_usb2_data,
 	},
 	{
-		.compatible = "renesas,usb2-phy-r9a08g046",
-		.data = &rz_g3s_phy_usb2_data,
-	},
-	{
 		.compatible = "renesas,usb2-phy-r9a09g057",
 		.data = &rz_v2h_phy_usb2_data,
 	},
@@ -1184,7 +1180,7 @@ static int rcar_gen3_phy_usb2_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	channel = devm_kzalloc_obj(dev, *channel);
+	channel = devm_kzalloc(dev, sizeof(*channel), GFP_KERNEL);
 	if (!channel)
 		return -ENOMEM;
 

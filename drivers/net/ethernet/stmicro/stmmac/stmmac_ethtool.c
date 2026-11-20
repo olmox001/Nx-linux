@@ -89,6 +89,7 @@ static const struct stmmac_stats stmmac_gstrings_stats[] = {
 	STMMAC_STAT(fatal_bus_error_irq),
 	/* Tx/Rx IRQ Events */
 	STMMAC_STAT(rx_early_irq),
+	STMMAC_STAT(threshold),
 	STMMAC_STAT(irq_receive_pmt_irq_n),
 	/* MMC info */
 	STMMAC_STAT(mmc_tx_irq_n),
@@ -288,7 +289,6 @@ static const struct stmmac_stats stmmac_mmc[] = {
 static const char stmmac_qstats_tx_string[][ETH_GSTRING_LEN] = {
 	"tx_pkt_n",
 	"tx_irq_n",
-	"tx_threshold",
 #define STMMAC_TXQ_STATS ARRAY_SIZE(stmmac_qstats_tx_string)
 };
 
@@ -496,7 +496,6 @@ static void stmmac_get_per_qstats(struct stmmac_priv *priv, u64 *data)
 
 		*data++ = pkt_n;
 		*data++ = stmmac_get_tx_normal_irq_n(priv, q);
-		*data++ = priv->tx_threshold[q];
 	}
 
 	for (q = 0; q < rx_cnt; q++) {
@@ -760,10 +759,7 @@ static u32 stmmac_usec2riwt(u32 usec, struct stmmac_priv *priv)
 			return 0;
 	}
 
-	/* Receive Interrupt Watchdog Timer (riwt) has a resolution of 256
-	 * ticks.
-	 */
-	return DIV_ROUND_CLOSEST(usec * (clk / USEC_PER_SEC), 256);
+	return (usec * (clk / 1000000)) / 256;
 }
 
 static u32 stmmac_riwt2usec(u32 riwt, struct stmmac_priv *priv)
@@ -776,7 +772,7 @@ static u32 stmmac_riwt2usec(u32 riwt, struct stmmac_priv *priv)
 			return 0;
 	}
 
-	return DIV_ROUND_CLOSEST(riwt * 256, clk / USEC_PER_SEC);
+	return (riwt * 256) / (clk / 1000000);
 }
 
 static int __stmmac_get_coalesce(struct net_device *dev,
@@ -799,8 +795,7 @@ static int __stmmac_get_coalesce(struct net_device *dev,
 
 	if (queue < tx_cnt) {
 		ec->tx_coalesce_usecs = priv->tx_coal_timer[queue];
-		ec->tx_max_coalesced_frames =
-			READ_ONCE(priv->tx_coal_frames[queue]);
+		ec->tx_max_coalesced_frames = priv->tx_coal_frames[queue];
 	} else {
 		ec->tx_coalesce_usecs = 0;
 		ec->tx_max_coalesced_frames = 0;
@@ -889,14 +884,14 @@ static int __stmmac_set_coalesce(struct net_device *dev,
 		int i;
 
 		for (i = 0; i < tx_cnt; i++) {
-			WRITE_ONCE(priv->tx_coal_frames[i],
-				   ec->tx_max_coalesced_frames);
+			priv->tx_coal_frames[i] =
+				ec->tx_max_coalesced_frames;
 			priv->tx_coal_timer[i] =
 				ec->tx_coalesce_usecs;
 		}
 	} else if (queue < tx_cnt) {
-		WRITE_ONCE(priv->tx_coal_frames[queue],
-			   ec->tx_max_coalesced_frames);
+		priv->tx_coal_frames[queue] =
+			ec->tx_max_coalesced_frames;
 		priv->tx_coal_timer[queue] =
 			ec->tx_coalesce_usecs;
 	}
@@ -1009,7 +1004,8 @@ static int stmmac_get_ts_info(struct net_device *dev,
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 
-	if (stmmac_check_timestamp_cap(priv)) {
+	if ((priv->dma_cap.time_stamp || priv->dma_cap.atime_stamp)) {
+
 		info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
 					SOF_TIMESTAMPING_TX_HARDWARE |
 					SOF_TIMESTAMPING_RX_HARDWARE |

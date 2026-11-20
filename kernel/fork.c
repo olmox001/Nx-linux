@@ -143,7 +143,7 @@
 unsigned long total_forks;	/* Handle normal Linux uptimes. */
 int nr_threads;			/* The idle threads do not count.. */
 
-static int max_threads __read_mostly;		/* tunable limit on nr_threads */
+static int max_threads;		/* tunable limit on nr_threads */
 
 #define NAMED_ARRAY_INDEX(x)	[x] = __stringify(x)
 
@@ -537,7 +537,6 @@ void free_task(struct task_struct *tsk)
 #endif
 	release_user_cpus_ptr(tsk);
 	scs_release(tsk);
-	smp_task_ipi_mask_free(tsk);
 
 #ifndef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -858,8 +857,7 @@ void __init fork_init(void)
 #ifndef ARCH_MIN_TASKALIGN
 #define ARCH_MIN_TASKALIGN	0
 #endif
-	int align = max3(L1_CACHE_BYTES, ARCH_MIN_TASKALIGN,
-			 __alignof__(struct task_struct));
+	int align = max_t(int, L1_CACHE_BYTES, ARCH_MIN_TASKALIGN);
 	unsigned long useroffset, usersize;
 
 	/* create a slab on which task_structs can be allocated */
@@ -937,13 +935,9 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 #endif
 	account_kernel_stack(tsk, 1);
 
-	err = smp_task_ipi_mask_alloc(tsk);
-	if (err)
-		goto free_stack;
-
 	err = scs_prepare(tsk, node);
 	if (err)
-		goto free_ipi_mask;
+		goto free_stack;
 
 #ifdef CONFIG_SECCOMP
 	/*
@@ -971,10 +965,10 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	dup_user_cpus_ptr(tsk, orig, node);
 
 	/*
-	 * Nobody can keep the task while copy_process() may still fail, which
-	 * frees it no matter what.
+	 * One for the user space visible state that goes away when reaped.
+	 * One for the scheduler.
 	 */
-	refcount_set(&tsk->rcu_users, 0);
+	refcount_set(&tsk->rcu_users, 2);
 	/* One for the rcu users */
 	refcount_set(&tsk->usage, 1);
 #ifdef CONFIG_BLK_DEV_IO_TRACE
@@ -1022,8 +1016,6 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 #endif
 	return tsk;
 
-free_ipi_mask:
-	smp_task_ipi_mask_free(tsk);
 free_stack:
 	exit_task_stack_account(tsk);
 	free_thread_stack(tsk);
@@ -1084,7 +1076,9 @@ static void mmap_init_lock(struct mm_struct *mm)
 {
 	init_rwsem(&mm->mmap_lock);
 	mm_lock_seqcount_init(mm);
+#ifdef CONFIG_PER_VMA_LOCK
 	rcuwait_init(&mm->vma_writer_wait);
+#endif
 }
 
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p)
@@ -1507,9 +1501,15 @@ static void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 		complete_vfork_done(tsk);
 }
 
-void mm_exit_exec_release(struct task_struct *tsk, struct mm_struct *mm)
+void exit_mm_release(struct task_struct *tsk, struct mm_struct *mm)
 {
-	futex_exit_exec_release(tsk);
+	futex_exit_release(tsk);
+	mm_release(tsk, mm);
+}
+
+void exec_mm_release(struct task_struct *tsk, struct mm_struct *mm)
+{
+	futex_exec_release(tsk);
 	mm_release(tsk, mm);
 }
 
@@ -1533,19 +1533,12 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 	if (!mm)
 		goto fail_nomem;
 
-	uprobe_start_dup_mmap();
-	if (mmap_write_lock_killable(oldmm)) {
-		free_mm(mm);
-		goto fail_uprobe;
-	}
-
 	memcpy(mm, oldmm, sizeof(*mm));
 
-	if (!mm_init(mm, tsk)) {
-		mmap_write_unlock(oldmm);
-		goto fail_uprobe;
-	}
+	if (!mm_init(mm, tsk))
+		goto fail_nomem;
 
+	uprobe_start_dup_mmap();
 	err = dup_mmap(mm, oldmm);
 	if (err)
 		goto free_pt;
@@ -1564,10 +1557,9 @@ free_pt:
 	mm->binfmt = NULL;
 	mm_init_owner(mm, NULL);
 	mmput(mm);
-	if (!err)
-		return NULL;
-fail_uprobe:
-	uprobe_end_dup_mmap();
+	if (err)
+		uprobe_end_dup_mmap();
+
 fail_nomem:
 	return NULL;
 }
@@ -1626,36 +1618,11 @@ static int copy_exec_state(u64 clone_flags, struct task_struct *tsk)
 	return task_exec_state_copy(tsk);
 }
 
-enum copy_fs_flags_t {
-	COPY_FS_UMH	= (1 << 0),
-	COPY_FS_IDLE	= (1 << 1),
-};
-
-static int copy_fs(u64 clone_flags, struct task_struct *tsk,
-		   enum copy_fs_flags_t flags)
+static int copy_fs(u64 clone_flags, struct task_struct *tsk)
 {
-	struct fs_struct *fs;
-
-	/*
-	 * Usermodehelper may copy userspace_init_fs filesystem state but
-	 * they don't get to create mount namespaces, share the
-	 * filesystem state, or be started from a non-initial mount
-	 * namespace.
-	 */
-	if (flags & COPY_FS_UMH) {
-		if (clone_flags & (CLONE_NEWNS | CLONE_FS))
-			return -EINVAL;
-		if (current->nsproxy->mnt_ns != &init_mnt_ns)
-			return -EINVAL;
-		fs = userspace_init_fs;
-	} else if (flags & COPY_FS_IDLE) {
-		fs = &init_fs;
-	} else {
-		fs = current->fs;
-		VFS_WARN_ON_ONCE(current->fs != current->real_fs);
-	}
-
+	struct fs_struct *fs = current->fs;
 	if (clone_flags & CLONE_FS) {
+		/* tsk->fs is already what we want */
 		read_seqlock_excl(&fs->seq);
 		/* "users" and "in_exec" locked for check_unsafe_exec() */
 		if (fs->in_exec) {
@@ -1664,10 +1631,9 @@ static int copy_fs(u64 clone_flags, struct task_struct *tsk,
 		}
 		fs->users++;
 		read_sequnlock_excl(&fs->seq);
-		tsk->real_fs = tsk->fs = fs;
 		return 0;
 	}
-	tsk->real_fs = tsk->fs = copy_fs_struct(fs);
+	tsk->fs = copy_fs_struct(fs);
 	if (!tsk->fs)
 		return -ENOMEM;
 	return 0;
@@ -2162,9 +2128,12 @@ __latent_entropy struct task_struct *copy_process(
 	if (args->kthread)
 		p->flags |= PF_KTHREAD;
 	if (args->user_worker) {
-		/* A user worker takes only the signals nobody can block. */
+		/*
+		 * Mark us a user worker, and block any signal that isn't
+		 * fatal or STOP
+		 */
 		p->flags |= PF_USER_WORKER;
-		siginitsetinv(&p->blocked, SIG_KERNEL_ONLY_MASK);
+		siginitsetinv(&p->blocked, sigmask(SIGKILL)|sigmask(SIGSTOP));
 	}
 	if (args->io_thread)
 		p->flags |= PF_IO_WORKER;
@@ -2314,9 +2283,7 @@ __latent_entropy struct task_struct *copy_process(
 	retval = copy_files(clone_flags, p, args->no_files);
 	if (retval)
 		goto bad_fork_cleanup_semundo;
-	retval = copy_fs(clone_flags, p,
-			 (args->umh ? COPY_FS_UMH : 0) |
-			 (args->idle ? COPY_FS_IDLE : 0));
+	retval = copy_fs(clone_flags, p);
 	if (retval)
 		goto bad_fork_cleanup_semundo;
 	retval = copy_sighand(clone_flags, p);
@@ -2518,12 +2485,6 @@ __latent_entropy struct task_struct *copy_process(
 	/* No more failure paths after this point. */
 
 	/*
-	 * One for the user space visible state that goes away when reaped.
-	 * One for the scheduler.
-	 */
-	refcount_set(&p->rcu_users, 2);
-
-	/*
 	 * Copy seccomp details explicitly here, in case they were changed
 	 * before holding sighand lock.
 	 */
@@ -2694,7 +2655,7 @@ struct task_struct * __init fork_idle(int cpu)
 {
 	struct task_struct *task;
 	struct kernel_clone_args args = {
-		.flags		= CLONE_VM | CLONE_FS,
+		.flags		= CLONE_VM,
 		.fn		= &idle_dummy,
 		.fn_arg		= NULL,
 		.kthread	= 1,
@@ -2869,7 +2830,6 @@ pid_t user_mode_thread(int (*fn)(void *), void *arg, unsigned long flags)
 		.exit_signal	= (flags & CSIGNAL),
 		.fn		= fn,
 		.fn_arg		= arg,
-		.umh		= 1,
 	};
 
 	return kernel_clone(&args);
@@ -3240,6 +3200,24 @@ static int unshare_fs(unsigned long unshare_flags, struct fs_struct **new_fsp)
 }
 
 /*
+ * Unshare file descriptor table if it is being shared
+ */
+static int unshare_fd(unsigned long unshare_flags, struct files_struct **new_fdp)
+{
+	struct files_struct *fd = current->files;
+
+	if ((unshare_flags & CLONE_FILES) &&
+	    (fd && atomic_read(&fd->count) > 1)) {
+		fd = dup_fd(fd, NULL);
+		if (IS_ERR(fd))
+			return PTR_ERR(fd);
+		*new_fdp = fd;
+	}
+
+	return 0;
+}
+
+/*
  * unshare allows a process to 'unshare' part of the process
  * context which was originally shared using clone.  copy_*
  * functions used by kernel_clone() cannot be used here directly
@@ -3249,7 +3227,7 @@ static int unshare_fs(unsigned long unshare_flags, struct fs_struct **new_fsp)
  */
 int ksys_unshare(unsigned long unshare_flags)
 {
-	struct fs_struct *new_fs = NULL;
+	struct fs_struct *fs, *new_fs = NULL;
 	struct files_struct *new_fd = NULL;
 	struct cred *new_cred = NULL;
 	struct nsproxy *new_nsproxy = NULL;
@@ -3279,10 +3257,6 @@ int ksys_unshare(unsigned long unshare_flags)
 		unshare_flags |= CLONE_NEWNS;
 	if (unshare_flags & CLONE_NEWNS)
 		unshare_flags |= CLONE_FS;
-
-	/* No unsharing with overriden fs state */
-	VFS_WARN_ON_ONCE(unshare_flags & (CLONE_NEWNS | CLONE_FS) &&
-			 current->fs != current->real_fs);
 
 	err = check_unshare_flags(unshare_flags);
 	if (err)
@@ -3326,19 +3300,28 @@ int ksys_unshare(unsigned long unshare_flags)
 			shm_init_task(current);
 		}
 
-		if (new_fs) {
-			new_fs = switch_fs_struct(new_fs);
-			if (new_fs)
-				free_fs_struct(no_free_ptr(new_fs));
-		}
-
 		if (new_nsproxy) {
 			switch_task_namespaces(current, new_nsproxy);
 			new_nsproxy = NULL;
 		}
 
+		task_lock(current);
+
+		if (new_fs) {
+			fs = current->fs;
+			read_seqlock_excl(&fs->seq);
+			current->fs = new_fs;
+			if (--fs->users)
+				new_fs = NULL;
+			else
+				new_fs = fs;
+			read_sequnlock_excl(&fs->seq);
+		}
+
 		if (new_fd)
-			switch_files_struct(current, no_free_ptr(new_fd));
+			swap(current->files, new_fd);
+
+		task_unlock(current);
 
 		if (new_cred) {
 			/* Install the new user namespace */
@@ -3370,6 +3353,30 @@ bad_unshare_out:
 SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
 {
 	return ksys_unshare(unshare_flags);
+}
+
+/*
+ *	Helper to unshare the files of the current task.
+ *	We don't want to expose copy_files internals to
+ *	the exec layer of the kernel.
+ */
+
+int unshare_files(void)
+{
+	struct task_struct *task = current;
+	struct files_struct *old, *copy = NULL;
+	int error;
+
+	error = unshare_fd(CLONE_FILES, &copy);
+	if (error || !copy)
+		return error;
+
+	old = task->files;
+	task_lock(task);
+	task->files = copy;
+	task_unlock(task);
+	put_files_struct(old);
+	return 0;
 }
 
 static int sysctl_max_threads(const struct ctl_table *table, int write,

@@ -167,7 +167,8 @@ static int rs5c348_probe(struct spi_device *spi)
 	struct rtc_device *rtc;
 	struct rs5c348_plat_data *pdata;
 
-	pdata = devm_kzalloc_obj(&spi->dev, struct rs5c348_plat_data);
+	pdata = devm_kzalloc(&spi->dev, sizeof(struct rs5c348_plat_data),
+				GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 	spi->dev.platform_data = pdata;

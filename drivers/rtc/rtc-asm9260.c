@@ -116,13 +116,15 @@ static irqreturn_t asm9260_rtc_irq(int irq, void *dev_id)
 	u32 isr;
 	unsigned long events = 0;
 
-	guard(rtc_ops)(priv->rtc);
+	rtc_lock(priv->rtc);
 	isr = ioread32(priv->iobase + HW_CIIR);
 	if (!isr) {
+		rtc_unlock(priv->rtc);
 		return IRQ_NONE;
 	}
 
 	iowrite32(0, priv->iobase + HW_CIIR);
+	rtc_unlock(priv->rtc);
 
 	events |= RTC_AF | RTC_IRQF;
 
@@ -246,7 +248,7 @@ static int asm9260_rtc_probe(struct platform_device *pdev)
 	int irq_alarm, ret;
 	u32 ccr;
 
-	priv = devm_kzalloc_obj(dev, struct asm9260_rtc_priv);
+	priv = devm_kzalloc(dev, sizeof(struct asm9260_rtc_priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

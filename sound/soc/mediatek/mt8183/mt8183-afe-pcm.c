@@ -740,7 +740,7 @@ static int mt8183_dai_memif_register(struct mtk_base_afe *afe)
 {
 	struct mtk_base_afe_dai *dai;
 
-	dai = devm_kzalloc_obj(afe->dev, *dai);
+	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
 	if (!dai)
 		return -ENOMEM;
 
@@ -766,6 +766,11 @@ static const dai_register_cb dai_register_cbs[] = {
 	mt8183_dai_memif_register,
 };
 
+static void mt8183_afe_release_reserved_mem(void *data)
+{
+	of_reserved_mem_device_release(data);
+}
+
 static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 {
 	struct mtk_base_afe *afe;
@@ -778,28 +783,36 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	afe = devm_kzalloc_obj(dev, *afe);
+	afe = devm_kzalloc(dev, sizeof(*afe), GFP_KERNEL);
 	if (!afe)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, afe);
 
-	afe->platform_priv = devm_kzalloc_obj(dev, *afe_priv);
+	afe->platform_priv = devm_kzalloc(dev, sizeof(*afe_priv), GFP_KERNEL);
 	if (!afe->platform_priv)
 		return -ENOMEM;
 
 	afe_priv = afe->platform_priv;
 	afe->dev = dev;
 
-	ret = devm_of_reserved_mem_device_init(dev);
+	ret = of_reserved_mem_device_init(dev);
 	if (ret) {
 		dev_info(dev, "no reserved memory found, pre-allocating buffers instead\n");
 		afe->preallocate_buffers = true;
+	} else {
+		ret = devm_add_action_or_reset(dev,
+					       mt8183_afe_release_reserved_mem,
+					       dev);
+		if (ret)
+			return ret;
 	}
 
 	/* initial audio related clock */
 	ret = mt8183_init_clock(afe);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "init clock error\n");
 		return ret;
+	}
 
 	pm_runtime_enable(dev);
 
@@ -851,7 +864,8 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* init memif */
 	afe->memif_size = MT8183_MEMIF_NUM;
-	afe->memif = devm_kzalloc_objs(dev, *afe->memif, afe->memif_size);
+	afe->memif = devm_kcalloc(dev, afe->memif_size, sizeof(*afe->memif),
+				  GFP_KERNEL);
 	if (!afe->memif) {
 		ret = -ENOMEM;
 		goto err_pm_disable;
@@ -870,7 +884,8 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 	/* init memif */
 	/* irq initialize */
 	afe->irqs_size = MT8183_IRQ_NUM;
-	afe->irqs = devm_kzalloc_objs(dev, *afe->irqs, afe->irqs_size);
+	afe->irqs = devm_kcalloc(dev, afe->irqs_size, sizeof(*afe->irqs),
+				 GFP_KERNEL);
 	if (!afe->irqs) {
 		ret = -ENOMEM;
 		goto err_pm_disable;
@@ -888,8 +903,10 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(dev, irq_id, mt8183_afe_irq_handler,
 			       IRQF_TRIGGER_NONE, "asys-isr", (void *)afe);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "could not request_irq for asys-isr\n");
 		goto err_pm_disable;
+	}
 
 	/* init sub_dais */
 	INIT_LIST_HEAD(&afe->sub_dais);

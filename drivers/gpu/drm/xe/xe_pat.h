@@ -42,10 +42,8 @@ struct xe_pat_table_entry {
 /**
  * xe_pat_init_early - SW initialization, setting up data based on device
  * @xe: xe device
- *
- * Return: 0 on success or a negative error code on failure.
  */
-int xe_pat_init_early(struct xe_device *xe);
+void xe_pat_init_early(struct xe_device *xe);
 
 /**
  * xe_pat_init - Program HW PAT table

@@ -224,7 +224,7 @@ config ACPI_VIDEO
 	tristate "Video"
 	depends on BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
-	depends on ACPI_WMI
+	depends on ACPI_WMI || !X86
 	select THERMAL
 	help
 	  This driver implements the ACPI Extensions For Display Adapters
@@ -548,10 +548,6 @@ config ACPI_PFRUT
 
 if ARM64
 source "drivers/acpi/arm64/Kconfig"
-endif
-
-if LOONGARCH
-source "drivers/acpi/loongarch/Kconfig"
 endif
 
 if RISCV

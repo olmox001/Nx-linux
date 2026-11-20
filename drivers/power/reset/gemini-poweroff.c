@@ -95,7 +95,7 @@ static int gemini_poweroff_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	gpw = devm_kzalloc_obj(dev, *gpw);
+	gpw = devm_kzalloc(dev, sizeof(*gpw), GFP_KERNEL);
 	if (!gpw)
 		return -ENOMEM;
 

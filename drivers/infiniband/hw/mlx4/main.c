@@ -471,6 +471,8 @@ static int mlx4_ib_query_device(struct ib_device *ibdev,
 	if (err)
 		goto out;
 
+	memset(props, 0, sizeof *props);
+
 	have_ib_ports = num_ib_ports(dev->dev);
 
 	props->fw_ver = dev->dev->caps.fw_ver;
@@ -574,7 +576,6 @@ static int mlx4_ib_query_device(struct ib_device *ibdev,
 	if (uhw_outlen >= resp.response_length + sizeof(resp.hca_core_clock_offset)) {
 		resp.response_length += sizeof(resp.hca_core_clock_offset);
 		if (!mlx4_get_internal_clock_params(dev->dev, &clock_params)) {
-			resp.comp_mask |= MLX4_IB_QUERY_DEV_RESP_MASK_CORE_CLOCK_OFFSET;
 			resp.hca_core_clock_offset = clock_params.offset % PAGE_SIZE;
 		}
 	}
@@ -641,8 +642,22 @@ mlx4_ib_port_link_layer(struct ib_device *device, u32 port_num)
 {
 	struct mlx4_dev *dev = to_mdev(device)->dev;
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	return dev->caps.port_mask[port_num] == MLX4_PORT_TYPE_IB ?
 		IB_LINK_LAYER_INFINIBAND : IB_LINK_LAYER_ETHERNET;
+#else
+	if (port_num > MLX4_MAX_PORTS || port_num == 0)
+		return IB_LINK_LAYER_UNSPECIFIED;
+
+	switch (dev->caps.port_mask[port_num]) {
+	case MLX4_PORT_TYPE_IB:
+		return IB_LINK_LAYER_INFINIBAND;
+	case MLX4_PORT_TYPE_ETH:
+		return IB_LINK_LAYER_ETHERNET;
+	}
+
+	return IB_LINK_LAYER_UNSPECIFIED;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 }
 
 static int ib_link_query_port(struct ib_device *ibdev, u32 port,
@@ -1169,10 +1184,6 @@ static int mlx4_ib_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 		struct mlx4_clock_params params;
 		int ret;
 
-		if (vma->vm_flags & (VM_WRITE | VM_EXEC))
-			return -EPERM;
-		vm_flags_clear(vma, VM_MAYWRITE);
-
 		ret = mlx4_get_internal_clock_params(dev->dev, &params);
 		if (ret)
 			return ret;
@@ -1214,9 +1225,79 @@ static int mlx4_ib_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 	return 0;
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+
+static struct ib_shpd *mlx4_ib_alloc_shpd(struct ib_device *ibdev,
+					  struct ib_pd *pd)
+{
+	struct mlx4_ib_shpd *shpd;
+
+	shpd = kzalloc(sizeof(*shpd), GFP_KERNEL);
+	if (!shpd)
+		return ERR_PTR(-ENOMEM);
+
+	shpd->pdn = to_mpd(pd)->pdn;
+
+	return &shpd->ibshpd;
+}
+
+static struct ib_pd *mlx4_ib_share_pd(struct ib_device *ibdev,
+				      struct ib_ucontext *context,
+				      struct ib_udata *udata,
+				      struct ib_shpd *shpd)
+{
+	struct mlx4_ib_pd *pd;
+
+	pd = kzalloc(sizeof(*pd), GFP_KERNEL);
+	if (!pd)
+		return ERR_PTR(-ENOMEM);
+
+	pd->pdn = to_mshpd(shpd)->pdn;
+
+	if (context)
+		if (ib_copy_to_udata(udata, &pd->pdn, sizeof(__u32))) {
+			kfree(pd);
+			return ERR_PTR(-EFAULT);
+		}
+
+	return &pd->ibpd;
+}
+
+static int mlx4_ib_remove_shpd(struct ib_device *ibdev,
+			       struct ib_shpd *shpd, int atinit)
+{
+
+	/*
+	 * if remove shpd is called during shpd creation time itself, then
+	 * pd should not be freed from device. it will be freed when deall_pd
+	 * is called
+	 */
+	if (!atinit)
+		mlx4_pd_free(to_mdev(ibdev)->dev, to_mshpd(shpd)->pdn);
+	kfree(shpd);
+
+	return 0;
+}
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static int mlx4_ib_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
+
 	mlx4_pd_free(to_mdev(pd->device)->dev, to_mpd(pd)->pdn);
+
+#else /* !WITHOUT_ORACLE_EXTENSIONS */
+
+	/*
+	 * if pd is shared, pd number will be freed by remove_shpd call
+	 */
+	if (!pd->shpd) {
+		mlx4_pd_free(to_mdev(pd->device)->dev, to_mpd(pd)->pdn);
+	}
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	return 0;
 }
 
@@ -2453,6 +2534,9 @@ static void mlx4_ib_alloc_eqs(struct mlx4_dev *dev, struct mlx4_ib_dev *ibdev)
 
 	/* Advertise the new number of EQs to clients */
 	ibdev->ib_dev.num_comp_vectors = eq;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	ibdev->ib_dev.can_balance_comp_vectors = true;
+#endif
 }
 
 static void mlx4_ib_free_eqs(struct mlx4_dev *dev, struct mlx4_ib_dev *ibdev)
@@ -2466,6 +2550,9 @@ static void mlx4_ib_free_eqs(struct mlx4_dev *dev, struct mlx4_ib_dev *ibdev)
 
 	/* Reset the advertised EQ number */
 	ibdev->ib_dev.num_comp_vectors = 0;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	ibdev->ib_dev.can_balance_comp_vectors = false;
+#endif
 
 	for (i = 0; i < total_eqs; i++)
 		mlx4_release_eq(dev, ibdev->eq_table[i]);
@@ -2506,6 +2593,17 @@ static int mlx4_port_immutable(struct ib_device *ibdev, u32 port_num,
 	return 0;
 }
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+static int
+mlx4_ib_get_vector_irqn(struct ib_device *ibdev, int comp_vector)
+{
+	if (comp_vector < 0 || comp_vector >= ibdev->num_comp_vectors)
+		return -1;
+
+	return mlx4_eq_get_irq(to_mdev(ibdev)->dev, comp_vector);
+}
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static void get_fw_ver_str(struct ib_device *device, char *str)
 {
 	struct mlx4_ib_dev *dev =
@@ -2524,6 +2622,9 @@ static const struct ib_device_ops mlx4_ib_dev_ops = {
 	.add_gid = mlx4_ib_add_gid,
 	.alloc_mr = mlx4_ib_alloc_mr,
 	.alloc_pd = mlx4_ib_alloc_pd,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.alloc_shpd = mlx4_ib_alloc_shpd,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	.alloc_ucontext = mlx4_ib_alloc_ucontext,
 	.attach_mcast = mlx4_ib_mcg_attach,
 	.create_ah = mlx4_ib_create_ah,
@@ -2549,6 +2650,9 @@ static const struct ib_device_ops mlx4_ib_dev_ops = {
 	.get_link_layer = mlx4_ib_port_link_layer,
 	.get_netdev = mlx4_ib_get_netdev,
 	.get_port_immutable = mlx4_port_immutable,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.get_vector_irqn = mlx4_ib_get_vector_irqn,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	.map_mr_sg = mlx4_ib_map_mr_sg,
 	.mmap = mlx4_ib_mmap,
 	.modify_cq = mlx4_ib_modify_cq,
@@ -2568,11 +2672,17 @@ static const struct ib_device_ops mlx4_ib_dev_ops = {
 	.query_port = mlx4_ib_query_port,
 	.query_qp = mlx4_ib_query_qp,
 	.query_srq = mlx4_ib_query_srq,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.remove_shpd = mlx4_ib_remove_shpd,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	.reg_user_mr = mlx4_ib_reg_user_mr,
 	.req_notify_cq = mlx4_ib_arm_cq,
 	.rereg_user_mr = mlx4_ib_rereg_user_mr,
 	.resize_user_cq = mlx4_ib_resize_cq,
 	.report_port_event = mlx4_ib_port_event,
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	.share_pd = mlx4_ib_share_pd,
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	INIT_RDMA_OBJ_SIZE(ib_ah, mlx4_ib_ah, ibah),
 	INIT_RDMA_OBJ_SIZE(ib_cq, mlx4_ib_cq, ibcq),
@@ -2673,6 +2783,9 @@ static int mlx4_ib_probe(struct auxiliary_device *adev,
 						1 : ibdev->num_ports;
 	ibdev->ib_dev.num_comp_vectors	= dev->caps.num_comp_vectors;
 	ibdev->ib_dev.dev.parent	= &dev->persist->pdev->dev;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	ibdev->ib_dev.can_balance_comp_vectors = true;
+#endif
 
 	ib_set_device_ops(&ibdev->ib_dev, &mlx4_ib_dev_ops);
 

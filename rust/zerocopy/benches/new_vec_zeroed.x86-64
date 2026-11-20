@@ -29,7 +29,8 @@ bench_new_vec_zeroed:
 	mov qword ptr [rax + 16], rsi
 	ret
 .LBB5_5:
-	mov qword ptr [rax], -1
+	movabs rcx, -9223372036854775808
+	mov qword ptr [rax], rcx
 	ret
 .LBB5_2:
 	mov ecx, 2

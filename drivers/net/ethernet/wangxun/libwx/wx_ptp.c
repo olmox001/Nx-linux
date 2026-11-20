@@ -492,7 +492,10 @@ static int wx_ptp_feature_enable(struct ptp_clock_info *ptp,
 		wx->pps_width = 120000000;
 	}
 
-	assign_bit(WX_FLAG_PTP_PPS_ENABLED, wx->flags, on);
+	if (on)
+		set_bit(WX_FLAG_PTP_PPS_ENABLED, wx->flags);
+	else
+		clear_bit(WX_FLAG_PTP_PPS_ENABLED, wx->flags);
 
 	return wx->ptp_setup_sdp(wx);
 }

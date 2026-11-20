@@ -1049,7 +1049,8 @@ static struct idt_mw_cfg *idt_scan_mws(struct idt_ntb_dev *ndev, int port,
 	int aprt_size;
 	u32 data;
 
-	mws = devm_kzalloc_objs(&ndev->ntb.pdev->dev, *mws, IDT_MAX_NR_MWS);
+	mws = devm_kcalloc(&ndev->ntb.pdev->dev, IDT_MAX_NR_MWS,
+			   sizeof(*mws), GFP_KERNEL);
 	if (!mws)
 		return ERR_PTR(-ENOMEM);
 
@@ -2597,7 +2598,7 @@ static struct idt_ntb_dev *idt_create_dev(struct pci_dev *pdev,
 	struct idt_ntb_dev *ndev;
 
 	/* Allocate memory for the IDT PCIe-device descriptor */
-	ndev = devm_kzalloc_obj(&pdev->dev, *ndev);
+	ndev = devm_kzalloc(&pdev->dev, sizeof(*ndev), GFP_KERNEL);
 	if (!ndev) {
 		dev_err(&pdev->dev, "Memory allocation failed for descriptor");
 		return ERR_PTR(-ENOMEM);

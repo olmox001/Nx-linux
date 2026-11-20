@@ -1649,7 +1649,7 @@ static struct atmel_nand *atmel_nand_create(struct atmel_nand_controller *nc,
 		return ERR_PTR(-EINVAL);
 	}
 
-	nand = devm_kzalloc_flex(nc->dev, *nand, cs, numcs);
+	nand = devm_kzalloc(nc->dev, struct_size(nand, cs, numcs), GFP_KERNEL);
 	if (!nand)
 		return ERR_PTR(-ENOMEM);
 
@@ -1799,7 +1799,8 @@ atmel_nand_controller_legacy_add_nands(struct atmel_nand_controller *nc)
 	 * Legacy bindings only allow connecting a single NAND with a unique CS
 	 * line to the controller.
 	 */
-	nand = devm_kzalloc_flex(nc->dev, *nand, cs, 1);
+	nand = devm_kzalloc(nc->dev, sizeof(*nand) + sizeof(*nand->cs),
+			    GFP_KERNEL);
 	if (!nand)
 		return -ENOMEM;
 
@@ -2085,7 +2086,7 @@ static int atmel_nand_controller_init(struct atmel_nand_controller *nc,
 	if (!np) {
 		dev_err(dev, "Missing or invalid atmel,smc property\n");
 		ret = -EINVAL;
-		goto out_put_mck;
+		goto out_release_dma;
 	}
 
 	nc->smc = syscon_node_to_regmap(np);
@@ -2093,13 +2094,11 @@ static int atmel_nand_controller_init(struct atmel_nand_controller *nc,
 	if (IS_ERR(nc->smc)) {
 		ret = PTR_ERR(nc->smc);
 		dev_err(dev, "Could not get SMC regmap (err = %d)\n", ret);
-		goto out_put_mck;
+		goto out_release_dma;
 	}
 
 	return 0;
 
-out_put_mck:
-	clk_put(nc->mck);
 out_release_dma:
 	if (nc->dmac)
 		dma_release_channel(nc->dmac);
@@ -2356,7 +2355,7 @@ static int atmel_hsmc_nand_controller_probe(struct platform_device *pdev,
 	struct atmel_hsmc_nand_controller *nc;
 	int ret;
 
-	nc = devm_kzalloc_obj(dev, *nc);
+	nc = devm_kzalloc(dev, sizeof(*nc), GFP_KERNEL);
 	if (!nc)
 		return -ENOMEM;
 
@@ -2433,7 +2432,7 @@ static int atmel_smc_nand_controller_probe(struct platform_device *pdev,
 	struct atmel_smc_nand_controller *nc;
 	int ret;
 
-	nc = devm_kzalloc_obj(dev, *nc);
+	nc = devm_kzalloc(dev, sizeof(*nc), GFP_KERNEL);
 	if (!nc)
 		return -ENOMEM;
 

@@ -12,7 +12,6 @@
 #define __LINUX_PINCTRL_CONSUMER_H
 
 #include <linux/err.h>
-#include <linux/errno.h>
 #include <linux/types.h>
 
 #include <linux/pinctrl/pinctrl-state.h>
@@ -108,14 +107,14 @@ static inline int
 pinctrl_gpio_get_config(struct gpio_chip *gc, unsigned int offset,
 			unsigned long *config)
 {
-	return -ENOTSUPP;
+	return 0;
 }
 
 static inline int
 pinctrl_gpio_set_config(struct gpio_chip *gc, unsigned int offset,
 			    unsigned long config)
 {
-	return -ENOTSUPP;
+	return 0;
 }
 
 static inline struct pinctrl * __must_check pinctrl_get(struct device *dev)

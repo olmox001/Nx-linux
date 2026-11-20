@@ -468,7 +468,7 @@ static int mt7621_reset_init(struct device *dev, struct regmap *sysc)
 {
 	struct mt7621_rst *rst_data;
 
-	rst_data = devm_kzalloc_obj(dev, *rst_data);
+	rst_data = devm_kzalloc(dev, sizeof(*rst_data), GFP_KERNEL);
 	if (!rst_data)
 		return -ENOMEM;
 
@@ -491,7 +491,7 @@ static int mt7621_clk_probe(struct platform_device *pdev)
 	struct mt7621_clk_priv *priv;
 	int ret, i, count;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -517,7 +517,8 @@ static int mt7621_clk_probe(struct platform_device *pdev)
 
 	count = ARRAY_SIZE(mt7621_clks_base) +
 		ARRAY_SIZE(mt7621_fixed_clks) + ARRAY_SIZE(mt7621_gates);
-	clk_data = devm_kzalloc_flex(dev, *clk_data, hws, count);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, count),
+				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 	clk_data->num = count;

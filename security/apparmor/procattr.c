@@ -74,8 +74,7 @@ int aa_getprocattr(struct aa_label *label, char **string, bool newline)
  * @args: string to parse  (NOT NULL)
  * @token: stores returned parsed token value  (NOT NULL)
  *
- * Returns: the name following the token, %NULL if the name is empty, or
- * ERR_PTR(-EINVAL) if the input is malformed.
+ * Returns: start position of name after token else NULL on failure
  */
 static char *split_token_from_name(const char *op, char *args, u64 *token)
 {

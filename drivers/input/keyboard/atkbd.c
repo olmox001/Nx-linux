@@ -73,6 +73,13 @@ MODULE_PARM_DESC(terminal, "Enable break codes on an IBM Terminal keyboard conne
 #define ATKBD_KEYMAP_SIZE	512
 
 static const unsigned short atkbd_set2_keycode[ATKBD_KEYMAP_SIZE] = {
+#ifdef CONFIG_KEYBOARD_ATKBD_HP_KEYCODES
+
+/* XXX: need a more general approach */
+
+#include "hpps2atkbd.h"	/* include the keyboard scancodes */
+
+#else
 	  0, 67, 65, 63, 61, 59, 60, 88,183, 68, 66, 64, 62, 15, 41,117,
 	184, 56, 42, 93, 29, 16,  2,  0,185,  0, 44, 31, 30, 17,  3,  0,
 	186, 46, 45, 32, 18,  5,  4, 95,187, 57, 47, 33, 20, 19,  6,183,
@@ -92,6 +99,7 @@ static const unsigned short atkbd_set2_keycode[ATKBD_KEYMAP_SIZE] = {
 	110,111,108,112,106,103,  0,119,  0,118,109,  0, 99,104,119,  0,
 
 	  0,  0,  0, 65, 99,
+#endif
 };
 
 static const unsigned short atkbd_set3_keycode[ATKBD_KEYMAP_SIZE] = {
@@ -357,7 +365,10 @@ static void atkbd_calculate_xl_bit(struct atkbd *atkbd, u8 code)
 
 	for (i = 0; i < ARRAY_SIZE(xl_table); i++) {
 		if (!((code ^ xl_table[i]) & 0x7f)) {
-			__assign_bit(i, &atkbd->xl_bit, !(code & 0x80));
+			if (code & 0x80)
+				__clear_bit(i, &atkbd->xl_bit);
+			else
+				__set_bit(i, &atkbd->xl_bit);
 			break;
 		}
 	}
@@ -1067,7 +1078,7 @@ static int atkbd_get_keymap_from_fwnode(struct atkbd *atkbd)
 	if (n <= 0 || n > ATKBD_KEYMAP_SIZE)
 		return -ENXIO;
 
-	u32 *ptr __free(kfree) = kzalloc_objs(*ptr, n);
+	u32 *ptr __free(kfree) = kcalloc(n, sizeof(*ptr), GFP_KERNEL);
 	if (!ptr)
 		return -ENOMEM;
 

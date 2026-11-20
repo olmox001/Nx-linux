@@ -419,7 +419,7 @@ static int lc824206xa_probe(struct i2c_client *client)
 	struct lc824206xa_data *data;
 	int ret;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

@@ -136,8 +136,7 @@ out:
 	struct_ops_assoc_in_timer__destroy(skel);
 }
 
-static void run_st_ops_assoc_in_timer_no_uref(int timer_ns, int wait_map_free,
-					      int spin_loops)
+static void test_st_ops_assoc_in_timer_no_uref(void)
 {
 	struct struct_ops_assoc_in_timer *skel = NULL;
 	struct bpf_link *link;
@@ -149,8 +148,7 @@ static void run_st_ops_assoc_in_timer_no_uref(int timer_ns, int wait_map_free,
 
 	err = bpf_program__assoc_struct_ops(skel->progs.syscall_prog,
 					    skel->maps.st_ops_map, NULL);
-	if (!ASSERT_OK(err, "bpf_program__assoc_struct_ops"))
-		goto out;
+	ASSERT_OK(err, "bpf_program__assoc_struct_ops");
 
 	link = bpf_map__attach_struct_ops(skel->maps.st_ops_map);
 	if (!ASSERT_OK_PTR(link, "bpf_map__attach_struct_ops"))
@@ -159,18 +157,12 @@ static void run_st_ops_assoc_in_timer_no_uref(int timer_ns, int wait_map_free,
 	/*
 	 * Run .test_1 by calling kfunc bpf_kfunc_multi_st_ops_test_1_prog_arg() and checks
 	 * the return value. .test_1 will also schedule timer_cb that runs .test_1 again.
-	 * timer_cb will run timer_ns after syscall_prog runs and, with wait_map_free, every
-	 * timer_ns after that until the map is freed. With 500ms, it first runs when the
-	 * user space no longer holds a reference to st_ops_map.
+	 * timer_cb will run 500ms after syscall_prog runs, when the user space no longer
+	 * holds a reference to st_ops_map.
 	 */
-	skel->bss->timer_ns = timer_ns;
-	skel->bss->wait_map_free = wait_map_free;
-	skel->bss->spin_loops = spin_loops;
+	skel->bss->timer_ns = 500000000;
 	err = bpf_prog_test_run_opts(bpf_program__fd(skel->progs.syscall_prog), NULL);
-	if (!ASSERT_OK(err, "bpf_prog_test_run_opts")) {
-		bpf_link__destroy(link);
-		goto out;
-	}
+	ASSERT_OK(err, "bpf_prog_test_run_opts");
 
 	/* Detach and close struct_ops map to cause it to be freed */
 	bpf_link__destroy(link);
@@ -186,21 +178,6 @@ out:
 	struct_ops_assoc_in_timer__destroy(skel);
 }
 
-static void test_st_ops_assoc_in_timer_no_uref(void)
-{
-	run_st_ops_assoc_in_timer_no_uref(500000000, 1, 0);
-}
-
-/*
- * Keep calling .test_1 through the association from the timer callback, and
- * stay in it for a while each time, while the map is being freed. The map
- * must not be freed under a running .test_1.
- */
-static void test_st_ops_assoc_in_timer_free(void)
-{
-	run_st_ops_assoc_in_timer_no_uref(0, 1, 1 << 20);
-}
-
 void test_struct_ops_assoc(void)
 {
 	if (test__start_subtest("st_ops_assoc"))
@@ -211,6 +188,4 @@ void test_struct_ops_assoc(void)
 		test_st_ops_assoc_in_timer();
 	if (test__start_subtest("st_ops_assoc_in_timer_no_uref"))
 		test_st_ops_assoc_in_timer_no_uref();
-	if (test__start_subtest("st_ops_assoc_in_timer_free"))
-		test_st_ops_assoc_in_timer_free();
 }

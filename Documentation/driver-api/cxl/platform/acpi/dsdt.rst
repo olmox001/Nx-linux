@@ -25,5 +25,4 @@ Example Compute Express Link Host Bridge ::
             ...
             Name (_UID, 0x05)  // _UID: Unique ID
             ...
-        }
-    }
+      }

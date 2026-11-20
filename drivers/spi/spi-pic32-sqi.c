@@ -297,7 +297,7 @@ static int pic32_sqi_one_transfer(struct pic32_sqi *sqi,
 		/* get ring descriptor */
 		rdesc = ring_desc_get(sqi);
 		if (!rdesc)
-			return -ENOMEM;
+			break;
 
 		bd = rdesc->bd;
 
@@ -387,7 +387,6 @@ static int pic32_sqi_one_message(struct spi_controller *host,
 		ret = pic32_sqi_one_transfer(sqi, msg, xfer);
 		if (ret) {
 			dev_err(&spi->dev, "xfer %p err\n", xfer);
-			msg->status = ret;
 			goto xfer_out;
 		}
 	}

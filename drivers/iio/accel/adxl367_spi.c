@@ -90,7 +90,7 @@ static int adxl367_spi_probe(struct spi_device *spi)
 	struct adxl367_spi_state *st;
 	struct regmap *regmap;
 
-	st = devm_kzalloc_obj(&spi->dev, *st);
+	st = devm_kzalloc(&spi->dev, sizeof(*st), GFP_KERNEL);
 	if (!st)
 		return -ENOMEM;
 
@@ -137,7 +137,7 @@ static int adxl367_spi_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id adxl367_spi_id[] = {
-	{ .name = "adxl367" },
+	{ "adxl367", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, adxl367_spi_id);

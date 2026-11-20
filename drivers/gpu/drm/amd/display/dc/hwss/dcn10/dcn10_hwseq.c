@@ -41,7 +41,6 @@
 #include "opp.h"
 #include "ipp.h"
 #include "mpc.h"
-#include "rmcm.h"
 #include "reg_helper.h"
 #include "dcn10/dcn10_hubp.h"
 #include "dcn10/dcn10_hubbub.h"
@@ -247,9 +246,9 @@ void dcn10_lock_all_pipes(struct dc *dc,
 			continue;
 
 		if (lock)
-			hwss_pipe_control_lock(dc, pipe_ctx, true);
+			dc->hwss.pipe_control_lock(dc, pipe_ctx, true);
 		else
-			hwss_pipe_control_lock(dc, pipe_ctx, false);
+			dc->hwss.pipe_control_lock(dc, pipe_ctx, false);
 	}
 }
 
@@ -525,7 +524,7 @@ static void dcn10_log_color_state(struct dc *dc,
 	DTN_INFO("DPP Color Caps: input_lut_shared:%d  icsc:%d"
 		 "  dgam_ram:%d  dgam_rom: srgb:%d,bt2020:%d,gamma2_2:%d,pq:%d,hlg:%d"
 		 "  post_csc:%d  gamcor:%d  dgam_rom_for_yuv:%d  3d_lut:%d"
-		 "  upsp_pre_scaler:%d  blnd_lut:%d  oscs:%d\n\n",
+		 "  blnd_lut:%d  oscs:%d\n\n",
 		 dc->caps.color.dpp.input_lut_shared,
 		 dc->caps.color.dpp.icsc,
 		 dc->caps.color.dpp.dgam_ram,
@@ -538,20 +537,19 @@ static void dcn10_log_color_state(struct dc *dc,
 		 dc->caps.color.dpp.gamma_corr,
 		 dc->caps.color.dpp.dgam_rom_for_yuv,
 		 dc->caps.color.dpp.hw_3d_lut,
-		 dc->caps.color.dpp.upsp_pre_scaler,
 		 dc->caps.color.dpp.ogam_ram,
 		 dc->caps.color.dpp.ocsc);
 
-	DTN_INFO("MPCC:  OPP  DPP  MPCCBOT  MODE  ALPHA_MODE  PREMULT  OVERLAP_ONLY  IDLE  SHAPER  3DLUT  3DLUT_SIZE\n");
+	DTN_INFO("MPCC:  OPP  DPP  MPCCBOT  MODE  ALPHA_MODE  PREMULT  OVERLAP_ONLY  IDLE\n");
 	for (i = 0; i < pool->mpcc_count; i++) {
 		struct mpcc_state s = {0};
 
 		pool->mpc->funcs->read_mpcc_state(pool->mpc, i, &s);
 		if (s.opp_id != 0xf)
-			DTN_INFO("[%2d]:  %2xh  %2xh  %6xh  %4d  %10d  %7d  %12d  %4d  %6d  %5d  %10d\n",
+			DTN_INFO("[%2d]:  %2xh  %2xh  %6xh  %4d  %10d  %7d  %12d  %4d\n",
 				i, s.opp_id, s.dpp_id, s.bot_mpcc_id,
 				s.mode, s.alpha_mode, s.pre_multiplied_alpha, s.overlap_only,
-				s.idle, s.shaper_lut_mode, s.lut3d_mode, s.lut3d_size);
+				s.idle);
 	}
 	DTN_INFO("\n");
 	DTN_INFO("MPC Color Caps: gamut_remap:%d, 3dlut:%d, ogam_ram:%d, ocsc:%d\n\n",
@@ -566,32 +564,31 @@ static void dcn10_log_color_state(struct dc *dc,
 		"OUT_OFFSET", "OUT_SCALE", "FL_DONE", "SOFT_UNDERFLOW", "HARD_UNDERFLOW",
 		"MEM_PWR_ST", "FORCE", "DIS", "MODE"};
 
-	/* Read RMCM state separately - RMCM is a shared resource (only 2 instances) */
-	for (i = 0; i < MAX_RMCM_INST && i < pool->mpcc_count; i++) {
-		struct rmcm_state r = {0};
+	for (i = 0; i < pool->mpcc_count; i++) {
+		struct mpcc_state s = {0};
 
-		if (pool->rmcm[i] && pool->rmcm[i]->funcs->read_rmcm_state) {
-			pool->rmcm[i]->funcs->read_rmcm_state(pool->rmcm[i], i, &r);
+		pool->mpc->funcs->read_mpcc_state(pool->mpc, i, &s);
+		if (s.opp_id != 0xf) {
 			uint32_t values[] = {
 				i,
-				r.regs.rmcm_3dlut_size,
-				r.regs.rmcm_3dlut_mode,
-				r.regs.rmcm_3dlut_mode_cur,
-				r.regs.rmcm_3dlut_read_sel,
-				r.regs.rmcm_3dlut_30bit_en,
-				r.regs.rmcm_3dlut_wr_en_mask,
-				r.regs.rmcm_3dlut_ram_sel,
-				r.regs.rmcm_3dlut_out_norm_factor,
-				r.regs.rmcm_3dlut_fl_sel,
-				r.regs.rmcm_3dlut_out_offset_r,
-				r.regs.rmcm_3dlut_out_scale_r,
-				r.regs.rmcm_3dlut_fl_done,
-				r.regs.rmcm_3dlut_fl_soft_underflow,
-				r.regs.rmcm_3dlut_fl_hard_underflow,
-				r.regs.rmcm_3dlut_mem_pwr_state,
-				r.regs.rmcm_3dlut_mem_pwr_force,
-				r.regs.rmcm_3dlut_mem_pwr_dis,
-				r.regs.rmcm_3dlut_mem_pwr_mode};
+				s.rmcm_regs.rmcm_3dlut_size,
+				s.rmcm_regs.rmcm_3dlut_mode,
+				s.rmcm_regs.rmcm_3dlut_mode_cur,
+				s.rmcm_regs.rmcm_3dlut_read_sel,
+				s.rmcm_regs.rmcm_3dlut_30bit_en,
+				s.rmcm_regs.rmcm_3dlut_wr_en_mask,
+				s.rmcm_regs.rmcm_3dlut_ram_sel,
+				s.rmcm_regs.rmcm_3dlut_out_norm_factor,
+				s.rmcm_regs.rmcm_3dlut_fl_sel,
+				s.rmcm_regs.rmcm_3dlut_out_offset_r,
+				s.rmcm_regs.rmcm_3dlut_out_scale_r,
+				s.rmcm_regs.rmcm_3dlut_fl_done,
+				s.rmcm_regs.rmcm_3dlut_fl_soft_underflow,
+				s.rmcm_regs.rmcm_3dlut_fl_hard_underflow,
+				s.rmcm_regs.rmcm_3dlut_mem_pwr_state,
+				s.rmcm_regs.rmcm_3dlut_mem_pwr_force,
+				s.rmcm_regs.rmcm_3dlut_mem_pwr_dis,
+				s.rmcm_regs.rmcm_3dlut_mem_pwr_mode};
 
 			int num_elements = 19;
 
@@ -602,18 +599,17 @@ static void dcn10_log_color_state(struct dc *dc,
 	DTN_INFO("\n");
 	DTN_INFO("===== MPC RMCM Shaper =====\n");
 	DTN_INFO("MPCC:  CNTL  LUT_MODE  MODE_CUR  WR_EN_MASK  WR_SEL  OFFSET  SCALE  START_B	START_SEG_B	END_B	END_BASE_B	MEM_PWR_ST	FORCE	DIS	MODE\n");
-	for (i = 0; i < MAX_RMCM_INST && i < pool->mpcc_count; i++) {
-		struct rmcm_state r = {0};
+	for (i = 0; i < pool->mpcc_count; i++) {
+		struct mpcc_state s = {0};
 
-		if (pool->rmcm[i] && pool->rmcm[i]->funcs->read_rmcm_state) {
-			pool->rmcm[i]->funcs->read_rmcm_state(pool->rmcm[i], i, &r);
+		pool->mpc->funcs->read_mpcc_state(pool->mpc, i, &s);
+		if (s.opp_id != 0xf)
 			DTN_INFO("[%2d]:  %4xh  %4xh  %6xh  %4x  %4x  %4x  %4x  %4x %4xh  %4xh  %6xh  %4x  %4x  %4x  %4x\n",
-				i, r.regs.rmcm_cntl, r.regs.rmcm_shaper_lut_mode, r.regs.rmcm_shaper_mode_cur,
-				r.regs.rmcm_shaper_lut_write_en_mask, r.regs.rmcm_shaper_lut_write_sel, r.regs.rmcm_shaper_offset_b,
-				r.regs.rmcm_shaper_scale_b, r.regs.rmcm_shaper_rama_exp_region_start_b, r.regs.rmcm_shaper_rama_exp_region_start_seg_b,
-				r.regs.rmcm_shaper_rama_exp_region_end_b, r.regs.rmcm_shaper_rama_exp_region_end_base_b, r.regs.rmcm_shaper_mem_pwr_state,
-				r.regs.rmcm_shaper_mem_pwr_force, r.regs.rmcm_shaper_mem_pwr_dis, r.regs.rmcm_shaper_mem_pwr_mode);
-		}
+				i, s.rmcm_regs.rmcm_cntl, s.rmcm_regs.rmcm_shaper_lut_mode, s.rmcm_regs.rmcm_shaper_mode_cur,
+				s.rmcm_regs.rmcm_shaper_lut_write_en_mask, s.rmcm_regs.rmcm_shaper_lut_write_sel, s.rmcm_regs.rmcm_shaper_offset_b,
+				s.rmcm_regs.rmcm_shaper_scale_b, s.rmcm_regs.rmcm_shaper_rama_exp_region_start_b, s.rmcm_regs.rmcm_shaper_rama_exp_region_start_seg_b,
+				s.rmcm_regs.rmcm_shaper_rama_exp_region_end_b, s.rmcm_regs.rmcm_shaper_rama_exp_region_end_base_b, s.rmcm_regs.rmcm_shaper_mem_pwr_state,
+				s.rmcm_regs.rmcm_shaper_mem_pwr_force, s.rmcm_regs.rmcm_shaper_mem_pwr_dis, s.rmcm_regs.rmcm_shaper_mem_pwr_mode);
 	}
 }
 
@@ -1349,12 +1345,7 @@ static void dcn10_reset_back_end_for_pipe(
 	 * screen only, the dpms_off would be true but
 	 * VBIOS lit up eDP, so check link status too.
 	 */
-	if (link->connector_signal == SIGNAL_TYPE_EDP &&
-	    link->forced_psr_active) {
-		/* forced psr is active for seamless switch; skip dpms-off. */
-		if (pipe_ctx->stream_res.audio)
-			dc->hwss.disable_audio_stream(pipe_ctx);
-	} else if (!pipe_ctx->stream->dpms_off || link->link_status.link_active)
+	if (!pipe_ctx->stream->dpms_off || link->link_status.link_active)
 		dc->link_srv->set_dpms_off(pipe_ctx);
 	else if (pipe_ctx->stream_res.audio)
 		dc->hwss.disable_audio_stream(pipe_ctx);
@@ -1378,15 +1369,13 @@ static void dcn10_reset_back_end_for_pipe(
 	 * parent pipe.
 	 */
 	if (pipe_ctx->top_pipe == NULL) {
-		if (!(link->connector_signal == SIGNAL_TYPE_EDP &&
-			link->forced_psr_active)) {
-			if (pipe_ctx->stream_res.abm)
-				dc->hwss.set_abm_immediate_disable(pipe_ctx);
 
-			pipe_ctx->stream_res.tg->funcs->disable_crtc(pipe_ctx->stream_res.tg);
+		if (pipe_ctx->stream_res.abm)
+			dc->hwss.set_abm_immediate_disable(pipe_ctx);
 
-			pipe_ctx->stream_res.tg->funcs->enable_optc_clock(pipe_ctx->stream_res.tg, false);
-		}
+		pipe_ctx->stream_res.tg->funcs->disable_crtc(pipe_ctx->stream_res.tg);
+
+		pipe_ctx->stream_res.tg->funcs->enable_optc_clock(pipe_ctx->stream_res.tg, false);
 		set_drr_and_clear_adjust_pending(pipe_ctx, pipe_ctx->stream, NULL);
 		if (dc_is_hdmi_tmds_signal(pipe_ctx->stream->signal))
 			pipe_ctx->stream->link->phy_state.symclk_ref_cnts.otg = 0;
@@ -1750,9 +1739,7 @@ void dcn10_init_pipes(struct dc *dc, struct dc_state *context)
 
 		if (tg->funcs->is_tg_enabled(tg)) {
 			if (tg->funcs->init_odm)
-				if (!tg->funcs->is_odm_enabled ||
-					!tg->funcs->is_odm_enabled(tg))
-						tg->funcs->init_odm(tg);
+				tg->funcs->init_odm(tg);
 		}
 
 		tg->funcs->tg_init(tg);
@@ -2062,8 +2049,7 @@ static bool patch_address_for_sbs_tb_stereo(
 	return false;
 }
 
-void dcn10_prepare_plane_addr_update(const struct dc *dc, struct pipe_ctx *pipe_ctx,
-		struct dc_plane_address *addr_to_program, bool *flip_immediate)
+void dcn10_update_plane_addr(const struct dc *dc, struct pipe_ctx *pipe_ctx)
 {
 	(void)dc;
 	bool addr_patched = false;
@@ -2075,8 +2061,10 @@ void dcn10_prepare_plane_addr_update(const struct dc *dc, struct pipe_ctx *pipe_
 
 	addr_patched = patch_address_for_sbs_tb_stereo(pipe_ctx, &addr);
 
-	*addr_to_program = plane_state->address;
-	*flip_immediate = plane_state->flip_immediate;
+	pipe_ctx->plane_res.hubp->funcs->hubp_program_surface_flip_and_addr(
+			pipe_ctx->plane_res.hubp,
+			&plane_state->address,
+			plane_state->flip_immediate);
 
 	plane_state->status.requested_address = plane_state->address;
 
@@ -2087,55 +2075,39 @@ void dcn10_prepare_plane_addr_update(const struct dc *dc, struct pipe_ctx *pipe_
 		pipe_ctx->plane_state->address.grph_stereo.left_addr = addr;
 }
 
-void dcn10_update_plane_addr(const struct dc *dc, struct pipe_ctx *pipe_ctx)
+bool dcn10_set_input_transfer_func(struct dc *dc, struct pipe_ctx *pipe_ctx,
+			const struct dc_plane_state *plane_state)
 {
-	struct dc_plane_address address;
-	bool flip_immediate;
-
-	if (pipe_ctx->plane_state == NULL)
-		return;
-
-	dcn10_prepare_plane_addr_update(dc, pipe_ctx, &address, &flip_immediate);
-
-	pipe_ctx->plane_res.hubp->funcs->hubp_program_surface_flip_and_addr(
-			pipe_ctx->plane_res.hubp,
-			&address,
-			flip_immediate,
-			pipe_ctx->plane_state->dcc.enable);
-}
-
-bool dcn10_set_input_transfer_func(struct set_input_transfer_func_params *params)
-{
-	struct dpp *dpp = params->dpp;
-	struct dc_plane_state *plane_state = params->plane_state;
+	(void)dc;
+	struct dpp *dpp_base = pipe_ctx->plane_res.dpp;
 	const struct dc_transfer_func *tf = NULL;
 	bool result = true;
 
-	if (dpp == NULL)
+	if (dpp_base == NULL)
 		return false;
 
 	tf = &plane_state->in_transfer_func;
 
-	if (!dpp->ctx->dc->debug.always_use_regamma
+	if (!dpp_base->ctx->dc->debug.always_use_regamma
 		&& !plane_state->gamma_correction.is_identity
 			&& dce_use_lut(plane_state->format))
-		dpp->funcs->dpp_program_input_lut(dpp, &plane_state->gamma_correction);
+		dpp_base->funcs->dpp_program_input_lut(dpp_base, &plane_state->gamma_correction);
 
 	if (tf->type == TF_TYPE_PREDEFINED) {
 		switch (tf->tf) {
 		case TRANSFER_FUNCTION_SRGB:
-			dpp->funcs->dpp_set_degamma(dpp, IPP_DEGAMMA_MODE_HW_sRGB);
+			dpp_base->funcs->dpp_set_degamma(dpp_base, IPP_DEGAMMA_MODE_HW_sRGB);
 			break;
 		case TRANSFER_FUNCTION_BT709:
-			dpp->funcs->dpp_set_degamma(dpp, IPP_DEGAMMA_MODE_HW_xvYCC);
+			dpp_base->funcs->dpp_set_degamma(dpp_base, IPP_DEGAMMA_MODE_HW_xvYCC);
 			break;
 		case TRANSFER_FUNCTION_LINEAR:
-			dpp->funcs->dpp_set_degamma(dpp, IPP_DEGAMMA_MODE_BYPASS);
+			dpp_base->funcs->dpp_set_degamma(dpp_base, IPP_DEGAMMA_MODE_BYPASS);
 			break;
 		case TRANSFER_FUNCTION_PQ:
-			dpp->funcs->dpp_set_degamma(dpp, IPP_DEGAMMA_MODE_USER_PWL);
-			cm_helper_translate_curve_to_degamma_hw_format(tf, &dpp->degamma_params);
-			dpp->funcs->dpp_program_degamma_pwl(dpp, &dpp->degamma_params);
+			dpp_base->funcs->dpp_set_degamma(dpp_base, IPP_DEGAMMA_MODE_USER_PWL);
+			cm_helper_translate_curve_to_degamma_hw_format(tf, &dpp_base->degamma_params);
+			dpp_base->funcs->dpp_program_degamma_pwl(dpp_base, &dpp_base->degamma_params);
 			result = true;
 			break;
 		default:
@@ -2143,12 +2115,12 @@ bool dcn10_set_input_transfer_func(struct set_input_transfer_func_params *params
 			break;
 		}
 	} else if (tf->type == TF_TYPE_BYPASS) {
-		dpp->funcs->dpp_set_degamma(dpp, IPP_DEGAMMA_MODE_BYPASS);
+		dpp_base->funcs->dpp_set_degamma(dpp_base, IPP_DEGAMMA_MODE_BYPASS);
 	} else {
 		cm_helper_translate_curve_to_degamma_hw_format(tf,
-					&dpp->degamma_params);
-		dpp->funcs->dpp_program_degamma_pwl(dpp,
-				&dpp->degamma_params);
+					&dpp_base->degamma_params);
+		dpp_base->funcs->dpp_program_degamma_pwl(dpp_base,
+				&dpp_base->degamma_params);
 		result = true;
 	}
 
@@ -2182,19 +2154,16 @@ static void log_tf(struct dc_context *ctx,
 	}
 }
 
-bool dcn10_set_output_transfer_func(struct set_output_transfer_func_params *params)
+bool dcn10_set_output_transfer_func(struct dc *dc, struct pipe_ctx *pipe_ctx,
+				const struct dc_stream_state *stream)
 {
-	struct dpp *dpp = params->dpp;
-	const struct dc_stream_state *stream = params->stream;
-	struct dc *dc;
+	struct dpp *dpp = pipe_ctx->plane_res.dpp;
 
 	if (!stream)
 		return false;
 
 	if (dpp == NULL)
 		return false;
-
-	dc = dpp->ctx->dc;
 
 	dpp->regamma_params.hw_points_num = GAMMA_HW_POINTS_NUM;
 
@@ -2223,20 +2192,29 @@ bool dcn10_set_output_transfer_func(struct set_output_transfer_func_params *para
 	return true;
 }
 
-void dcn10_tg_lock(struct tg_lock_params *params)
+void dcn10_pipe_control_lock(
+	struct dc *dc,
+	struct pipe_ctx *pipe,
+	bool lock)
 {
-	struct dce_hwseq *hws = params->dc->hwseq;
+	struct dce_hwseq *hws = dc->hwseq;
 
-	if (params->dc->debug.sanity_checks)
-		hws->funcs.verify_allow_pstate_change_high(params->dc);
+	/* use TG master update lock to lock everything on the TG
+	 * therefore only top pipe need to lock
+	 */
+	if (!pipe || pipe->top_pipe)
+		return;
 
-	if (params->lock)
-		params->tg->funcs->lock(params->tg);
+	if (dc->debug.sanity_checks)
+		hws->funcs.verify_allow_pstate_change_high(dc);
+
+	if (lock)
+		pipe->stream_res.tg->funcs->lock(pipe->stream_res.tg);
 	else
-		params->tg->funcs->unlock(params->tg);
+		pipe->stream_res.tg->funcs->unlock(pipe->stream_res.tg);
 
-	if (params->dc->debug.sanity_checks)
-		hws->funcs.verify_allow_pstate_change_high(params->dc);
+	if (dc->debug.sanity_checks)
+		hws->funcs.verify_allow_pstate_change_high(dc);
 }
 
 /**
@@ -2836,32 +2814,28 @@ static void dcn10_enable_plane(
 
 }
 
-void dcn10_program_gamut_remap(struct program_gamut_remap_params *params)
+void dcn10_program_gamut_remap(struct pipe_ctx *pipe_ctx)
 {
-	struct dpp *dpp = params->dpp;
-	const struct dc_stream_state *stream = params->stream;
-	const struct dc_plane_state *plane = params->plane;
 	int i = 0;
 	struct dpp_grph_csc_adjustment adjust;
-
 	memset(&adjust, 0, sizeof(adjust));
 	adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_BYPASS;
 
 
-	if (stream->gamut_remap_matrix.enable_remap == true) {
+	if (pipe_ctx->stream->gamut_remap_matrix.enable_remap == true) {
 		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
 		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
 			adjust.temperature_matrix[i] =
-				stream->gamut_remap_matrix.matrix[i];
-	} else if (plane &&
-		   plane->gamut_remap_matrix.enable_remap == true) {
+				pipe_ctx->stream->gamut_remap_matrix.matrix[i];
+	} else if (pipe_ctx->plane_state &&
+		   pipe_ctx->plane_state->gamut_remap_matrix.enable_remap == true) {
 		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
 		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
 			adjust.temperature_matrix[i] =
-				plane->gamut_remap_matrix.matrix[i];
+				pipe_ctx->plane_state->gamut_remap_matrix.matrix[i];
 	}
 
-	dpp->funcs->dpp_set_gamut_remap(dpp, &adjust);
+	pipe_ctx->plane_res.dpp->funcs->dpp_set_gamut_remap(pipe_ctx->plane_res.dpp, &adjust);
 }
 
 
@@ -3007,7 +2981,7 @@ void dcn10_update_mpcc(struct dc *dc, struct pipe_ctx *pipe_ctx)
 	mpcc_id = hubp->inst;
 
 	/* If there is no full update, don't need to touch MPC tree*/
-	if (!pipe_ctx->plane_state->update_bits.full_update) {
+	if (!pipe_ctx->plane_state->update_flags.bits.full_update) {
 		mpc->funcs->update_blending(mpc, &blnd_cfg, mpcc_id);
 		dc->hwss.update_visual_confirm_color(dc, pipe_ctx, mpcc_id);
 		return;
@@ -3067,7 +3041,7 @@ static void dcn10_update_dchubp_dpp(
 	/* If request max dpp clk is lower than current dispclk, no need to
 	 * divided by 2
 	 */
-	if (plane_state->update_bits.full_update) {
+	if (plane_state->update_flags.bits.full_update) {
 
 		/* new calculated dispclk, dppclk are stored in
 		 * context->bw_ctx.bw.dcn.clk.dispclk_khz / dppclk_khz. current
@@ -3122,7 +3096,7 @@ static void dcn10_update_dchubp_dpp(
 	 * VTG is within DCHUBBUB which is commond block share by each pipe HUBP.
 	 * VTG is 1:1 mapping with OTG. Each pipe HUBP will select which VTG
 	 */
-	if (plane_state->update_bits.full_update) {
+	if (plane_state->update_flags.bits.full_update) {
 		hubp->funcs->hubp_vtg_sel(hubp, pipe_ctx->stream_res.tg->inst);
 
 		hubp->funcs->hubp_setup(
@@ -3139,26 +3113,26 @@ static void dcn10_update_dchubp_dpp(
 
 	size.surface_size = pipe_ctx->plane_res.scl_data.viewport;
 
-	if (plane_state->update_bits.full_update ||
-		plane_state->update_bits.bpp_change)
+	if (plane_state->update_flags.bits.full_update ||
+		plane_state->update_flags.bits.bpp_change)
 		dcn10_update_dpp(dpp, plane_state);
 
-	if (plane_state->update_bits.full_update ||
-		plane_state->update_bits.per_pixel_alpha_change ||
-		plane_state->update_bits.global_alpha_change)
+	if (plane_state->update_flags.bits.full_update ||
+		plane_state->update_flags.bits.per_pixel_alpha_change ||
+		plane_state->update_flags.bits.global_alpha_change)
 		hws->funcs.update_mpcc(dc, pipe_ctx);
 
-	if (plane_state->update_bits.full_update ||
-		plane_state->update_bits.per_pixel_alpha_change ||
-		plane_state->update_bits.global_alpha_change ||
-		plane_state->update_bits.scaling_change ||
-		plane_state->update_bits.position_change) {
+	if (plane_state->update_flags.bits.full_update ||
+		plane_state->update_flags.bits.per_pixel_alpha_change ||
+		plane_state->update_flags.bits.global_alpha_change ||
+		plane_state->update_flags.bits.scaling_change ||
+		plane_state->update_flags.bits.position_change) {
 		update_scaler(pipe_ctx);
 	}
 
-	if (plane_state->update_bits.full_update ||
-		plane_state->update_bits.scaling_change ||
-		plane_state->update_bits.position_change) {
+	if (plane_state->update_flags.bits.full_update ||
+		plane_state->update_flags.bits.scaling_change ||
+		plane_state->update_flags.bits.position_change) {
 		hubp->funcs->mem_program_viewport(
 			hubp,
 			&pipe_ctx->plane_res.scl_data.viewport,
@@ -3166,30 +3140,19 @@ static void dcn10_update_dchubp_dpp(
 	}
 
 	if (pipe_ctx->stream->cursor_attributes.address.quad_part != 0) {
-		if (dc_dmub_srv_is_cursor_offload_enabled(dc) && dc->hwss.abort_cursor_offload_update) {
-			struct pipe_ctx *top_pipe = resource_get_otg_master(pipe_ctx);
-			struct dpp *dpp[MAX_PIPES];
-			struct hubp *hubp[MAX_PIPES];
-
-			if (top_pipe) {
-				uint8_t pipe_count =
-					hwss_build_cursor_offload_pipe_list(pipe_ctx, dpp, hubp);
-
-				dc->hwss.abort_cursor_offload_update(dc->ctx->dmub_srv->dmub,
-					dpp, hubp, pipe_count, top_pipe->pipe_idx);
-			}
-		}
+		if (dc->hwss.abort_cursor_offload_update)
+			dc->hwss.abort_cursor_offload_update(dc, pipe_ctx);
 
 		dc->hwss.set_cursor_attribute(pipe_ctx);
-		hwss_program_cursor_position(dc, pipe_ctx);
+		dc->hwss.set_cursor_position(pipe_ctx);
 
 		if (dc->hwss.set_cursor_sdr_white_level)
 			dc->hwss.set_cursor_sdr_white_level(pipe_ctx);
 	}
 
-	if (plane_state->update_bits.full_update) {
+	if (plane_state->update_flags.bits.full_update) {
 		/*gamut remap*/
-		hwss_program_gamut_remap(pipe_ctx);
+		dc->hwss.program_gamut_remap(pipe_ctx);
 
 		dc->hwss.program_output_csc(dc,
 				pipe_ctx,
@@ -3198,15 +3161,15 @@ static void dcn10_update_dchubp_dpp(
 				pipe_ctx->stream_res.opp->inst);
 	}
 
-	if (plane_state->update_bits.full_update ||
-		plane_state->update_bits.pixel_format_change ||
-		plane_state->update_bits.horizontal_mirror_change ||
-		plane_state->update_bits.rotation_change ||
-		plane_state->update_bits.swizzle_change ||
-		plane_state->update_bits.dcc_change ||
-		plane_state->update_bits.bpp_change ||
-		plane_state->update_bits.scaling_change ||
-		plane_state->update_bits.plane_size_change) {
+	if (plane_state->update_flags.bits.full_update ||
+		plane_state->update_flags.bits.pixel_format_change ||
+		plane_state->update_flags.bits.horizontal_mirror_change ||
+		plane_state->update_flags.bits.rotation_change ||
+		plane_state->update_flags.bits.swizzle_change ||
+		plane_state->update_flags.bits.dcc_change ||
+		plane_state->update_flags.bits.bpp_change ||
+		plane_state->update_flags.bits.scaling_change ||
+		plane_state->update_flags.bits.plane_size_change) {
 		hubp->funcs->hubp_program_surface_config(
 			hubp,
 			plane_state->format,
@@ -3315,17 +3278,17 @@ void dcn10_program_pipe(
 		hws->funcs.blank_pixel_data(dc, pipe_ctx, blank);
 	}
 
-	if (pipe_ctx->plane_state->update_bits.full_update)
+	if (pipe_ctx->plane_state->update_flags.bits.full_update)
 		dcn10_enable_plane(dc, pipe_ctx, context);
 
 	dcn10_update_dchubp_dpp(dc, pipe_ctx, context);
 
 	hws->funcs.set_hdr_multiplier(pipe_ctx);
 
-	if (pipe_ctx->plane_state->update_bits.full_update ||
-			pipe_ctx->plane_state->update_bits.in_transfer_func_change ||
-			pipe_ctx->plane_state->update_bits.gamma_change)
-		hwss_set_input_transfer_func(dc, pipe_ctx);
+	if (pipe_ctx->plane_state->update_flags.bits.full_update ||
+			pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
+			pipe_ctx->plane_state->update_flags.bits.gamma_change)
+		hws->funcs.set_input_transfer_func(dc, pipe_ctx, pipe_ctx->plane_state);
 
 	/* dcn10_translate_regamma_to_hw_format takes 750us to finish
 	 * only do gamma programming for full update.
@@ -3333,8 +3296,8 @@ void dcn10_program_pipe(
 	 * Always call this for now since it does memcmp inside before
 	 * doing heavy calculation and programming
 	 */
-	if (pipe_ctx->plane_state->update_bits.full_update)
-		hwss_set_output_transfer_func(dc, pipe_ctx);
+	if (pipe_ctx->plane_state->update_flags.bits.full_update)
+		hws->funcs.set_output_transfer_func(dc, pipe_ctx, pipe_ctx->stream);
 }
 
 void dcn10_wait_for_pending_cleared(struct dc *dc,
@@ -3734,11 +3697,11 @@ void dcn10_update_dchub(struct dce_hwseq *hws, struct dchub_init_data *dh_data)
 	hubbub->funcs->update_dchub(hubbub, dh_data);
 }
 
-void dcn10_build_cursor_pos_update_params(const struct pipe_ctx *pipe_ctx,
-		struct dc_cursor_position *pos_out,
-		struct dc_cursor_mi_param *param_out)
+void dcn10_set_cursor_position(struct pipe_ctx *pipe_ctx)
 {
 	struct dc_cursor_position pos_cpy = pipe_ctx->stream->cursor_position;
+	struct hubp *hubp = pipe_ctx->plane_res.hubp;
+	struct dpp *dpp = pipe_ctx->plane_res.dpp;
 	struct dc_cursor_mi_param param = {
 		.pixel_clk_khz = pipe_ctx->stream->timing.pix_clk_100hz / 10,
 		.ref_clk_khz = pipe_ctx->stream->ctx->dc->res_pool->ref_clocks.dchub_ref_clock_inKhz,
@@ -3954,16 +3917,8 @@ void dcn10_build_cursor_pos_update_params(const struct pipe_ctx *pipe_ctx,
 			pipe_ctx->plane_res.scl_data.viewport.height - pos_cpy.y;
 	}
 
-	*pos_out = pos_cpy;
-	*param_out = param;
-}
-
-void dcn10_set_cursor_position(struct hubp *hubp, struct dpp *dpp,
-		const struct dc_cursor_position *pos,
-		const struct dc_cursor_mi_param *param)
-{
-	hubp->funcs->set_cursor_position(hubp, pos, param);
-	dpp->funcs->set_cursor_position(dpp, pos, param, hubp->curs_attr.width, hubp->curs_attr.height);
+	hubp->funcs->set_cursor_position(hubp, &pos_cpy, &param);
+	dpp->funcs->set_cursor_position(dpp, &pos_cpy, &param, hubp->curs_attr.width, hubp->curs_attr.height);
 }
 
 void dcn10_set_cursor_attribute(struct pipe_ctx *pipe_ctx)
@@ -3978,13 +3933,29 @@ void dcn10_set_cursor_attribute(struct pipe_ctx *pipe_ctx)
 
 void dcn10_set_cursor_sdr_white_level(struct pipe_ctx *pipe_ctx)
 {
-	struct dpp *dpp = pipe_ctx->plane_res.dpp;
-	struct dpp_cursor_attributes attr;
+	uint32_t sdr_white_level = pipe_ctx->stream->cursor_attributes.sdr_white_level;
+	struct fixed31_32 multiplier;
+	struct dpp_cursor_attributes opt_attr = { 0 };
+	uint32_t hw_scale = 0x3c00; // 1.0 default multiplier
+	struct custom_float_format fmt;
 
-	if (dpp && dpp->funcs->set_optional_cursor_attributes) {
-		attr = calc_sdr_cursor_attributes(pipe_ctx);
-		dpp->funcs->set_optional_cursor_attributes(dpp, &attr);
+	if (!pipe_ctx->plane_res.dpp->funcs->set_optional_cursor_attributes)
+		return;
+
+	fmt.exponenta_bits = 5;
+	fmt.mantissa_bits = 10;
+	fmt.sign = true;
+
+	if (sdr_white_level > 80) {
+		multiplier = dc_fixpt_from_fraction(sdr_white_level, 80);
+		convert_to_custom_float_format(multiplier, &fmt, &hw_scale);
 	}
+
+	opt_attr.scale = hw_scale;
+	opt_attr.bias = 0;
+
+	pipe_ctx->plane_res.dpp->funcs->set_optional_cursor_attributes(
+			pipe_ctx->plane_res.dpp, &opt_attr);
 }
 
 /*
@@ -4047,12 +4018,45 @@ void dcn10_calc_vupdate_position(
 	*end_line = (*start_line + 2) % timing->v_total;
 }
 
-void dcn10_setup_periodic_interrupt(
-		struct timing_generator *tg,
-		uint32_t start_line,
-		uint32_t end_line
-	)
+static void dcn10_cal_vline_position(
+		struct dc *dc,
+		struct pipe_ctx *pipe_ctx,
+		uint32_t *start_line,
+		uint32_t *end_line)
 {
+	const struct dc_crtc_timing *timing = &pipe_ctx->stream->timing;
+	int vline_pos = pipe_ctx->stream->periodic_interrupt.lines_offset;
+
+	if (pipe_ctx->stream->periodic_interrupt.ref_point == START_V_UPDATE) {
+		if (vline_pos > 0)
+			vline_pos--;
+		else if (vline_pos < 0)
+			vline_pos++;
+
+		vline_pos += dc->hwss.get_vupdate_offset_from_vsync(pipe_ctx);
+		if (vline_pos >= 0)
+			*start_line = vline_pos - ((vline_pos / timing->v_total) * timing->v_total);
+		else
+			*start_line = vline_pos + ((-vline_pos / timing->v_total) + 1) * timing->v_total - 1;
+		*end_line = (*start_line + 2) % timing->v_total;
+	} else if (pipe_ctx->stream->periodic_interrupt.ref_point == START_V_SYNC) {
+		// vsync is line 0 so start_line is just the requested line offset
+		*start_line = vline_pos;
+		*end_line = (*start_line + 2) % timing->v_total;
+	} else
+		ASSERT(0);
+}
+
+void dcn10_setup_periodic_interrupt(
+		struct dc *dc,
+		struct pipe_ctx *pipe_ctx)
+{
+	struct timing_generator *tg = pipe_ctx->stream_res.tg;
+	uint32_t start_line = 0;
+	uint32_t end_line = 0;
+
+	dcn10_cal_vline_position(dc, pipe_ctx, &start_line, &end_line);
+
 	tg->funcs->setup_vertical_interrupt0(tg, start_line, end_line);
 }
 
@@ -4198,6 +4202,5 @@ void dcn10_reset_surface_dcc_and_tiling(struct pipe_ctx *pipe_ctx,
 	/* force page flip to see the new content of the framebuffer */
 	hubp->funcs->hubp_program_surface_flip_and_addr(hubp,
 							&plane_state->address,
-							true,
-							plane_state->dcc.enable);
+							true);
 }

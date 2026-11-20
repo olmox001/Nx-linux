@@ -127,7 +127,7 @@ static int kb3930_probe(struct i2c_client *client)
 	unsigned int model;
 	int ret;
 
-	ddata = devm_kzalloc_obj(dev, *ddata);
+	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
 		return -ENOMEM;
 

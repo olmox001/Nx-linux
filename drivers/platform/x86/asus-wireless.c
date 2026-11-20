@@ -136,7 +136,7 @@ static int asus_wireless_probe(struct platform_device *pdev)
 	if (!id)
 		return -ENODEV;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

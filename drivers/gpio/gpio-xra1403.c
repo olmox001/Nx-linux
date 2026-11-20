@@ -149,7 +149,7 @@ static int xra1403_probe(struct spi_device *spi)
 	struct gpio_desc *reset_gpio;
 	int ret;
 
-	xra = devm_kzalloc_obj(&spi->dev, *xra);
+	xra = devm_kzalloc(&spi->dev, sizeof(*xra), GFP_KERNEL);
 	if (!xra)
 		return -ENOMEM;
 

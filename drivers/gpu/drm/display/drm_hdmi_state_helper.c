@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-#include <linux/debugfs.h>
 #include <linux/export.h>
 
 #include <drm/drm_atomic.h>
@@ -13,7 +12,6 @@
 #include <drm/display/drm_hdmi_cec_helper.h>
 #include <drm/display/drm_hdmi_helper.h>
 #include <drm/display/drm_hdmi_state_helper.h>
-#include <drm/display/drm_scdc_helper.h>
 
 /**
  * DOC: hdmi helpers
@@ -308,18 +306,17 @@
  */
 
 /**
- * __drm_atomic_helper_connector_hdmi_state_init() - Initialize all HDMI @drm_connector_state resources
+ * __drm_atomic_helper_connector_hdmi_reset() - Initializes all HDMI @drm_connector_state resources
  * @connector: DRM connector
- * @new_conn_state: connector state to initialize
+ * @new_conn_state: connector state to reset
  *
  * Initializes all HDMI resources from a @drm_connector_state without
  * actually allocating it. This is useful for HDMI drivers, in
- * combination with __drm_atomic_helper_connector_state_init(),
- * drm_atomic_helper_connector_reset(), or
- * drm_atomic_helper_connector_create_state().
+ * combination with __drm_atomic_helper_connector_reset() or
+ * drm_atomic_helper_connector_reset().
  */
-void __drm_atomic_helper_connector_hdmi_state_init(struct drm_connector *connector,
-						   struct drm_connector_state *new_conn_state)
+void __drm_atomic_helper_connector_hdmi_reset(struct drm_connector *connector,
+					      struct drm_connector_state *new_conn_state)
 {
 	unsigned int max_bpc = connector->max_bpc;
 
@@ -327,7 +324,7 @@ void __drm_atomic_helper_connector_hdmi_state_init(struct drm_connector *connect
 	new_conn_state->max_requested_bpc = max_bpc;
 	new_conn_state->hdmi.broadcast_rgb = DRM_HDMI_BROADCAST_RGB_AUTO;
 }
-EXPORT_SYMBOL(__drm_atomic_helper_connector_hdmi_state_init);
+EXPORT_SYMBOL(__drm_atomic_helper_connector_hdmi_reset);
 
 static enum hdmi_colorspace
 output_color_format_to_hdmi_colorspace(const struct drm_connector *connector,
@@ -544,11 +541,10 @@ sink_supports_format_bpc(const struct drm_connector *connector,
 		drm_dbg_kms(dev, "YUV444 format supported in that configuration.\n");
 
 		return true;
-
-	default:
-		drm_dbg_kms(dev, "Unsupported pixel format.\n");
-		return false;
 	}
+
+	drm_dbg_kms(dev, "Unsupported pixel format.\n");
+	return false;
 }
 
 static enum drm_mode_status
@@ -560,10 +556,6 @@ hdmi_clock_valid(const struct drm_connector *connector,
 	const struct drm_display_info *info = &connector->display_info;
 
 	if (info->max_tmds_clock && clock > info->max_tmds_clock * 1000)
-		return MODE_CLOCK_HIGH;
-
-	if (connector->hdmi.max_tmds_char_rate &&
-	    clock > connector->hdmi.max_tmds_char_rate)
 		return MODE_CLOCK_HIGH;
 
 	if (funcs && funcs->tmds_char_rate_valid) {
@@ -595,9 +587,6 @@ hdmi_compute_clock(const struct drm_connector *connector,
 		return -EINVAL;
 
 	conn_state->hdmi.tmds_char_rate = clock;
-
-	/* TODO: also check drm_display_info.hdmi.scdc.scrambling.low_rates */
-	conn_state->hdmi.scrambler_needed = (clock > HDMI_1_3_TMDS_CHAR_RATE_MAX_HZ);
 
 	return 0;
 }
@@ -680,39 +669,8 @@ hdmi_compute_config(const struct drm_connector *connector,
 	unsigned int max_bpc = clamp_t(unsigned int,
 				       conn_state->max_bpc,
 				       8, connector->max_bpc);
-	enum drm_output_color_format fmt;
 	int ret;
 
-	if (conn_state->color_format != DRM_CONNECTOR_COLOR_FORMAT_AUTO) {
-		switch (conn_state->color_format) {
-		case DRM_CONNECTOR_COLOR_FORMAT_AUTO:
-			drm_warn(connector->dev, "AUTO format in non-AUTO path.\n");
-			fallthrough;
-		case DRM_CONNECTOR_COLOR_FORMAT_RGB444:
-			fmt = DRM_OUTPUT_COLOR_FORMAT_RGB444;
-			break;
-		case DRM_CONNECTOR_COLOR_FORMAT_YCBCR444:
-			fmt = DRM_OUTPUT_COLOR_FORMAT_YCBCR444;
-			break;
-		case DRM_CONNECTOR_COLOR_FORMAT_YCBCR422:
-			fmt = DRM_OUTPUT_COLOR_FORMAT_YCBCR422;
-			break;
-		case DRM_CONNECTOR_COLOR_FORMAT_YCBCR420:
-			fmt = DRM_OUTPUT_COLOR_FORMAT_YCBCR420;
-			break;
-		default:
-			drm_dbg_kms(connector->dev, "HDMI does not support color format '%d'.\n",
-				conn_state->color_format);
-			return -EINVAL;
-		}
-
-		return hdmi_compute_format_bpc(connector, conn_state, mode, max_bpc, fmt);
-	}
-
-	/*
-	 * For %DRM_CONNECTOR_COLOR_FORMAT_AUTO, try RGB first, and fall back
-	 * to the less bandwidth-intensive YCBCR420 if RGB fails.
-	 */
 	ret = hdmi_compute_format_bpc(connector, conn_state, mode, max_bpc,
 				      DRM_OUTPUT_COLOR_FORMAT_RGB444);
 	if (ret) {
@@ -974,160 +932,6 @@ drm_hdmi_connector_mode_valid(struct drm_connector *connector,
 }
 EXPORT_SYMBOL(drm_hdmi_connector_mode_valid);
 
-static ssize_t
-audio_infoframe_read(struct file *filp, char __user *ubuf, size_t count, loff_t *ppos)
-{
-	struct drm_connector_hdmi_infoframe *infoframe;
-	struct drm_connector *connector;
-	union hdmi_infoframe *frame;
-	u8 buf[HDMI_INFOFRAME_SIZE(AUDIO)];
-	ssize_t len = 0;
-
-	connector = filp->private_data;
-	mutex_lock(&connector->hdmi.infoframes.lock);
-
-	infoframe = &connector->hdmi.infoframes.audio;
-	if (!infoframe->set)
-		goto out;
-
-	frame = &infoframe->data;
-	len = hdmi_infoframe_pack(frame, buf, sizeof(buf));
-	if (len < 0)
-		goto out;
-
-	len = simple_read_from_buffer(ubuf, count, ppos, buf, len);
-
-out:
-	mutex_unlock(&connector->hdmi.infoframes.lock);
-	return len;
-}
-
-static const struct file_operations audio_infoframe_fops = {
-	.owner   = THIS_MODULE,
-	.open    = simple_open,
-	.read    = audio_infoframe_read,
-};
-
-static int create_hdmi_audio_infoframe_file(struct drm_connector *connector,
-					    struct dentry *parent)
-{
-	struct dentry *file;
-
-	if (!connector->hdmi.funcs ||
-	    !connector->hdmi.funcs->audio.write_infoframe)
-		return 0;
-
-	file = debugfs_create_file("audio", 0400, parent, connector, &audio_infoframe_fops);
-	if (IS_ERR(file))
-		return PTR_ERR(file);
-
-	return 0;
-}
-
-#define DEFINE_INFOFRAME_FILE(_f) \
-static ssize_t _f##_read_infoframe(struct file *filp, \
-				   char __user *ubuf, \
-				   size_t count,      \
-				   loff_t *ppos)      \
-{ \
-	struct drm_connector_hdmi_infoframe *infoframe; \
-	struct drm_connector_state *conn_state; \
-	struct drm_connector *connector; \
-	union hdmi_infoframe *frame; \
-	struct drm_device *dev; \
-	u8 buf[HDMI_INFOFRAME_SIZE(MAX)]; \
-	ssize_t len = 0; \
-	\
-	connector = filp->private_data; \
-	dev = connector->dev; \
-	\
-	drm_modeset_lock(&dev->mode_config.connection_mutex, NULL); \
-	\
-	conn_state = connector->state; \
-	infoframe = &conn_state->hdmi.infoframes._f; \
-	if (!infoframe->set) \
-		goto out; \
-	\
-	frame = &infoframe->data; \
-	len = hdmi_infoframe_pack(frame, buf, sizeof(buf)); \
-	if (len < 0) \
-		goto out; \
-	\
-	len = simple_read_from_buffer(ubuf, count, ppos, buf, len); \
-	\
-out: \
-	drm_modeset_unlock(&dev->mode_config.connection_mutex); \
-	return len; \
-} \
-\
-static const struct file_operations _f##_infoframe_fops = { \
-	.owner = THIS_MODULE, \
-	.open = simple_open, \
-	.read = _f##_read_infoframe, \
-}; \
-\
-static int create_hdmi_## _f ## _infoframe_file(struct drm_connector *connector, \
-						struct dentry *parent) \
-{ \
-	struct dentry *file; \
-	\
-	if (!connector->hdmi.funcs || \
-	    !connector->hdmi.funcs->_f.write_infoframe) \
-		return 0; \
-	file = debugfs_create_file(#_f, 0400, parent, connector, &_f ## _infoframe_fops); \
-	if (IS_ERR(file)) \
-		return PTR_ERR(file); \
-	\
-	return 0; \
-}
-
-DEFINE_INFOFRAME_FILE(avi);
-DEFINE_INFOFRAME_FILE(hdmi);
-DEFINE_INFOFRAME_FILE(hdr_drm);
-DEFINE_INFOFRAME_FILE(spd);
-
-static int create_hdmi_infoframe_files(struct drm_connector *connector,
-				       struct dentry *parent)
-{
-	int ret;
-
-	ret = create_hdmi_audio_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_avi_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_hdmi_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_hdr_drm_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_spd_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-
-void drm_hdmi_connector_debugfs_init(struct drm_connector *connector,
-				     struct dentry *root)
-{
-	struct dentry *dir;
-
-	dir = debugfs_create_dir("infoframes", root);
-	if (IS_ERR(dir))
-		return;
-
-	create_hdmi_infoframe_files(connector, dir);
-	drm_scdc_debugfs_init(connector, root);
-}
-EXPORT_SYMBOL(drm_hdmi_connector_debugfs_init);
-
 static int clear_infoframe(struct drm_connector *connector,
 			   const struct drm_connector_infoframe_funcs *funcs,
 			   const char *type)
@@ -1359,36 +1163,18 @@ drm_atomic_helper_connector_hdmi_clear_audio_infoframe(struct drm_connector *con
 }
 EXPORT_SYMBOL(drm_atomic_helper_connector_hdmi_clear_audio_infoframe);
 
-static int
+static void
 drm_atomic_helper_connector_hdmi_update(struct drm_connector *connector,
-					struct drm_modeset_acquire_ctx *ctx,
 					enum drm_connector_status status)
 {
 	const struct drm_edid *drm_edid;
-	int ret;
 
 	if (status == connector_status_disconnected) {
-		/*
-		 * .detect_ctx() can only ever return a drm_connector_status or
-		 * -EDEADLK. Handle deadlocks, and report any !EDEADLK error.
-		 */
-		ret = drm_connector_hdmi_sync_scdc(connector, false, ctx);
-		if (ret) {
-			if (ret == -EDEADLK)
-				return ret;
-
-			drm_warn(connector->dev, "Ignored SCDC sync error: %d\n", ret);
-		}
-
+		// TODO: also handle scramber, HDMI sink disconnected.
 		drm_connector_hdmi_audio_plugged_notify(connector, false);
-
-		ret = drm_edid_connector_update(connector, NULL);
-		if (ret)
-			drm_warn(connector->dev, "Ignored EDID update error: %d\n", ret);
-
+		drm_edid_connector_update(connector, NULL);
 		drm_connector_cec_phys_addr_invalidate(connector);
-
-		return 0;
+		return;
 	}
 
 	if (connector->hdmi.funcs->read_edid)
@@ -1401,43 +1187,24 @@ drm_atomic_helper_connector_hdmi_update(struct drm_connector *connector,
 	drm_edid_free(drm_edid);
 
 	if (status == connector_status_connected) {
-		/*
-		 * .detect_ctx() can only ever return a drm_connector_status or
-		 * -EDEADLK. Handle deadlocks, and report any !EDEADLK error.
-		 */
-		ret = drm_connector_hdmi_sync_scdc(connector, true, ctx);
-		if (ret) {
-			if (ret == -EDEADLK)
-				return ret;
-
-			drm_warn(connector->dev, "Ignored SCDC sync error: %d\n", ret);
-		}
-
+		// TODO: also handle scramber, HDMI sink is now connected.
 		drm_connector_hdmi_audio_plugged_notify(connector, true);
 		drm_connector_cec_phys_addr_set(connector);
 	}
-
-	return 0;
 }
 
 /**
  * drm_atomic_helper_connector_hdmi_hotplug - Handle the hotplug event for the HDMI connector
  * @connector: A pointer to the HDMI connector
- * @ctx: Lock acquisition context to be used for resetting CRTC
  * @status: Connection status
  *
  * This function should be called as a part of the .detect() / .detect_ctx()
  * callbacks for all status changes.
- *
- * Returns:
- * Zero on success, error code on failure.
- * If @ctx is set, it might also return -EDEADLK.
  */
-int drm_atomic_helper_connector_hdmi_hotplug(struct drm_connector *connector,
-					     struct drm_modeset_acquire_ctx *ctx,
-					     enum drm_connector_status status)
+void drm_atomic_helper_connector_hdmi_hotplug(struct drm_connector *connector,
+					      enum drm_connector_status status)
 {
-	return drm_atomic_helper_connector_hdmi_update(connector, ctx, status);
+	drm_atomic_helper_connector_hdmi_update(connector, status);
 }
 EXPORT_SYMBOL(drm_atomic_helper_connector_hdmi_hotplug);
 
@@ -1452,27 +1219,6 @@ EXPORT_SYMBOL(drm_atomic_helper_connector_hdmi_hotplug);
  */
 void drm_atomic_helper_connector_hdmi_force(struct drm_connector *connector)
 {
-	drm_atomic_helper_connector_hdmi_update(connector, NULL, connector->status);
+	drm_atomic_helper_connector_hdmi_update(connector, connector->status);
 }
 EXPORT_SYMBOL(drm_atomic_helper_connector_hdmi_force);
-
-/**
- * drm_atomic_helper_connector_hdmi_force_ctx - HDMI Connector implementation
- * of the force_ctx callback
- * @connector: A pointer to the HDMI connector
- * @ctx: Lock acquisition context to be used for resetting CRTC
- *
- * This function implements the .force_ctx() callback for the HDMI connectors.
- * It can either be used directly as the callback or should be called from
- * within the .force_ctx() callback implementation to maintain the HDMI-specific
- * connector's data.
- *
- * Returns:
- * Zero on success, error code on failure, including -EDEADLK.
- */
-int drm_atomic_helper_connector_hdmi_force_ctx(struct drm_connector *connector,
-					       struct drm_modeset_acquire_ctx *ctx)
-{
-	return drm_atomic_helper_connector_hdmi_update(connector, ctx, connector->status);
-}
-EXPORT_SYMBOL(drm_atomic_helper_connector_hdmi_force_ctx);

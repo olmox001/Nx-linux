@@ -630,7 +630,7 @@ static int usbhs_probe(struct platform_device *pdev)
 		return irq;
 
 	/* usb private data */
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

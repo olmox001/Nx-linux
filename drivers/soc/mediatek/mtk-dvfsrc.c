@@ -520,11 +520,12 @@ static int dvfsrc_get_hw_opps_v4(struct mtk_dvfsrc *dvfsrc)
 		 num_opps, num_vcore, num_dram, num_emi);
 
 	/* Allocate everything now as anything else after that cannot fail */
-	desc = devm_kzalloc_obj(dvfsrc->dev, *desc);
+	desc = devm_kzalloc(dvfsrc->dev, sizeof(*desc), GFP_KERNEL);
 	if (!desc)
 		return -ENOMEM;
 
-	dvfsrc_opps = devm_kzalloc_objs(dvfsrc->dev, *dvfsrc_opps, num_opps + 1);
+	dvfsrc_opps = devm_kcalloc(dvfsrc->dev, num_opps + 1,
+				   sizeof(*dvfsrc_opps), GFP_KERNEL);
 	if (!dvfsrc_opps)
 		return -ENOMEM;
 
@@ -652,7 +653,7 @@ static int mtk_dvfsrc_probe(struct platform_device *pdev)
 	struct mtk_dvfsrc *dvfsrc;
 	int ret;
 
-	dvfsrc = devm_kzalloc_obj(&pdev->dev, *dvfsrc);
+	dvfsrc = devm_kzalloc(&pdev->dev, sizeof(*dvfsrc), GFP_KERNEL);
 	if (!dvfsrc)
 		return -ENOMEM;
 
@@ -861,7 +862,6 @@ static const struct of_device_id mtk_dvfsrc_of_match[] = {
 	{ .compatible = "mediatek,mt8196-dvfsrc", .data = &mt8196_data },
 	{ /* sentinel */ }
 };
-MODULE_DEVICE_TABLE(of, mtk_dvfsrc_of_match);
 
 static struct platform_driver mtk_dvfsrc_driver = {
 	.probe	= mtk_dvfsrc_probe,

@@ -1225,13 +1225,10 @@ static int __create_snap(struct dm_pool_metadata *pmd,
 	__close_device(td);
 
 	if (r)
-		goto bad2;
+		goto bad;
 
 	return 0;
 
-bad2:
-	list_del(&td->list);
-	kfree(td);
 bad:
 	dm_btree_remove(&pmd->tl_info, pmd->root, &key, &pmd->root);
 	dm_btree_remove(&pmd->details_info, pmd->details_root,

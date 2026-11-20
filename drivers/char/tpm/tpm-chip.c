@@ -66,6 +66,22 @@ static void tpm_relinquish_locality(struct tpm_chip *chip)
 	chip->locality = -1;
 }
 
+static int tpm_cmd_ready(struct tpm_chip *chip)
+{
+	if (!chip->ops->cmd_ready)
+		return 0;
+
+	return chip->ops->cmd_ready(chip);
+}
+
+static int tpm_go_idle(struct tpm_chip *chip)
+{
+	if (!chip->ops->go_idle)
+		return 0;
+
+	return chip->ops->go_idle(chip);
+}
+
 static void tpm_clk_enable(struct tpm_chip *chip)
 {
 	if (chip->ops->clk_enable)
@@ -100,6 +116,13 @@ int tpm_chip_start(struct tpm_chip *chip)
 		}
 	}
 
+	ret = tpm_cmd_ready(chip);
+	if (ret) {
+		tpm_relinquish_locality(chip);
+		tpm_clk_disable(chip);
+		return ret;
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tpm_chip_start);
@@ -114,6 +137,7 @@ EXPORT_SYMBOL_GPL(tpm_chip_start);
  */
 void tpm_chip_stop(struct tpm_chip *chip)
 {
+	tpm_go_idle(chip);
 	tpm_relinquish_locality(chip);
 	tpm_clk_disable(chip);
 }

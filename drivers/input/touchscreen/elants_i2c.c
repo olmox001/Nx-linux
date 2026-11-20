@@ -1360,9 +1360,9 @@ static void elants_i2c_power_off(void *_data)
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id i2c_hid_ids[] = {
-	{ .id = "ACPI0C50" },
-	{ .id = "PNP0C50" },
-	{ }
+	{"ACPI0C50", 0 },
+	{"PNP0C50", 0 },
+	{ },
 };
 
 static const guid_t i2c_hid_guid =
@@ -1410,7 +1410,7 @@ static int elants_i2c_probe(struct i2c_client *client)
 		return -ENXIO;
 	}
 
-	ts = devm_kzalloc_obj(&client->dev, struct elants_data);
+	ts = devm_kzalloc(&client->dev, sizeof(struct elants_data), GFP_KERNEL);
 	if (!ts)
 		return -ENOMEM;
 
@@ -1624,7 +1624,7 @@ MODULE_DEVICE_TABLE(i2c, elants_i2c_id);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id elants_acpi_id[] = {
-	{ .id = "ELAN0001", .driver_data = EKTH3500 },
+	{ "ELAN0001", EKTH3500 },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, elants_acpi_id);

@@ -13,7 +13,6 @@
         "EventCode": "0xc0",
         "EventName": "UNC_M2HBM_CMS_CLOCKTICKS",
         "PerPkg": "1",
-        "UMask": "0x80000000",
         "Unit": "M2HBM"
     },
     {
@@ -927,7 +926,6 @@
         "EventName": "UNC_M2HBM_IMC_WRITES.CH0_FROM_TGR",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x900",
         "Unit": "M2HBM"
     },
     {
@@ -961,7 +959,6 @@
         "FCMask": "0x00000000",
         "PerPkg": "1",
         "PortMask": "0x00000000",
-        "UMask": "0xa00",
         "Unit": "M2HBM"
     },
     {
@@ -973,7 +970,6 @@
         "FCMask": "0x00000000",
         "PerPkg": "1",
         "PortMask": "0x00000000",
-        "UMask": "0xc00",
         "Unit": "M2HBM"
     },
     {
@@ -1047,7 +1043,6 @@
         "EventName": "UNC_M2HBM_IMC_WRITES.CH1_FROM_TGR",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1100",
         "Unit": "M2HBM"
     },
     {
@@ -1081,7 +1076,6 @@
         "FCMask": "0x00000000",
         "PerPkg": "1",
         "PortMask": "0x00000000",
-        "UMask": "0x1200",
         "Unit": "M2HBM"
     },
     {
@@ -1093,7 +1087,6 @@
         "FCMask": "0x00000000",
         "PerPkg": "1",
         "PortMask": "0x00000000",
-        "UMask": "0x1400",
         "Unit": "M2HBM"
     },
     {
@@ -1125,7 +1118,6 @@
         "EventName": "UNC_M2HBM_IMC_WRITES.FROM_TGR",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1900",
         "Unit": "M2HBM"
     },
     {
@@ -1157,7 +1149,6 @@
         "FCMask": "0x00000000",
         "PerPkg": "1",
         "PortMask": "0x00000000",
-        "UMask": "0x1a00",
         "Unit": "M2HBM"
     },
     {
@@ -1169,7 +1160,6 @@
         "FCMask": "0x00000000",
         "PerPkg": "1",
         "PortMask": "0x00000000",
-        "UMask": "0x1c00",
         "Unit": "M2HBM"
     },
     {

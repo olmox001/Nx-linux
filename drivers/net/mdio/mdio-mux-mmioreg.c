@@ -104,7 +104,7 @@ static int mdio_mux_mmioreg_probe(struct platform_device *pdev)
 
 	dev_dbg(&pdev->dev, "probing node %pOF\n", np);
 
-	s = devm_kzalloc_obj(&pdev->dev, *s);
+	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
 	if (!s)
 		return -ENOMEM;
 

@@ -578,7 +578,7 @@ static int validate_sample_rate_table_v2v3(struct snd_usb_audio *chip,
 				UAC2_AS_VAL_ALT_SETTINGS))
 		return 0;
 
-	table = kzalloc_objs(*table, fp->nr_rates);
+	table = kcalloc(fp->nr_rates, sizeof(*table), GFP_KERNEL);
 	if (!table)
 		return -ENOMEM;
 

@@ -35,26 +35,17 @@ do {											\
 
 #define RE_PRINTK(__args...) __args
 
-#define REMOTE_EVENT_PRINT_FUNC(__name, __printk)					\
+#define REMOTE_EVENT(__name, __id, __struct, __printk)					\
+	REMOTE_EVENT_FORMAT(__name, __struct);						\
 	static void remote_event_print_##__name(void *evt, struct trace_seq *seq)	\
 	{										\
 		struct remote_event_format_##__name __maybe_unused *__entry = evt;	\
 		trace_seq_puts(seq, #__name);						\
-		__printk;								\
+		remote_printk(__printk);						\
 	}
-
-#define REMOTE_EVENT(__name, __id, __struct, __printk)					\
-	REMOTE_EVENT_FORMAT(__name, __struct);						\
-	REMOTE_EVENT_PRINT_FUNC(__name, remote_printk(__printk))
-
-#define REMOTE_EVENT_CUSTOM_PRINTK(__name, __id, __struct, __printk)			\
-	REMOTE_EVENT_FORMAT(__name, __struct);						\
-	REMOTE_EVENT_PRINT_FUNC(__name, __printk)
-
 #include REMOTE_EVENT_INCLUDE(REMOTE_EVENT_INCLUDE_FILE)
 
 #undef REMOTE_EVENT
-#undef REMOTE_EVENT_CUSTOM_PRINTK
 #undef RE_PRINTK
 #undef re_field
 #define re_field(__type, __field)							\
@@ -79,8 +70,4 @@ do {											\
 		.print_fmt	= remote_event_print_fmt_##__name,			\
 		.print		= remote_event_print_##__name,				\
 	}
-
-#define REMOTE_EVENT_CUSTOM_PRINTK(__name, __id, __struct, __printk)			\
-	REMOTE_EVENT(__name, __id, RE_STRUCT(__struct), "\"Unknown\"")
-
 #include REMOTE_EVENT_INCLUDE(REMOTE_EVENT_INCLUDE_FILE)

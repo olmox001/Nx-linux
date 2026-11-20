@@ -119,7 +119,7 @@ static int rpmsg_wwan_ctrl_probe(struct rpmsg_device *rpdev)
 	if (!parent)
 		return -ENODEV;
 
-	rpwwan = devm_kzalloc_obj(&rpdev->dev, *rpwwan);
+	rpwwan = devm_kzalloc(&rpdev->dev, sizeof(*rpwwan), GFP_KERNEL);
 	if (!rpwwan)
 		return -ENOMEM;
 

@@ -59,7 +59,7 @@ static int __init test_fns(void)
 	unsigned int i, n;
 	ktime_t time;
 
-	buf = kmalloc_objs(unsigned long, 10000);
+	buf = kmalloc_array(10000, sizeof(unsigned long), GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 

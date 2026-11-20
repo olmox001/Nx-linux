@@ -215,7 +215,7 @@ static int ns_pinctrl_probe(struct platform_device *pdev)
 	struct resource *res;
 	int i;
 
-	ns_pinctrl = devm_kzalloc_obj(dev, *ns_pinctrl);
+	ns_pinctrl = devm_kzalloc(dev, sizeof(*ns_pinctrl), GFP_KERNEL);
 	if (!ns_pinctrl)
 		return -ENOMEM;
 	pctldesc = &ns_pinctrl->pctldesc;
@@ -237,8 +237,9 @@ static int ns_pinctrl_probe(struct platform_device *pdev)
 
 	/* Set pinctrl properties */
 
-	pctldesc->pins = devm_kzalloc_objs(dev, struct pinctrl_pin_desc,
-					   ARRAY_SIZE(ns_pinctrl_pins));
+	pctldesc->pins = devm_kcalloc(dev, ARRAY_SIZE(ns_pinctrl_pins),
+				      sizeof(struct pinctrl_pin_desc),
+				      GFP_KERNEL);
 	if (!pctldesc->pins)
 		return -ENOMEM;
 	for (i = 0, pin = (struct pinctrl_pin_desc *)&pctldesc->pins[0];

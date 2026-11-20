@@ -325,8 +325,10 @@ static int mlxreg_hotplug_attr_init(struct mlxreg_hotplug_priv_data *priv)
 		num_attrs += k;
 	}
 
-	priv->group.attrs = devm_kzalloc_objs(&priv->pdev->dev,
-					      struct attribute *, num_attrs);
+	priv->group.attrs = devm_kcalloc(&priv->pdev->dev,
+					 num_attrs,
+					 sizeof(struct attribute *),
+					 GFP_KERNEL);
 	if (!priv->group.attrs)
 		return -ENOMEM;
 
@@ -719,7 +721,7 @@ static int mlxreg_hotplug_probe(struct platform_device *pdev)
 		return -EPROBE_DEFER;
 	i2c_put_adapter(deferred_adap);
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -738,8 +740,10 @@ static int mlxreg_hotplug_probe(struct platform_device *pdev)
 	err = devm_request_irq(&pdev->dev, priv->irq,
 			       mlxreg_hotplug_irq_handler, IRQF_TRIGGER_FALLING
 			       | IRQF_SHARED, "mlxreg-hotplug", priv);
-	if (err)
+	if (err) {
+		dev_err(&pdev->dev, "Failed to request irq: %d\n", err);
 		return err;
+	}
 
 	disable_irq(priv->irq);
 	spin_lock_init(&priv->lock);

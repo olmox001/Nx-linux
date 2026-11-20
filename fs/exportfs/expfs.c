@@ -336,11 +336,7 @@ static int get_name(const struct path *path, char *name, struct dentry *child)
 	}
 
 out_close:
-	/*
-	 * @file is the read-only directory opened above, so __fput()
-	 * cannot block on anything the caller holds.
-	 */
-	__fput_sync(file);
+	fput(file);
 out:
 	return error;
 }

@@ -836,12 +836,13 @@ static int pm8xxx_xoadc_parse_channels(struct pm8xxx_xoadc *adc)
 	}
 	dev_dbg(adc->dev, "found %d ADC channels\n", adc->nchans);
 
-	adc->iio_chans = devm_kzalloc_objs(adc->dev, *adc->iio_chans,
-					   adc->nchans);
+	adc->iio_chans = devm_kcalloc(adc->dev, adc->nchans,
+				      sizeof(*adc->iio_chans), GFP_KERNEL);
 	if (!adc->iio_chans)
 		return -ENOMEM;
 
-	adc->chans = devm_kzalloc_objs(adc->dev, *adc->chans, adc->nchans);
+	adc->chans = devm_kcalloc(adc->dev, adc->nchans,
+				  sizeof(*adc->chans), GFP_KERNEL);
 	if (!adc->chans)
 		return -ENOMEM;
 

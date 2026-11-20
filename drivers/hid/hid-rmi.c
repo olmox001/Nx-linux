@@ -386,7 +386,7 @@ static int rmi_check_sanity(struct hid_device *hdev, u8 *data, int size)
 	 * such reports here.
 	 */
 
-	while (valid_size > 0 && data[valid_size - 1] == 0xff)
+	while ((data[valid_size - 1] == 0xff) && valid_size > 0)
 		valid_size--;
 
 	return valid_size;
@@ -669,7 +669,7 @@ static int rmi_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	struct hid_report *output_report;
 	struct hid_report *feature_report;
 
-	data = devm_kzalloc_obj(&hdev->dev, struct rmi_data);
+	data = devm_kzalloc(&hdev->dev, sizeof(struct rmi_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

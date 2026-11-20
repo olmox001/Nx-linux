@@ -284,8 +284,10 @@ int msm_dp_audio_prepare(struct drm_bridge *bridge,
 	 * such cases check for connection status and bail out if not
 	 * connected.
 	 */
-	if (!msm_dp_display->power_on)
+	if (!msm_dp_display->power_on) {
+		rc = -EINVAL;
 		goto end;
+	}
 
 	audio = msm_dp_audio_get_data(msm_dp_display);
 	if (IS_ERR(audio)) {
@@ -348,7 +350,7 @@ struct msm_dp_audio *msm_dp_audio_get(struct platform_device *pdev,
 		goto error;
 	}
 
-	audio = devm_kzalloc_obj(&pdev->dev, *audio);
+	audio = devm_kzalloc(&pdev->dev, sizeof(*audio), GFP_KERNEL);
 	if (!audio) {
 		rc = -ENOMEM;
 		goto error;

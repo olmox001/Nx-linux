@@ -170,7 +170,6 @@ static int csi_enum_frameintervals(struct v4l2_subdev *subdev,
 }
 
 static int csi_set_format(struct v4l2_subdev *subdev,
-			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
@@ -791,7 +790,7 @@ static int tegra_csi_probe(struct platform_device *pdev)
 	unsigned int i;
 	int ret;
 
-	csi = devm_kzalloc_obj(&pdev->dev, *csi);
+	csi = devm_kzalloc(&pdev->dev, sizeof(*csi), GFP_KERNEL);
 	if (!csi)
 		return -ENOMEM;
 
@@ -801,8 +800,8 @@ static int tegra_csi_probe(struct platform_device *pdev)
 
 	csi->soc = of_device_get_match_data(&pdev->dev);
 
-	csi->clks = devm_kzalloc_objs(&pdev->dev, *csi->clks,
-				      csi->soc->num_clks);
+	csi->clks = devm_kcalloc(&pdev->dev, csi->soc->num_clks,
+				 sizeof(*csi->clks), GFP_KERNEL);
 	if (!csi->clks)
 		return -ENOMEM;
 

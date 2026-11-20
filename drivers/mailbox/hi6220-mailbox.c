@@ -267,14 +267,15 @@ static int hi6220_mbox_probe(struct platform_device *pdev)
 	struct hi6220_mbox *mbox;
 	int i, err;
 
-	mbox = devm_kzalloc_flex(dev, *mbox, mchan, MBOX_CHAN_MAX);
+	mbox = devm_kzalloc(dev, struct_size(mbox, mchan, MBOX_CHAN_MAX), GFP_KERNEL);
 	if (!mbox)
 		return -ENOMEM;
 
 	mbox->chan_num = MBOX_CHAN_MAX;
 	mbox->dev = dev;
 
-	mbox->chan = devm_kzalloc_objs(dev, *mbox->chan, mbox->chan_num);
+	mbox->chan = devm_kcalloc(dev,
+		mbox->chan_num, sizeof(*mbox->chan), GFP_KERNEL);
 	if (!mbox->chan)
 		return -ENOMEM;
 
@@ -296,8 +297,11 @@ static int hi6220_mbox_probe(struct platform_device *pdev)
 
 	err = devm_request_irq(dev, mbox->irq, hi6220_mbox_interrupt, 0,
 			dev_name(dev), mbox);
-	if (err)
+	if (err) {
+		dev_err(dev, "Failed to register a mailbox IRQ handler: %d\n",
+			err);
 		return -ENODEV;
+	}
 
 	mbox->controller.dev = dev;
 	mbox->controller.chans = &mbox->chan[0];

@@ -665,10 +665,8 @@ static int smcr_clnt_conf_first_link(struct smc_sock *smc)
 	if (rc < 0)
 		return SMC_CLC_DECL_TIMEOUT_CL;
 
-	down_write(&link->lgr->llc_conf_mutex);
 	smc_llc_link_active(link);
 	smcr_lgr_set_type(link->lgr, SMC_LGR_SINGLE);
-	up_write(&link->lgr->llc_conf_mutex);
 
 	if (link->lgr->max_links > 1) {
 		/* optional 2nd link, receive ADD LINK request from server */
@@ -684,9 +682,7 @@ static int smcr_clnt_conf_first_link(struct smc_sock *smc)
 			return rc;
 		}
 		smc_llc_flow_qentry_clr(&link->lgr->llc_flow_lcl);
-		down_write(&link->lgr->llc_conf_mutex);
 		smc_llc_cli_add_link(link, qentry);
-		up_write(&link->lgr->llc_conf_mutex);
 	}
 	return 0;
 }
@@ -980,7 +976,7 @@ static int smc_connect_fallback(struct smc_sock *smc, int reason_code)
 	smc_copy_sock_settings_to_clc(smc);
 	smc->connect_nonblock = 0;
 	if (smc->sk.sk_state == SMC_INIT)
-		smp_store_release(&smc->sk.sk_state, SMC_ACTIVE);
+		smc->sk.sk_state = SMC_ACTIVE;
 	return 0;
 }
 
@@ -1013,15 +1009,14 @@ static void smc_conn_abort(struct smc_sock *smc, int local_first)
 {
 	struct smc_connection *conn = &smc->conn;
 	struct smc_link_group *lgr = conn->lgr;
-	bool lgr_valid = local_first && smc_conn_lgr_valid(conn);
+	bool lgr_valid = false;
 
-	if (lgr_valid)
-		smc_lgr_hold(lgr);	/* lgr_put below */
+	if (smc_conn_lgr_valid(conn))
+		lgr_valid = true;
+
 	smc_conn_free(conn);
-	if (lgr_valid) {
+	if (local_first && lgr_valid)
 		smc_lgr_cleanup_early(lgr);
-		smc_lgr_put(lgr);
-	}
 }
 
 /* check if there is a rdma device available for this connection. */
@@ -1386,7 +1381,7 @@ static int smc_connect_rdma(struct smc_sock *smc,
 	smc_copy_sock_settings_to_clc(smc);
 	smc->connect_nonblock = 0;
 	if (smc->sk.sk_state == SMC_INIT)
-		smp_store_release(&smc->sk.sk_state, SMC_ACTIVE);
+		smc->sk.sk_state = SMC_ACTIVE;
 
 	return 0;
 connect_abort:
@@ -1489,7 +1484,7 @@ static int smc_connect_ism(struct smc_sock *smc,
 	smc_copy_sock_settings_to_clc(smc);
 	smc->connect_nonblock = 0;
 	if (smc->sk.sk_state == SMC_INIT)
-		smp_store_release(&smc->sk.sk_state, SMC_ACTIVE);
+		smc->sk.sk_state = SMC_ACTIVE;
 
 	return 0;
 connect_abort:
@@ -1914,10 +1909,8 @@ static int smcr_serv_conf_first_link(struct smc_sock *smc)
 	/* confirm_rkey is implicit on 1st contact */
 	smc->conn.rmb_desc->is_conf_rkey = true;
 
-	down_write(&link->lgr->llc_conf_mutex);
 	smc_llc_link_active(link);
 	smcr_lgr_set_type(link->lgr, SMC_LGR_SINGLE);
-	up_write(&link->lgr->llc_conf_mutex);
 
 	if (link->lgr->max_links > 1) {
 		down_write(&link->lgr->llc_conf_mutex);
@@ -1958,7 +1951,7 @@ static void smc_listen_out_connected(struct smc_sock *new_smc)
 	struct sock *newsmcsk = &new_smc->sk;
 
 	if (newsmcsk->sk_state == SMC_INIT)
-		smp_store_release(&newsmcsk->sk_state, SMC_ACTIVE);
+		newsmcsk->sk_state = SMC_ACTIVE;
 
 	smc_listen_out(new_smc);
 }
@@ -1972,7 +1965,7 @@ static void smc_listen_out_err(struct smc_sock *new_smc)
 	this_cpu_inc(net->smc.smc_stats->srv_hshake_err_cnt);
 	if (newsmcsk->sk_state == SMC_INIT)
 		sock_put(&new_smc->sk); /* passive closing */
-	smp_store_release(&newsmcsk->sk_state, SMC_CLOSED);
+	newsmcsk->sk_state = SMC_CLOSED;
 
 	smc_listen_out(new_smc);
 }
@@ -2931,7 +2924,7 @@ __poll_t smc_poll(struct file *file, struct socket *sock,
 				mask |= EPOLLOUT | EPOLLWRNORM;
 			} else {
 				sk_set_bit(SOCKWQ_ASYNC_NOSPACE, sk);
-				sk_set_nospace(sk);
+				set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 
 				if (sk->sk_state != SMC_INIT) {
 					/* Race breaker the same way as tcp_poll(). */
@@ -3153,8 +3146,7 @@ int smc_setsockopt(struct socket *sock, int level, int optname,
 			if (val) {
 				SMC_STAT_INC(smc, ndly_cnt);
 				smc_tx_pending(&smc->conn);
-				if (cancel_delayed_work(&smc->conn.tx_work))
-					sock_put(sk);
+				cancel_delayed_work(&smc->conn.tx_work);
 			}
 		}
 		break;
@@ -3165,8 +3157,7 @@ int smc_setsockopt(struct socket *sock, int level, int optname,
 			if (!val) {
 				SMC_STAT_INC(smc, cork_cnt);
 				smc_tx_pending(&smc->conn);
-				if (cancel_delayed_work(&smc->conn.tx_work))
-					sock_put(sk);
+				cancel_delayed_work(&smc->conn.tx_work);
 			}
 		}
 		break;

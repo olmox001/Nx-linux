@@ -28,7 +28,6 @@
 #include "xe_ggtt.h"
 #include "xe_map.h"
 #include "xe_migrate.h"
-#include "xe_mmio_gem.h"
 #include "xe_pat.h"
 #include "xe_pm.h"
 #include "xe_preempt_fence.h"
@@ -105,16 +104,13 @@ static bool resource_is_vram(struct ttm_resource *res)
 
 bool xe_bo_is_vram(struct xe_bo *bo)
 {
-	struct ttm_resource *res = bo->ttm.resource;
-
-	return  res && (resource_is_vram(res) || resource_is_stolen_vram(xe_bo_device(bo), res));
+	return resource_is_vram(bo->ttm.resource) ||
+		resource_is_stolen_vram(xe_bo_device(bo), bo->ttm.resource);
 }
 
 bool xe_bo_is_stolen(struct xe_bo *bo)
 {
-	struct ttm_resource *res = bo->ttm.resource;
-
-	return res && res->mem_type == XE_PL_STOLEN;
+	return bo->ttm.resource->mem_type == XE_PL_STOLEN;
 }
 
 /**
@@ -162,13 +158,7 @@ bool xe_bo_is_vm_bound(struct xe_bo *bo)
 	return !list_empty(&bo->ttm.base.gpuva.list);
 }
 
-/**
- * xe_bo_is_user - Check if BO is user-created
- * @bo: The BO
- *
- * Returns: true if @bo was created by userspace
- */
-bool xe_bo_is_user(struct xe_bo *bo)
+static bool xe_bo_is_user(struct xe_bo *bo)
 {
 	return bo->flags & XE_BO_FLAG_USER;
 }
@@ -354,18 +344,6 @@ static void xe_evict_flags(struct ttm_buffer_object *tbo,
 
 	if (device_unplugged && !tbo->base.dma_buf) {
 		*placement = purge_placement;
-		return;
-	}
-
-	if (xe_bo_madv_is_dontneed(bo)) {
-		/*
-		 * We can't use purge_placement here, since we need to trigger
-		 * our own purge procedure at the start of xe_bo_move(), which
-		 * would otherwise be skipped. At the same time we don't want
-		 * ttm to then populate the tt with dst pages, before the move
-		 * callback, hence use sys_placement here.
-		 */
-		*placement = sys_placement;
 		return;
 	}
 
@@ -792,7 +770,7 @@ static int xe_bo_trigger_rebind(struct xe_device *xe, struct xe_bo *bo,
 		dma_resv_iter_begin(&cursor, bo->ttm.base.resv,
 				    DMA_RESV_USAGE_BOOKKEEP);
 		dma_resv_for_each_fence_unlocked(&cursor, fence)
-			dma_fence_enable_signaling(fence);
+			dma_fence_enable_sw_signaling(fence);
 		dma_resv_iter_end(&cursor);
 	}
 
@@ -1034,13 +1012,16 @@ void xe_bo_set_purgeable_state(struct xe_bo *bo,
  *
  * Return: 0 on success, negative error code on failure
  */
-int xe_ttm_bo_purge(struct ttm_buffer_object *ttm_bo, struct ttm_operation_ctx *ctx)
+static int xe_ttm_bo_purge(struct ttm_buffer_object *ttm_bo, struct ttm_operation_ctx *ctx)
 {
 	struct xe_bo *bo = ttm_to_xe_bo(ttm_bo);
 	struct ttm_placement place = {};
 	int ret;
 
 	xe_bo_assert_held(bo);
+
+	if (!ttm_bo->ttm)
+		return 0;
 
 	if (!xe_bo_madv_is_dontneed(bo))
 		return 0;
@@ -1983,7 +1964,7 @@ static void xe_ttm_bo_destroy(struct ttm_buffer_object *ttm_bo)
 		xe_drm_client_remove_bo(bo);
 #endif
 
-	if (bo->vm && (xe_bo_is_user(bo) || bo->flags & XE_BO_FLAG_PAGETABLE))
+	if (bo->vm && xe_bo_is_user(bo))
 		xe_vm_put(bo->vm);
 
 	if (bo->parent_obj)
@@ -2461,16 +2442,8 @@ struct xe_bo *xe_bo_init_locked(struct xe_device *xe, struct xe_bo *bo,
 	if (flags & (XE_BO_FLAG_VRAM_MASK | XE_BO_FLAG_STOLEN) &&
 	    !(flags & XE_BO_FLAG_IGNORE_MIN_PAGE_SIZE) &&
 	    ((xe->info.vram_flags & XE_VRAM_FLAGS_NEED64K) ||
-	     (flags & (XE_BO_FLAG_NEEDS_64K | XE_BO_FLAG_NEEDS_2M |
-		       XE_BO_FLAG_NEEDS_1G)))) {
-		size_t align;
-
-		if (flags & XE_BO_FLAG_NEEDS_1G)
-			align = SZ_1G;
-		else if (flags & XE_BO_FLAG_NEEDS_2M)
-			align = SZ_2M;
-		else
-			align = SZ_64K;
+	     (flags & (XE_BO_FLAG_NEEDS_64K | XE_BO_FLAG_NEEDS_2M)))) {
+		size_t align = flags & XE_BO_FLAG_NEEDS_2M ? SZ_2M : SZ_64K;
 
 		aligned_size = ALIGN(size, align);
 		if (type != ttm_bo_type_device)
@@ -2670,7 +2643,7 @@ __xe_bo_create_locked(struct xe_device *xe,
 	 * by having all the vm's bo refereferences released at vm close
 	 * time.
 	 */
-	if (vm && (xe_bo_is_user(bo) || bo->flags & XE_BO_FLAG_PAGETABLE))
+	if (vm && xe_bo_is_user(bo))
 		xe_vm_get(vm);
 	bo->vm = vm;
 
@@ -2761,145 +2734,6 @@ static struct xe_bo *xe_bo_create_novm(struct xe_device *xe, struct xe_tile *til
 	return ret ? ERR_PTR(ret) : bo;
 }
 
-#ifdef CONFIG_DRM_XE_DEBUG_PAGE_SIZE
-static void xe_bo_debug_mixed_mode_cur_index_advance(struct xe_device *xe, struct xe_bo *bo)
-{
-	if (!xe_debug_page_size_mode_is_mixed(xe))
-		return;
-
-	if (!(bo->flags & XE_BO_FLAG_VRAM_MASK) ||
-	    !(bo->flags & XE_BO_FLAG_USER))
-		return;
-
-	mutex_lock(&xe->page_size_alloc_ctrl.lock);
-	if (xe->page_size_alloc_ctrl.mode == XE_PAGE_SIZE_ALLOC_CTRL_MODE_MIXED)
-		xe->page_size_alloc_ctrl.cur_index++;
-	mutex_unlock(&xe->page_size_alloc_ctrl.lock);
-}
-
-static bool xe_size_align_overflows(size_t size, size_t align)
-{
-	return size > SIZE_MAX - (align - 1);
-}
-
-static u32 get_flag_from_cur_index_in_mixed_mode(struct xe_device *xe, size_t *align_size,
-						 int *err)
-{
-	static const struct {
-		u32    flag;
-		size_t align;
-	} map[] = {
-		{ 0,                     SZ_4K  }, /* default: 4K, no flag */
-		{ XE_BO_FLAG_NEEDS_64K,  SZ_64K },
-		{ XE_BO_FLAG_NEEDS_2M,   SZ_2M  },
-		{ XE_BO_FLAG_NEEDS_1G,   SZ_1G  },
-	};
-	u32 idx;
-	const typeof(*map) *entry;
-
-	lockdep_assert_held(&xe->page_size_alloc_ctrl.lock);
-
-	*err = 0;
-	idx = xe->page_size_alloc_ctrl.cur_index % ARRAY_SIZE(map);
-
-	entry = &map[idx];
-
-	if (!entry->flag)
-		return 0;
-
-	if (xe_size_align_overflows(*align_size, entry->align)) {
-		*err = -EINVAL;
-		return 0;
-	}
-	*align_size = ALIGN(*align_size, entry->align);
-
-	return entry->flag;
-}
-
-static int xe_bo_apply_debug_page_size_policy(struct xe_device *xe,
-					      u32 *bo_flags,
-					      size_t *size)
-{
-	enum xe_page_size_alloc_ctrl_mode mode;
-	u32 want = 0;
-	size_t align_size = *size;
-	int err = 0;
-
-	/*
-	 * The debug page-size policy is only meaningful for BOs placed in
-	 * VRAM, where the downstream BO init path can
-	 * actually honor the corresponding minimum page-size requirement.
-	 */
-	if (!(*bo_flags & XE_BO_FLAG_VRAM_MASK))
-		return 0;
-
-	/*
-	 * Do not override existing page-size requirement flags, since they
-	 * may reflect functional requirements for specific BO types.
-	 */
-	if (*bo_flags & (XE_BO_FLAG_NEEDS_64K |
-			 XE_BO_FLAG_NEEDS_2M |
-			 XE_BO_FLAG_NEEDS_1G))
-		return 0;
-
-	if (!READ_ONCE(xe->page_size_alloc_ctrl.mode))
-		return 0;
-
-	mutex_lock(&xe->page_size_alloc_ctrl.lock);
-
-	mode = xe->page_size_alloc_ctrl.mode;
-	if (mode == XE_PAGE_SIZE_ALLOC_CTRL_MODE_NONE) {
-		goto out_unlock;
-	} else if (mode == XE_PAGE_SIZE_ALLOC_CTRL_MODE_ONLY_2M) {
-		if (xe_size_align_overflows(align_size, SZ_2M)) {
-			err = -EINVAL;
-			goto out_unlock;
-		}
-		want = XE_BO_FLAG_NEEDS_2M;
-		align_size = ALIGN(align_size, SZ_2M);
-	} else if (mode == XE_PAGE_SIZE_ALLOC_CTRL_MODE_ONLY_1G) {
-		if (xe_size_align_overflows(align_size, SZ_1G)) {
-			err = -EINVAL;
-			goto out_unlock;
-		}
-		want = XE_BO_FLAG_NEEDS_1G;
-		align_size = ALIGN(align_size, SZ_1G);
-	} else if (mode == XE_PAGE_SIZE_ALLOC_CTRL_MODE_MIXED) {
-		want = get_flag_from_cur_index_in_mixed_mode(xe, &align_size, &err);
-		if (err)
-			goto out_unlock;
-	} else {
-		goto out_unlock;
-	}
-
-	mutex_unlock(&xe->page_size_alloc_ctrl.lock);
-
-	*bo_flags |= want;
-	/*
-	 * Apply the debug page-size policy by rounding the user BO size up to
-	 * the selected granularity.
-	 */
-	*size = align_size;
-	return err;
-
-out_unlock:
-	mutex_unlock(&xe->page_size_alloc_ctrl.lock);
-	return err;
-}
-#else
-static int xe_bo_apply_debug_page_size_policy(struct xe_device *xe,
-					      u32 *bo_flags,
-					      size_t *size)
-{
-	return 0;
-}
-
-static void xe_bo_debug_mixed_mode_cur_index_advance(struct xe_device *xe,
-						     struct xe_bo *bo)
-{
-}
-#endif
-
 /**
  * xe_bo_create_user() - Create a user BO
  * @xe: The xe device.
@@ -2920,15 +2754,8 @@ struct xe_bo *xe_bo_create_user(struct xe_device *xe,
 				u32 flags, struct drm_exec *exec)
 {
 	struct xe_bo *bo;
-	int err = 0;
 
 	flags |= XE_BO_FLAG_USER;
-
-	if (xe_debug_page_size_mode_not_none(xe)) {
-		err = xe_bo_apply_debug_page_size_policy(xe, &flags, &size);
-		if (err)
-			return ERR_PTR(err);
-	}
 
 	if (vm || exec) {
 		xe_assert(xe, exec);
@@ -3360,9 +3187,6 @@ void xe_bo_unpin(struct xe_bo *bo)
 	struct ttm_place *place = &bo->placements[0];
 	struct xe_device *xe = xe_bo_device(bo);
 
-	if (xe_bo_is_purged(bo))
-		return;
-
 	xe_assert(xe, !bo->ttm.base.import_attach);
 	xe_assert(xe, xe_bo_is_pinned(bo));
 
@@ -3732,8 +3556,6 @@ int xe_gem_create_ioctl(struct drm_device *dev, void *data,
 	if (err)
 		goto out_bulk;
 
-	xe_bo_debug_mixed_mode_cur_index_advance(xe, bo);
-
 	args->handle = handle;
 	goto out_put;
 
@@ -3752,39 +3574,6 @@ out_vm:
 	return err;
 }
 
-static int xe_gem_pci_barrier_mmap_offset(struct xe_device *xe, struct drm_file *file,
-					  struct drm_xe_gem_mmap_offset *args)
-{
-	struct xe_file *xef = file->driver_priv;
-	struct xe_mmio_gem **barrier = &xef->mmio_gem.pci_barrier;
-
-	if (XE_IOCTL_DBG(xe, !IS_DGFX(xe)))
-		return -EINVAL;
-
-	if (XE_IOCTL_DBG(xe, args->handle))
-		return -EINVAL;
-
-	scoped_guard(mutex, &xef->mmio_gem.lock) {
-		if (!*barrier) {
-			phys_addr_t phys_addr;
-
-#define LAST_DB_PAGE_OFFSET 0x7ff000
-			phys_addr = pci_resource_start(to_pci_dev(xe->drm.dev), 0) +
-				LAST_DB_PAGE_OFFSET;
-			*barrier = xe_mmio_gem_create(xe, file, phys_addr, SZ_4K);
-			if (IS_ERR(*barrier)) {
-				int err = PTR_ERR(*barrier);
-
-				*barrier = NULL;
-				return err;
-			}
-		}
-
-		args->offset = xe_mmio_gem_mmap_offset(*barrier);
-	}
-	return 0;
-}
-
 int xe_gem_mmap_offset_ioctl(struct drm_device *dev, void *data,
 			     struct drm_file *file)
 {
@@ -3800,8 +3589,21 @@ int xe_gem_mmap_offset_ioctl(struct drm_device *dev, void *data,
 			 ~DRM_XE_MMAP_OFFSET_FLAG_PCI_BARRIER))
 		return -EINVAL;
 
-	if (args->flags & DRM_XE_MMAP_OFFSET_FLAG_PCI_BARRIER)
-		return xe_gem_pci_barrier_mmap_offset(xe, file, args);
+	if (args->flags & DRM_XE_MMAP_OFFSET_FLAG_PCI_BARRIER) {
+		if (XE_IOCTL_DBG(xe, !IS_DGFX(xe)))
+			return -EINVAL;
+
+		if (XE_IOCTL_DBG(xe, args->handle))
+			return -EINVAL;
+
+		if (XE_IOCTL_DBG(xe, PAGE_SIZE > SZ_4K))
+			return -EINVAL;
+
+		BUILD_BUG_ON(((XE_PCI_BARRIER_MMAP_OFFSET >> XE_PTE_SHIFT) +
+			      SZ_4K) >= DRM_FILE_PAGE_OFFSET_START);
+		args->offset = XE_PCI_BARRIER_MMAP_OFFSET;
+		return 0;
+	}
 
 	gem_obj = drm_gem_object_lookup(file, args->handle);
 	if (XE_IOCTL_DBG(xe, !gem_obj))

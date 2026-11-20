@@ -101,7 +101,8 @@ static int max8998_battery_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	max8998 = devm_kzalloc_obj(&pdev->dev, struct max8998_battery_data);
+	max8998 = devm_kzalloc(&pdev->dev, sizeof(struct max8998_battery_data),
+				GFP_KERNEL);
 	if (!max8998)
 		return -ENOMEM;
 

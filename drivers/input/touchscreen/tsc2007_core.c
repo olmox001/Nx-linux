@@ -221,6 +221,7 @@ static int tsc2007_get_pendown_state_gpio(struct device *dev)
 static int tsc2007_probe_properties(struct device *dev, struct tsc2007 *ts)
 {
 	u32 val32;
+	u64 val64;
 
 	if (!device_property_read_u32(dev, "ti,max-rt", &val32))
 		ts->max_rt = val32;
@@ -236,8 +237,8 @@ static int tsc2007_probe_properties(struct device *dev, struct tsc2007 *ts)
 	if (!device_property_read_u32(dev, "ti,fuzzz", &val32))
 		ts->fuzzz = val32;
 
-	if (!device_property_read_u32(dev, "ti,poll-period", &val32))
-		ts->poll_period = msecs_to_jiffies(val32);
+	if (!device_property_read_u64(dev, "ti,poll-period", &val64))
+		ts->poll_period = msecs_to_jiffies(val64);
 	else
 		ts->poll_period = msecs_to_jiffies(1);
 
@@ -303,7 +304,7 @@ static int tsc2007_probe(struct i2c_client *client)
 				     I2C_FUNC_SMBUS_READ_WORD_DATA))
 		return -EIO;
 
-	ts = devm_kzalloc_obj(&client->dev, struct tsc2007);
+	ts = devm_kzalloc(&client->dev, sizeof(struct tsc2007), GFP_KERNEL);
 	if (!ts)
 		return -ENOMEM;
 

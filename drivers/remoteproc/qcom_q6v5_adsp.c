@@ -106,7 +106,7 @@ struct qcom_adsp {
 	phys_addr_t mem_phys;
 	unsigned long iova;
 	phys_addr_t mem_reloc;
-	void __iomem *mem_region;
+	void *mem_region;
 	size_t mem_size;
 	bool has_iommu;
 
@@ -319,7 +319,7 @@ static int adsp_load(struct rproc *rproc, const struct firmware *fw)
 	int ret;
 
 	ret = qcom_mdt_load_no_init(adsp->dev, fw, rproc->firmware,
-				    (__force void *)adsp->mem_region, adsp->mem_phys,
+				    adsp->mem_region, adsp->mem_phys,
 				    adsp->mem_size, &adsp->mem_reloc);
 	if (ret)
 		return ret;
@@ -430,7 +430,7 @@ static int adsp_start(struct rproc *rproc)
 		goto disable_adsp_clks;
 	}
 
-	ret = qcom_q6v5_wait_for_start(&adsp->q6v5, msecs_to_jiffies(5000));
+	ret = qcom_q6v5_wait_for_start(&adsp->q6v5, msecs_to_jiffies(5 * HZ));
 	if (ret == -ETIMEDOUT) {
 		dev_err(adsp->dev, "start timed out\n");
 		goto disable_adsp_clks;
@@ -492,7 +492,7 @@ static void *adsp_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iom
 	if (offset < 0 || offset + len > adsp->mem_size)
 		return NULL;
 
-	return (__force void *)adsp->mem_region + offset;
+	return adsp->mem_region + offset;
 }
 
 static int adsp_parse_firmware(struct rproc *rproc, const struct firmware *fw)
@@ -545,7 +545,8 @@ static int adsp_init_clock(struct qcom_adsp *adsp, const char **clk_ids)
 		num_clks++;
 
 	adsp->num_clks = num_clks;
-	adsp->clks = devm_kzalloc_objs(adsp->dev, *adsp->clks, adsp->num_clks);
+	adsp->clks = devm_kcalloc(adsp->dev, adsp->num_clks,
+				sizeof(*adsp->clks), GFP_KERNEL);
 	if (!adsp->clks)
 		return -ENOMEM;
 

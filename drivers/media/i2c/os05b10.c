@@ -595,7 +595,6 @@ static int os05b10_set_framing_limits(struct os05b10 *os05b10,
 }
 
 static int os05b10_set_pad_format(struct v4l2_subdev *sd,
-				  const struct v4l2_subdev_client_info *ci,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_format *fmt)
 {
@@ -625,7 +624,6 @@ static int os05b10_set_pad_format(struct v4l2_subdev *sd,
 }
 
 static int os05b10_get_selection(struct v4l2_subdev *sd,
-				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_selection *sel)
 {
@@ -977,7 +975,7 @@ static int os05b10_probe(struct i2c_client *client)
 	unsigned int xclk_freq;
 	int ret;
 
-	os05b10 = devm_kzalloc_obj(&client->dev, *os05b10);
+	os05b10 = devm_kzalloc(&client->dev, sizeof(*os05b10), GFP_KERNEL);
 	if (!os05b10)
 		return -ENOMEM;
 

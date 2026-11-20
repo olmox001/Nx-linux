@@ -242,7 +242,7 @@ static int ixp4xx_pata_probe(struct platform_device *pdev)
 	int ret;
 	int irq;
 
-	ixpp = devm_kzalloc_obj(dev, *ixpp);
+	ixpp = devm_kzalloc(dev, sizeof(*ixpp), GFP_KERNEL);
 	if (!ixpp)
 		return -ENOMEM;
 

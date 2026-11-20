@@ -2,7 +2,6 @@
 
 /* Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries. */
 
-#include <linux/device-id/mhi.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>

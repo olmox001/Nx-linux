@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2017 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2020 Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -31,29 +31,12 @@
  *
  */
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/in.h>
-#include <net/net_namespace.h>
-#include <net/netns/generic.h>
 #include <linux/ipv6.h>
 
-#include "rds_single_path.h"
 #include "rds.h"
 #include "loop.h"
-
-static DEFINE_SPINLOCK(loop_conns_lock);
-static LIST_HEAD(loop_conns);
-static atomic_t rds_loop_unloading = ATOMIC_INIT(0);
-
-static void rds_loop_set_unloading(void)
-{
-	atomic_set(&rds_loop_unloading, 1);
-}
-
-static bool rds_loop_is_unloading(struct rds_connection *conn)
-{
-	return atomic_read(&rds_loop_unloading) != 0;
-}
+#include "rds_single_path.h"
 
 /*
  * This 'loopback' transport is a special case for flows that originate
@@ -76,25 +59,24 @@ static int rds_loop_xmit(struct rds_connection *conn, struct rds_message *rm,
 			 unsigned int hdr_off, unsigned int sg,
 			 unsigned int off)
 {
-	struct scatterlist *sgp = &rm->data.op_sg[sg];
-	int ret = sizeof(struct rds_header) +
-			be32_to_cpu(rm->m_inc.i_hdr.h_len);
-
 	/* Do not send cong updates to loopback */
 	if (rm->m_inc.i_hdr.h_flags & RDS_FLAG_CONG_BITMAP) {
-		rds_cong_map_updated(conn->c_fcong, ~(u64) 0);
-		ret = min_t(int, ret, sgp->length - conn->c_xmit_data_off);
-		goto out;
+		rds_cong_map_updated(conn, conn->c_fcong, ~(u64)0);
+		return sizeof(struct rds_header) + RDS_CONG_MAP_BYTES;
 	}
 
 	BUG_ON(hdr_off || sg || off);
 
-	/* rds_send_queue_rm() stored the connection path in this embedded
-	 * inc; use the path init so the re-initialization keeps the field
-	 * valid instead of discarding it.
+	/* Note: This call to rds_inc_init() initializes the
+	 * rm->m_inc but the embedded rm->m_inc->i_conn is
+	 * the sending conn. (All other call instances embed
+	 * the receiving conn as rm->m_inc->i_conn). Any code
+	 * that uses local/remote struct fields of i_conn to
+	 * imply sending/receiving side needs care!
 	 */
-	rds_inc_path_init(&rm->m_inc, &conn->c_path[0], &conn->c_laddr);
+	rds_inc_init(&rm->m_inc, conn, &conn->c_laddr);
 	/* For the embedded inc. Matching put is in loop_inc_free() */
+
 	rds_message_addref(rm);
 
 	rds_recv_incoming(conn, &conn->c_laddr, &conn->c_faddr, &rm->m_inc,
@@ -104,8 +86,8 @@ static int rds_loop_xmit(struct rds_connection *conn, struct rds_message *rm,
 			    NULL);
 
 	rds_inc_put(&rm->m_inc);
-out:
-	return ret;
+
+	return sizeof(struct rds_header) + be32_to_cpu(rm->m_inc.i_hdr.h_len);
 }
 
 /*
@@ -114,9 +96,8 @@ out:
  */
 static void rds_loop_inc_free(struct rds_incoming *inc)
 {
-	struct rds_message *rm = container_of(inc, struct rds_message, m_inc);
-
-	rds_message_put(rm);
+        struct rds_message *rm = container_of(inc, struct rds_message, m_inc);
+        rds_message_put(rm);
 }
 
 /* we need to at least give the thread something to succeed */
@@ -128,11 +109,12 @@ static int rds_loop_recv_path(struct rds_conn_path *cp)
 struct rds_loop_connection {
 	struct list_head loop_node;
 	struct rds_connection *conn;
+	struct rds_net	*rns;
 };
 
 /*
  * Even the loopback transport needs to keep track of its connections,
- * so it can call rds_conn_destroy() on them on exit. N.B. there are
+ * so it can call rds_conn_destroy_init() on them on exit. N.B. there are
  * 1+ loopback addresses (127.*.*.*) so it's not a bug to have
  * multiple loopback conns allocated, although rather useless.
  */
@@ -141,17 +123,27 @@ static int rds_loop_conn_alloc(struct rds_connection *conn, gfp_t gfp)
 	struct rds_loop_connection *lc;
 	unsigned long flags;
 
-	lc = kzalloc_obj(struct rds_loop_connection, gfp);
+	lc = kzalloc(sizeof(struct rds_loop_connection), gfp);
 	if (!lc)
 		return -ENOMEM;
 
+	/* Ideally we would rds_conn_get() here for lc->conn
+	 * and a put() in rds_loop_conn_free(), but that would
+	 * mean the refcount would never drop to 0 as c_trans->conn_free()
+	 * is called in the kref callback rds_conn_(path_)destroy_fini() and
+	 * we'll be off-by-one rds_conn_put(). So, we choose to
+	 * ignore this "conn" copy and not bring it under the kref umbrella.
+	 * This is safe as c_trans->conn_free() is called before
+	 * freeing its container conn.
+	 */
 	INIT_LIST_HEAD(&lc->loop_node);
 	lc->conn = conn;
 	conn->c_transport_data = lc;
+	lc->rns = conn->c_rns;
 
-	spin_lock_irqsave(&loop_conns_lock, flags);
-	list_add_tail(&lc->loop_node, &loop_conns);
-	spin_unlock_irqrestore(&loop_conns_lock, flags);
+	spin_lock_irqsave(&lc->rns->rns_loop_conns_lock, flags);
+	list_add_tail(&lc->loop_node, &lc->rns->rns_loop_conns);
+	spin_unlock_irqrestore(&lc->rns->rns_loop_conns_lock, flags);
 
 	return 0;
 }
@@ -162,9 +154,9 @@ static void rds_loop_conn_free(void *arg)
 	unsigned long flags;
 
 	rdsdebug("lc %p\n", lc);
-	spin_lock_irqsave(&loop_conns_lock, flags);
+	spin_lock_irqsave(&lc->rns->rns_loop_conns_lock, flags);
 	list_del(&lc->loop_node);
-	spin_unlock_irqrestore(&loop_conns_lock, flags);
+	spin_unlock_irqrestore(&lc->rns->rns_loop_conns_lock, flags);
 	kfree(lc);
 }
 
@@ -178,63 +170,28 @@ static void rds_loop_conn_path_shutdown(struct rds_conn_path *cp)
 {
 }
 
-void rds_loop_exit(void)
+int rds_loop_net_init(struct rds_net *rns)
+{
+	spin_lock_init(&rns->rns_loop_conns_lock);
+	INIT_LIST_HEAD(&rns->rns_loop_conns);
+	return 0;
+}
+
+void rds_loop_net_exit(struct rds_net *rns)
 {
 	struct rds_loop_connection *lc, *_lc;
 	LIST_HEAD(tmp_list);
 
-	rds_loop_set_unloading();
-	synchronize_rcu();
 	/* avoid calling conn_destroy with irqs off */
-	spin_lock_irq(&loop_conns_lock);
-	list_splice(&loop_conns, &tmp_list);
-	INIT_LIST_HEAD(&loop_conns);
-	spin_unlock_irq(&loop_conns_lock);
+	spin_lock_irq(&rns->rns_loop_conns_lock);
+	list_splice(&rns->rns_loop_conns, &tmp_list);
+	INIT_LIST_HEAD(&rns->rns_loop_conns);
+	spin_unlock_irq(&rns->rns_loop_conns_lock);
 
 	list_for_each_entry_safe(lc, _lc, &tmp_list, loop_node) {
 		WARN_ON(lc->conn->c_passive);
-		rds_conn_destroy(lc->conn);
+		rds_conn_destroy_init(lc->conn, 1);
 	}
-}
-
-static void rds_loop_kill_conns(struct net *net)
-{
-	struct rds_loop_connection *lc, *_lc;
-	LIST_HEAD(tmp_list);
-
-	spin_lock_irq(&loop_conns_lock);
-	list_for_each_entry_safe(lc, _lc, &loop_conns, loop_node)  {
-		struct net *c_net = read_pnet(&lc->conn->c_net);
-
-		if (net != c_net)
-			continue;
-		list_move_tail(&lc->loop_node, &tmp_list);
-	}
-	spin_unlock_irq(&loop_conns_lock);
-
-	list_for_each_entry_safe(lc, _lc, &tmp_list, loop_node) {
-		WARN_ON(lc->conn->c_passive);
-		rds_conn_destroy(lc->conn);
-	}
-}
-
-static void __net_exit rds_loop_exit_net(struct net *net)
-{
-	rds_loop_kill_conns(net);
-}
-
-static struct pernet_operations rds_loop_net_ops = {
-	.exit = rds_loop_exit_net,
-};
-
-int rds_loop_net_init(void)
-{
-	return register_pernet_device(&rds_loop_net_ops);
-}
-
-void rds_loop_net_exit(void)
-{
-	unregister_pernet_device(&rds_loop_net_ops);
 }
 
 /*
@@ -253,6 +210,7 @@ struct rds_transport rds_loop_transport = {
 	.inc_copy_to_user	= rds_message_inc_copy_to_user,
 	.inc_free		= rds_loop_inc_free,
 	.t_name			= "loopback",
+	/* Make sure this transport is not associated with RDS_TRANS_IB (0) */
 	.t_type			= RDS_TRANS_LOOP,
-	.t_unloading		= rds_loop_is_unloading,
+	.t_conn_count		= ATOMIC_INIT(0),
 };

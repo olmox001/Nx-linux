@@ -104,11 +104,13 @@ static int jh7110_ispcrg_probe(struct platform_device *pdev)
 	unsigned int idx;
 	int ret;
 
-	priv = devm_kzalloc_flex(&pdev->dev, *priv, reg, JH7110_ISPCLK_END);
+	priv = devm_kzalloc(&pdev->dev,
+			    struct_size(priv, reg, JH7110_ISPCLK_END),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
-	top = devm_kzalloc_obj(&pdev->dev, *top);
+	top = devm_kzalloc(&pdev->dev, sizeof(*top), GFP_KERNEL);
 	if (!top)
 		return -ENOMEM;
 
@@ -128,7 +130,7 @@ static int jh7110_ispcrg_probe(struct platform_device *pdev)
 
 	/* enable power domain and clocks */
 	pm_runtime_enable(priv->dev);
-	ret = pm_runtime_resume_and_get(priv->dev);
+	ret = pm_runtime_get_sync(priv->dev);
 	if (ret < 0)
 		return dev_err_probe(priv->dev, ret, "failed to turn on power\n");
 

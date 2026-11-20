@@ -21,7 +21,6 @@
 
 #include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinconf.h>
-#include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
 
@@ -292,8 +291,8 @@ struct pinmux_ops imx_pmx_ops = {
 	.set_mux = imx_pmx_set,
 };
 
-static int imx_pinconf_get_raw_mmio(struct pinctrl_dev *pctldev,
-				    unsigned int pin_id, unsigned long *config)
+static int imx_pinconf_get_mmio(struct pinctrl_dev *pctldev, unsigned pin_id,
+				unsigned long *config)
 {
 	struct imx_pinctrl *ipctl = pinctrl_dev_get_drvdata(pctldev);
 	const struct imx_pinctrl_soc_info *info = ipctl->info;
@@ -313,39 +312,6 @@ static int imx_pinconf_get_raw_mmio(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static int imx_pinconf_get_mmio(struct pinctrl_dev *pctldev,
-				unsigned int pin_id, unsigned long *config)
-{
-	struct imx_pinctrl *ipctl = pinctrl_dev_get_drvdata(pctldev);
-	const struct imx_pinctrl_soc_info *info = ipctl->info;
-	const struct imx_pin_reg *pin_reg = &ipctl->pin_regs[pin_id];
-	enum pin_config_param param = pinconf_to_config_param(*config);
-	unsigned int mask;
-	u32 raw;
-
-	switch (param) {
-	case PIN_CONFIG_OUTPUT_ENABLE:
-		mask = info->obe_mask;
-		break;
-	case PIN_CONFIG_INPUT_ENABLE:
-		mask = info->ibe_mask;
-		break;
-	default:
-		mask = 0;
-		break;
-	}
-
-	if (!mask)
-		return -ENOTSUPP;
-	if (pin_reg->conf_reg == -1)
-		return -EINVAL;
-
-	raw = readl(ipctl->base + pin_reg->conf_reg);
-	*config = pinconf_to_config_packed(param, !!(raw & mask));
-
-	return 0;
-}
-
 static int imx_pinconf_get(struct pinctrl_dev *pctldev,
 			   unsigned pin_id, unsigned long *config)
 {
@@ -353,21 +319,9 @@ static int imx_pinconf_get(struct pinctrl_dev *pctldev,
 	const struct imx_pinctrl_soc_info *info = ipctl->info;
 
 	if (info->flags & IMX_USE_SCU)
-		return -ENOTSUPP;
-
-	return imx_pinconf_get_mmio(pctldev, pin_id, config);
-}
-
-static int imx_pinconf_get_raw(struct pinctrl_dev *pctldev,
-			       unsigned int pin_id, unsigned long *config)
-{
-	struct imx_pinctrl *ipctl = pinctrl_dev_get_drvdata(pctldev);
-	const struct imx_pinctrl_soc_info *info = ipctl->info;
-
-	if (info->flags & IMX_USE_SCU)
 		return info->imx_pinconf_get(pctldev, pin_id, config);
 	else
-		return imx_pinconf_get_raw_mmio(pctldev, pin_id, config);
+		return imx_pinconf_get_mmio(pctldev, pin_id, config);
 }
 
 static int imx_pinconf_set_mmio(struct pinctrl_dev *pctldev,
@@ -472,7 +426,7 @@ static void imx_pinconf_group_dbg_show(struct pinctrl_dev *pctldev,
 		struct imx_pin *pin = &((struct imx_pin *)(grp->data))[i];
 
 		name = pin_get_name(pctldev, pin->pin);
-		ret = imx_pinconf_get_raw(pctldev, pin->pin, &config);
+		ret = imx_pinconf_get(pctldev, pin->pin, &config);
 		if (ret)
 			return;
 		seq_printf(s, "  %s: 0x%lx\n", name, config);
@@ -600,11 +554,11 @@ static int imx_pinctrl_parse_groups(struct device_node *np,
 	}
 
 	grp->grp.npins = size / pin_size;
-	grp->data = devm_kzalloc_objs(ipctl->dev, *pin, grp->grp.npins);
+	grp->data = devm_kcalloc(ipctl->dev, grp->grp.npins, sizeof(*pin), GFP_KERNEL);
 	if (!grp->data)
 		return -ENOMEM;
 
-	pins = devm_kzalloc_objs(ipctl->dev, *pins, grp->grp.npins);
+	pins = devm_kcalloc(ipctl->dev, grp->grp.npins, sizeof(*pins), GFP_KERNEL);
 	if (!pins)
 		return -ENOMEM;
 	grp->grp.pins = pins;
@@ -633,7 +587,7 @@ static int imx_pinctrl_parse_functions(struct device_node *np,
 
 	dev_dbg(pctl->dev, "parse function(%d): %pOFn\n", index, np);
 
-	func = devm_kzalloc_obj(ipctl->dev, *func);
+	func = devm_kzalloc(ipctl->dev, sizeof(*func), GFP_KERNEL);
 	if (!func)
 		return -ENOMEM;
 
@@ -645,7 +599,8 @@ static int imx_pinctrl_parse_functions(struct device_node *np,
 		return -EINVAL;
 	}
 
-	group_names = devm_kzalloc_objs(ipctl->dev, *group_names, func->ngroups);
+	group_names = devm_kcalloc(ipctl->dev, func->ngroups,
+				   sizeof(*func->groups), GFP_KERNEL);
 	if (!group_names)
 		return -ENOMEM;
 	i = 0;
@@ -659,7 +614,7 @@ static int imx_pinctrl_parse_functions(struct device_node *np,
 
 	i = 0;
 	for_each_child_of_node_scoped(np, child) {
-		grp = devm_kzalloc_obj(ipctl->dev, *grp);
+		grp = devm_kzalloc(ipctl->dev, sizeof(*grp), GFP_KERNEL);
 		if (!grp)
 			return -ENOMEM;
 
@@ -765,14 +720,14 @@ int imx_pinctrl_probe(struct platform_device *pdev,
 	}
 
 	/* Create state holders etc for this driver */
-	ipctl = devm_kzalloc_obj(&pdev->dev, *ipctl);
+	ipctl = devm_kzalloc(&pdev->dev, sizeof(*ipctl), GFP_KERNEL);
 	if (!ipctl)
 		return -ENOMEM;
 
 	if (!(info->flags & IMX_USE_SCU)) {
-		ipctl->pin_regs = devm_kmalloc_objs(&pdev->dev,
-						    *ipctl->pin_regs,
-						    info->npins);
+		ipctl->pin_regs = devm_kmalloc_array(&pdev->dev, info->npins,
+						     sizeof(*ipctl->pin_regs),
+						     GFP_KERNEL);
 		if (!ipctl->pin_regs)
 			return -ENOMEM;
 
@@ -802,7 +757,8 @@ int imx_pinctrl_probe(struct platform_device *pdev,
 		}
 	}
 
-	imx_pinctrl_desc = devm_kzalloc_obj(&pdev->dev, *imx_pinctrl_desc);
+	imx_pinctrl_desc = devm_kzalloc(&pdev->dev, sizeof(*imx_pinctrl_desc),
+					GFP_KERNEL);
 	if (!imx_pinctrl_desc)
 		return -ENOMEM;
 

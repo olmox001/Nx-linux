@@ -162,8 +162,8 @@ static int apq8016_lpass_init(struct platform_device *pdev)
 	int ret, i;
 
 
-	drvdata->clks = devm_kzalloc_objs(dev, *drvdata->clks,
-					  variant->num_clks);
+	drvdata->clks = devm_kcalloc(dev, variant->num_clks,
+				     sizeof(*drvdata->clks), GFP_KERNEL);
 	if (!drvdata->clks)
 		return -ENOMEM;
 	drvdata->num_clks = variant->num_clks;

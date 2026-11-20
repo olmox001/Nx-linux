@@ -545,7 +545,6 @@
         "EventCode": "0xc0",
         "EventName": "UNC_M2M_CMS_CLOCKTICKS",
         "PerPkg": "1",
-        "UMask": "0x80000000",
         "Unit": "M2M"
     },
     {
@@ -1456,7 +1455,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH0.NI",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0xa00",
         "Unit": "M2M"
     },
     {
@@ -1478,7 +1476,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH0_FROM_TGR",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x900",
         "Unit": "M2M"
     },
     {
@@ -1510,7 +1507,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH0_NI",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0xa00",
         "Unit": "M2M"
     },
     {
@@ -1520,7 +1516,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH0_NI_MISS",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0xc00",
         "Unit": "M2M"
     },
     {
@@ -1585,7 +1580,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH1.NI",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1200",
         "Unit": "M2M"
     },
     {
@@ -1607,7 +1601,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH1_FROM_TGR",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1100",
         "Unit": "M2M"
     },
     {
@@ -1639,7 +1632,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH1_NI",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1200",
         "Unit": "M2M"
     },
     {
@@ -1649,7 +1641,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.CH1_NI_MISS",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1400",
         "Unit": "M2M"
     },
     {
@@ -1714,7 +1705,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.FROM_TGR",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1900",
         "Unit": "M2M"
     },
     {
@@ -1744,7 +1734,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.NI",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1a00",
         "Unit": "M2M"
     },
     {
@@ -1754,7 +1743,6 @@
         "EventName": "UNC_M2M_IMC_WRITES.NI_MISS",
         "Experimental": "1",
         "PerPkg": "1",
-        "UMask": "0x1c00",
         "Unit": "M2M"
     },
     {

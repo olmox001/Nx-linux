@@ -7,14 +7,6 @@ doc: >-
 
 definitions:
   -
-    type: const
-    name: page-size
-    # Dummy value, codegen needs a number. The real value comes from
-    # the PAGE_SIZE macro in the header below.
-    value: 0
-    header: asm/page.h
-    scope: kernel
-  -
     type: flags
     name: xdp-act
     render-max: true
@@ -80,7 +72,7 @@ definitions:
       -
         name: tx-checksum
         doc: >-
-          L4 checksum HW offload is supported by the driver.
+          L3 checksum HW offload is supported by the driver.
       -
         name: tx-launch-time-fifo
         doc: >-
@@ -118,8 +110,7 @@ attribute-sets:
         enum: xdp-act
       -
         name: xdp-zc-max-segs
-        doc: max buffer count per packet supported by ZC driver,
-             including the head buffer
+        doc: max fragment count supported by ZC driver
         type: u32
         checks:
           min: 1
@@ -607,16 +598,6 @@ attribute-sets:
         type: u32
         checks:
           min: 1
-      -
-        name: rx-page-size
-        doc: |
-          Size in bytes of each device page the NIC writes into from the bound
-          dmabuf. Must be a power of two and >= PAGE_SIZE; defaults to
-          PAGE_SIZE.
-        type: u32
-        checks:
-          min: page-size
-          max: u32-max
 
 operations:
   list:
@@ -831,7 +812,6 @@ operations:
             - ifindex
             - fd
             - queues
-            - rx-page-size
         reply:
           attributes:
             - id
@@ -852,8 +832,6 @@ operations:
       name: bind-tx
       doc: Bind dmabuf to netdev for TX
       attribute-set: dmabuf
-      # Intentionally unprivileged (no admin-perm / uns-admin-perm); see
-      # comment above netdev_nl_bind_tx_doit().
       do:
         request:
           attributes:

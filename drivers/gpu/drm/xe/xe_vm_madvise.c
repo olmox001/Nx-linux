@@ -659,8 +659,11 @@ int xe_vm_madvise_ioctl(struct drm_device *dev, void *data, struct drm_file *fil
 			err = -EINVAL;
 			goto free_vmas;
 		}
+	}
 
-		if (!check_pat_args_are_sane(xe, &madvise_range, pat_index)) {
+	if (args->type == DRM_XE_MEM_RANGE_ATTR_PAT) {
+		if (!check_pat_args_are_sane(xe, &madvise_range,
+					     args->pat_index.val)) {
 			err = -EINVAL;
 			goto free_vmas;
 		}
@@ -709,6 +712,12 @@ int xe_vm_madvise_ioctl(struct drm_device *dev, void *data, struct drm_file *fil
 	}
 
 	attr_type = array_index_nospec(args->type, ARRAY_SIZE(madvise_funcs));
+
+	/* Ensure the madvise function exists for this type */
+	if (!madvise_funcs[attr_type]) {
+		err = -EINVAL;
+		goto err_fini;
+	}
 
 	madvise_funcs[attr_type](xe, vm, madvise_range.vmas, madvise_range.num_vmas, args,
 				 &details);

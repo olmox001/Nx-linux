@@ -24,7 +24,6 @@
 #include <linux/page_owner.h>
 #include <linux/psi.h>
 #include <linux/cpuset.h>
-#include "page_alloc.h"
 #include "internal.h"
 
 #ifdef CONFIG_COMPACTION
@@ -83,7 +82,7 @@ static inline bool is_via_compact_memory(int order) { return false; }
 
 static struct page *mark_allocated_noprof(struct page *page, unsigned int order, gfp_t gfp_flags)
 {
-	post_alloc_hook(page, order, __GFP_MOVABLE, ALLOC_DEFAULT);
+	post_alloc_hook(page, order, __GFP_MOVABLE);
 	set_page_refcounted(page);
 	return page;
 }
@@ -216,7 +215,7 @@ static unsigned long skip_offline_sections(unsigned long start_pfn)
 	if (online_section_nr(start_nr))
 		return 0;
 
-	while (++start_nr <= __highest_used_section_nr) {
+	while (++start_nr <= __highest_present_section_nr) {
 		if (online_section_nr(start_nr))
 			return section_nr_to_pfn(start_nr);
 	}
@@ -645,6 +644,7 @@ static unsigned long isolate_freepages_block(struct compact_control *cc,
 		isolated = __isolate_free_page(page, order);
 		if (!isolated)
 			break;
+		set_page_private(page, order);
 
 		nr_scanned += isolated - 1;
 		total_isolated += isolated;
@@ -806,6 +806,42 @@ static bool too_many_isolated(struct compact_control *cc)
 		wake_throttle_isolated(pgdat);
 
 	return too_many;
+}
+
+/*
+ * Check if this base page should be skipped from isolation because
+ * it has extra refcounts that will prevent it from being migrated.
+ * This code is inspired by similar code in migrate_vma_check_page(),
+ * can_split_folio() and folio_migrate_mapping()
+ */
+static inline bool page_has_extra_refs(struct page *page,
+					struct address_space *mapping)
+{
+	unsigned long extra_refs;
+	struct folio *folio;
+
+	/*
+	 * Skip this check for pages in ZONE_MOVABLE or MIGRATE_CMA
+	 * pages that can not be long term pinned
+	 */
+	if (is_zone_movable_page(page) || is_migrate_cma_page(page))
+		return false;
+
+	folio = page_folio(page);
+
+	/*
+	 * caller holds a ref already from get_page_unless_zero()
+	 * which is accounted for in folio_expected_refs()
+	 */
+	extra_refs = folio_expected_refs(mapping, folio);
+
+	/*
+	 * This is an admittedly racy check but good enough to determine
+	 * if a page is pinned and can not be migrated
+	 */
+	if ((folio_ref_count(folio) - extra_refs) > folio_mapcount(folio))
+		return true;
+	return false;
 }
 
 /**
@@ -1094,12 +1130,12 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 			goto isolate_fail;
 
 		/*
-		 * Migration will fail if an anonymous page is pinned in memory,
-		 * so avoid taking lru_lock and isolating it unnecessarily in an
-		 * admittedly racy check.
+		 * Migration will fail if a page has extra refcounts
+		 * from long term pinning preventing it from migrating,
+		 * so avoid taking lru_lock and isolating it unnecessarily.
 		 */
 		mapping = folio_mapping(folio);
-		if (!mapping && (folio_ref_count(folio) - 1) > folio_mapcount(folio))
+		if (!cc->alloc_contig && page_has_extra_refs(page, mapping))
 			goto isolate_fail_put;
 
 		/*
@@ -1649,6 +1685,7 @@ static void fast_isolate_freepages(struct compact_control *cc)
 		/* Isolate the page if available */
 		if (page) {
 			if (__isolate_free_page(page, order)) {
+				set_page_private(page, order);
 				nr_isolated = 1 << order;
 				nr_scanned += nr_isolated - 1;
 				total_isolated += nr_isolated;
@@ -1877,10 +1914,11 @@ again:
 		size >>= 1;
 
 		list_add(&freepage[size].lru, &cc->freepages[start_order]);
+		set_page_private(&freepage[size], start_order);
 	}
 	dst = (struct folio *)freepage;
 
-	post_alloc_hook(&dst->page, order, __GFP_MOVABLE, ALLOC_DEFAULT);
+	post_alloc_hook(&dst->page, order, __GFP_MOVABLE);
 	set_page_refcounted(&dst->page);
 	if (order)
 		prep_compound_page(&dst->page, order);
@@ -3197,6 +3235,7 @@ static int kcompactd(void *p)
 	long default_timeout = msecs_to_jiffies(HPAGE_FRAG_CHECK_INTERVAL_MSEC);
 	long timeout = default_timeout;
 
+	current->flags |= PF_KCOMPACTD;
 	set_freezable();
 
 	pgdat->kcompactd_max_order = 0;
@@ -3253,14 +3292,10 @@ static int kcompactd(void *p)
 			pgdat->proactive_compact_trigger = false;
 	}
 
+	current->flags &= ~PF_KCOMPACTD;
+
 	return 0;
 }
-
-bool current_is_kcompactd(void)
-{
-	return kthread_func(current) == kcompactd;
-}
-EXPORT_SYMBOL_GPL(current_is_kcompactd);
 
 /*
  * This kcompactd start function will be called by init and node-hot-add.

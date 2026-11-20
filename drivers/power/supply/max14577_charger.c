@@ -465,7 +465,7 @@ static struct max14577_charger_platform_data *max14577_charger_dt_init(
 		return ERR_PTR(-EINVAL);
 	}
 
-	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
@@ -563,7 +563,7 @@ static int max14577_charger_probe(struct platform_device *pdev)
 	struct max14577 *max14577 = dev_get_drvdata(pdev->dev.parent);
 	int ret;
 
-	chg = devm_kzalloc_obj(&pdev->dev, *chg);
+	chg = devm_kzalloc(&pdev->dev, sizeof(*chg), GFP_KERNEL);
 	if (!chg)
 		return -ENOMEM;
 

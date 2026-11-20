@@ -1178,7 +1178,6 @@ static int ov08d10_set_stream(struct v4l2_subdev *sd, int enable)
 }
 
 static int ov08d10_set_format(struct v4l2_subdev *sd,
-			      const struct v4l2_subdev_client_info *ci,
 			      struct v4l2_subdev_state *sd_state,
 			      struct v4l2_subdev_format *fmt)
 {
@@ -1487,7 +1486,7 @@ static int ov08d10_probe(struct i2c_client *client)
 	unsigned int i;
 	int ret;
 
-	ov08d10 = devm_kzalloc_obj(&client->dev, *ov08d10);
+	ov08d10 = devm_kzalloc(&client->dev, sizeof(*ov08d10), GFP_KERNEL);
 	if (!ov08d10)
 		return -ENOMEM;
 

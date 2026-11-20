@@ -33,13 +33,6 @@
 
 #define NVME_MINORS		(1U << MINORBITS)
 
-/*
- * Write hints (bio->bi_write_stream) are u8, so FDP placement handles beyond
- * U8_MAX can never be selected. Cap the handle count to bound both the RUH
- * status buffer and the per-head plids array.
- */
-#define NVME_MAX_PLIDS		U8_MAX
-
 struct nvme_ns_info {
 	struct nvme_ns_ids ids;
 	u32 nsid;
@@ -133,8 +126,8 @@ EXPORT_SYMBOL_GPL(nvme_reset_wq);
 struct workqueue_struct *nvme_delete_wq;
 EXPORT_SYMBOL_GPL(nvme_delete_wq);
 
+static LIST_HEAD(nvme_subsystems);
 DEFINE_MUTEX(nvme_subsystems_lock);
-static LIST_HEAD_GUARDED(nvme_subsystems, nvme_subsystems_lock);
 
 static DEFINE_IDA(nvme_instance_ida);
 static dev_t nvme_ctrl_base_chr_devt;
@@ -1278,7 +1271,7 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
 
-u32 nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
+void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		       struct nvme_command *cmd, int status)
 {
 	if (effects & NVME_CMD_EFFECTS_CSE_MASK) {
@@ -1299,7 +1292,7 @@ u32 nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		flush_work(&ctrl->scan_work);
 	}
 	if (ns)
-		return effects;
+		return;
 
 	switch (cmd->common.opcode) {
 	case nvme_admin_set_features:
@@ -1320,8 +1313,6 @@ u32 nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 	default:
 		break;
 	}
-
-	return effects;
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_end, "NVME_TARGET_PASSTHRU");
 
@@ -1595,11 +1586,7 @@ static int nvme_identify_ns_descs(struct nvme_ctrl *ctrl,
 	for (pos = 0; pos < NVME_IDENTIFY_DATA_SIZE; pos += len) {
 		struct nvme_ns_id_desc *cur = data + pos;
 
-		if (pos + sizeof(*cur) > NVME_IDENTIFY_DATA_SIZE)
-			break;
 		if (cur->nidl == 0)
-			break;
-		if (pos + sizeof(*cur) + cur->nidl > NVME_IDENTIFY_DATA_SIZE)
 			break;
 
 		len = nvme_process_ns_desc(ctrl, &info->ids, cur, &csi_seen);
@@ -2273,18 +2260,13 @@ static int nvme_query_fdp_granularity(struct nvme_ctrl *ctrl,
 	}
 
 	size = le32_to_cpu(hdr.sze);
-	if (size < sizeof(*h) + sizeof(*desc)) {
-		dev_warn(ctrl->device, "FDP config size too small:%zu\n",
-			 size);
-		return 0;
-	}
 	if (size > PAGE_SIZE * MAX_ORDER_NR_PAGES) {
 		dev_warn(ctrl->device, "FDP config size too large:%zu\n",
 			 size);
 		return 0;
 	}
 
-	h = kvzalloc(size, GFP_KERNEL);
+	h = kvmalloc(size, GFP_KERNEL);
 	if (!h)
 		return -ENOMEM;
 
@@ -2310,9 +2292,9 @@ static int nvme_query_fdp_granularity(struct nvme_ctrl *ctrl,
 	desc = log;
 	end = log + size - sizeof(*h);
 	for (i = 0; i < fdp_idx; i++) {
-		u16 dsze = get_unaligned_le16(&desc->dsze);
+		u16 dsze = le16_to_cpu(desc->dsze);
 
-		if (dsze < sizeof(*desc) || log + dsze + sizeof(*desc) > end) {
+		if (!dsze || log + dsze > end) {
 			dev_warn(ctrl->device,
 				 "FDP invalid config descriptor at index %d\n", i);
 			ret = 0;
@@ -2322,13 +2304,13 @@ static int nvme_query_fdp_granularity(struct nvme_ctrl *ctrl,
 		desc = log;
 	}
 
-	if (get_unaligned_le32(&desc->nrg) > 1) {
+	if (le32_to_cpu(desc->nrg) > 1) {
 		dev_warn(ctrl->device, "FDP NRG > 1 not supported\n");
 		ret = 0;
 		goto out;
 	}
 
-	info->runs = get_unaligned_le64(&desc->runs);
+	info->runs = le64_to_cpu(desc->runs);
 out:
 	kvfree(h);
 	return ret;
@@ -2358,7 +2340,7 @@ static int nvme_query_fdp_info(struct nvme_ns *ns, struct nvme_ns_info *info)
 	if (!info->runs)
 		return ret;
 
-	size = struct_size(ruhs, ruhsd, NVME_MAX_PLIDS);
+	size = struct_size(ruhs, ruhsd, S8_MAX - 1);
 	ruhs = kzalloc(size, GFP_KERNEL);
 	if (!ruhs)
 		return -ENOMEM;
@@ -2373,11 +2355,12 @@ static int nvme_query_fdp_info(struct nvme_ns *ns, struct nvme_ns_info *info)
 		goto free;
 	}
 
-	head->nr_plids = min(le16_to_cpu(ruhs->nruhsd), NVME_MAX_PLIDS);
+	head->nr_plids = le16_to_cpu(ruhs->nruhsd);
 	if (!head->nr_plids)
 		goto free;
 
-	head->plids = kzalloc_objs(*head->plids, head->nr_plids);
+	head->plids = kcalloc(head->nr_plids, sizeof(*head->plids),
+			      GFP_KERNEL);
 	if (!head->plids) {
 		dev_warn(ctrl->device,
 			 "failed to allocate %u FDP placement IDs\n",
@@ -2482,8 +2465,6 @@ static int nvme_update_ns_info_block(struct nvme_ns *ns,
 		lim.features |= BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA;
 	else
 		lim.features &= ~(BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA);
-	if (ns->ctrl->quirks & NVME_QUIRK_NO_FUA)
-		lim.features &= ~BLK_FEAT_FUA;
 
 	if (info->is_rotational)
 		lim.features |= BLK_FEAT_ROTATIONAL;
@@ -2618,25 +2599,12 @@ static int nvme_update_ns_info(struct nvme_ns *ns, struct nvme_ns_info *info)
 		lim.max_write_streams = ns_lim->max_write_streams;
 		lim.write_stream_granularity = ns_lim->write_stream_granularity;
 		ret = queue_limits_commit_update(ns->head->disk->queue, &lim);
-		if (ret)
-			goto unfreeze_head_queue;
 
 		set_capacity_and_notify(ns->head->disk, get_capacity(ns->disk));
 		set_disk_ro(ns->head->disk, nvme_ns_is_readonly(ns, info));
 		nvme_mpath_revalidate_paths(ns->head);
 
-unfreeze_head_queue:
 		blk_mq_unfreeze_queue(ns->head->disk->queue, memflags);
-
-		/*
-		 * Wait until the head queue is unfrozen before revalidating
-		 * its zones. blk_revalidate_disk_zones() takes the queue limits
-		 * lock and then freezes the queue on its own, so it must not be
-		 * called with the queue already frozen. This is also what
-		 * nvme_update_ns_info_block() does for ns->disk.
-		 */
-		if (!ret)
-			ret = nvme_mpath_revalidate_zones(ns->head);
 	}
 
 	return ret;
@@ -2715,17 +2683,6 @@ static int nvme_report_zones(struct gendisk *disk, sector_t sector,
 #define nvme_report_zones	NULL
 #endif /* CONFIG_BLK_DEV_ZONED */
 
-static int nvme_init_dma_buf_io_ctx(struct block_device *bdev,
-		struct dma_buf_io_ctx *ctx)
-{
-	struct nvme_ns *ns = bdev->bd_disk->private_data;
-	struct nvme_ctrl *ctrl = ns->ctrl;
-
-	if (!ctrl->ops->init_dma_buf_io_ctx)
-		return -EINVAL;
-	return ctrl->ops->init_dma_buf_io_ctx(ctrl, ctx);
-}
-
 const struct block_device_operations nvme_bdev_ops = {
 	.owner		= THIS_MODULE,
 	.ioctl		= nvme_ioctl,
@@ -2736,7 +2693,6 @@ const struct block_device_operations nvme_bdev_ops = {
 	.get_unique_id	= nvme_get_unique_id,
 	.report_zones	= nvme_report_zones,
 	.pr_ops		= &nvme_pr_ops,
-	.init_dma_buf_io_ctx = nvme_init_dma_buf_io_ctx,
 };
 
 static int nvme_wait_ready(struct nvme_ctrl *ctrl, u32 mask, u32 val,
@@ -3256,7 +3212,6 @@ static void nvme_put_subsystem(struct nvme_subsystem *subsys)
 }
 
 static struct nvme_subsystem *__nvme_find_get_subsystem(const char *subsysnqn)
-	__must_hold(&nvme_subsystems_lock)
 {
 	struct nvme_subsystem *subsys;
 
@@ -3301,7 +3256,6 @@ static inline bool nvme_is_io_ctrl(struct nvme_ctrl *ctrl)
 
 static bool nvme_validate_cntlid(struct nvme_subsystem *subsys,
 		struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
-	__must_hold(&nvme_subsystems_lock)
 {
 	struct nvme_ctrl *tmp;
 
@@ -3955,16 +3909,10 @@ static int nvme_subsys_check_duplicate_ids(struct nvme_subsystem *subsys,
 	return 0;
 }
 
-/* The char device of a namespace rather than of a namespace head */
-static bool nvme_is_ns_cdev(struct device *dev)
-{
-	return dev->parent->class == &nvme_class;
-}
-
 static void nvme_cdev_rel(struct device *dev)
 {
 	ida_free(&nvme_ns_chr_minor_ida, MINOR(dev->devt));
-	if (nvme_is_ns_cdev(dev))
+	if (dev->parent->class == &nvme_class)
 		nvme_put_ns(container_of(dev, struct nvme_ns, cdev_device));
 	else
 		nvme_put_ns_head(container_of(dev, struct nvme_ns_head,
@@ -3998,14 +3946,6 @@ int nvme_cdev_add(struct cdev *cdev, struct device *cdev_device,
 	device_initialize(cdev_device);
 	cdev_init(cdev, fops);
 	cdev->owner = owner;
-	/* Undone in nvme_cdev_rel() */
-	if (nvme_is_ns_cdev(cdev_device))
-		nvme_get_ns(container_of(cdev_device, struct nvme_ns,
-					 cdev_device));
-	else
-		nvme_get_ns_head(container_of(cdev_device,
-					      struct nvme_ns_head,
-					      cdev_device));
 	ret = cdev_device_add(cdev, cdev_device);
 	if (ret)
 		put_device(cdev_device);
@@ -4038,11 +3978,13 @@ static void nvme_add_ns_cdev(struct nvme_ns *ns)
 {
 	ns->cdev_device.parent = ns->ctrl->device;
 
+	nvme_get_ns(ns); /* Undone in nvme_cdev_rel() */
 	if (nvme_cdev_add(&ns->cdev, &ns->cdev_device,
 			&nvme_ns_chr_fops, ns->ctrl->ops->module,
 			ns->ctrl->instance, ns->head->instance)) {
 		dev_err(ns->ctrl->device, "Unable to create the ng%dn%d device\n",
 			ns->ctrl->instance, ns->head->instance);
+		nvme_put_ns(ns);
 		return;
 	}
 	set_bit(NVME_NS_CDEV_LIVE, &ns->flags);
@@ -4769,8 +4711,9 @@ void nvme_remove_namespaces(struct nvme_ctrl *ctrl)
 	nvme_change_ctrl_state(ctrl, NVME_CTRL_DELETING_NOIO);
 
 	mutex_lock(&ctrl->namespaces_lock);
-	list_splice_init_srcu(&ctrl->namespaces, &ns_list, &ctrl->srcu);
+	list_splice_init_rcu(&ctrl->namespaces, &ns_list, synchronize_rcu);
 	mutex_unlock(&ctrl->namespaces_lock);
+	synchronize_srcu(&ctrl->srcu);
 
 	list_for_each_entry_safe(ns, next, &ns_list, list)
 		nvme_ns_remove(ns);

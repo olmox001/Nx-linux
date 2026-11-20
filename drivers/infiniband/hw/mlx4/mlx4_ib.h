@@ -49,6 +49,9 @@
 #include <linux/mlx4/doorbell.h>
 #include <linux/mlx4/qp.h>
 #include <linux/mlx4/cq.h>
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#include <linux/mlx4/driver.h>
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 #define MLX4_IB_DRV_NAME	"mlx4_ib"
 
@@ -95,6 +98,13 @@ struct mlx4_ib_pd {
 	u32			pdn;
 };
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+struct mlx4_ib_shpd {
+	struct ib_shpd		ibshpd;
+	u32			pdn;
+};
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 struct mlx4_ib_xrcd {
 	struct ib_xrcd		ibxrcd;
 	u32			xrcdn;
@@ -126,6 +136,9 @@ struct mlx4_ib_cq {
 	/* List of qps that it serves.*/
 	struct list_head		send_qp_list;
 	struct list_head		recv_qp_list;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	int			vector;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 };
 
 #define MLX4_MR_PAGES_ALIGN 0x40
@@ -684,6 +697,15 @@ static inline struct mlx4_ib_pd *to_mpd(struct ib_pd *ibpd)
 {
 	return container_of(ibpd, struct mlx4_ib_pd, ibpd);
 }
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+
+static inline struct mlx4_ib_shpd *to_mshpd(struct ib_shpd *ibshpd)
+{
+	return container_of(ibshpd, struct mlx4_ib_shpd, ibshpd);
+}
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 static inline struct mlx4_ib_xrcd *to_mxrcd(struct ib_xrcd *ibxrcd)
 {

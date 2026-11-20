@@ -1026,7 +1026,7 @@ static int ath10k_hw_power_on(struct ath10k *ar)
 
 	ath10k_dbg(ar, ATH10K_DBG_SNOC, "soc power on\n");
 
-	ret = pwrseq_enable(ar_snoc->pwrseq);
+	ret = pwrseq_power_on(ar_snoc->pwrseq);
 	if (ret)
 		return ret;
 
@@ -1043,7 +1043,7 @@ static int ath10k_hw_power_on(struct ath10k *ar)
 vreg_off:
 	regulator_bulk_disable(ar_snoc->num_vregs, ar_snoc->vregs);
 pwrseq_off:
-	pwrseq_disable(ar_snoc->pwrseq);
+	pwrseq_power_off(ar_snoc->pwrseq);
 
 	return ret;
 }
@@ -1061,7 +1061,7 @@ static int ath10k_hw_power_off(struct ath10k *ar)
 	ret_vreg = regulator_bulk_disable(ar_snoc->num_vregs, ar_snoc->vregs);
 
 	if (ar_snoc->pwrseq)
-		ret_seq = pwrseq_disable(ar_snoc->pwrseq);
+		ret_seq = pwrseq_power_off(ar_snoc->pwrseq);
 
 	return ret_vreg ? : ret_seq;
 }
@@ -1532,8 +1532,10 @@ static int ath10k_snoc_modem_notify(struct notifier_block *nb, unsigned long act
 	case QCOM_SSR_BEFORE_SHUTDOWN:
 		ath10k_dbg(ar, ATH10K_DBG_SNOC, "received modem %s event\n",
 			   notify_data->crashed ? "crashed" : "stopping");
-		assign_bit(ATH10K_SNOC_FLAG_MODEM_STOPPED, &ar_snoc->flags,
-			   !notify_data->crashed);
+		if (!notify_data->crashed)
+			set_bit(ATH10K_SNOC_FLAG_MODEM_STOPPED, &ar_snoc->flags);
+		else
+			clear_bit(ATH10K_SNOC_FLAG_MODEM_STOPPED, &ar_snoc->flags);
 		break;
 
 	case QCOM_SSR_AFTER_SHUTDOWN:
@@ -1816,8 +1818,8 @@ static int ath10k_snoc_probe(struct platform_device *pdev)
 		ar_snoc->num_vregs = 1;
 	}
 
-	ar_snoc->vregs = devm_kzalloc_objs(&pdev->dev, *ar_snoc->vregs,
-					   ar_snoc->num_vregs);
+	ar_snoc->vregs = devm_kcalloc(&pdev->dev, ar_snoc->num_vregs,
+				      sizeof(*ar_snoc->vregs), GFP_KERNEL);
 	if (!ar_snoc->vregs) {
 		ret = -ENOMEM;
 		goto err_free_irq;
@@ -1831,8 +1833,8 @@ static int ath10k_snoc_probe(struct platform_device *pdev)
 		goto err_free_irq;
 
 	ar_snoc->num_clks = ARRAY_SIZE(ath10k_clocks);
-	ar_snoc->clks = devm_kzalloc_objs(&pdev->dev, *ar_snoc->clks,
-					  ar_snoc->num_clks);
+	ar_snoc->clks = devm_kcalloc(&pdev->dev, ar_snoc->num_clks,
+				     sizeof(*ar_snoc->clks), GFP_KERNEL);
 	if (!ar_snoc->clks) {
 		ret = -ENOMEM;
 		goto err_free_irq;

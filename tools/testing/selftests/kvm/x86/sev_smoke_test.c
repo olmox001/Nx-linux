@@ -178,7 +178,7 @@ static void test_sev(void *guest_code, u32 type, u64 policy)
 		case UCALL_SYNC:
 			continue;
 		case UCALL_DONE:
-			goto done;
+			return;
 		case UCALL_ABORT:
 			REPORT_GUEST_ASSERT(uc);
 		default:
@@ -187,7 +187,6 @@ static void test_sev(void *guest_code, u32 type, u64 policy)
 		}
 	}
 
-done:
 	kvm_vm_free(vm);
 }
 

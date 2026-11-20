@@ -1268,18 +1268,18 @@ static int mtk_btcvsd_snd_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 
 	/* init btcvsd private data */
-	btcvsd = devm_kzalloc_obj(dev, *btcvsd);
+	btcvsd = devm_kzalloc(dev, sizeof(*btcvsd), GFP_KERNEL);
 	if (!btcvsd)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, btcvsd);
 	btcvsd->dev = dev;
 
 	/* init tx/rx */
-	btcvsd->rx = devm_kzalloc_obj(btcvsd->dev, *btcvsd->rx);
+	btcvsd->rx = devm_kzalloc(btcvsd->dev, sizeof(*btcvsd->rx), GFP_KERNEL);
 	if (!btcvsd->rx)
 		return -ENOMEM;
 
-	btcvsd->tx = devm_kzalloc_obj(btcvsd->dev, *btcvsd->tx);
+	btcvsd->tx = devm_kzalloc(btcvsd->dev, sizeof(*btcvsd->tx), GFP_KERNEL);
 	if (!btcvsd->tx)
 		return -ENOMEM;
 

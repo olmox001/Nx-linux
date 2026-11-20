@@ -340,7 +340,7 @@ static int atp867x_set_priv(struct ata_port *ap)
 	int port = ap->port_no;
 
 	dp = ap->private_data =
-		devm_kzalloc_obj(&pdev->dev, *dp);
+		devm_kzalloc(&pdev->dev, sizeof(*dp), GFP_KERNEL);
 	if (dp == NULL)
 		return -ENOMEM;
 

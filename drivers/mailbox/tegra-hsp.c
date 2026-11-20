@@ -280,7 +280,7 @@ tegra_hsp_doorbell_create(struct tegra_hsp *hsp, const char *name,
 	unsigned int offset;
 	unsigned long flags;
 
-	db = devm_kzalloc_obj(hsp->dev, *db);
+	db = devm_kzalloc(hsp->dev, sizeof(*db), GFP_KERNEL);
 	if (!db)
 		return ERR_PTR(-ENOMEM);
 
@@ -677,7 +677,8 @@ static int tegra_hsp_add_mailboxes(struct tegra_hsp *hsp, struct device *dev)
 {
 	int i;
 
-	hsp->mailboxes = devm_kzalloc_objs(dev, *hsp->mailboxes, hsp->num_sm);
+	hsp->mailboxes = devm_kcalloc(dev, hsp->num_sm, sizeof(*hsp->mailboxes),
+				      GFP_KERNEL);
 	if (!hsp->mailboxes)
 		return -ENOMEM;
 
@@ -707,8 +708,11 @@ static int tegra_hsp_request_shared_irq(struct tegra_hsp *hsp)
 
 		err = devm_request_irq(hsp->dev, irq, tegra_hsp_shared_irq, 0,
 				       dev_name(hsp->dev), hsp);
-		if (err < 0)
+		if (err < 0) {
+			dev_err(hsp->dev, "failed to request interrupt: %d\n",
+				err);
 			continue;
+		}
 
 		hsp->shared_irq = i;
 
@@ -735,7 +739,7 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	u32 value;
 	int err;
 
-	hsp = devm_kzalloc_obj(&pdev->dev, *hsp);
+	hsp = devm_kzalloc(&pdev->dev, sizeof(*hsp), GFP_KERNEL);
 	if (!hsp)
 		return -ENOMEM;
 
@@ -762,9 +766,9 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	if (hsp->num_si > 0) {
 		unsigned int count = 0;
 
-		hsp->shared_irqs = devm_kzalloc_objs(&pdev->dev,
-						     *hsp->shared_irqs,
-						     hsp->num_si);
+		hsp->shared_irqs = devm_kcalloc(&pdev->dev, hsp->num_si,
+						sizeof(*hsp->shared_irqs),
+						GFP_KERNEL);
 		if (!hsp->shared_irqs)
 			return -ENOMEM;
 
@@ -796,8 +800,9 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	hsp->mbox_db.dev = &pdev->dev;
 	hsp->mbox_db.ops = &tegra_hsp_db_ops;
 
-	hsp->mbox_db.chans = devm_kzalloc_objs(&pdev->dev, *hsp->mbox_db.chans,
-					       hsp->mbox_db.num_chans);
+	hsp->mbox_db.chans = devm_kcalloc(&pdev->dev, hsp->mbox_db.num_chans,
+					  sizeof(*hsp->mbox_db.chans),
+					  GFP_KERNEL);
 	if (!hsp->mbox_db.chans)
 		return -ENOMEM;
 
@@ -823,8 +828,9 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	hsp->mbox_sm.dev = &pdev->dev;
 	hsp->mbox_sm.ops = &tegra_hsp_sm_ops;
 
-	hsp->mbox_sm.chans = devm_kzalloc_objs(&pdev->dev, *hsp->mbox_sm.chans,
-					       hsp->mbox_sm.num_chans);
+	hsp->mbox_sm.chans = devm_kcalloc(&pdev->dev, hsp->mbox_sm.num_chans,
+					  sizeof(*hsp->mbox_sm.chans),
+					  GFP_KERNEL);
 	if (!hsp->mbox_sm.chans)
 		return -ENOMEM;
 
@@ -850,8 +856,12 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 		err = devm_request_irq(&pdev->dev, hsp->doorbell_irq,
 				       tegra_hsp_doorbell_irq, IRQF_NO_SUSPEND,
 				       dev_name(&pdev->dev), hsp);
-		if (err < 0)
+		if (err < 0) {
+			dev_err(&pdev->dev,
+			        "failed to request doorbell IRQ#%u: %d\n",
+				hsp->doorbell_irq, err);
 			return err;
+		}
 	}
 
 	if (hsp->shared_irqs) {

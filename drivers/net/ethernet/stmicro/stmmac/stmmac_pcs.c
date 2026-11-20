@@ -222,7 +222,7 @@ int stmmac_integrated_pcs_init(struct stmmac_priv *priv,
 {
 	struct stmmac_pcs *spcs;
 
-	spcs = devm_kzalloc_obj(priv->device, *spcs);
+	spcs = devm_kzalloc(priv->device, sizeof(*spcs), GFP_KERNEL);
 	if (!spcs)
 		return -ENOMEM;
 

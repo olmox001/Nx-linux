@@ -86,10 +86,10 @@ static inline void chacha_init(struct chacha_state *state,
 }
 
 void chacha_crypt(struct chacha_state *state, u8 *dst, const u8 *src,
-		  size_t bytes, int nrounds);
+		  unsigned int bytes, int nrounds);
 
-static inline void chacha20_crypt(struct chacha_state *state, u8 *dst,
-				  const u8 *src, size_t bytes)
+static inline void chacha20_crypt(struct chacha_state *state,
+				  u8 *dst, const u8 *src, unsigned int bytes)
 {
 	chacha_crypt(state, dst, src, bytes, 20);
 }

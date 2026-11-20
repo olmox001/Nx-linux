@@ -666,7 +666,7 @@ static int rt5033_charger_probe(struct platform_device *pdev)
 	struct device_node *np_conn, *np_edev;
 	int ret;
 
-	charger = devm_kzalloc_obj(&pdev->dev, *charger);
+	charger = devm_kzalloc(&pdev->dev, sizeof(*charger), GFP_KERNEL);
 	if (!charger)
 		return -ENOMEM;
 

@@ -169,7 +169,7 @@ static int rtd119x_rtc_probe(struct platform_device *pdev)
 	u32 val;
 	int ret;
 
-	data = devm_kzalloc_obj(&pdev->dev, *data);
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

@@ -134,30 +134,22 @@ static int print_extlog_rcd(const char *pfx,
 }
 
 static void extlog_print_pcie(struct cper_sec_pcie *pcie_err,
-			      int severity, u32 len)
+			      int severity)
 {
-#ifdef CONFIG_ACPI_APEI_PCIEAER
-	struct aer_capability_regs aer_regs = {};
+#ifdef ACPI_APEI_PCIEAER
+	struct aer_capability_regs *aer;
 	struct pci_dev *pdev;
 	unsigned int devfn;
 	unsigned int bus;
 	int aer_severity;
 	int domain;
 
-	if (len < sizeof(*pcie_err)) {
-		pr_warn_ratelimited(FW_WARN
-				    "PCIe error section too small (%u)\n", len);
-		return;
-	}
-
 	if (!(pcie_err->validation_bits & CPER_PCIE_VALID_DEVICE_ID &&
 	      pcie_err->validation_bits & CPER_PCIE_VALID_AER_INFO))
 		return;
 
 	aer_severity = cper_severity_to_aer(severity);
-
-	aer_cap_regs_unpack(&aer_regs, pcie_err->aer_info, sizeof(pcie_err->aer_info));
-
+	aer = (struct aer_capability_regs *)pcie_err->aer_info;
 	domain = pcie_err->device_id.segment;
 	bus = pcie_err->device_id.bus;
 	devfn = PCI_DEVFN(pcie_err->device_id.device,
@@ -166,8 +158,25 @@ static void extlog_print_pcie(struct cper_sec_pcie *pcie_err,
 	if (!pdev)
 		return;
 
-	pci_print_aer(pdev, aer_severity, &aer_regs);
+	pci_print_aer(pdev, aer_severity, aer);
 	pci_dev_put(pdev);
+#endif
+}
+
+static void
+extlog_cxl_cper_handle_prot_err(struct cxl_cper_sec_prot_err *prot_err,
+				int severity)
+{
+#ifdef ACPI_APEI_PCIEAER
+	struct cxl_cper_prot_err_work_data wd;
+
+	if (cxl_cper_sec_prot_err_valid(prot_err))
+		return;
+
+	if (cxl_cper_setup_prot_err_work_data(&wd, prot_err, severity))
+		return;
+
+	cxl_cper_handle_prot_err(&wd);
 #endif
 }
 
@@ -199,15 +208,6 @@ static int extlog_print(struct notifier_block *nb, unsigned long val,
 
 	tmp = (struct acpi_hest_generic_status *)elog_buf;
 
-	/*
-	 * Bound the length before cper_estatus_check() walks the sections: it
-	 * iterates over data_length, which is not yet known to fit elog_buf.
-	 * cper_estatus_check_header() then rejects a length that wrapped, which
-	 * the bound cannot see.
-	 */
-	if (cper_estatus_len(tmp) > ELOG_ENTRY_LEN || cper_estatus_check(tmp))
-		return NOTIFY_DONE;
-
 	if (!ras_userspace_consumers()) {
 		print_extlog_rcd(NULL, tmp, cpu);
 		goto out;
@@ -235,14 +235,12 @@ static int extlog_print(struct notifier_block *nb, unsigned long val,
 			struct cxl_cper_sec_prot_err *prot_err =
 				acpi_hest_get_payload(gdata);
 
-			cxl_cper_post_prot_err(prot_err,
-					       gdata->error_severity,
-					       gdata->error_data_length);
+			extlog_cxl_cper_handle_prot_err(prot_err,
+							gdata->error_severity);
 		} else if (guid_equal(sec_type, &CPER_SEC_PCIE)) {
 			struct cper_sec_pcie *pcie_err = acpi_hest_get_payload(gdata);
 
-			extlog_print_pcie(pcie_err, gdata->error_severity,
-					  gdata->error_data_length);
+			extlog_print_pcie(pcie_err, gdata->error_severity);
 		} else {
 			void *err = acpi_hest_get_payload(gdata);
 

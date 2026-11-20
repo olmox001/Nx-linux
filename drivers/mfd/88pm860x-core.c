@@ -1136,8 +1136,9 @@ static int pm860x_probe(struct i2c_client *client)
 
 	if (node && !pdata) {
 		/* parse DT to get platform data */
-		pdata = devm_kzalloc_obj(&client->dev,
-					 struct pm860x_platform_data);
+		pdata = devm_kzalloc(&client->dev,
+				     sizeof(struct pm860x_platform_data),
+				     GFP_KERNEL);
 		if (!pdata)
 			return -ENOMEM;
 		ret = pm860x_dt_init(node, &client->dev, pdata);
@@ -1148,7 +1149,8 @@ static int pm860x_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	chip = devm_kzalloc_obj(&client->dev, struct pm860x_chip);
+	chip = devm_kzalloc(&client->dev,
+			    sizeof(struct pm860x_chip), GFP_KERNEL);
 	if (chip == NULL)
 		return -ENOMEM;
 

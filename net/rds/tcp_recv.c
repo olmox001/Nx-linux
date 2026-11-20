@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2017 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2024 Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -31,9 +31,9 @@
  *
  */
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <net/tcp.h>
-#include <trace/events/sock.h>
+
+#include "trace.h"
 
 #include "rds.h"
 #include "tcp.h"
@@ -57,37 +57,182 @@ void rds_tcp_inc_free(struct rds_incoming *inc)
 	kmem_cache_free(rds_tcp_incoming_slab, tinc);
 }
 
+static size_t
+rds_csum_copy_to_iter(const void *addr, size_t bytes, void *data,
+		      struct iov_iter *i)
+{
+	__wsum *sum = (__wsum *)data;
+	struct rds_csum_state csdata = { .csum = *sum };
+	size_t n;
+
+	n = rds_csum_and_copy_to_iter(addr, bytes, &csdata, i);
+
+	if (n == bytes)
+		*sum = csdata.csum;
+
+	return n;
+}
+
+/* RDS checksum version of __skb_datagram_iter()
+ *
+ * This code is based upon __skb_datagram_iter() from net/core/datagram.c, but
+ * that routine is declared as a static int, so it is unavailable to be called
+ * from routines in other source files.
+ *
+ * Modifications to what is currently generic code from upstream could be made,
+ * but it would result in a long-term maintenance burden. Instead, copy its
+ * functionality to a local routine within the RDS source tree.
+ *
+ * The functionality is largely the same, except there is no need to generalize
+ * for a passed callback function via a function pointer and therefore code to
+ * optimize for an indirect call that can never occur is unneeded.
+ */
+static int
+rds_skb_datagram_iter(const struct sk_buff *skb, int offset, struct iov_iter *to, int len,
+		      bool fault_short, void *data)
+{
+	int start = skb_headlen(skb);
+	int i, copy = start - offset, start_off = offset, n;
+	struct sk_buff *frag_iter;
+
+	/* Copy header. */
+	if (copy > 0) {
+		if (copy > len)
+			copy = len;
+		n = rds_csum_copy_to_iter(skb->data + offset, copy, data, to);
+		offset += n;
+		if (n != copy)
+			goto short_copy;
+		len -= copy;
+		if (!len)
+			return 0;
+	}
+
+	/* Copy paged appendix. Hmm... why does this look so complicated? */
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		int end;
+		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+
+		WARN_ON(start > offset + len);
+
+		end = start + skb_frag_size(frag);
+		copy = end - offset;
+		if (copy > 0) {
+			struct page *page = skb_frag_page(frag);
+			u8 *vaddr = kmap_local_page(page);
+
+			if (copy > len)
+				copy = len;
+			n = rds_csum_copy_to_iter(vaddr + skb_frag_off(frag) + offset - start, copy,
+						  data, to);
+			kunmap_local(vaddr);
+			offset += n;
+			if (n != copy)
+				goto short_copy;
+			len -= copy;
+			if (!len)
+				return 0;
+		}
+		start = end;
+	}
+
+	skb_walk_frags(skb, frag_iter) {
+		int end;
+
+		WARN_ON(start > offset + len);
+
+		end = start + frag_iter->len;
+		copy = end - offset;
+		if (copy > 0) {
+			if (copy > len)
+				copy = len;
+			if (rds_skb_datagram_iter(frag_iter, offset - start, to, copy, fault_short,
+						  data))
+				goto fault;
+			len -= copy;
+			if (!len)
+				return 0;
+			offset += copy;
+		}
+		start = end;
+	}
+	if (!len)
+		return 0;
+
+	/* This is not really a user copy fault, but rather someone
+	 * gave us a bogus length on the skb.  We should probably
+	 * print a warning here as it may indicate a kernel bug.
+	 */
+
+fault:
+	iov_iter_revert(to, offset - start_off);
+	return -EFAULT;
+
+short_copy:
+	if (fault_short || iov_iter_count(to))
+		goto fault;
+
+	return 0;
+}
+
+/* end of RDS checksum version of __skb_datagram_iter() */
+
 /*
  * this is pretty lame, but, whatever.
  */
-int rds_tcp_inc_copy_to_user(struct rds_incoming *inc, struct iov_iter *to)
+int rds_tcp_inc_copy_to_user(struct rds_sock *rs, struct rds_incoming *inc,
+			     struct iov_iter *to)
 {
 	struct rds_tcp_incoming *tinc;
 	struct sk_buff *skb;
+	unsigned long to_copy, skb_off;
 	int ret = 0;
+	__wsum sum = 0;
 
 	if (!iov_iter_count(to))
-		goto out;
+		return 0;
 
 	tinc = container_of(inc, struct rds_tcp_incoming, ti_inc);
 
 	skb_queue_walk(&tinc->ti_skb_list, skb) {
-		unsigned long to_copy, skb_off;
-		for (skb_off = 0; skb_off < skb->len; skb_off += to_copy) {
+		skb_off = 0;
+
+		while (skb_off < skb->len) {
 			to_copy = iov_iter_count(to);
 			to_copy = min(to_copy, skb->len - skb_off);
 
-			if (skb_copy_datagram_iter(skb, skb_off, to, to_copy))
-				return -EFAULT;
+			if (likely(!inc->i_payload_csum.csum_enabled)) {
+				/* no checksum */
+				if (skb_copy_datagram_iter(skb, skb_off, to, to_copy))
+					ret = -EFAULT;
+			} else {
+				/* full packet wsum checksum */
+				if (rds_skb_datagram_iter(skb, skb_off, to, to_copy, false, &sum))
+					ret = -EFAULT;
+			}
 
-			rds_stats_add(s_copy_to_user, to_copy);
+			if (ret < 0)
+				return ret;
+
+			rds_stats_add(rs->rs_stats, s_copy_to_user, to_copy);
 			ret += to_copy;
+			skb_off += to_copy;
 
 			if (!iov_iter_count(to))
 				goto out;
 		}
 	}
 out:
+	if (unlikely(inc->i_payload_csum.csum_enabled)) {
+		if (likely(ret)) {
+			inc->i_usercopy_csum = csum_fold(sum);
+			rds_stats_inc(rs->rs_stats, s_recv_payload_csum_tcp);
+		} else {
+			rds_stats_inc(rs->rs_stats,
+				      s_recv_payload_csum_tcp_badlen);
+		}
+	}
+
 	return ret;
 }
 
@@ -144,7 +289,9 @@ static void rds_tcp_cong_recv(struct rds_connection *conn,
 		}
 	}
 
-	rds_cong_map_updated(map, ~(u64) 0);
+	trace_rds_receive(&tinc->ti_inc, NULL, conn, NULL,
+			  &conn->c_faddr, &conn->c_laddr);
+	rds_cong_map_updated(conn, map, ~(u64)0);
 }
 
 struct rds_tcp_desc_arg {
@@ -172,13 +319,13 @@ static int rds_tcp_data_recv(read_descriptor_t *desc, struct sk_buff *skb,
 	while (left) {
 		if (!tinc) {
 			tinc = kmem_cache_alloc(rds_tcp_incoming_slab,
-						arg->gfp);
+					        arg->gfp);
 			if (!tinc) {
 				desc->error = -ENOMEM;
 				goto out;
 			}
 			tc->t_tinc = tinc;
-			rdsdebug("allocated tinc %p\n", tinc);
+			rdsdebug("alloced tinc %p\n", tinc);
 			rds_inc_path_init(&tinc->ti_inc, cp,
 					  &cp->cp_conn->c_faddr);
 			tinc->ti_inc.i_rx_lat_trace[RDS_MSG_RX_HDR] =
@@ -275,7 +422,7 @@ static int rds_tcp_read_sock(struct rds_conn_path *cp, gfp_t gfp)
 	desc.count = 1; /* give more than one skb per call */
 
 	tcp_read_sock(sock->sk, &desc, rds_tcp_data_recv);
-	rdsdebug("tcp_read_sock for tc %p gfp %pGg returned %d\n", tc, &gfp,
+	rdsdebug("tcp_read_sock for tc %p gfp 0x%x returned %d\n", tc, gfp,
 		 desc.error);
 
 	if (skb_queue_empty_lockless(&sock->sk->sk_receive_queue) &&
@@ -283,6 +430,19 @@ static int rds_tcp_read_sock(struct rds_conn_path *cp, gfp_t gfp)
 		wake_up(&tc->t_recv_done_waitq);
 
 	return desc.error;
+}
+
+int rds_tcp_recv_path_lock(struct rds_conn_path *cp)
+{
+	struct rds_tcp_connection *tc = cp->cp_transport_data;
+	int ret = 0;
+
+	mutex_lock(&tc->t_conn_path_lock);
+	if (rds_conn_path_state(cp) == RDS_CONN_UP)
+		ret = rds_tcp_recv_path(cp);
+	mutex_unlock(&tc->t_conn_path_lock);
+
+	return ret;
 }
 
 /*
@@ -314,7 +474,6 @@ void rds_tcp_data_ready(struct sock *sk)
 	struct rds_conn_path *cp;
 	struct rds_tcp_connection *tc;
 
-	trace_sk_data_ready(sk);
 	rdsdebug("data ready sk %p\n", sk);
 
 	read_lock_bh(&sk->sk_callback_lock);
@@ -326,14 +485,10 @@ void rds_tcp_data_ready(struct sock *sk)
 
 	tc = cp->cp_transport_data;
 	ready = tc->t_orig_data_ready;
-	rds_tcp_stats_inc(s_tcp_data_ready_calls);
+	rds_tcp_stats_inc(tc->t_stats, s_tcp_data_ready_calls);
 
-	if (rds_tcp_read_sock(cp, GFP_ATOMIC) == -ENOMEM) {
-		rcu_read_lock();
-		if (!rds_destroy_pending(cp->cp_conn))
-			queue_delayed_work(cp->cp_wq, &cp->cp_recv_w, 0);
-		rcu_read_unlock();
-	}
+	if (rds_tcp_read_sock(cp, GFP_ATOMIC) == -ENOMEM)
+		rds_cond_queue_recv_work(cp, 0);
 out:
 	read_unlock_bh(&sk->sk_callback_lock);
 	ready(sk);
@@ -341,7 +496,9 @@ out:
 
 int rds_tcp_recv_init(void)
 {
-	rds_tcp_incoming_slab = KMEM_CACHE(rds_tcp_incoming, 0);
+	rds_tcp_incoming_slab = kmem_cache_create("rds_tcp_incoming",
+					sizeof(struct rds_tcp_incoming),
+					0, 0, NULL);
 	if (!rds_tcp_incoming_slab)
 		return -ENOMEM;
 	return 0;

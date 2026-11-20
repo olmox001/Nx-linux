@@ -105,12 +105,10 @@ void inet_twsk_hashdance_schedule(struct inet_timewait_sock *tw,
 				  struct inet_hashinfo *hashinfo,
 				  int timeo)
 {
-	spinlock_t *lock = inet_ehash_lockp(hashinfo, sk->sk_hash);
-	struct inet_connection_sock *icsk = inet_csk(sk);
-	struct inet_bind_hashbucket *bhead, *bhead2;
 	const struct inet_sock *inet = inet_sk(sk);
-
-	icsk->unhashed_state = sk->sk_state;
+	const struct inet_connection_sock *icsk = inet_csk(sk);
+	spinlock_t *lock = inet_ehash_lockp(hashinfo, sk->sk_hash);
+	struct inet_bind_hashbucket *bhead, *bhead2;
 
 	/* Put TW into bind hash. Original socket stays there too.
 	 * Note, that any socket with inet->num != 0 MUST be bound in
@@ -143,7 +141,7 @@ void inet_twsk_hashdance_schedule(struct inet_timewait_sock *tw,
 	 * Also note that after this point, we lost our implicit reference
 	 * so we are not allowed to use tw anymore.
 	 */
-	refcount_set_release(&tw->tw_refcnt, 3);
+	refcount_set(&tw->tw_refcnt, 3);
 
 	/* Ensure tw_refcnt has been set before tw is published.
 	 * smp_wmb() provides the necessary memory barrier to enforce this
@@ -330,7 +328,7 @@ restart:
 			if (check_net(sock_net(sk)))
 				continue;
 
-			if (unlikely(!refcount_inc_not_zero_acquire(&sk->sk_refcnt)))
+			if (unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
 				continue;
 
 			if (check_net(sock_net(sk))) {

@@ -13,7 +13,6 @@
 #include "debug.h"
 #include "ntfs.h"
 #include "ntfs_fs.h"
-#include <trace/events/ntfs3.h>
 
 /*
  * fill_name_de - Format NTFS_DE in @buf.
@@ -23,7 +22,7 @@ int fill_name_de(struct ntfs_sb_info *sbi, void *buf, const struct qstr *name,
 {
 	int err;
 	struct NTFS_DE *e = buf;
-	u16 data_size, real_size, aligned_size;
+	u16 data_size;
 	struct ATTR_FILE_NAME *fname = (struct ATTR_FILE_NAME *)(e + 1);
 
 #ifndef CONFIG_NTFS3_64BIT_CLUSTER
@@ -54,12 +53,7 @@ int fill_name_de(struct ntfs_sb_info *sbi, void *buf, const struct qstr *name,
 	fname->type = FILE_NAME_POSIX;
 	data_size = fname_full_size(fname);
 
-	real_size = data_size + sizeof(struct NTFS_DE);
-	aligned_size = ALIGN(data_size, 8) + sizeof(struct NTFS_DE);
-	if (aligned_size > real_size)
-		memset(Add2Ptr(buf, real_size), 0, aligned_size - real_size);
-
-	e->size = cpu_to_le16(aligned_size);
+	e->size = cpu_to_le16(ALIGN(data_size, 8) + sizeof(struct NTFS_DE));
 	e->key_size = cpu_to_le16(data_size);
 	e->flags = 0;
 	e->res = 0;
@@ -78,25 +72,21 @@ static struct dentry *ntfs_lookup(struct inode *dir, struct dentry *dentry,
 	struct inode *inode;
 	int err;
 
-	trace_ntfs3_lookup(dir, dentry);
-
 	if (!uni)
-		return ERR_PTR(-ENOMEM);
-
-	err = ntfs_nls_to_utf16(ni->mi.sbi, dentry->d_name.name,
-				dentry->d_name.len, uni, NTFS_NAME_LEN,
-				UTF16_HOST_ENDIAN);
-
-	if (err < 0) {
+		inode = ERR_PTR(-ENOMEM);
+	else {
+		err = ntfs_nls_to_utf16(ni->mi.sbi, dentry->d_name.name,
+					dentry->d_name.len, uni, NTFS_NAME_LEN,
+					UTF16_HOST_ENDIAN);
+		if (err < 0)
+			inode = ERR_PTR(err);
+		else {
+			ni_lock_dir(ni);
+			inode = dir_search_u(dir, uni, NULL);
+			ni_unlock(ni);
+		}
 		kfree(uni);
-		return ERR_PTR(err);
 	}
-
-	ni_lock_dir(ni);
-	inode = dir_search_flags(dir, uni, NULL, flags);
-	ni_unlock(ni);
-
-	kfree(uni);
 
 	/*
 	 * Check for a null pointer
@@ -105,7 +95,7 @@ static struct dentry *ntfs_lookup(struct inode *dir, struct dentry *dentry,
 	 */
 	if (!IS_ERR_OR_NULL(inode) && !inode->i_op) {
 		iput(inode);
-		return ERR_PTR(-EINVAL);
+		inode = ERR_PTR(-EINVAL);
 	}
 
 	return d_splice_alias(inode, dentry);
@@ -114,8 +104,8 @@ static struct dentry *ntfs_lookup(struct inode *dir, struct dentry *dentry,
 /*
  * ntfs_create - inode_operations::create
  */
-static int ntfs_create(const struct mnt_idmap *idmap, struct inode *dir,
-		       struct dentry *dentry, umode_t mode)
+static int ntfs_create(struct mnt_idmap *idmap, struct inode *dir,
+		       struct dentry *dentry, umode_t mode, bool excl)
 {
 	return ntfs_create_inode(idmap, dir, dentry, NULL, S_IFREG | mode, 0,
 				 NULL, 0, NULL);
@@ -124,7 +114,7 @@ static int ntfs_create(const struct mnt_idmap *idmap, struct inode *dir,
 /*
  * ntfs_mknod - inode_operations::mknod
  */
-static int ntfs_mknod(const struct mnt_idmap *idmap, struct inode *dir,
+static int ntfs_mknod(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode, dev_t rdev)
 {
 	return ntfs_create_inode(idmap, dir, dentry, NULL, mode, rdev, NULL, 0,
@@ -178,9 +168,7 @@ static int ntfs_link(struct dentry *ode, struct inode *dir, struct dentry *de)
  */
 static int ntfs_unlink(struct inode *dir, struct dentry *dentry)
 {
-	struct ntfs_inode *dir_ni = ntfs_i(dir);
-	struct inode *inode = d_inode(dentry);
-	struct ntfs_inode *ni = ntfs_i(inode);
+	struct ntfs_inode *ni = ntfs_i(dir);
 	int err;
 
 	/* Avoid any operation if inode is bad. */
@@ -190,21 +178,11 @@ static int ntfs_unlink(struct inode *dir, struct dentry *dentry)
 	if (unlikely(ntfs3_forced_shutdown(dir->i_sb)))
 		return -EIO;
 
-	if (likely(is_ni_base(ni))) {
-		ni_lock_dir(dir_ni);
-		/* Remove general file/dir. */
-		err = ntfs_unlink_inode(dir, dentry);
-		ni_unlock(dir_ni);
-	} else {
-		ni_lock(ni);
-		/* Remove ADS. */
-		err = ni_remove_attr(ni, ATTR_DATA, ni->file.ads.name,
-				     ni->file.ads.len, false, NULL);
-		ni_unlock(ni);
+	ni_lock_dir(ni);
 
-		if (!err)
-			drop_nlink(inode);
-	}
+	err = ntfs_unlink_inode(dir, dentry);
+
+	ni_unlock(ni);
 
 	return err;
 }
@@ -212,7 +190,7 @@ static int ntfs_unlink(struct inode *dir, struct dentry *dentry)
 /*
  * ntfs_symlink - inode_operations::symlink
  */
-static int ntfs_symlink(const struct mnt_idmap *idmap, struct inode *dir,
+static int ntfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, const char *symname)
 {
 	u32 size = strlen(symname);
@@ -231,11 +209,11 @@ static int ntfs_symlink(const struct mnt_idmap *idmap, struct inode *dir,
 /*
  * ntfs_mkdir - inode_operations::mkdir
  */
-static struct dentry *ntfs_mkdir(const struct mnt_idmap *idmap, struct inode *dir,
+static struct dentry *ntfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 				 struct dentry *dentry, umode_t mode)
 {
-	return ERR_PTR(ntfs_create_inode(idmap, dir, dentry, NULL, mode, 0,
-					 NULL, 0, NULL));
+	return ERR_PTR(ntfs_create_inode(idmap, dir, dentry, NULL,
+					 S_IFDIR | mode, 0, NULL, 0, NULL));
 }
 
 /*
@@ -265,7 +243,7 @@ static int ntfs_rmdir(struct inode *dir, struct dentry *dentry)
 /*
  * ntfs_rename - inode_operations::rename
  */
-static int ntfs_rename(const struct mnt_idmap *idmap, struct inode *dir,
+static int ntfs_rename(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, struct inode *new_dir,
 		       struct dentry *new_dentry, u32 flags)
 {
@@ -290,19 +268,12 @@ static int ntfs_rename(const struct mnt_idmap *idmap, struct inode *dir,
 		      1024);
 	static_assert(PATH_MAX >= 4 * 1024);
 
-	if (!is_ni_base(ni)) {
-		/* No rename for ADS. */
-		return -EOPNOTSUPP;
-	}
-
 	/* Avoid any operation if inode is bad. */
 	if (unlikely(is_bad_ni(ni)))
 		return -EINVAL;
 
 	if (unlikely(ntfs3_forced_shutdown(sb)))
 		return -EIO;
-
-	trace_ntfs3_rename(dir, dentry, new_dir, new_dentry);
 
 	if (flags & ~RENAME_NOREPLACE)
 		return -EINVAL;

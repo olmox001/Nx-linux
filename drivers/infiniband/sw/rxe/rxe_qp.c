@@ -67,27 +67,27 @@ static int rxe_qp_chk_cap(struct rxe_dev *rxe, struct ib_qp_cap *cap,
 			  int has_srq)
 {
 	if (cap->max_send_wr > rxe->attr.max_qp_wr) {
-		rxe_dbg_dev(rxe, "invalid send wr = %u > %u\n",
-			    cap->max_send_wr, rxe->attr.max_qp_wr);
+		rxe_dbg_dev(rxe, "invalid send wr = %u > %d\n",
+			 cap->max_send_wr, rxe->attr.max_qp_wr);
 		goto err1;
 	}
 
 	if (cap->max_send_sge > rxe->attr.max_send_sge) {
-		rxe_dbg_dev(rxe, "invalid send sge = %u > %u\n",
-			    cap->max_send_sge, rxe->attr.max_send_sge);
+		rxe_dbg_dev(rxe, "invalid send sge = %u > %d\n",
+			 cap->max_send_sge, rxe->attr.max_send_sge);
 		goto err1;
 	}
 
 	if (!has_srq) {
 		if (cap->max_recv_wr > rxe->attr.max_qp_wr) {
-			rxe_dbg_dev(rxe, "invalid recv wr = %u > %u\n",
-				    cap->max_recv_wr, rxe->attr.max_qp_wr);
+			rxe_dbg_dev(rxe, "invalid recv wr = %u > %d\n",
+				 cap->max_recv_wr, rxe->attr.max_qp_wr);
 			goto err1;
 		}
 
 		if (cap->max_recv_sge > rxe->attr.max_recv_sge) {
-			rxe_dbg_dev(rxe, "invalid recv sge = %u > %u\n",
-				    cap->max_recv_sge, rxe->attr.max_recv_sge);
+			rxe_dbg_dev(rxe, "invalid recv sge = %u > %d\n",
+				 cap->max_recv_sge, rxe->attr.max_recv_sge);
 			goto err1;
 		}
 	}
@@ -538,9 +538,9 @@ int rxe_qp_chk_attr(struct rxe_dev *rxe, struct rxe_qp *qp,
 
 	if (mask & IB_QP_MAX_QP_RD_ATOMIC) {
 		if (attr->max_rd_atomic > rxe->attr.max_qp_rd_atom) {
-			rxe_dbg_qp(qp, "invalid max_rd_atomic %u > %u\n",
-				   attr->max_rd_atomic,
-				   rxe->attr.max_qp_rd_atom);
+			rxe_dbg_qp(qp, "invalid max_rd_atomic %d > %d\n",
+				 attr->max_rd_atomic,
+				 rxe->attr.max_qp_rd_atom);
 			goto err1;
 		}
 	}
@@ -855,16 +855,6 @@ int rxe_qp_chk_destroy(struct rxe_qp *qp)
 	 */
 	if (atomic_read(&qp->mcg_num)) {
 		rxe_dbg_qp(qp, "Attempt to destroy while attached to multicast group\n");
-		return -EBUSY;
-	}
-
-	/* An attempt to destroy a QP while it still holds references for
-	 * bound type 2 memory windows will fail immediately.  Otherwise the
-	 * QP is freed with those references outstanding and the windows are
-	 * left pointing at freed memory (use-after-free).
-	 */
-	if (atomic_read(&qp->mw_bind_num)) {
-		rxe_dbg_qp(qp, "Attempt to destroy while type 2 MWs are bound\n");
 		return -EBUSY;
 	}
 

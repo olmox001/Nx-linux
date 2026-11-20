@@ -215,7 +215,7 @@ static int imx_intmux_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	data = devm_kzalloc_flex(&pdev->dev, *data, irqchip_data, channum);
+	data = devm_kzalloc(&pdev->dev, struct_size(data, irqchip_data, channum), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -288,16 +288,12 @@ out:
 static void imx_intmux_remove(struct platform_device *pdev)
 {
 	struct intmux_data *data = platform_get_drvdata(pdev);
-	int i, ret;
-
-	ret = pm_runtime_resume_and_get(&pdev->dev);
-	if (ret < 0)
-		dev_warn(&pdev->dev, "failed to resume device: %d\n", ret);
+	int i;
 
 	for (i = 0; i < data->channum; i++) {
 		/* disable all interrupt sources of this channel */
-		if (ret >= 0)
-			writel_relaxed(0, data->regs + CHANIER(i));
+		writel_relaxed(0, data->regs + CHANIER(i));
+
 		irq_set_chained_handler_and_data(data->irqchip_data[i].irq,
 						 NULL, NULL);
 
@@ -305,11 +301,6 @@ static void imx_intmux_remove(struct platform_device *pdev)
 	}
 
 	pm_runtime_disable(&pdev->dev);
-	if (ret >= 0) {
-		pm_runtime_put_noidle(&pdev->dev);
-		clk_disable_unprepare(data->ipg_clk);
-		pm_runtime_set_suspended(&pdev->dev);
-	}
 }
 
 #ifdef CONFIG_PM

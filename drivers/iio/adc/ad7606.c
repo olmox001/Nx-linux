@@ -1400,7 +1400,8 @@ static int ad7606_probe_channels(struct iio_dev *indio_dev)
 	if (slow_bus)
 		indio_dev->num_channels++;
 
-	channels = devm_kzalloc_objs(dev, *channels, indio_dev->num_channels);
+	channels = devm_kcalloc(dev, indio_dev->num_channels, sizeof(*channels),
+				GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
 

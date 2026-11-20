@@ -133,14 +133,10 @@ static inline void __raw_writeb(u8 b, volatile void __iomem *addr)
 #define __raw_writew __raw_writew
 static inline void __raw_writew(u16 s, volatile void __iomem *addr)
 {
-	/*
-	 * Not an "m" operand: GCC can pick a register-indexed address for it,
-	 * which ST doesn't support (GCC PR target/127718).
-	 */
 	__asm__ __volatile__(
-	"	stw %0, [%1]	\n"
+	"	stw%U1 %0, %1	\n"
 	:
-	: "r" (s), "r" (addr)
+	: "r" (s), "m" (*(volatile u16 __force *)addr)
 	: "memory");
 
 }
@@ -148,11 +144,10 @@ static inline void __raw_writew(u16 s, volatile void __iomem *addr)
 #define __raw_writel __raw_writel
 static inline void __raw_writel(u32 w, volatile void __iomem *addr)
 {
-	/* See __raw_writew() above for why this doesn't use an "m" operand. */
 	__asm__ __volatile__(
-	"	st %0, [%1]	\n"
+	"	st%U1 %0, %1	\n"
 	:
-	: "r" (w), "r" (addr)
+	: "r" (w), "m" (*(volatile u32 __force *)addr)
 	: "memory");
 
 }

@@ -610,7 +610,7 @@ static int adm1266_probe(struct i2c_client *client)
 	int ret;
 	int i;
 
-	data = devm_kzalloc_obj(&client->dev, struct adm1266_data);
+	data = devm_kzalloc(&client->dev, sizeof(struct adm1266_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

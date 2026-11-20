@@ -64,8 +64,7 @@ int ip_vs_get_debug_level(void)
 
 
 /*  Protos */
-static void __ip_vs_del_service(struct ip_vs_service *svc,
-				struct list_head *dest_trash, bool cleanup);
+static void __ip_vs_del_service(struct ip_vs_service *svc, bool cleanup);
 
 
 #ifdef CONFIG_IP_VS_IPV6
@@ -236,7 +235,7 @@ static void defense_work_handler(struct work_struct *work)
 	update_defense_level(ipvs);
 	if (atomic_read(&ipvs->dropentry))
 		ip_vs_random_dropentry(ipvs);
-	queue_delayed_work(system_dfl_long_wq, &ipvs->defense_work,
+	queue_delayed_work(system_long_wq, &ipvs->defense_work,
 			   DEFENSE_TIMER_PERIOD);
 }
 #endif
@@ -291,7 +290,7 @@ static void est_reload_work_handler(struct work_struct *work)
 	atomic_set(&ipvs->est_genid_done, genid);
 
 	if (repeat)
-		queue_delayed_work(system_dfl_long_wq, &ipvs->est_reload_work,
+		queue_delayed_work(system_long_wq, &ipvs->est_reload_work,
 				   delay);
 
 unlock:
@@ -919,11 +918,6 @@ static void ip_vs_rs_hash(struct netns_ipvs *ipvs, struct ip_vs_dest *dest)
 	 */
 	hash = ip_vs_rs_hashkey(dest->af, &dest->addr, port);
 
-	/* Need RCU grace period when rehashing */
-	if (dest->need_gp) {
-		cond_synchronize_rcu(dest->rcu_state);
-		dest->need_gp = 0;
-	}
 	hlist_add_head_rcu(&dest->d_list, &ipvs->rs_table[hash]);
 	dest->in_rs_table = 1;
 }
@@ -1117,8 +1111,6 @@ ip_vs_trash_get_dest(struct ip_vs_service *svc, int dest_af,
 	struct ip_vs_dest *dest;
 	struct netns_ipvs *ipvs = svc->ipvs;
 
-	lockdep_assert_held(&ipvs->service_mutex);
-
 	/*
 	 * Find the destination in trash
 	 */
@@ -1152,55 +1144,22 @@ out:
 	return dest;
 }
 
-/* Add destination in temp list for trash */
-static void ip_vs_trash_add_dest(struct netns_ipvs *ipvs,
+/* Put destination in trash */
+static void ip_vs_trash_put_dest(struct netns_ipvs *ipvs,
 				 struct ip_vs_dest *dest, unsigned long istart,
-				 struct list_head *dest_trash)
+				 bool cleanup)
 {
+	spin_lock_bh(&ipvs->dest_trash_lock);
 	IP_VS_DBG_BUF(3, "Moving dest %s:%u into trash, dest->refcnt=%d\n",
 		      IP_VS_DBG_ADDR(dest->af, &dest->addr), ntohs(dest->port),
 		      refcount_read(&dest->refcnt));
-	/* dest lives in trash with reference */
-	list_add(&dest->t_list, dest_trash);
-	dest->idle_start = istart;
-}
-
-/* Put destinations in trash */
-static void ip_vs_trash_put_dests(struct netns_ipvs *ipvs,
-				  struct list_head *dest_trash, bool cleanup)
-{
-	spin_lock_bh(&ipvs->dest_trash_lock);
 	if (list_empty(&ipvs->dest_trash) && !cleanup)
 		mod_timer(&ipvs->dest_trash_timer,
 			  jiffies + (IP_VS_DEST_TRASH_PERIOD >> 1));
-	list_splice(dest_trash, &ipvs->dest_trash);
+	/* dest lives in trash with reference */
+	list_add(&dest->t_list, &ipvs->dest_trash);
+	dest->idle_start = istart;
 	spin_unlock_bh(&ipvs->dest_trash_lock);
-}
-
-/* Put destination back in trash */
-static void ip_vs_trash_put_back(struct netns_ipvs *ipvs,
-				 struct ip_vs_dest *dest)
-{
-	LIST_HEAD(dest_trash);
-
-	ip_vs_trash_add_dest(ipvs, dest, dest->idle_start, &dest_trash);
-	ip_vs_trash_put_dests(ipvs, &dest_trash, false);
-}
-
-/* Put destinations in trash and save the RCU state */
-static void ip_vs_trash_save_dests(struct netns_ipvs *ipvs,
-				   struct list_head *dest_trash, bool cleanup)
-{
-	struct ip_vs_dest *dest;
-	unsigned long rcu_state;
-
-	if (!list_empty(dest_trash)) {
-		/* Remember when dests were removed and added to dest_trash */
-		rcu_state = get_state_synchronize_rcu();
-		list_for_each_entry(dest, dest_trash, t_list)
-			dest->rcu_state = rcu_state;
-		ip_vs_trash_put_dests(ipvs, dest_trash, cleanup);
-	}
 }
 
 static void ip_vs_dest_rcu_free(struct rcu_head *head)
@@ -1345,45 +1304,37 @@ void ip_vs_stats_free(struct ip_vs_stats *stats)
 	}
 }
 
-/* Update overload state based on number of dest conns and lower/upper
+/* Update overload flag based on number of dest conns and lower/upper
  * connection thresholds:
- * - conns reach u_threshold and exceed it: set the overload state
- * - conns go below l_threshold (or 75% of u_threshold): clear the state
+ * - conns reach u_threshold and exceed it: set the flag
+ * - conns go below l_threshold (or 75% of u_threshold): clear the flag
  */
-static void __ip_vs_dest_update_overload(struct ip_vs_dest *dest)
+static void __ip_vs_dest_update_overload(struct ip_vs_dest *dest, int mode)
 {
 	int conns;
 	u32 l, u;
 
 	lockdep_assert_held(&dest->dst_lock);
 	u = READ_ONCE(dest->u_threshold);
-	if (u) {
-		/* Low threshold defaults to 75% of upper threshold */
-		l = READ_ONCE(dest->l_threshold) ? : (u - (u >> 2));
-		conns = atomic_read(&dest->totalconns);
-		if (conns >= (ip_vs_dest_is_overloaded(dest) ? l : u)) {
-			WRITE_ONCE(dest->u_threshold_val, INT_MAX);
-			WRITE_ONCE(dest->l_threshold_val, l);
-			/* Commit thresholds before repeating the check,
-			 * it is paired with atomic_fetch_dec() in
-			 * ip_vs_unbind_dest() to avoid entering the
-			 * overload state forever.
-			 */
-			smp_mb();
-			conns = atomic_read(&dest->totalconns);
-			if (conns >= l)
-				return;
-		}
+	if (!u)
+		goto unset;
+	l = READ_ONCE(dest->l_threshold_val);
+	conns = atomic_read(&dest->totalconns);
+	if (conns >= (mode > 0 ? l : u)) {
+		dest->flags |= IP_VS_DEST_F_OVERLOAD;
+		return;
 	}
+	if (conns >= (mode < 0 ? u : l))
+		return;
 
-	WRITE_ONCE(dest->u_threshold_val, u ? : INT_MAX);
-	WRITE_ONCE(dest->l_threshold_val, 0);
+unset:
+	dest->flags &= ~IP_VS_DEST_F_OVERLOAD;
 }
 
-void ip_vs_dest_update_overload(struct ip_vs_dest *dest)
+void ip_vs_dest_update_overload(struct ip_vs_dest *dest, int mode)
 {
 	spin_lock_bh(&dest->dst_lock);
-	__ip_vs_dest_update_overload(dest);
+	__ip_vs_dest_update_overload(dest, mode);
 	spin_unlock_bh(&dest->dst_lock);
 }
 
@@ -1418,16 +1369,8 @@ __ip_vs_update_dest(struct ip_vs_service *svc, struct ip_vs_dest *dest,
 	if ((udest->conn_flags & IP_VS_CONN_F_FWD_MASK) !=
 	    IP_VS_DFWD_METHOD(dest) ||
 	    udest->tun_type != dest->tun_type ||
-	    udest->tun_port != dest->tun_port) {
-		bool unlinked = dest->in_rs_table;
-
+	    udest->tun_port != dest->tun_port)
 		ip_vs_rs_unhash(dest);
-		if (unlinked) {
-			dest->rcu_state = get_state_synchronize_rcu();
-			/* Need grace period in this or next dest update */
-			dest->need_gp = 1;
-		}
-	}
 
 	/* set the tunnel info */
 	dest->tun_type = udest->tun_type;
@@ -1466,7 +1409,12 @@ __ip_vs_update_dest(struct ip_vs_service *svc, struct ip_vs_dest *dest,
 		spin_lock_bh(&dest->dst_lock);
 		WRITE_ONCE(dest->u_threshold, udest->u_threshold);
 		WRITE_ONCE(dest->l_threshold, udest->l_threshold);
-		__ip_vs_dest_update_overload(dest);
+		/* Low threshold defaults to 75% of upper threshold */
+		WRITE_ONCE(dest->l_threshold_val,
+			   udest->l_threshold ? :
+			   (udest->u_threshold -
+			    (udest->u_threshold >> 2)));
+		__ip_vs_dest_update_overload(dest, 0);
 		spin_unlock_bh(&dest->dst_lock);
 	}
 
@@ -1531,7 +1479,6 @@ ip_vs_new_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 	if (ret < 0)
 		goto err_stats;
 
-	dest->u_threshold_val = INT_MAX;
 	dest->af = udest->af;
 	dest->protocol = svc->protocol;
 	dest->vaddr = svc->addr;
@@ -1611,11 +1558,6 @@ ip_vs_add_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 	dest = ip_vs_trash_get_dest(svc, udest->af, &daddr, dport);
 
 	if (dest != NULL) {
-		/* Readers may still follow the n_list, d_list or estimator list
-		 * links. Wait before reusing any of them.
-		 */
-		cond_synchronize_rcu(dest->rcu_state);
-
 		IP_VS_DBG_BUF(3, "Get destination %s:%u from trash, "
 			      "dest->refcnt=%d, service %u/%s:%u\n",
 			      IP_VS_DBG_ADDR(udest->af, &daddr), ntohs(dport),
@@ -1626,14 +1568,11 @@ ip_vs_add_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 
 		ret = ip_vs_start_estimator(svc->ipvs, &dest->stats);
 		/* On error put back dest into the trash */
-		if (ret < 0) {
-			ip_vs_trash_put_back(svc->ipvs, dest);
-		} else {
-			/* need_gp matters only on dest edit, reinit it */
-			dest->need_gp = 0;
-
+		if (ret < 0)
+			ip_vs_trash_put_dest(svc->ipvs, dest, dest->idle_start,
+					     false);
+		else
 			__ip_vs_update_dest(svc, dest, udest, 1);
-		}
 	} else {
 		/*
 		 * Allocate and initialize the dest structure
@@ -1697,7 +1636,7 @@ ip_vs_edit_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
  *	Delete a destination (must be already unlinked from the service)
  */
 static void __ip_vs_del_dest(struct netns_ipvs *ipvs, struct ip_vs_dest *dest,
-			     struct list_head *dest_trash, bool cleanup)
+			     bool cleanup)
 {
 	ip_vs_stop_estimator(ipvs, &dest->stats);
 
@@ -1706,7 +1645,7 @@ static void __ip_vs_del_dest(struct netns_ipvs *ipvs, struct ip_vs_dest *dest,
 	 */
 	ip_vs_rs_unhash(dest);
 
-	ip_vs_trash_add_dest(ipvs, dest, 0, dest_trash);
+	ip_vs_trash_put_dest(ipvs, dest, 0, cleanup);
 
 	/* Queue up delayed work to expire all no destination connections.
 	 * No-op when CONFIG_SYSCTL is disabled.
@@ -1756,7 +1695,6 @@ ip_vs_del_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 {
 	struct ip_vs_dest *dest;
 	__be16 dport = udest->port;
-	LIST_HEAD(dest_trash);
 
 	/* We use function that requires RCU lock */
 	rcu_read_lock();
@@ -1776,9 +1714,7 @@ ip_vs_del_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 	/*
 	 *	Delete the destination
 	 */
-	__ip_vs_del_dest(svc->ipvs, dest, &dest_trash, false);
-
-	ip_vs_trash_save_dests(svc->ipvs, &dest_trash, false);
+	__ip_vs_del_dest(svc->ipvs, dest, false);
 
 	return 0;
 }
@@ -2123,8 +2059,7 @@ out:
  *	- The service must be unlinked, unlocked and not referenced!
  *	- We are called under _bh lock
  */
-static void __ip_vs_del_service(struct ip_vs_service *svc,
-				struct list_head *dest_trash, bool cleanup)
+static void __ip_vs_del_service(struct ip_vs_service *svc, bool cleanup)
 {
 	struct ip_vs_dest *dest, *nxt;
 	struct ip_vs_scheduler *old_sched;
@@ -2158,7 +2093,7 @@ static void __ip_vs_del_service(struct ip_vs_service *svc,
 	 */
 	list_for_each_entry_safe(dest, nxt, &svc->destinations, n_list) {
 		__ip_vs_unlink_dest(svc, dest, 0);
-		__ip_vs_del_dest(svc->ipvs, dest, dest_trash, cleanup);
+		__ip_vs_del_dest(svc->ipvs, dest, cleanup);
 	}
 
 	/*
@@ -2181,8 +2116,7 @@ static void __ip_vs_del_service(struct ip_vs_service *svc,
 /*
  * Unlink a service from list and try to delete it if its refcnt reached 0
  */
-static void ip_vs_unlink_service(struct ip_vs_service *svc,
-				 struct list_head *dest_trash, bool cleanup)
+static void ip_vs_unlink_service(struct ip_vs_service *svc, bool cleanup)
 {
 	ip_vs_unregister_conntrack(svc);
 	/* Hold svc to avoid double release from dest_trash */
@@ -2192,7 +2126,7 @@ static void ip_vs_unlink_service(struct ip_vs_service *svc,
 	 */
 	ip_vs_svc_unhash(svc);
 
-	__ip_vs_del_service(svc, dest_trash, cleanup);
+	__ip_vs_del_service(svc, cleanup);
 }
 
 /*
@@ -2202,14 +2136,12 @@ static int ip_vs_del_service(struct ip_vs_service *svc)
 {
 	struct netns_ipvs *ipvs;
 	struct ip_vs_rht *t, *p;
-	LIST_HEAD(dest_trash);
 	int ns;
 
 	if (svc == NULL)
 		return -EEXIST;
 	ipvs = svc->ipvs;
-	ip_vs_unlink_service(svc, &dest_trash, false);
-	ip_vs_trash_save_dests(ipvs, &dest_trash, false);
+	ip_vs_unlink_service(svc, false);
 
 	/* Drop the table if no more services */
 	ns = ip_vs_get_num_services(ipvs);
@@ -2260,7 +2192,6 @@ static int ip_vs_flush(struct netns_ipvs *ipvs, bool cleanup)
 	struct hlist_bl_node *ne;
 	struct hlist_bl_node *e;
 	struct ip_vs_rht *t, *p;
-	LIST_HEAD(dest_trash);
 
 	/* Stop the resizer and drop the tables */
 	if (!test_and_set_bit(IP_VS_WORK_SVC_NORESIZE, &ipvs->work_flags))
@@ -2270,9 +2201,8 @@ static int ip_vs_flush(struct netns_ipvs *ipvs, bool cleanup)
 	if (ip_vs_get_num_services(ipvs)) {
 		ip_vs_rht_walk_buckets(ipvs->svc_table, head) {
 			hlist_bl_for_each_entry_safe(svc, e, ne, head, s_list)
-				ip_vs_unlink_service(svc, &dest_trash, cleanup);
+				ip_vs_unlink_service(svc, cleanup);
 		}
-		ip_vs_trash_save_dests(ipvs, &dest_trash, cleanup);
 	}
 
 	/* Unregister the hash table and release it after RCU grace period */
@@ -2524,8 +2454,6 @@ proc_do_sync_threshold(const struct ctl_table *table, int write,
 	mutex_lock(&ipvs->sync_mutex);
 	memcpy(val, valp, sizeof(val));
 	rc = proc_dointvec(&tmp, write, buffer, lenp, ppos);
-	if (rc)
-		goto out;
 	if (write) {
 		if (val[0] < 0 || val[1] < 0 ||
 		    (val[0] >= val[1] && val[1]))
@@ -2533,7 +2461,6 @@ proc_do_sync_threshold(const struct ctl_table *table, int write,
 		else
 			memcpy(valp, val, sizeof(val));
 	}
-out:
 	mutex_unlock(&ipvs->sync_mutex);
 	return rc;
 }
@@ -5250,7 +5177,7 @@ static int __net_init ip_vs_control_net_init_sysctl(struct netns_ipvs *ipvs)
 		goto err;
 
 	/* Schedule defense work */
-	queue_delayed_work(system_dfl_long_wq, &ipvs->defense_work,
+	queue_delayed_work(system_long_wq, &ipvs->defense_work,
 			   DEFENSE_TIMER_PERIOD);
 
 	return 0;

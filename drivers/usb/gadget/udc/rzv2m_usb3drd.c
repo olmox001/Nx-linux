@@ -73,7 +73,7 @@ static int rzv2m_usb3drd_probe(struct platform_device *pdev)
 	struct rzv2m_usb3drd *usb3;
 	int ret;
 
-	usb3 = devm_kzalloc_obj(&pdev->dev, *usb3);
+	usb3 = devm_kzalloc(&pdev->dev, sizeof(*usb3), GFP_KERNEL);
 	if (!usb3)
 		return -ENOMEM;
 

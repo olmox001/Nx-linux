@@ -429,7 +429,7 @@ static struct scp *init_scp(struct platform_device *pdev,
 	struct scp *scp;
 	struct clk *clk[CLK_MAX];
 
-	scp = devm_kzalloc_obj(&pdev->dev, *scp);
+	scp = devm_kzalloc(&pdev->dev, sizeof(*scp), GFP_KERNEL);
 	if (!scp)
 		return ERR_PTR(-ENOMEM);
 
@@ -444,13 +444,15 @@ static struct scp *init_scp(struct platform_device *pdev,
 	if (IS_ERR(scp->base))
 		return ERR_CAST(scp->base);
 
-	scp->domains = devm_kzalloc_objs(&pdev->dev, *scp->domains, num);
+	scp->domains = devm_kcalloc(&pdev->dev,
+				num, sizeof(*scp->domains), GFP_KERNEL);
 	if (!scp->domains)
 		return ERR_PTR(-ENOMEM);
 
 	pd_data = &scp->pd_data;
 
-	pd_data->domains = devm_kzalloc_objs(&pdev->dev, *pd_data->domains, num);
+	pd_data->domains = devm_kcalloc(&pdev->dev,
+			num, sizeof(*pd_data->domains), GFP_KERNEL);
 	if (!pd_data->domains)
 		return ERR_PTR(-ENOMEM);
 

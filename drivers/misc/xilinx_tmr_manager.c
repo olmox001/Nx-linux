@@ -166,7 +166,8 @@ static int xtmr_manager_probe(struct platform_device *pdev)
 	struct resource *res;
 	int err;
 
-	xtmr_manager = devm_kzalloc_obj(&pdev->dev, *xtmr_manager);
+	xtmr_manager = devm_kzalloc(&pdev->dev, sizeof(*xtmr_manager),
+				    GFP_KERNEL);
 	if (!xtmr_manager)
 		return -ENOMEM;
 

@@ -152,7 +152,7 @@ struct hbg_mac_filter {
 	bool enabled;
 };
 
-/* saved for restore after reset */
+/* saved for restore after rest */
 struct hbg_user_def {
 	struct ethtool_pauseparam pause_param;
 };

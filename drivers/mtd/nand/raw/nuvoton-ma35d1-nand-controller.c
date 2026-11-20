@@ -866,7 +866,8 @@ static int ma35_nand_chip_init(struct device *dev, struct ma35_nand_info *nand,
 		return -EINVAL;
 	}
 
-	nvtnand = devm_kzalloc_flex(dev, *nvtnand, sels, nsels);
+	nvtnand = devm_kzalloc(dev, struct_size(nvtnand, sels, nsels),
+			       GFP_KERNEL);
 	if (!nvtnand)
 		return -ENOMEM;
 
@@ -952,7 +953,7 @@ static int ma35_nand_probe(struct platform_device *pdev)
 	struct ma35_nand_info *nand;
 	int ret = 0;
 
-	nand = devm_kzalloc_obj(&pdev->dev, *nand);
+	nand = devm_kzalloc(&pdev->dev, sizeof(*nand), GFP_KERNEL);
 	if (!nand)
 		return -ENOMEM;
 
@@ -992,6 +993,7 @@ static int ma35_nand_probe(struct platform_device *pdev)
 	ret = ma35_nand_chips_init(&pdev->dev, nand);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to init NAND chips\n");
+		clk_disable(nand->clk);
 		return ret;
 	}
 

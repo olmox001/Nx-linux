@@ -34,7 +34,6 @@ static const struct pci_device_id slic_id_tbl[] = {
 		     PCI_DEVICE_ID_ALACRITECH_OASIS) },
 	{ 0 }
 };
-MODULE_DEVICE_TABLE(pci, slic_id_tbl);
 
 static const char slic_stats_strings[][ETH_GSTRING_LEN] = {
 	"rx_packets",
@@ -814,7 +813,7 @@ static int slic_init_stat_queue(struct slic_device *sdev)
 
 free_descs:
 	while (i--) {
-		dma_free_coherent(&sdev->pdev->dev, size,
+		dma_free_coherent(&sdev->pdev->dev, stq->mem_size,
 				  stq->descs[i] - stq->addr_offset[i],
 				  stq->paddr[i] - stq->addr_offset[i]);
 	}

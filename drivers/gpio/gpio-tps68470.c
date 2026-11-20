@@ -142,7 +142,8 @@ static int tps68470_gpio_probe(struct platform_device *pdev)
 	struct tps68470_gpio_data *tps68470_gpio;
 	int ret;
 
-	tps68470_gpio = devm_kzalloc_obj(&pdev->dev, *tps68470_gpio);
+	tps68470_gpio = devm_kzalloc(&pdev->dev, sizeof(*tps68470_gpio),
+				     GFP_KERNEL);
 	if (!tps68470_gpio)
 		return -ENOMEM;
 

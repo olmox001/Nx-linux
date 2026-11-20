@@ -61,7 +61,7 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
 	struct qrtr_smd_dev *qdev;
 	int rc;
 
-	qdev = devm_kzalloc_obj(&rpdev->dev, *qdev);
+	qdev = devm_kzalloc(&rpdev->dev, sizeof(*qdev), GFP_KERNEL);
 	if (!qdev)
 		return -ENOMEM;
 

@@ -576,7 +576,9 @@ static int tda7419_probe(struct i2c_client *i2c)
 	struct tda7419_data *tda7419;
 	int i, ret;
 
-	tda7419 = devm_kzalloc_obj(&i2c->dev, struct tda7419_data);
+	tda7419 = devm_kzalloc(&i2c->dev,
+			       sizeof(struct tda7419_data),
+			       GFP_KERNEL);
 	if (tda7419 == NULL)
 		return -ENOMEM;
 

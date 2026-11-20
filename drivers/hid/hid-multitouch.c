@@ -623,7 +623,7 @@ static struct mt_usages *mt_allocate_usage(struct hid_device *hdev,
 {
 	struct mt_usages *usage;
 
-	usage = devm_kzalloc_obj(&hdev->dev, *usage);
+	usage = devm_kzalloc(&hdev->dev, sizeof(*usage), GFP_KERNEL);
 	if (!usage)
 		return NULL;
 
@@ -652,7 +652,8 @@ static struct mt_application *mt_allocate_application(struct mt_device *td,
 	unsigned int application = report->application;
 	struct mt_application *mt_application;
 
-	mt_application = devm_kzalloc_obj(&td->hdev->dev, *mt_application);
+	mt_application = devm_kzalloc(&td->hdev->dev, sizeof(*mt_application),
+				      GFP_KERNEL);
 	if (!mt_application)
 		return NULL;
 
@@ -710,7 +711,7 @@ static struct mt_report_data *mt_allocate_report_data(struct mt_device *td,
 	struct hid_field *field;
 	int r, n;
 
-	rdata = devm_kzalloc_obj(&td->hdev->dev, *rdata);
+	rdata = devm_kzalloc(&td->hdev->dev, sizeof(*rdata), GFP_KERNEL);
 	if (!rdata)
 		return NULL;
 
@@ -1339,18 +1340,21 @@ static void mt_touch_report(struct hid_device *hid,
 	 * Includes multi-packet support where subsequent
 	 * packets are sent with zero contactcount.
 	 */
-	if (contact_count > 0)
-		app->num_expected = contact_count;
-	else if (app->num_received == 0 && app->prev_scantime != scantime) {
+	if (contact_count >= 0) {
 		/*
-		 * New multi-report frame:
-		 *
 		 * For Win8 PTPs the first packet (td->num_received == 0) may
 		 * have a contactcount of 0 if there only is a button event.
-		 *
-		 * Some other devices use a sentinel frame with 0 to release all contacts
+		 * We double check that this is not a continuation packet
+		 * of a possible multi-packet frame be checking that the
+		 * timestamp has changed.
 		 */
-		app->num_expected = 0;
+		if ((app->quirks & MT_QUIRK_WIN8_PTP_BUTTONS) &&
+		    app->num_received == 0 &&
+		    app->prev_scantime != scantime)
+			app->num_expected = contact_count;
+		/* A non 0 contact count always indicates a first packet */
+		else if (contact_count)
+			app->num_expected = contact_count;
 	}
 	app->prev_scantime = scantime;
 
@@ -2126,12 +2130,12 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		}
 	}
 
-	td = devm_kzalloc_obj(&hdev->dev, struct mt_device);
+	td = devm_kzalloc(&hdev->dev, sizeof(struct mt_device), GFP_KERNEL);
 	if (!td) {
 		dev_err(&hdev->dev, "cannot allocate multitouch data\n");
 		return -ENOMEM;
 	}
-	td->haptic = devm_kzalloc_obj(&hdev->dev, *(td->haptic));
+	td->haptic = devm_kzalloc(&hdev->dev, sizeof(*(td->haptic)), GFP_KERNEL);
 	if (!td->haptic)
 		return -ENOMEM;
 
@@ -2204,8 +2208,16 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 	mt_set_modes(hdev, HID_LATENCY_NORMAL, TOUCHPAD_REPORT_ALL);
 
-	if (!td->is_haptic_touchpad)
+	if (td->is_haptic_touchpad) {
+		if (hid_haptic_init(hdev, &td->haptic)) {
+			dev_warn(&hdev->dev, "Cannot allocate haptic for %s\n",
+				 hdev->name);
+			td->is_haptic_touchpad = false;
+			devm_kfree(&hdev->dev, td->haptic);
+		}
+	} else {
 		devm_kfree(&hdev->dev, td->haptic);
+	}
 
 	return 0;
 }

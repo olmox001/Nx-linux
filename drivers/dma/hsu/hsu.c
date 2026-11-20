@@ -431,7 +431,7 @@ int hsu_dma_probe(struct hsu_dma_chip *chip)
 	unsigned short i;
 	int ret;
 
-	hsu = devm_kzalloc_obj(chip->dev, *hsu);
+	hsu = devm_kzalloc(chip->dev, sizeof(*hsu), GFP_KERNEL);
 	if (!hsu)
 		return -ENOMEM;
 
@@ -440,7 +440,8 @@ int hsu_dma_probe(struct hsu_dma_chip *chip)
 	/* Calculate nr_channels from the IO space length */
 	hsu->nr_channels = (chip->length - chip->offset) / HSU_DMA_CHAN_LENGTH;
 
-	hsu->chan = devm_kzalloc_objs(chip->dev, *hsu->chan, hsu->nr_channels);
+	hsu->chan = devm_kcalloc(chip->dev, hsu->nr_channels,
+				 sizeof(*hsu->chan), GFP_KERNEL);
 	if (!hsu->chan)
 		return -ENOMEM;
 

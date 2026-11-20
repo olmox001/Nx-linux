@@ -1,11 +1,12 @@
 #!/bin/bash
-# perf stat STD output linter (no_mlock)
+# perf stat STD output linter
 # SPDX-License-Identifier: GPL-2.0
 # Tests various perf stat STD output commands for
 # default event and metricgroup
 
 set -e
 
+# shellcheck source=lib/stat_output.sh
 . "$(dirname $0)"/lib/stat_output.sh
 
 stat_output=$(mktemp /tmp/__perf_test.stat_output.std.XXXXX)

@@ -3,7 +3,7 @@
  * Copyright © 2023 Intel Corporation
  */
 
-#include <linux/error-injection.h>
+#include <linux/fault-inject.h>
 
 #include <drm/drm_managed.h>
 

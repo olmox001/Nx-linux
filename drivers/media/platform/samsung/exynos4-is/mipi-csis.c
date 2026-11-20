@@ -575,7 +575,6 @@ static struct v4l2_mbus_framefmt *__s5pcsis_get_format(
 }
 
 static int s5pcsis_set_fmt(struct v4l2_subdev *sd,
-			   const struct v4l2_subdev_client_info *ci,
 			   struct v4l2_subdev_state *sd_state,
 			   struct v4l2_subdev_format *fmt)
 {
@@ -771,7 +770,7 @@ static int s5pcsis_probe(struct platform_device *pdev)
 	int ret = -ENOMEM;
 	int i;
 
-	state = devm_kzalloc_obj(dev, *state);
+	state = devm_kzalloc(dev, sizeof(*state), GFP_KERNEL);
 	if (!state)
 		return -ENOMEM;
 

@@ -63,7 +63,6 @@ static void rfcomm_sk_data_ready(struct rfcomm_dlc *d, struct sk_buff *skb)
 }
 
 static void rfcomm_sk_state_change(struct rfcomm_dlc *d, int err)
-	__must_hold(&d->lock)
 {
 	struct sock *sk = d->owner, *parent;
 
@@ -724,7 +723,10 @@ static int rfcomm_sock_setsockopt(struct socket *sock, int level, int optname,
 		if (err)
 			break;
 
-		assign_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags, opt);
+		if (opt)
+			set_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags);
+		else
+			clear_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags);
 
 		break;
 

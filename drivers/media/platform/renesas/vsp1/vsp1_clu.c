@@ -43,13 +43,14 @@ static inline void vsp1_clu_write(struct vsp1_clu *clu,
 static int clu_set_table(struct vsp1_clu *clu, struct v4l2_ctrl *ctrl)
 {
 	struct vsp1_dl_body *dlb;
+	unsigned int i;
 
 	dlb = vsp1_dl_body_get(clu->pool);
 	if (!dlb)
 		return -ENOMEM;
 
 	vsp1_dl_body_write(dlb, VI6_CLU_ADDR, 0);
-	for (unsigned int i = 0; i < CLU_SIZE; ++i)
+	for (i = 0; i < CLU_SIZE; ++i)
 		vsp1_dl_body_write(dlb, VI6_CLU_DATA, ctrl->p_new.p_u32[i]);
 
 	scoped_guard(spinlock_irq, &clu->lock) {
@@ -206,7 +207,7 @@ struct vsp1_clu *vsp1_clu_create(struct vsp1_device *vsp1)
 	struct vsp1_clu *clu;
 	int ret;
 
-	clu = devm_kzalloc_obj(vsp1->dev, *clu);
+	clu = devm_kzalloc(vsp1->dev, sizeof(*clu), GFP_KERNEL);
 	if (clu == NULL)
 		return ERR_PTR(-ENOMEM);
 

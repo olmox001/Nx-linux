@@ -256,7 +256,7 @@ static struct i2c_pca9564_pf_platform_data i2c_platform_data = {
 
 static struct platform_device i2c_device = {
 	.name		= "i2c-pca-platform",
-	.id		= 0,
+	.id		= -1,
 	.dev		= {
 		.platform_data	= &i2c_platform_data,
 	},

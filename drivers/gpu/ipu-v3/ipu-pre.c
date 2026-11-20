@@ -312,7 +312,7 @@ static int ipu_pre_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct ipu_pre *pre;
 
-	pre = devm_kzalloc_obj(dev, *pre);
+	pre = devm_kzalloc(dev, sizeof(*pre), GFP_KERNEL);
 	if (!pre)
 		return -ENOMEM;
 

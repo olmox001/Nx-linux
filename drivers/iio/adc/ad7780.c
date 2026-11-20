@@ -311,9 +311,7 @@ static int ad7780_probe(struct spi_device *spi)
 	st = iio_priv(indio_dev);
 	st->gain = 1;
 
-	ret = ad_sd_init(&st->sd, indio_dev, spi, &ad7780_sigma_delta_info);
-	if (ret)
-		return ret;
+	ad_sd_init(&st->sd, indio_dev, spi, &ad7780_sigma_delta_info);
 
 	st->chip_info =
 		&ad7780_chip_info_tbl[spi_get_device_id(spi)->driver_data];
@@ -349,10 +347,10 @@ static int ad7780_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad7780_id[] = {
-	{ .name = "ad7170", .driver_data = ID_AD7170 },
-	{ .name = "ad7171", .driver_data = ID_AD7171 },
-	{ .name = "ad7780", .driver_data = ID_AD7780 },
-	{ .name = "ad7781", .driver_data = ID_AD7781 },
+	{ "ad7170", ID_AD7170 },
+	{ "ad7171", ID_AD7171 },
+	{ "ad7780", ID_AD7780 },
+	{ "ad7781", ID_AD7781 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad7780_id);

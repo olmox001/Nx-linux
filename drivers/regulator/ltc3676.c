@@ -312,7 +312,7 @@ static int ltc3676_regulator_probe(struct i2c_client *client)
 	struct ltc3676 *ltc3676;
 	int i, ret;
 
-	ltc3676 = devm_kzalloc_obj(dev, *ltc3676);
+	ltc3676 = devm_kzalloc(dev, sizeof(*ltc3676), GFP_KERNEL);
 	if (!ltc3676)
 		return -ENOMEM;
 
@@ -366,7 +366,7 @@ static int ltc3676_regulator_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ltc3676_i2c_id[] = {
-	{ .name = "ltc3676" },
+	{ "ltc3676" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ltc3676_i2c_id);

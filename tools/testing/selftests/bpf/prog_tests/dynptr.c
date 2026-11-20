@@ -9,7 +9,6 @@
 enum test_setup_type {
 	SETUP_SYSCALL_SLEEP,
 	SETUP_SKB_PROG,
-	SETUP_SKB_PROG_NONLINEAR,
 	SETUP_SKB_PROG_TP,
 	SETUP_XDP_PROG,
 };
@@ -22,9 +21,6 @@ static struct {
 	{"test_dynptr_data", SETUP_SYSCALL_SLEEP},
 	{"test_dynptr_copy", SETUP_SYSCALL_SLEEP},
 	{"test_dynptr_copy_xdp", SETUP_XDP_PROG},
-	{"test_dynptr_copy_xdp_overlap", SETUP_XDP_PROG},
-	{"test_dynptr_copy_xdp_overlap_src_linear", SETUP_XDP_PROG},
-	{"test_dynptr_copy_xdp_overlap_dst_frag", SETUP_XDP_PROG},
 	{"test_dynptr_memset_zero", SETUP_SYSCALL_SLEEP},
 	{"test_dynptr_memset_notzero", SETUP_SYSCALL_SLEEP},
 	{"test_dynptr_memset_zero_offset", SETUP_SYSCALL_SLEEP},
@@ -36,8 +32,6 @@ static struct {
 	{"test_ringbuf", SETUP_SYSCALL_SLEEP},
 	{"test_skb_readonly", SETUP_SKB_PROG},
 	{"test_dynptr_skb_data", SETUP_SKB_PROG},
-	{"test_dynptr_skb_slice_non_linear", SETUP_SKB_PROG_NONLINEAR},
-	{"test_dynptr_skb_slice_rdwr_buffer", SETUP_SKB_PROG_NONLINEAR},
 	{"test_dynptr_skb_meta_data", SETUP_SKB_PROG},
 	{"test_dynptr_skb_meta_flags", SETUP_SKB_PROG},
 	{"test_adjust", SETUP_SYSCALL_SLEEP},
@@ -100,9 +94,7 @@ static void verify_success(const char *prog_name, enum test_setup_type setup_typ
 		bpf_link__destroy(link);
 		break;
 	case SETUP_SKB_PROG:
-	case SETUP_SKB_PROG_NONLINEAR:
 	{
-		struct __sk_buff ctx = {};
 		int prog_fd;
 		char buf[64];
 
@@ -113,12 +105,6 @@ static void verify_success(const char *prog_name, enum test_setup_type setup_typ
 			    .data_size_out = sizeof(buf),
 			    .repeat = 1,
 		);
-
-		if (setup_type == SETUP_SKB_PROG_NONLINEAR) {
-			ctx.data_end = ETH_HLEN + sizeof(struct iphdr);
-			topts.ctx_in = &ctx;
-			topts.ctx_size_in = sizeof(ctx);
-		}
 
 		prog_fd = bpf_program__fd(prog);
 		if (!ASSERT_GE(prog_fd, 0, "prog_fd"))

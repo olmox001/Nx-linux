@@ -53,7 +53,7 @@ static int dac124s085_probe(struct spi_device *spi)
 	struct dac124s085_led	*led;
 	int i, ret;
 
-	dac = devm_kzalloc_obj(&spi->dev, *dac);
+	dac = devm_kzalloc(&spi->dev, sizeof(*dac), GFP_KERNEL);
 	if (!dac)
 		return -ENOMEM;
 

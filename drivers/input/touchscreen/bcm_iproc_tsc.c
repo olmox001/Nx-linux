@@ -420,7 +420,7 @@ static int iproc_ts_probe(struct platform_device *pdev)
 	int irq;
 	int error;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -459,6 +459,7 @@ static int iproc_ts_probe(struct platform_device *pdev)
 
 	/* Set input device info  */
 	idev->name = IPROC_TS_NAME;
+	idev->dev.parent = &pdev->dev;
 
 	idev->id.bustype = BUS_HOST;
 	idev->id.vendor = SERIO_UNKNOWN;

@@ -854,7 +854,6 @@ tvp7002_get_pad_format(struct v4l2_subdev *sd,
  */
 static int
 tvp7002_set_pad_format(struct v4l2_subdev *sd,
-		       const struct v4l2_subdev_client_info *ci,
 		       struct v4l2_subdev_state *sd_state,
 		       struct v4l2_subdev_format *fmt)
 {
@@ -911,7 +910,7 @@ tvp7002_get_pdata(struct i2c_client *client)
 	if (v4l2_fwnode_endpoint_parse(of_fwnode_handle(endpoint), &bus_cfg))
 		goto done;
 
-	pdata = devm_kzalloc_obj(&client->dev, *pdata);
+	pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		goto done;
 
@@ -967,7 +966,7 @@ static int tvp7002_probe(struct i2c_client *c)
 		I2C_FUNC_SMBUS_READ_BYTE | I2C_FUNC_SMBUS_WRITE_BYTE_DATA))
 		return -EIO;
 
-	device = devm_kzalloc_obj(&c->dev, struct tvp7002);
+	device = devm_kzalloc(&c->dev, sizeof(struct tvp7002), GFP_KERNEL);
 
 	if (!device)
 		return -ENOMEM;

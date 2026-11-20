@@ -733,7 +733,7 @@ static int m10bmc_hwmon_probe(struct platform_device *pdev)
 	struct device *hwmon_dev, *dev = &pdev->dev;
 	struct m10bmc_hwmon *hw;
 
-	hw = devm_kzalloc_obj(dev, *hw);
+	hw = devm_kzalloc(dev, sizeof(*hw), GFP_KERNEL);
 	if (!hw)
 		return -ENOMEM;
 

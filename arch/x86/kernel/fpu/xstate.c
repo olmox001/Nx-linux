@@ -587,14 +587,13 @@ static bool __init check_xstate_against_struct(int nr)
 	return true;
 }
 
-unsigned int xstate_calculate_size(u64 xfeatures, bool compacted)
+static unsigned int xstate_calculate_size(u64 xfeatures, bool compacted)
 {
-	unsigned int topmost, offset, i;
+	unsigned int topmost = fls64(xfeatures) -  1;
+	unsigned int offset, i;
 
-	if (!(xfeatures & ~XFEATURE_MASK_FPSSE))
+	if (topmost <= XFEATURE_SSE)
 		return sizeof(struct xregs_state);
-
-	topmost = fls64(xfeatures) -  1;
 
 	if (compacted) {
 		offset = xfeature_get_offset(xfeatures, topmost);
@@ -807,15 +806,18 @@ static u64 __init guest_default_mask(void)
 void __init fpu__init_system_xstate(unsigned int legacy_size)
 {
 	unsigned int eax, ebx, ecx, edx;
-	u64 xfeatures, mask;
+	u64 xfeatures;
 	int err;
 	int i;
+
+	if (!boot_cpu_has(X86_FEATURE_FPU)) {
+		pr_info("x86/fpu: No FPU detected\n");
+		return;
+	}
 
 	if (!boot_cpu_has(X86_FEATURE_XSAVE)) {
 		pr_info("x86/fpu: x87 FPU will use %s\n",
 			boot_cpu_has(X86_FEATURE_FXSR) ? "FXSAVE" : "FSAVE");
-		/* Disable all dependent flags too */
-		setup_clear_cpu_cap(X86_FEATURE_XSAVE);
 		return;
 	}
 
@@ -831,8 +833,7 @@ void __init fpu__init_system_xstate(unsigned int legacy_size)
 	cpuid_count(CPUID_LEAF_XSTATE, 1, &eax, &ebx, &ecx, &edx);
 	fpu_kernel_cfg.max_features |= ecx + ((u64)edx << 32);
 
-	mask = XFEATURE_MASK_FPSSE;
-	if ((fpu_kernel_cfg.max_features & mask) != mask) {
+	if ((fpu_kernel_cfg.max_features & XFEATURE_MASK_FPSSE) != XFEATURE_MASK_FPSSE) {
 		/*
 		 * This indicates that something really unexpected happened
 		 * with the enumeration.  Disable XSAVE and try to continue
@@ -841,24 +842,6 @@ void __init fpu__init_system_xstate(unsigned int legacy_size)
 		pr_err("x86/fpu: FP/SSE not present amongst the CPU's xstate features: 0x%llx.\n",
 		       fpu_kernel_cfg.max_features);
 		goto out_disable;
-	}
-
-	mask |= XFEATURE_MASK_YMM;
-	if (boot_cpu_has(X86_FEATURE_AVX)) {
-		if ((fpu_kernel_cfg.max_features & mask) != mask) {
-			pr_err(FW_BUG
-			       "x86/fpu: Disabling AVX support due to missing xstate features\n");
-			setup_clear_cpu_cap(X86_FEATURE_AVX);
-		}
-	}
-
-	mask |= XFEATURE_MASK_AVX512;
-	if (boot_cpu_has(X86_FEATURE_AVX512F)) {
-		if ((fpu_kernel_cfg.max_features & mask) != mask) {
-			pr_err(FW_BUG
-			       "x86/fpu: Disabling AVX-512 support due to missing xstate features\n");
-			setup_clear_cpu_cap(X86_FEATURE_AVX512F);
-		}
 	}
 
 	if (fpu_kernel_cfg.max_features & XFEATURE_MASK_APX &&
@@ -1488,29 +1471,6 @@ void xrstors(struct xregs_state *xstate, u64 mask)
 		return;
 
 	XSTATE_OP(XRSTORS, xstate, (u32)mask, (u32)(mask >> 32), err);
-	WARN_ON_ONCE(err);
-}
-
-/**
- * xsaves_nmi - Save selected components to a kernel xstate buffer in NMI
- * @xstate:	Pointer to the buffer
- * @mask:	Feature mask to select the components to save
- *
- * This function is similar to xsaves(), but should only be called within
- * the NMI handler. This function returns the actual register contents at
- * the moment the NMI occurs.
- *
- * Currently, the perf subsystem is the sole user of this helper. It uses
- * the function to snapshot SIMD (XMM/YMM/ZMM) and APX eGPRs registers.
- */
-void xsaves_nmi(struct xregs_state *xstate, u64 mask)
-{
-	int err;
-
-	if (!in_nmi())
-		return;
-
-	XSTATE_OP(XSAVES, xstate, (u32)mask, (u32)(mask >> 32), err);
 	WARN_ON_ONCE(err);
 }
 

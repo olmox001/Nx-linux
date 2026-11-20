@@ -116,7 +116,7 @@ static ssize_t rw_write(struct file *filp, struct kobject *kobj,
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
 
-	mutex_lock(&sl->master->bus_mutex);
+	mutex_lock(&sl->master->mutex);
 	if (w1_reset_select_slave(sl)) {
 		count = 0;
 		goto out_up;
@@ -125,7 +125,7 @@ static ssize_t rw_write(struct file *filp, struct kobject *kobj,
 	w1_write_block(sl->master, buf, count);
 
 out_up:
-	mutex_unlock(&sl->master->bus_mutex);
+	mutex_unlock(&sl->master->mutex);
 	return count;
 }
 
@@ -135,9 +135,9 @@ static ssize_t rw_read(struct file *filp, struct kobject *kobj,
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
 
-	mutex_lock(&sl->master->bus_mutex);
+	mutex_lock(&sl->master->mutex);
 	w1_read_block(sl->master, buf, count);
-	mutex_unlock(&sl->master->bus_mutex);
+	mutex_unlock(&sl->master->mutex);
 	return count;
 }
 
@@ -402,11 +402,6 @@ static int w1_atoreg_num(struct device *dev, const char *buf, size_t count,
 	 */
 	const char *error_msg = "bad slave string format, expecting "
 		"ff-dddddddddddd\n";
-
-	if (count < 3) {
-		dev_err(dev, "%s", error_msg);
-		return -EINVAL;
-	}
 
 	if (buf[2] != '-') {
 		dev_err(dev, "%s", error_msg);
@@ -781,23 +776,15 @@ int w1_unref_slave(struct w1_slave *sl)
 {
 	struct w1_master *dev = sl->master;
 	int refcnt;
-
-	/*
-	 * Once it is off the list nobody can find the slave and take a new
-	 * reference.  The lock must not be held any longer than that: the rest
-	 * waits for sysfs callbacks and for users of the family data.
-	 */
 	mutex_lock(&dev->list_mutex);
 	refcnt = atomic_sub_return(1, &sl->refcnt);
-	if (refcnt == 0)
-		list_del(&sl->w1_slave_entry);
-	mutex_unlock(&dev->list_mutex);
-
 	if (refcnt == 0) {
 		struct w1_netlink_msg msg;
 
 		dev_dbg(&sl->dev, "%s: detaching %s [%p].\n", __func__,
 			sl->name, sl);
+
+		list_del(&sl->w1_slave_entry);
 
 		memset(&msg, 0, sizeof(msg));
 		memcpy(msg.id.id, &sl->reg_num, sizeof(msg.id));
@@ -812,6 +799,7 @@ int w1_unref_slave(struct w1_slave *sl)
 		kfree(sl);
 	}
 	atomic_dec(&dev->refcnt);
+	mutex_unlock(&dev->list_mutex);
 	return refcnt;
 }
 

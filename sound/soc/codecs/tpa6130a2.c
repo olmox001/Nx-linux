@@ -215,7 +215,7 @@ static int tpa6130a2_probe(struct i2c_client *client)
 
 	dev = &client->dev;
 
-	data = devm_kzalloc_obj(&client->dev, *data);
+	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

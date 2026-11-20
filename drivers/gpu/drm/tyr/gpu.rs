@@ -74,8 +74,10 @@ impl GpuInfo {
                 io.read(TILER_PRESENT_HI).into_raw(),
             ),
             core_features: io.read(CORE_FEATURES).into_raw(),
-            // Zero unsupported and newly added UAPI fields.
-            ..pin_init::zeroed()
+            // Padding must be zero.
+            pad: 0,
+            //GPU_FEATURES register is not available; it was introduced in arch 11.x.
+            gpu_features: 0,
         })
     }
 

@@ -218,8 +218,12 @@ static inline void evm_load_x509(void)
 /* declarations */
 void integrity_audit_msg(int audit_msgno, struct inode *inode,
 			 const unsigned char *fname, const char *op,
-			 const char *cause, int result, int info,
-			 int errno);
+			 const char *cause, int result, int info);
+
+void integrity_audit_message(int audit_msgno, struct inode *inode,
+			     const unsigned char *fname, const char *op,
+			     const char *cause, int result, int info,
+			     int errno);
 
 static inline struct audit_buffer *
 integrity_audit_log_start(struct audit_context *ctx, gfp_t gfp_mask, int type)
@@ -231,7 +235,15 @@ integrity_audit_log_start(struct audit_context *ctx, gfp_t gfp_mask, int type)
 static inline void integrity_audit_msg(int audit_msgno, struct inode *inode,
 				       const unsigned char *fname,
 				       const char *op, const char *cause,
-				       int result, int info, int errno)
+				       int result, int info)
+{
+}
+
+static inline void integrity_audit_message(int audit_msgno,
+					   struct inode *inode,
+					   const unsigned char *fname,
+					   const char *op, const char *cause,
+					   int result, int info, int errno)
 {
 }
 

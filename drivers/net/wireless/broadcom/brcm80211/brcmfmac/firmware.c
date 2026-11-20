@@ -37,7 +37,6 @@ enum nvram_parser_state {
  *
  * @state: current parser state.
  * @data: input buffer being parsed.
- * @data_len: size of the input buffer, including comments.
  * @nvram: output buffer with parse result.
  * @nvram_len: length of parse result.
  * @line: current line.
@@ -52,7 +51,6 @@ enum nvram_parser_state {
 struct nvram_parser {
 	enum nvram_parser_state state;
 	const u8 *data;
-	size_t data_len;
 	u8 *nvram;
 	u32 nvram_len;
 	u32 line;
@@ -173,14 +171,12 @@ brcmf_nvram_handle_value(struct nvram_parser *nvp)
 static enum nvram_parser_state
 brcmf_nvram_handle_comment(struct nvram_parser *nvp)
 {
-	const char *eoc, *sol;
-	size_t remaining;
+	char *eoc, *sol;
 
-	sol = (const char *)&nvp->data[nvp->pos];
-	remaining = nvp->data_len - nvp->pos;
-	eoc = strnchr(sol, remaining, '\n');
+	sol = (char *)&nvp->data[nvp->pos];
+	eoc = strchr(sol, '\n');
 	if (!eoc) {
-		eoc = memchr(sol, '\0', remaining);
+		eoc = strchr(sol, '\0');
 		if (!eoc)
 			return END;
 	}
@@ -214,7 +210,6 @@ static int brcmf_init_nvram_parser(struct nvram_parser *nvp,
 
 	memset(nvp, 0, sizeof(*nvp));
 	nvp->data = data;
-	nvp->data_len = data_len;
 	/* Limit size to MAX_NVRAM_SIZE, some files contain lot of comment */
 	if (data_len > BRCMF_FW_MAX_NVRAM_SIZE)
 		size = BRCMF_FW_MAX_NVRAM_SIZE;

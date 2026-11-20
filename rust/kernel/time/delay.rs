@@ -8,10 +8,7 @@
 //! C header: [`include/linux/delay.h`](srctree/include/linux/delay.h).
 
 use super::Delta;
-use crate::{
-    pr_warn_once,
-    prelude::*, //
-};
+use crate::prelude::*;
 
 /// Sleeps for a given duration at least.
 ///
@@ -21,7 +18,8 @@ use crate::{
 /// `delta` must be within `[0, i32::MAX]` microseconds;
 /// otherwise, it is erroneous behavior. That is, it is considered a bug
 /// to call this function with an out-of-range value, in which case the function
-/// will sleep for at least the maximum value in the range and warns once.
+/// will sleep for at least the maximum value in the range and may warn
+/// in the future.
 ///
 /// The behavior above differs from the C side [`fsleep()`] for which out-of-range
 /// values mean "infinite timeout" instead.
@@ -34,13 +32,10 @@ pub fn fsleep(delta: Delta) {
     // overflow inside fsleep, which could lead to unintentional infinite sleep.
     const MAX_DELTA: Delta = Delta::from_micros(i32::MAX as i64);
 
-    debug_assert!(delta.as_nanos() >= 0);
-    debug_assert!(delta <= MAX_DELTA);
-
     let delta = if (Delta::ZERO..=MAX_DELTA).contains(&delta) {
         delta
     } else {
-        pr_warn_once!("attempted to fsleep() with out of range delta\n");
+        // TODO: Add WARN_ONCE() when it's supported.
         MAX_DELTA
     };
 
@@ -59,8 +54,7 @@ pub fn fsleep(delta: Delta) {
 ///
 /// `delta` must be within `[0, MAX_UDELAY_MS]` in milliseconds;
 /// otherwise, it is erroneous behavior. That is, it is considered a bug to
-/// call this function with an out-of-range value, in which case the function
-/// will delay for at least the maximum value in the range and warns once.
+/// call this function with an out-of-range value.
 ///
 /// The behavior above differs from the C side [`udelay()`] for which out-of-range
 /// values could lead to an overflow and unexpected behavior.
@@ -75,7 +69,6 @@ pub fn udelay(delta: Delta) {
     let delta = if (Delta::ZERO..=MAX_UDELAY_DELTA).contains(&delta) {
         delta
     } else {
-        pr_warn_once!("attempted to udelay() with out of range delta\n");
         MAX_UDELAY_DELTA
     };
 

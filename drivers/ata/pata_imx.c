@@ -135,7 +135,8 @@ static int pata_imx_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	priv = devm_kzalloc_obj(&pdev->dev, struct pata_imx_priv);
+	priv = devm_kzalloc(&pdev->dev,
+				sizeof(struct pata_imx_priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

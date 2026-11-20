@@ -305,8 +305,8 @@ static void aplic_init_hw_irqs(struct aplic_priv *priv)
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id aplic_acpi_match[] = {
-	{ .id = "RSCV0002" },
-	{ }
+	{ "RSCV0002", 0 },
+	{}
 };
 MODULE_DEVICE_TABLE(acpi, aplic_acpi_match);
 

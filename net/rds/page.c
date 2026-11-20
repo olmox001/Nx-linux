@@ -31,28 +31,22 @@
  *
  */
 #include <linux/highmem.h>
-#include <linux/gfp.h>
 #include <linux/cpu.h>
-#include <linux/export.h>
 
 #include "rds.h"
 
 struct rds_page_remainder {
 	struct page	*r_page;
 	unsigned long	r_offset;
-	local_lock_t	bh_lock;
 };
 
-static DEFINE_PER_CPU_SHARED_ALIGNED(struct rds_page_remainder, rds_page_remainders) = {
-	.bh_lock = INIT_LOCAL_LOCK(bh_lock),
-};
+DEFINE_PER_CPU(struct rds_page_remainder, rds_page_remainders) ____cacheline_aligned;
 
-/**
- * rds_page_remainder_alloc - build up regions of a message.
+/*
+ * Message allocation uses this to build up regions of a message.
  *
- * @scat: Scatter list for message
- * @bytes: the number of bytes needed.
- * @gfp: the waiting behaviour of the allocation
+ * @bytes - the number of bytes needed.
+ * @gfp - the waiting behaviour of the allocation
  *
  * @gfp is always ored with __GFP_HIGHMEM.  Callers must be prepared to
  * kmap the pages, etc.
@@ -68,9 +62,10 @@ static DEFINE_PER_CPU_SHARED_ALIGNED(struct rds_page_remainder, rds_page_remaind
  * reference until they are done with the region.
  */
 int rds_page_remainder_alloc(struct scatterlist *scat, unsigned long bytes,
-			     gfp_t gfp)
+			     gfp_t gfp, int nid)
 {
 	struct rds_page_remainder *rem;
+	unsigned long flags;
 	struct page *page;
 	int ret;
 
@@ -78,7 +73,7 @@ int rds_page_remainder_alloc(struct scatterlist *scat, unsigned long bytes,
 
 	/* jump straight to allocation if we're trying for a huge page */
 	if (bytes >= PAGE_SIZE) {
-		page = alloc_page(gfp);
+		page = alloc_pages_node(nid, gfp, 0);
 		if (!page) {
 			ret = -ENOMEM;
 		} else {
@@ -88,14 +83,13 @@ int rds_page_remainder_alloc(struct scatterlist *scat, unsigned long bytes,
 		goto out;
 	}
 
-	local_bh_disable();
-	local_lock_nested_bh(&rds_page_remainders.bh_lock);
-	rem = this_cpu_ptr(&rds_page_remainders);
+	rem = &per_cpu(rds_page_remainders, get_cpu());
+	local_irq_save(flags);
 
 	while (1) {
 		/* avoid a tiny region getting stuck by tossing it */
 		if (rem->r_page && bytes > (PAGE_SIZE - rem->r_offset)) {
-			rds_stats_inc(s_page_remainder_miss);
+			rds_stats_inc(&rds_stats, s_page_remainder_miss);
 			__free_page(rem->r_page);
 			rem->r_page = NULL;
 		}
@@ -106,8 +100,9 @@ int rds_page_remainder_alloc(struct scatterlist *scat, unsigned long bytes,
 			get_page(sg_page(scat));
 
 			if (rem->r_offset != 0)
-				rds_stats_inc(s_page_remainder_hit);
+				rds_stats_inc(&rds_stats, s_page_remainder_hit);
 
+			/* some hw (e.g. sparc) require aligned memory */
 			rem->r_offset += ALIGN(bytes, 8);
 			if (rem->r_offset >= PAGE_SIZE) {
 				__free_page(rem->r_page);
@@ -118,14 +113,13 @@ int rds_page_remainder_alloc(struct scatterlist *scat, unsigned long bytes,
 		}
 
 		/* alloc if there is nothing for us to use */
-		local_unlock_nested_bh(&rds_page_remainders.bh_lock);
-		local_bh_enable();
+		local_irq_restore(flags);
+		put_cpu();
 
-		page = alloc_page(gfp);
+		page = alloc_pages_node(nid, gfp, 0);
 
-		local_bh_disable();
-		local_lock_nested_bh(&rds_page_remainders.bh_lock);
-		rem = this_cpu_ptr(&rds_page_remainders);
+		rem = &per_cpu(rds_page_remainders, get_cpu());
+		local_irq_save(flags);
 
 		if (!page) {
 			ret = -ENOMEM;
@@ -143,8 +137,8 @@ int rds_page_remainder_alloc(struct scatterlist *scat, unsigned long bytes,
 		rem->r_offset = 0;
 	}
 
-	local_unlock_nested_bh(&rds_page_remainders.bh_lock);
-	local_bh_enable();
+	local_irq_restore(flags);
+	put_cpu();
 out:
 	rdsdebug("bytes %lu ret %d %p %u %u\n", bytes, ret,
 		 ret ? NULL : sg_page(scat), ret ? 0 : scat->offset,
@@ -153,18 +147,37 @@ out:
 }
 EXPORT_SYMBOL_GPL(rds_page_remainder_alloc);
 
-void rds_page_exit(void)
+static int rds_page_remainder_cpu_notify(struct notifier_block *self,
+					 unsigned long action, void *hcpu)
 {
-	unsigned int cpu;
+	struct rds_page_remainder *rem;
+	long cpu = (long)hcpu;
 
-	for_each_possible_cpu(cpu) {
-		struct rds_page_remainder *rem;
+	rem = &per_cpu(rds_page_remainders, cpu);
 
-		rem = &per_cpu(rds_page_remainders, cpu);
-		rdsdebug("cpu %u\n", cpu);
+	rdsdebug("cpu %ld action 0x%lx\n", cpu, action);
 
+	switch (action) {
+	case CPU_DEAD:
 		if (rem->r_page)
 			__free_page(rem->r_page);
 		rem->r_page = NULL;
+		break;
 	}
+
+	return 0;
+}
+
+static struct notifier_block rds_page_remainder_nb = {
+	.notifier_call = rds_page_remainder_cpu_notify,
+};
+
+void rds_page_exit(void)
+{
+	int i;
+
+	for_each_possible_cpu(i)
+		rds_page_remainder_cpu_notify(&rds_page_remainder_nb,
+					      (unsigned long)CPU_DEAD,
+					      (void *)(long)i);
 }

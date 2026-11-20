@@ -162,7 +162,17 @@ static struct platform_driver tcsr_cc_eliza_driver = {
 	},
 };
 
-subsys_platform_driver(tcsr_cc_eliza_driver);
+static int __init tcsr_cc_eliza_init(void)
+{
+	return platform_driver_register(&tcsr_cc_eliza_driver);
+}
+subsys_initcall(tcsr_cc_eliza_init);
+
+static void __exit tcsr_cc_eliza_exit(void)
+{
+	platform_driver_unregister(&tcsr_cc_eliza_driver);
+}
+module_exit(tcsr_cc_eliza_exit);
 
 MODULE_DESCRIPTION("QTI TCSR_CC Eliza Driver");
 MODULE_LICENSE("GPL");

@@ -388,7 +388,7 @@ static int hx852x_probe(struct i2c_client *client)
 		return -ENXIO;
 	}
 
-	hx = devm_kzalloc_obj(dev, *hx);
+	hx = devm_kzalloc(dev, sizeof(*hx), GFP_KERNEL);
 	if (!hx)
 		return -ENOMEM;
 

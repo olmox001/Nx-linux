@@ -33,7 +33,7 @@ static int loongson_i2s_pci_probe(struct pci_dev *pdev,
 		return -ENODEV;
 	}
 
-	i2s = devm_kzalloc_obj(dev, *i2s);
+	i2s = devm_kzalloc(dev, sizeof(*i2s), GFP_KERNEL);
 	if (!i2s)
 		return -ENOMEM;
 

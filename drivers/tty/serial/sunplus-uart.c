@@ -595,7 +595,7 @@ static int sunplus_uart_probe(struct platform_device *pdev)
 	if (pdev->id < 0 || pdev->id >= SUP_UART_NR)
 		return -EINVAL;
 
-	sup = devm_kzalloc_obj(&pdev->dev, *sup);
+	sup = devm_kzalloc(&pdev->dev, sizeof(*sup), GFP_KERNEL);
 	if (!sup)
 		return -ENOMEM;
 

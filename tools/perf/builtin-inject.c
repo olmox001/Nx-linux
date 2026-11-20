@@ -726,11 +726,8 @@ static int perf_event__repipe_common_mmap(const struct perf_tool *tool,
 		}
 
 		if (dso && !dso__hit(dso)) {
-			if (!sample->evsel) {
+			if (!sample->evsel)
 				sample->evsel = evlist__event2evsel(inject->session->evlist, event);
-				if (sample->evsel)
-					evsel__get(sample->evsel);
-			}
 
 			if (sample->evsel) {
 				dso__set_hit(dso);
@@ -2306,7 +2303,6 @@ static bool keep_feat(struct perf_inject *inject, int feat)
 	case HEADER_PMU_CAPS:
 	case HEADER_CPU_DOMAIN_INFO:
 	case HEADER_CLN_SIZE:
-	case HEADER_MEMORY_RANGES:
 		return true;
 	/* Information that can be updated */
 	case HEADER_BUILD_ID:
@@ -2880,9 +2876,6 @@ int cmd_inject(int argc, const char **argv)
 			aslr_tool__delete(tool);
 		goto out_close_output;
 	}
-
-	if (inject.aslr)
-		aslr_tool__register_session(tool, inject.session);
 
 	if (zstd_init(&(inject.session->zstd_data), 0) < 0)
 		pr_warning("Decompression initialization failed.\n");

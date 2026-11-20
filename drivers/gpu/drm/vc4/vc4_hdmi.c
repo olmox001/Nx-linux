@@ -375,7 +375,7 @@ static void vc4_hdmi_handle_hotplug(struct vc4_hdmi *vc4_hdmi,
 	 * the lock for now.
 	 */
 
-	drm_atomic_helper_connector_hdmi_hotplug(connector, ctx, status);
+	drm_atomic_helper_connector_hdmi_hotplug(connector, status);
 
 	if (status != connector_status_connected)
 		return;
@@ -508,12 +508,11 @@ static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
 static void vc4_hdmi_connector_reset(struct drm_connector *connector)
 {
 	drm_atomic_helper_connector_reset(connector);
-	__drm_atomic_helper_connector_hdmi_state_init(connector, connector->state);
+	__drm_atomic_helper_connector_hdmi_reset(connector, connector->state);
 	drm_atomic_helper_connector_tv_margins_reset(connector);
 }
 
 static const struct drm_connector_funcs vc4_hdmi_connector_funcs = {
-	.debugfs_init = drm_hdmi_connector_debugfs_init,
 	.force = drm_atomic_helper_connector_hdmi_force,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.reset = vc4_hdmi_connector_reset,
@@ -542,7 +541,7 @@ static int vc4_hdmi_connector_init(struct drm_device *dev,
 	if (vc4_hdmi->variant->supports_hdr)
 		max_bpc = 12;
 
-	ret = drmm_connector_hdmi_ini2(dev, connector,
+	ret = drmm_connector_hdmi_init(dev, connector,
 				       "Broadcom", "Videocore",
 				       &vc4_hdmi_connector_funcs,
 				       &vc4_hdmi_hdmi_connector_funcs,
@@ -843,7 +842,8 @@ static void vc4_hdmi_disable_scrambling(struct drm_encoder *encoder)
 
 	vc4_hdmi->scdc_enabled = false;
 
-	cancel_delayed_work_sync(&vc4_hdmi->scrambling_work);
+	if (delayed_work_pending(&vc4_hdmi->scrambling_work))
+		cancel_delayed_work_sync(&vc4_hdmi->scrambling_work);
 
 	if (!drm_dev_enter(drm, &idx))
 		return;
@@ -918,6 +918,8 @@ static void vc4_hdmi_encoder_post_crtc_disable(struct drm_encoder *encoder,
 		spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
 	}
 
+	vc4_hdmi_disable_scrambling(encoder);
+
 	drm_dev_exit(idx);
 
 out:
@@ -944,8 +946,6 @@ static void vc4_hdmi_encoder_post_crtc_powerdown(struct drm_encoder *encoder,
 
 	if (vc4_hdmi->variant->phy_disable)
 		vc4_hdmi->variant->phy_disable(vc4_hdmi);
-
-	vc4_hdmi_disable_scrambling(encoder);
 
 	clk_disable_unprepare(vc4_hdmi->pixel_bvb_clock);
 	clk_disable_unprepare(vc4_hdmi->pixel_clock);
@@ -1554,8 +1554,6 @@ static void vc4_hdmi_encoder_pre_crtc_configure(struct drm_encoder *encoder,
 		goto err_disable_pixel_clock;
 	}
 
-	vc4_hdmi_enable_scrambling(encoder);
-
 	if (vc4_hdmi->variant->phy_init)
 		vc4_hdmi->variant->phy_init(vc4_hdmi, conn_state);
 
@@ -1690,6 +1688,7 @@ static void vc4_hdmi_encoder_post_crtc_enable(struct drm_encoder *encoder,
 	}
 
 	vc4_hdmi_recenter_fifo(vc4_hdmi);
+	vc4_hdmi_enable_scrambling(encoder);
 
 	drm_dev_exit(idx);
 
@@ -3211,11 +3210,11 @@ err_disable_clk:
 	return ret;
 }
 
-static void vc4_hdmi_put_ddc(void *ptr)
+static void vc4_hdmi_put_ddc_device(void *ptr)
 {
 	struct vc4_hdmi *vc4_hdmi = ptr;
 
-	i2c_put_adapter(vc4_hdmi->ddc);
+	put_device(&vc4_hdmi->ddc->dev);
 }
 
 static int vc4_hdmi_bind(struct device *dev, struct device *master, void *data)
@@ -3269,14 +3268,14 @@ static int vc4_hdmi_bind(struct device *dev, struct device *master, void *data)
 		return -ENODEV;
 	}
 
-	vc4_hdmi->ddc = of_get_i2c_adapter_by_node(ddc_node);
+	vc4_hdmi->ddc = of_find_i2c_adapter_by_node(ddc_node);
 	of_node_put(ddc_node);
 	if (!vc4_hdmi->ddc) {
 		drm_err(drm, "Failed to get ddc i2c adapter by node\n");
 		return -EPROBE_DEFER;
 	}
 
-	ret = devm_add_action_or_reset(dev, vc4_hdmi_put_ddc, vc4_hdmi);
+	ret = devm_add_action_or_reset(dev, vc4_hdmi_put_ddc_device, vc4_hdmi);
 	if (ret)
 		return ret;
 

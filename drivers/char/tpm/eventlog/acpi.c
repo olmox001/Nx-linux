@@ -167,8 +167,10 @@ int tpm_read_log_acpi(struct tpm_chip *chip)
 	}
 
 	ret = devm_add_action(&chip->dev, tpm_bios_log_free, log->bios_event_log);
-	if (ret)
+	if (ret) {
+		log->bios_event_log = NULL;
 		goto err;
+	}
 
 	return format;
 

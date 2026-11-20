@@ -384,7 +384,7 @@ static int thmc50_probe(struct i2c_client *client)
 	struct device *hwmon_dev;
 	int idx = 0;
 
-	data = devm_kzalloc_obj(dev, struct thmc50_data);
+	data = devm_kzalloc(dev, sizeof(struct thmc50_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

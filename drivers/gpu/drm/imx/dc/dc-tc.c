@@ -78,7 +78,7 @@ static int dc_tc_bind(struct device *dev, struct device *master, void *data)
 	struct dc_tc *tc;
 	int id;
 
-	tc = devm_kzalloc_obj(dev, *tc);
+	tc = devm_kzalloc(dev, sizeof(*tc), GFP_KERNEL);
 	if (!tc)
 		return -ENOMEM;
 

@@ -21,6 +21,9 @@
 #include "pci_irq.h"
 #include "devlink.h"
 #include "en_accel/ipsec.h"
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#include "oracle_ext.h"
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 enum {
 	MLX5_EQE_OWNER_INIT_VAL	= 0x1,
@@ -123,6 +126,11 @@ static int mlx5_eq_comp_int(struct notifier_block *nb,
 		dma_rmb();
 		/* Assume (eqe->type) is always MLX5_EVENT_TYPE_COMP */
 		cqn = be32_to_cpu(eqe->data.comp.cqn) & 0xffffff;
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		if (unlikely(mlx5_core_verify_eqe_flag))
+			verify_eqe(eq, eqe);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 		cq = mlx5_eq_cq_get(eq, cqn);
 		if (likely(cq)) {
@@ -954,6 +962,12 @@ static void destroy_comp_eq(struct mlx5_core_dev *dev, struct mlx5_eq_comp *eq, 
 {
 	struct mlx5_eq_table *table = dev->priv.eq_table;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	if (irq_set_affinity_notifier(eq->core.irqn, NULL))
+		mlx5_core_warn(dev, "failed to unset EQ 0x%x to irq 0x%x affinity\n",
+			      eq->core.eqn, eq->core.irqn);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	xa_erase(&table->comp_eqs, vecidx);
 	mlx5_eq_disable(dev, &eq->core, &eq->irq_nb);
 	if (destroy_unmap_eq(dev, &eq->core))
@@ -989,6 +1003,7 @@ static int create_comp_eq(struct mlx5_core_dev *dev, u16 vecidx)
 	struct mlx5_irq *irq;
 	int nent;
 	int err;
+	int ret;
 
 	lockdep_assert_held(&table->comp_lock);
 	if (table->curr_comp_eqs == table->max_comp_eqs) {
@@ -1035,6 +1050,18 @@ static int create_comp_eq(struct mlx5_core_dev *dev, u16 vecidx)
 	if (err)
 		goto disable_eq;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	eq->notify.notify = mlx5_eq_reap_irq_notify;
+	eq->notify.release = mlx5_eq_reap_irq_release;
+	ret = irq_set_affinity_notifier(eq->core.irqn, &eq->notify);
+	if (ret)
+		mlx5_core_warn(dev, "mlx5_eq_reap_irq_notifier: EQ 0x%x irqn = 0x%x irq_set_affinity_notifier failed: %d\n",
+			       eq->core.eqn, eq->core.irqn, ret);
+	else
+		mlx5_core_dbg(dev, "mlx5_eq_reap_irq_notifier: EQ 0x%x irqn = 0x%x irq_set_affinity_notifier set.\n",
+			      eq->core.eqn, eq->core.irqn);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 	table->curr_comp_eqs++;
 	return eq->core.eqn;
 
@@ -1079,6 +1106,78 @@ out:
 }
 EXPORT_SYMBOL(mlx5_comp_eqn_get);
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+
+struct mlx5_eq_comp *
+mlx5_comp_eqn_get_low(struct mlx5_core_dev *dev, int vecidx, int *eqn)
+{
+	struct mlx5_eq_table *table = dev->priv.eq_table;
+	struct mlx5_eq_comp *ret_eq, *eq;
+	u32 min_usage_count;
+	int err, i_min, i_max, i;
+
+	mutex_lock(&table->comp_lock);
+
+	if (vecidx >= 0) {
+		i_min = i_max = vecidx;
+	} else {
+		i_min = 0;
+		i_max = table->max_comp_eqs - 1;
+	}
+
+	ret_eq = NULL;
+	min_usage_count = U32_MAX;
+
+	for (i = i_min; i <= i_max; i++) {
+		eq = xa_load(&table->comp_eqs, i);
+		if (!eq) {
+			err = create_comp_eq(dev, i);
+			if (err < 0) {
+				ret_eq = ERR_PTR(err);
+				goto out;
+			}
+			eq = xa_load(&table->comp_eqs, i);
+			if (!eq) {
+				/* ignore and continue to the next */
+				continue;
+			}
+		}
+
+		if (eq->usage_count < min_usage_count) {
+			ret_eq = eq;
+			min_usage_count = eq->usage_count;
+
+			/* it can't get any better than zero */
+			if (min_usage_count == 0)
+				break;
+		}
+	}
+
+	if (ret_eq) {
+		ret_eq->usage_count++;
+		*eqn = ret_eq->core.eqn;
+	} else
+		ret_eq = ERR_PTR(-ENOENT);
+
+out:
+	mutex_unlock(&table->comp_lock);
+
+	return ret_eq;
+}
+EXPORT_SYMBOL(mlx5_comp_eqn_get_low);
+
+void mlx5_comp_eqn_put_low(struct mlx5_core_dev *dev, struct mlx5_eq_comp *eq)
+{
+	struct mlx5_eq_table *table = dev->priv.eq_table;
+
+	mutex_lock(&table->comp_lock);
+	eq->usage_count--;
+	mutex_unlock(&table->comp_lock);
+}
+EXPORT_SYMBOL(mlx5_comp_eqn_put_low);
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 int mlx5_comp_irqn_get(struct mlx5_core_dev *dev, int vector, unsigned int *irqn)
 {
 	struct mlx5_eq_table *table = dev->priv.eq_table;
@@ -1095,6 +1194,9 @@ int mlx5_comp_irqn_get(struct mlx5_core_dev *dev, int vector, unsigned int *irqn
 	*irqn = eq->core.irqn;
 	return 0;
 }
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+EXPORT_SYMBOL(mlx5_comp_irqn_get);
+#endif
 
 unsigned int mlx5_comp_vectors_max(struct mlx5_core_dev *dev)
 {

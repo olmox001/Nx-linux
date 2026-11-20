@@ -90,7 +90,7 @@ static int vpu_probe(struct platform_device *pdev)
 	int ret;
 
 	dev_dbg(dev, "probe\n");
-	vpu = devm_kzalloc_obj(dev, *vpu);
+	vpu = devm_kzalloc(dev, sizeof(*vpu), GFP_KERNEL);
 	if (!vpu)
 		return -ENOMEM;
 
@@ -205,7 +205,6 @@ static struct platform_driver amphion_vpu_driver = {
 	.remove = vpu_remove,
 	.driver = {
 		.name = "amphion-vpu",
-		.suppress_bind_attrs = true,
 		.of_match_table = vpu_dt_match,
 	},
 };

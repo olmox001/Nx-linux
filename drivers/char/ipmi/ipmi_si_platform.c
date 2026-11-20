@@ -387,8 +387,8 @@ static int acpi_ipmi_probe(struct platform_device *pdev)
 }
 
 static const struct acpi_device_id acpi_ipmi_match[] = {
-	{ .id = "IPI0001" },
-	{ }
+	{ "IPI0001", 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, acpi_ipmi_match);
 #else

@@ -538,11 +538,7 @@ static u64 arw_latency_data(struct perf_event *event, u64 status)
 		val |= P(BLK, NA);
 
 	src.val = val;
-	if (event->hw.flags &
-	    (PERF_X86_EVENT_PEBS_LDLAT | PERF_X86_EVENT_PEBS_LD_HSW))
-		src.mem_op = P(OP, LOAD);
-	if (event->hw.flags &
-	    (PERF_X86_EVENT_PEBS_STLAT | PERF_X86_EVENT_PEBS_ST_HSW))
+	if (event->hw.flags & PERF_X86_EVENT_PEBS_ST_HSW)
 		src.mem_op = P(OP, STORE);
 
 	return src.val;
@@ -854,7 +850,7 @@ static void *dsalloc_pages(size_t size, gfp_t flags, int cpu)
 	int node = cpu_to_node(cpu);
 	struct page *page;
 
-	page = alloc_pages_node(node, flags | __GFP_ZERO, order);
+	page = __alloc_pages_node(node, flags | __GFP_ZERO, order);
 	return page ? page_address(page) : NULL;
 }
 
@@ -1110,9 +1106,9 @@ void init_arch_pebs_on_cpu(int cpu)
 
 	/*
 	 * 4KB-aligned pointer of the output buffer
-	 * (alloc_pages_node() returns page aligned address)
+	 * (__alloc_pages_node() return page aligned address)
 	 * Buffer Size = 4KB * 2^SIZE
-	 * contiguous physical buffer (alloc_pages_node() with order)
+	 * contiguous physical buffer (__alloc_pages_node() with order)
 	 */
 	arch_pebs_base = virt_to_phys(cpuc->pebs_vaddr) | PEBS_BUFFER_SHIFT;
 	wrmsrq_on_cpu(cpu, MSR_IA32_PEBS_BASE, arch_pebs_base);
@@ -1469,6 +1465,10 @@ struct event_constraint intel_skl_pebs_event_constraints[] = {
 };
 
 struct event_constraint intel_icl_pebs_event_constraints[] = {
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x01c0, 0x100000000ULL),	/* old INST_RETIRED.PREC_DIST */
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x0100, 0x100000000ULL),	/* INST_RETIRED.PREC_DIST */
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x0400, 0x800000000ULL),	/* SLOTS */
+
 	INTEL_PLD_CONSTRAINT(0x1cd, 0xff),			/* MEM_TRANS_RETIRED.LOAD_LATENCY */
 	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_LD(0x11d0, 0xf),	/* MEM_INST_RETIRED.STLB_MISS_LOADS */
 	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_ST(0x12d0, 0xf),	/* MEM_INST_RETIRED.STLB_MISS_STORES */
@@ -1491,6 +1491,9 @@ struct event_constraint intel_icl_pebs_event_constraints[] = {
 };
 
 struct event_constraint intel_glc_pebs_event_constraints[] = {
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x100, 0x100000000ULL),	/* INST_RETIRED.PREC_DIST */
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x0400, 0x800000000ULL),
+
 	INTEL_FLAGS_EVENT_CONSTRAINT(0xc0, 0xfe),
 	INTEL_PLD_CONSTRAINT(0x1cd, 0xfe),
 	INTEL_PSD_CONSTRAINT(0x2cd, 0x1),
@@ -1515,6 +1518,9 @@ struct event_constraint intel_glc_pebs_event_constraints[] = {
 };
 
 struct event_constraint intel_lnc_pebs_event_constraints[] = {
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x100, 0x100000000ULL),	/* INST_RETIRED.PREC_DIST */
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x0400, 0x800000000ULL),
+
 	INTEL_FLAGS_UEVENT_CONSTRAINT(0x012a, 0x1),		/* OCR.* events */
 	INTEL_FLAGS_UEVENT_CONSTRAINT(0x012b, 0x1),		/* OCR.* events */
 
@@ -1530,6 +1536,9 @@ struct event_constraint intel_lnc_pebs_event_constraints[] = {
 };
 
 struct event_constraint intel_pnc_pebs_event_constraints[] = {
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x100, 0x100000000ULL),	/* INST_RETIRED.PREC_DIST */
+	INTEL_FLAGS_UEVENT_CONSTRAINT(0x0400, 0x800000000ULL),
+
 	INTEL_HYBRID_LDLAT_CONSTRAINT(0x1cd, 0xfc),
 	INTEL_HYBRID_STLAT_CONSTRAINT(0x2cd, 0x3),
 
@@ -1704,7 +1713,6 @@ static u64 pebs_update_adaptive_cfg(struct perf_event *event)
 	u64 sample_type = attr->sample_type;
 	u64 pebs_data_cfg = 0;
 	bool gprs, tsx_weight;
-	u64 xgprs_mask;
 
 	if (!(sample_type & ~(PERF_SAMPLE_IP|PERF_SAMPLE_TIME)) &&
 	    attr->precise_ip > 1)
@@ -1719,13 +1727,10 @@ static u64 pebs_update_adaptive_cfg(struct perf_event *event)
 	 * + precise_ip < 2 for the non event IP
 	 * + For RTM TSX weight we need GPRs for the abort code.
 	 */
-	xgprs_mask = event->attr.sample_simd_regs_enabled ?
-		     PEBS_GP_REGS | BIT_ULL(PERF_REG_X86_SSP) :
-		     PEBS_GP_REGS;
 	gprs = ((sample_type & PERF_SAMPLE_REGS_INTR) &&
-		(attr->sample_regs_intr & xgprs_mask)) ||
+		(attr->sample_regs_intr & PEBS_GP_REGS)) ||
 	       ((sample_type & PERF_SAMPLE_REGS_USER) &&
-		(attr->sample_regs_user & xgprs_mask));
+		(attr->sample_regs_user & PEBS_GP_REGS));
 
 	tsx_weight = (sample_type & PERF_SAMPLE_WEIGHT_TYPE) &&
 		     ((attr->config & INTEL_ARCH_EVENT_MASK) ==
@@ -1734,20 +1739,9 @@ static u64 pebs_update_adaptive_cfg(struct perf_event *event)
 	if (gprs || (attr->precise_ip < 2) || tsx_weight)
 		pebs_data_cfg |= PEBS_DATACFG_GP;
 
-	if (sample_type & (PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER)) {
-		if (event_needs_xmm(event))
-			pebs_data_cfg |= PEBS_DATACFG_XMMS;
-		if (x86_pmu.arch_pebs && event_needs_ymm(event))
-			pebs_data_cfg |= PEBS_DATACFG_YMMHS;
-		if (x86_pmu.arch_pebs && event_needs_low16_zmm(event))
-			pebs_data_cfg |= PEBS_DATACFG_ZMMHS;
-		if (x86_pmu.arch_pebs && event_needs_high16_zmm(event))
-			pebs_data_cfg |= PEBS_DATACFG_H16ZMMS;
-		if (x86_pmu.arch_pebs && event_needs_opmask(event))
-			pebs_data_cfg |= PEBS_DATACFG_OPMASKS;
-		if (x86_pmu.arch_pebs && event_needs_egprs(event))
-			pebs_data_cfg |= PEBS_DATACFG_EGPRS;
-	}
+	if ((sample_type & PERF_SAMPLE_REGS_INTR) &&
+	    (attr->sample_regs_intr & PERF_REG_EXTENDED_MASK))
+		pebs_data_cfg |= PEBS_DATACFG_XMMS;
 
 	if (sample_type & PERF_SAMPLE_BRANCH_STACK) {
 		/*
@@ -2538,7 +2532,7 @@ static void setup_pebs_adaptive_sample_data(struct perf_event *event,
 		return;
 
 	perf_regs = container_of(regs, struct x86_perf_regs, regs);
-	x86_pmu_clear_perf_regs(regs);
+	perf_regs->xmm_regs = NULL;
 
 	format_group = basic->format_group;
 
@@ -2623,8 +2617,6 @@ static void setup_pebs_adaptive_sample_data(struct perf_event *event,
 		next_record += nr * sizeof(u64);
 	}
 
-	x86_pmu_update_perf_regs(event, data, regs, true);
-
 	WARN_ONCE(next_record != __pebs + basic->format_size,
 			"PEBS record size %u, expected %llu, config %llx\n",
 			basic->format_size,
@@ -2657,7 +2649,7 @@ static void setup_arch_pebs_sample_data(struct perf_event *event,
 		return;
 
 	perf_regs = container_of(regs, struct x86_perf_regs, regs);
-	x86_pmu_clear_perf_regs(regs);
+	perf_regs->xmm_regs = NULL;
 
 	__setup_perf_sample_data(event, iregs, data);
 
@@ -2665,9 +2657,6 @@ static void setup_arch_pebs_sample_data(struct perf_event *event,
 
 again:
 	header = at;
-	if (!header->size)
-		return;
-
 	next_record = at + sizeof(struct arch_pebs_header);
 	if (header->basic) {
 		struct arch_pebs_basic *basic = next_record;
@@ -2698,11 +2687,6 @@ again:
 		__setup_pebs_gpr_group(event, regs,
 				       (struct pebs_gprs *)gprs,
 				       sample_type);
-
-		/* Currently only user space mode enables SSP. */
-		if (user_mode(regs) && (sample_type &
-		    (PERF_SAMPLE_REGS_INTR | PERF_SAMPLE_REGS_USER)))
-			perf_regs->ssp = &gprs->ssp;
 	}
 
 	if (header->aux) {
@@ -2715,63 +2699,14 @@ again:
 					   meminfo->tsx_tuning, ax);
 	}
 
-	if (header->xmm || header->ymmh || header->egpr ||
-	    header->opmask || header->zmmh || header->h16zmm) {
-		struct arch_pebs_xer_header *xer_header = next_record;
+	if (header->xmm) {
 		struct pebs_xmm *xmm;
-		struct ymmh_struct *ymmh;
-		struct avx_512_zmm_uppers_state *zmmh;
-		struct avx_512_hi16_state *h16zmm;
-		struct avx_512_opmask_state *opmask;
-		struct apx_state *egpr;
 
 		next_record += sizeof(struct arch_pebs_xer_header);
 
-		if (header->xmm) {
-			xmm = next_record;
-			/*
-			 * Only output XMM regs to user space when arch-PEBS
-			 * really writes data into xstate area.
-			 */
-			if (xer_header->xstate & XFEATURE_MASK_SSE)
-				perf_regs->xmm_regs = xmm->xmm;
-			next_record = xmm + 1;
-		}
-
-		if (header->ymmh) {
-			ymmh = next_record;
-			if (xer_header->xstate & XFEATURE_MASK_YMM)
-				perf_regs->ymmh = ymmh;
-			next_record = ymmh + 1;
-		}
-
-		if (header->egpr) {
-			egpr = next_record;
-			if (xer_header->xstate & XFEATURE_MASK_APX)
-				perf_regs->egpr = egpr;
-			next_record = egpr + 1;
-		}
-
-		if (header->opmask) {
-			opmask = next_record;
-			if (xer_header->xstate & XFEATURE_MASK_OPMASK)
-				perf_regs->opmask = opmask;
-			next_record = opmask + 1;
-		}
-
-		if (header->zmmh) {
-			zmmh = next_record;
-			if (xer_header->xstate & XFEATURE_MASK_ZMM_Hi256)
-				perf_regs->zmmh = zmmh;
-			next_record = zmmh + 1;
-		}
-
-		if (header->h16zmm) {
-			h16zmm = next_record;
-			if (xer_header->xstate & XFEATURE_MASK_Hi16_ZMM)
-				perf_regs->h16zmm = h16zmm;
-			next_record = h16zmm + 1;
-		}
+		xmm = next_record;
+		perf_regs->xmm_regs = xmm->xmm;
+		next_record = xmm + 1;
 	}
 
 	if (header->lbr) {
@@ -2816,8 +2751,6 @@ again:
 		at = at + header->size;
 		goto again;
 	}
-
-	x86_pmu_update_perf_regs(event, data, regs, true);
 }
 
 static inline void *
@@ -2941,21 +2874,13 @@ __intel_pmu_pebs_last_event(struct perf_event *event,
 			    struct pt_regs *iregs,
 			    struct pt_regs *regs,
 			    struct perf_sample_data *data,
-			    void *at, int count, bool corrupted,
+			    void *at,
+			    int count,
 			    setup_fn setup_sample)
 {
 	struct hw_perf_event *hwc = &event->hw;
 
-	/* Skip parsing corrupted PEBS record. */
-	if (corrupted) {
-		/* Clear stale register states in previous records. */
-		memset(regs, 0, sizeof(*regs));
-		x86_pmu_clear_perf_regs(regs);
-		perf_sample_data_init(data, 0, event->hw.last_period);
-	} else {
-		setup_sample(event, iregs, at, data, regs);
-	}
-
+	setup_sample(event, iregs, at, data, regs);
 	if (iregs == &dummy_iregs) {
 		/*
 		 * The PEBS records may be drained in the non-overflow context,
@@ -2973,16 +2898,12 @@ __intel_pmu_pebs_last_event(struct perf_event *event,
 	}
 
 	if (hwc->flags & PERF_X86_EVENT_AUTO_RELOAD) {
-		if (is_pebs_counter_event_group(event)) {
-			if (corrupted) {
-				intel_pmu_save_and_restart_reload(event, 1);
-			} else {
-				/*
-				 * The value of each sample has been updated
-				 * when setup the corresponding sample data.
-				 */
-				perf_event_update_userpage(event);
-			}
+		if ((is_pebs_counter_event_group(event))) {
+			/*
+			 * The value of each sample has been updated when setup
+			 * the corresponding sample data.
+			 */
+			perf_event_update_userpage(event);
 		} else {
 			/*
 			 * Now, auto-reload is only enabled in fixed period mode.
@@ -3006,14 +2927,12 @@ __intel_pmu_pebs_last_event(struct perf_event *event,
 		 * counters-snapshotting record, only needs to set the new
 		 * period for the counter.
 		 */
-		if (is_pebs_counter_event_group(event) && !corrupted)
+		if (is_pebs_counter_event_group(event))
 			static_call(x86_pmu_set_period)(event);
 		else
 			intel_pmu_save_and_restart(event);
 	}
 }
-
-static DEFINE_PER_CPU(struct x86_perf_regs, x86_pebs_regs);
 
 static __always_inline void
 __intel_pmu_pebs_events(struct perf_event *event,
@@ -3024,29 +2943,25 @@ __intel_pmu_pebs_events(struct perf_event *event,
 			setup_fn setup_sample)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
-	struct x86_perf_regs *perf_regs = this_cpu_ptr(&x86_pebs_regs);
-	struct pt_regs *regs = &perf_regs->regs;
+	struct x86_perf_regs perf_regs;
+	struct pt_regs *regs = &perf_regs.regs;
 	void *at = get_next_pebs_record_by_bit(base, top, bit);
 	int cnt = count;
-
-	x86_pmu_clear_perf_regs(regs);
 
 	if (!iregs)
 		iregs = &dummy_iregs;
 
 	while (cnt > 1) {
-		__intel_pmu_pebs_event(event, iregs, regs, data,
-				       at, setup_sample);
+		__intel_pmu_pebs_event(event, iregs, regs, data, at, setup_sample);
 		at += cpuc->pebs_record_size;
 		at = get_next_pebs_record_by_bit(at, top, bit);
 		cnt--;
 	}
 
-	__intel_pmu_pebs_last_event(event, iregs, regs, data, at,
-				    count, false, setup_sample);
+	__intel_pmu_pebs_last_event(event, iregs, regs, data, at, count, setup_sample);
 }
 
-static int intel_pmu_drain_pebs_core(struct pt_regs *iregs, struct perf_sample_data *data)
+static void intel_pmu_drain_pebs_core(struct pt_regs *iregs, struct perf_sample_data *data)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct debug_store *ds = cpuc->ds;
@@ -3055,7 +2970,7 @@ static int intel_pmu_drain_pebs_core(struct pt_regs *iregs, struct perf_sample_d
 	int n;
 
 	if (!x86_pmu.pebs_active)
-		return 0;
+		return;
 
 	at  = (struct pebs_record_core *)(unsigned long)ds->pebs_buffer_base;
 	top = (struct pebs_record_core *)(unsigned long)ds->pebs_index;
@@ -3066,25 +2981,22 @@ static int intel_pmu_drain_pebs_core(struct pt_regs *iregs, struct perf_sample_d
 	ds->pebs_index = ds->pebs_buffer_base;
 
 	if (!test_bit(0, cpuc->active_mask))
-		return 0;
+		return;
 
 	WARN_ON_ONCE(!event);
 
 	if (!event->attr.precise_ip)
-		return 0;
+		return;
 
 	n = top - at;
 	if (n <= 0) {
 		if (event->hw.flags & PERF_X86_EVENT_AUTO_RELOAD)
 			intel_pmu_save_and_restart_reload(event, 0);
-		return 0;
+		return;
 	}
 
 	__intel_pmu_pebs_events(event, iregs, data, at, top, 0, n,
 				setup_pebs_fixed_sample_data);
-
-	/* PMC0 only */
-	return 1;
 }
 
 static void intel_pmu_pebs_event_update_no_drain(struct cpu_hw_events *cpuc, u64 mask)
@@ -3107,7 +3019,7 @@ static void intel_pmu_pebs_event_update_no_drain(struct cpu_hw_events *cpuc, u64
 	}
 }
 
-static int intel_pmu_drain_pebs_nhm(struct pt_regs *iregs, struct perf_sample_data *data)
+static void intel_pmu_drain_pebs_nhm(struct pt_regs *iregs, struct perf_sample_data *data)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct debug_store *ds = cpuc->ds;
@@ -3116,12 +3028,11 @@ static int intel_pmu_drain_pebs_nhm(struct pt_regs *iregs, struct perf_sample_da
 	short counts[INTEL_PMC_IDX_FIXED + MAX_FIXED_PEBS_EVENTS] = {};
 	short error[INTEL_PMC_IDX_FIXED + MAX_FIXED_PEBS_EVENTS] = {};
 	int max_pebs_events = intel_pmu_max_num_pebs(NULL);
-	u64 events_bitmap = 0;
 	int bit, i, size;
 	u64 mask;
 
 	if (!x86_pmu.pebs_active)
-		return 0;
+		return;
 
 	base = (struct pebs_record_nhm *)(unsigned long)ds->pebs_buffer_base;
 	top = (struct pebs_record_nhm *)(unsigned long)ds->pebs_index;
@@ -3137,7 +3048,7 @@ static int intel_pmu_drain_pebs_nhm(struct pt_regs *iregs, struct perf_sample_da
 
 	if (unlikely(base >= top)) {
 		intel_pmu_pebs_event_update_no_drain(cpuc, mask);
-		return 0;
+		return;
 	}
 
 	for (at = base; at < top; at += x86_pmu.pebs_record_size) {
@@ -3201,7 +3112,6 @@ static int intel_pmu_drain_pebs_nhm(struct pt_regs *iregs, struct perf_sample_da
 		if ((counts[bit] == 0) && (error[bit] == 0))
 			continue;
 
-		events_bitmap |= BIT_ULL(bit);
 		event = cpuc->events[bit];
 		if (WARN_ON_ONCE(!event))
 			continue;
@@ -3223,8 +3133,6 @@ static int intel_pmu_drain_pebs_nhm(struct pt_regs *iregs, struct perf_sample_da
 						setup_pebs_fixed_sample_data);
 		}
 	}
-
-	return hweight64(events_bitmap);
 }
 
 static __always_inline void
@@ -3259,46 +3167,39 @@ static __always_inline void
 __intel_pmu_handle_last_pebs_record(struct pt_regs *iregs,
 				    struct pt_regs *regs,
 				    struct perf_sample_data *data,
-				    u64 mask, short *counts,
-				    void **last, bool corrupted,
+				    u64 mask, short *counts, void **last,
 				    setup_fn setup_sample)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct perf_event *event;
-	bool handled = false;
 	int bit;
 
 	for_each_set_bit(bit, (unsigned long *)&mask, X86_PMC_IDX_MAX) {
 		if (!counts[bit])
 			continue;
 
-		handled = true;
 		event = cpuc->events[bit];
+
 		__intel_pmu_pebs_last_event(event, iregs, regs, data, last[bit],
-					    counts[bit], corrupted, setup_sample);
+					    counts[bit], setup_sample);
 	}
 
-	/* All records are corrupted, reset sampling period. */
-	if (!handled)
-		intel_pmu_pebs_event_update_no_drain(cpuc, mask);
 }
 
-static int intel_pmu_drain_pebs_icl(struct pt_regs *iregs, struct perf_sample_data *data)
+static void intel_pmu_drain_pebs_icl(struct pt_regs *iregs, struct perf_sample_data *data)
 {
 	short counts[INTEL_PMC_IDX_FIXED + MAX_FIXED_PEBS_EVENTS] = {};
 	void *last[INTEL_PMC_IDX_FIXED + MAX_FIXED_PEBS_EVENTS];
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct debug_store *ds = cpuc->ds;
-	struct x86_perf_regs *perf_regs = this_cpu_ptr(&x86_pebs_regs);
-	struct pt_regs *regs = &perf_regs->regs;
+	struct x86_perf_regs perf_regs;
+	struct pt_regs *regs = &perf_regs.regs;
 	struct pebs_basic *basic;
 	void *base, *at, *top;
-	u64 events_bitmap = 0;
-	bool corrupted = false;
 	u64 mask;
 
 	if (!x86_pmu.pebs_active)
-		return 0;
+		return;
 
 	base = (struct pebs_basic *)(unsigned long)ds->pebs_buffer_base;
 	top = (struct pebs_basic *)(unsigned long)ds->pebs_index;
@@ -3311,7 +3212,7 @@ static int intel_pmu_drain_pebs_icl(struct pt_regs *iregs, struct perf_sample_da
 
 	if (unlikely(base >= top)) {
 		intel_pmu_pebs_event_update_no_drain(cpuc, mask);
-		return 0;
+		return;
 	}
 
 	if (!iregs)
@@ -3322,45 +3223,36 @@ static int intel_pmu_drain_pebs_icl(struct pt_regs *iregs, struct perf_sample_da
 		u64 pebs_status;
 
 		basic = at;
-		if (WARN_ON_ONCE(!basic->format_size)) {
-			corrupted = true;
-			break;
-		}
 		if (basic->format_size != cpuc->pebs_record_size)
 			continue;
 
 		pebs_status = mask & basic->applicable_counters;
-		events_bitmap |= pebs_status;
 		__intel_pmu_handle_pebs_record(iregs, regs, data, at,
 					       pebs_status, counts, last,
 					       setup_pebs_adaptive_sample_data);
 	}
 
 	__intel_pmu_handle_last_pebs_record(iregs, regs, data, mask, counts, last,
-					    corrupted, setup_pebs_adaptive_sample_data);
-
-	return hweight64(events_bitmap);
+					    setup_pebs_adaptive_sample_data);
 }
 
-static int intel_pmu_drain_arch_pebs(struct pt_regs *iregs,
-				     struct perf_sample_data *data)
+static void intel_pmu_drain_arch_pebs(struct pt_regs *iregs,
+				      struct perf_sample_data *data)
 {
 	short counts[INTEL_PMC_IDX_FIXED + MAX_FIXED_PEBS_EVENTS] = {};
 	void *last[INTEL_PMC_IDX_FIXED + MAX_FIXED_PEBS_EVENTS];
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	union arch_pebs_index index;
-	struct x86_perf_regs *perf_regs = this_cpu_ptr(&x86_pebs_regs);
-	struct pt_regs *regs = &perf_regs->regs;
+	struct x86_perf_regs perf_regs;
+	struct pt_regs *regs = &perf_regs.regs;
 	void *base, *at, *top;
-	u64 events_bitmap = 0;
-	bool corrupted = false;
 	u64 mask;
 
 	rdmsrq(MSR_IA32_PEBS_INDEX, index.whole);
 
 	if (unlikely(!index.wr)) {
 		intel_pmu_pebs_event_update_no_drain(cpuc, X86_PMC_IDX_MAX);
-		return 0;
+		return;
 	}
 
 	base = cpuc->pebs_vaddr;
@@ -3388,10 +3280,8 @@ static int intel_pmu_drain_arch_pebs(struct pt_regs *iregs,
 
 		header = at;
 
-		if (WARN_ON_ONCE(!header->size)) {
-			corrupted = true;
-			goto done;
-		}
+		if (WARN_ON_ONCE(!header->size))
+			break;
 
 		/* 1st fragment or single record must have basic group */
 		if (!header->basic) {
@@ -3401,7 +3291,6 @@ static int intel_pmu_drain_arch_pebs(struct pt_regs *iregs,
 
 		basic = at + sizeof(struct arch_pebs_header);
 		pebs_status = mask & basic->applicable_counters;
-		events_bitmap |= pebs_status;
 		__intel_pmu_handle_pebs_record(iregs, regs, data, at,
 					       pebs_status, counts, last,
 					       setup_arch_pebs_sample_data);
@@ -3411,27 +3300,16 @@ static int intel_pmu_drain_arch_pebs(struct pt_regs *iregs,
 			if (!header->size)
 				break;
 			at += header->size;
-			if (WARN_ON_ONCE(at >= top)) {
-				corrupted = true;
-				goto done;
-			}
 			header = at;
 		}
 
 		/* Skip last fragment or the single record */
 		at += header->size;
-		if (WARN_ON_ONCE(at > top)) {
-			corrupted = true;
-			goto done;
-		}
 	}
 
-done:
 	__intel_pmu_handle_last_pebs_record(iregs, regs, data, mask,
-					    counts, last, corrupted,
+					    counts, last,
 					    setup_arch_pebs_sample_data);
-
-	return hweight64(events_bitmap);
 }
 
 static void __init intel_arch_pebs_init(void)
@@ -3533,6 +3411,7 @@ static void __init intel_ds_pebs_init(void)
 				x86_pmu.flags |= PMU_FL_PEBS_ALL;
 				x86_pmu.pebs_capable = ~0ULL;
 				pebs_qual = "-baseline";
+				x86_get_pmu(smp_processor_id())->capabilities |= PERF_PMU_CAP_EXTENDED_REGS;
 			} else {
 				/* Only basic record supported */
 				x86_pmu.large_pebs_flags &=

@@ -262,7 +262,7 @@ static int mpfs_probe(struct platform_device *pdev)
 	struct clk *clk;
 	int ret;
 
-	glue = devm_kzalloc_obj(dev, *glue);
+	glue = devm_kzalloc(dev, sizeof(*glue), GFP_KERNEL);
 	if (!glue)
 		return -ENOMEM;
 
@@ -294,7 +294,7 @@ static int mpfs_probe(struct platform_device *pdev)
 	glue->musb = musb_pdev;
 	glue->clk = clk;
 
-	pdata = devm_kzalloc_obj(dev, *pdata);
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata) {
 		ret = -ENOMEM;
 		goto err_clk_disable;

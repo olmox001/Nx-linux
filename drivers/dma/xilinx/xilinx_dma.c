@@ -165,8 +165,8 @@
 #define XILINX_DMA_FLUSH_MM2S		2
 #define XILINX_DMA_FLUSH_BOTH		1
 
-/* Timeout for polling various registers */
-#define XILINX_DMA_POLL_TIMEOUT_US	1000000
+/* Delay loop counter to prevent hardware failure */
+#define XILINX_DMA_LOOP_COUNT		1000000
 /* Delay between polls (avoid a delay of 0 to prevent CPU stalls) */
 #define XILINX_DMA_POLL_DELAY_US	10
 
@@ -223,7 +223,6 @@
 #define XILINX_MCDMA_IRQ_ERR_MASK		BIT(7)
 #define XILINX_MCDMA_BD_EOP			BIT(30)
 #define XILINX_MCDMA_BD_SOP			BIT(31)
-#define XILINX_MCDMA_BD_HW_SIZE			64
 
 /**
  * struct xilinx_vdma_desc_hw - Hardware Descriptor
@@ -278,10 +277,8 @@ struct xilinx_axidma_desc_hw {
  * @buf_addr_msb: MSB of Buffer address @0x0C
  * @rsvd: Reserved field @0x10
  * @control: Control Information field @0x14
- * @mm2s_ctrl_sideband: Sideband control info for mm2s @0x18
- * @s2mm_status: Status field for s2mm @0x18
- * @mm2s_status: Status field for mm2s @0x1C
- * @s2mm_sideband_status: Sideband status for s2mm @0x1C
+ * @status: Status field @0x18
+ * @sideband_status: Status of sideband signals @0x1C
  * @app: APP Fields @0x20 - 0x30
  */
 struct xilinx_aximcdma_desc_hw {
@@ -291,17 +288,10 @@ struct xilinx_aximcdma_desc_hw {
 	u32 buf_addr_msb;
 	u32 rsvd;
 	u32 control;
-	union {
-		u32 mm2s_ctrl_sideband;
-		u32 s2mm_status;
-	};
-	union {
-		u32 mm2s_status;
-		u32 s2mm_sideband_status;
-	};
+	u32 status;
+	u32 sideband_status;
 	u32 app[XILINX_DMA_NUM_APP_WORDS];
 } __aligned(64);
-static_assert(sizeof(struct xilinx_aximcdma_desc_hw) == XILINX_MCDMA_BD_HW_SIZE);
 
 /**
  * struct xilinx_cdma_desc_hw - Hardware Descriptor
@@ -651,55 +641,21 @@ static inline void xilinx_aximcdma_buf(struct xilinx_dma_chan *chan,
  * @tx: async transaction descriptor
  * @payload_len: metadata payload length
  * @max_len: metadata max length
- *
- * The metadata lives in the SOP descriptor for TX and the EOF descriptor for RX.
- * Field order depends on dmatype and direction:
- *
- *   AXI DMA:         [0..] app
- *   AXI MCDMA (TX):  [0] ctrl_sideband, [1] status, [2..] app
- *   AXI MCDMA (RX):  [0] status, [1] sideband, [2..] app
- *
- * Return: Pointer to the first metadata word.
+ * Return: The app field pointer.
  */
 static void *xilinx_dma_get_metadata_ptr(struct dma_async_tx_descriptor *tx,
 					 size_t *payload_len, size_t *max_len)
 {
 	struct xilinx_dma_tx_descriptor *desc = to_dma_tx_descriptor(tx);
-	struct xilinx_dma_chan *chan = to_xilinx_chan(tx->chan);
-
-	if (chan->xdev->dma_config->dmatype == XDMA_TYPE_AXIMCDMA) {
-		struct xilinx_aximcdma_tx_segment *seg;
-
-		if (chan->direction == DMA_DEV_TO_MEM) {
-			seg = list_last_entry(&desc->segments,
-					      struct xilinx_aximcdma_tx_segment, node);
-			*max_len = *payload_len = sizeof(seg->hw.s2mm_status) +
-						  sizeof(seg->hw.s2mm_sideband_status) +
-						  sizeof(seg->hw.app);
-			return &seg->hw.s2mm_status;
-		}
-		seg = list_first_entry(&desc->segments,
-				       struct xilinx_aximcdma_tx_segment, node);
-		*max_len = *payload_len = sizeof(seg->hw.mm2s_ctrl_sideband) +
-					  sizeof(seg->hw.mm2s_status) +
-					  sizeof(seg->hw.app);
-		return &seg->hw.mm2s_ctrl_sideband;
-	}
-
 	struct xilinx_axidma_tx_segment *seg;
 
-	if (chan->direction == DMA_DEV_TO_MEM)
-		seg = list_last_entry(&desc->segments,
-				      struct xilinx_axidma_tx_segment, node);
-	else
-		seg = list_first_entry(&desc->segments,
-				       struct xilinx_axidma_tx_segment, node);
-
-	*max_len = *payload_len = sizeof(seg->hw.app);
+	*max_len = *payload_len = sizeof(u32) * XILINX_DMA_NUM_APP_WORDS;
+	seg = list_first_entry(&desc->segments,
+			       struct xilinx_axidma_tx_segment, node);
 	return seg->hw.app;
 }
 
-static const struct dma_descriptor_metadata_ops xilinx_dma_metadata_ops = {
+static struct dma_descriptor_metadata_ops xilinx_dma_metadata_ops = {
 	.get_ptr = xilinx_dma_get_metadata_ptr,
 };
 
@@ -1069,11 +1025,9 @@ static u32 xilinx_dma_get_residue(struct xilinx_dma_chan *chan,
 					   struct xilinx_aximcdma_tx_segment,
 					   node);
 			aximcdma_hw = &aximcdma_seg->hw;
-			residue += aximcdma_hw->control & chan->xdev->max_buffer_len;
-			if (chan->direction == DMA_DEV_TO_MEM)
-				residue -= aximcdma_hw->s2mm_status & chan->xdev->max_buffer_len;
-			else
-				residue -= aximcdma_hw->mm2s_status & chan->xdev->max_buffer_len;
+			residue +=
+				(aximcdma_hw->control & chan->xdev->max_buffer_len) -
+				(aximcdma_hw->status & chan->xdev->max_buffer_len);
 		}
 	}
 
@@ -1384,7 +1338,7 @@ static int xilinx_dma_stop_transfer(struct xilinx_dma_chan *chan)
 	return xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_DMASR, val,
 				       val & XILINX_DMA_DMASR_HALTED,
 				       XILINX_DMA_POLL_DELAY_US,
-				       XILINX_DMA_POLL_TIMEOUT_US);
+				       XILINX_DMA_LOOP_COUNT);
 }
 
 /**
@@ -1400,7 +1354,7 @@ static int xilinx_cdma_stop_transfer(struct xilinx_dma_chan *chan)
 	return xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_DMASR, val,
 				       val & XILINX_DMA_DMASR_IDLE,
 				       XILINX_DMA_POLL_DELAY_US,
-				       XILINX_DMA_POLL_TIMEOUT_US);
+				       XILINX_DMA_LOOP_COUNT);
 }
 
 /**
@@ -1418,7 +1372,7 @@ static void xilinx_dma_start(struct xilinx_dma_chan *chan)
 	err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_DMASR, val,
 				      !(val & XILINX_DMA_DMASR_HALTED),
 				      XILINX_DMA_POLL_DELAY_US,
-				      XILINX_DMA_POLL_TIMEOUT_US);
+				      XILINX_DMA_LOOP_COUNT);
 
 	if (err) {
 		dev_err(chan->dev, "Cannot start channel %p: %x\n",
@@ -1641,14 +1595,7 @@ static void xilinx_dma_start_transfer(struct xilinx_dma_chan *chan)
 		return;
 	}
 
-	/*
-	 * Direct (non-SG) mode has no descriptor queue: writing the BTT
-	 * register launches a transfer immediately, so a new transfer must
-	 * not be programmed while one is in flight. Keep such transfers
-	 * serialized. SG mode supports chaining onto a running transfer via
-	 * tail-pointer extension, so it is allowed to proceed when busy.
-	 */
-	if (!chan->has_sg && !chan->idle)
+	if (!chan->idle)
 		return;
 
 	head_desc = list_first_entry(&chan->pending_list,
@@ -1664,9 +1611,10 @@ static void xilinx_dma_start_transfer(struct xilinx_dma_chan *chan)
 		reg &= ~XILINX_DMA_CR_COALESCE_MAX;
 		reg |= chan->desc_pendingcount <<
 				  XILINX_DMA_CR_COALESCE_SHIFT;
+		dma_ctrl_write(chan, XILINX_DMA_REG_DMACR, reg);
 	}
 
-	if (chan->has_sg && list_empty(&chan->active_list))
+	if (chan->has_sg)
 		xilinx_write(chan, XILINX_DMA_REG_CURDESC,
 			     head_desc->async_tx.phys);
 	reg  &= ~XILINX_DMA_CR_DELAY_MAX;
@@ -1674,8 +1622,7 @@ static void xilinx_dma_start_transfer(struct xilinx_dma_chan *chan)
 	reg |= XILINX_DMA_DMAXR_ALL_IRQ_MASK;
 	dma_ctrl_write(chan, XILINX_DMA_REG_DMACR, reg);
 
-	if (chan->idle)
-		xilinx_dma_start(chan);
+	xilinx_dma_start(chan);
 
 	if (chan->err)
 		return;
@@ -1728,6 +1675,9 @@ static void xilinx_mcdma_start_transfer(struct xilinx_dma_chan *chan)
 	if (chan->err)
 		return;
 
+	if (!chan->idle)
+		return;
+
 	if (list_empty(&chan->pending_list))
 		return;
 
@@ -1750,9 +1700,8 @@ static void xilinx_mcdma_start_transfer(struct xilinx_dma_chan *chan)
 	dma_ctrl_write(chan, XILINX_MCDMA_CHAN_CR_OFFSET(chan->tdest), reg);
 
 	/* Program current descriptor */
-	if (chan->has_sg && list_empty(&chan->active_list))
-		xilinx_write(chan, XILINX_MCDMA_CHAN_CDESC_OFFSET(chan->tdest),
-			     head_desc->async_tx.phys);
+	xilinx_write(chan, XILINX_MCDMA_CHAN_CDESC_OFFSET(chan->tdest),
+		     head_desc->async_tx.phys);
 
 	/* Program channel enable register */
 	reg = dma_ctrl_read(chan, XILINX_MCDMA_CHEN_OFFSET);
@@ -1764,8 +1713,7 @@ static void xilinx_mcdma_start_transfer(struct xilinx_dma_chan *chan)
 	reg |= XILINX_MCDMA_CR_RUNSTOP_MASK;
 	dma_ctrl_write(chan, XILINX_MCDMA_CHAN_CR_OFFSET(chan->tdest), reg);
 
-	if (chan->idle)
-		xilinx_dma_start(chan);
+	xilinx_dma_start(chan);
 
 	if (chan->err)
 		return;
@@ -1828,17 +1776,6 @@ static void xilinx_dma_complete_descriptor(struct xilinx_dma_chan *chan)
 					      struct xilinx_axidma_tx_segment, node);
 			if (!(seg->hw.status & XILINX_DMA_BD_COMP_MASK) && chan->has_sg)
 				break;
-		} else if (chan->xdev->dma_config->dmatype == XDMA_TYPE_AXIMCDMA) {
-			struct xilinx_aximcdma_tx_segment *seg;
-			u32 status;
-
-			seg = list_last_entry(&desc->segments,
-					      struct xilinx_aximcdma_tx_segment,
-					      node);
-			status = (chan->direction == DMA_DEV_TO_MEM) ?
-				seg->hw.s2mm_status : seg->hw.mm2s_status;
-			if (!(status & XILINX_DMA_BD_COMP_MASK))
-				break;
 		}
 		if (chan->has_sg && chan->xdev->dma_config->dmatype !=
 		    XDMA_TYPE_VDMA)
@@ -1874,7 +1811,7 @@ static int xilinx_dma_reset(struct xilinx_dma_chan *chan)
 	err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_DMACR, tmp,
 				      !(tmp & XILINX_DMA_DMACR_RESET),
 				      XILINX_DMA_POLL_DELAY_US,
-				      XILINX_DMA_POLL_TIMEOUT_US);
+				      XILINX_DMA_LOOP_COUNT);
 
 	if (err) {
 		dev_err(chan->dev, "reset timeout, cr %x, sr %x\n",
@@ -2683,9 +2620,6 @@ xilinx_mcdma_prep_slave_sg(struct dma_chan *dchan, struct scatterlist *sgl,
 		segment->hw.control |= XILINX_MCDMA_BD_EOP;
 	}
 
-	if (chan->xdev->has_axistream_connected)
-		desc->async_tx.metadata_ops = &xilinx_dma_metadata_ops;
-
 	return &desc->async_tx;
 
 error:
@@ -3033,7 +2967,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	int err;
 
 	/* Allocate and initialize the channel structure */
-	chan = devm_kzalloc_obj(xdev->dev, *chan);
+	chan = devm_kzalloc(xdev->dev, sizeof(*chan), GFP_KERNEL);
 	if (!chan)
 		return -ENOMEM;
 
@@ -3285,7 +3219,7 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 	int i, err;
 
 	/* Allocate and initialize the DMA engine structure */
-	xdev = devm_kzalloc_obj(&pdev->dev, *xdev);
+	xdev = devm_kzalloc(&pdev->dev, sizeof(*xdev), GFP_KERNEL);
 	if (!xdev)
 		return -ENOMEM;
 
@@ -3334,8 +3268,7 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 
 	dma_set_max_seg_size(xdev->dev, xdev->max_buffer_len);
 
-	if (xdev->dma_config->dmatype == XDMA_TYPE_AXIDMA ||
-	    xdev->dma_config->dmatype == XDMA_TYPE_AXIMCDMA) {
+	if (xdev->dma_config->dmatype == XDMA_TYPE_AXIDMA) {
 		xdev->has_axistream_connected =
 			of_property_read_bool(node, "xlnx,axistream-connected");
 	}

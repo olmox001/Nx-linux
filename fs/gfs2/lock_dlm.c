@@ -126,7 +126,7 @@ static void gdlm_ast(void *arg)
 	clear_bit(GLF_BLOCKING, &gl->gl_flags);
 
 	/* If the glock is dead, we only react to a dlm_unlock() reply. */
-	if (lockref_is_dead(&gl->gl_lockref) &&
+	if (__lockref_is_dead(&gl->gl_lockref) &&
 	    gl->gl_lksb.sb_status != -DLM_EUNLOCK)
 		return;
 
@@ -181,6 +181,9 @@ out:
 static void gdlm_bast(void *arg, int mode)
 {
 	struct gfs2_glock *gl = arg;
+
+	if (__lockref_is_dead(&gl->gl_lockref))
+		return;
 
 	switch (mode) {
 	case DLM_LOCK_EX:
@@ -326,7 +329,7 @@ static void gdlm_put_lock(struct gfs2_glock *gl)
 	uint32_t flags = 0;
 	int error;
 
-	BUG_ON(!lockref_is_dead(&gl->gl_lockref));
+	BUG_ON(!__lockref_is_dead(&gl->gl_lockref));
 
 	if (test_bit(GLF_INITIAL, &gl->gl_flags)) {
 		gfs2_glock_free(gl);
@@ -344,7 +347,7 @@ static void gdlm_put_lock(struct gfs2_glock *gl)
 	 * DLM_LOCK_PW mode, the lock value block (LVB) would be lost.
 	 */
 
-	if (test_bit(SDF_KILL, &sdp->sd_flags) &&
+	if (test_bit(SDF_SKIP_DLM_UNLOCK, &sdp->sd_flags) &&
 	    (!gl->gl_lksb.sb_lvbptr || gl->gl_state != LM_ST_EXCLUSIVE)) {
 		gfs2_glock_free_later(gl);
 		return;
@@ -431,7 +434,7 @@ static void gdlm_cancel(struct gfs2_glock *gl)
  * 10. gfs2_control sets control_lock lvb = new gen + bits for failed jids
  * 12. gfs2_recover does journal recoveries for failed jids identified above
  * 14. gfs2_control clears control_lock lvb bits for recovered jids
- * 15. gfs2_control checks if recover_block == recover_start (step 3 occurred
+ * 15. gfs2_control checks if recover_block == recover_start (step 3 occured
  *     again) then do nothing, otherwise if recover_start > recover_block
  *     then clear BLOCK_LOCKS.
  *
@@ -809,7 +812,7 @@ static void gfs2_control_func(struct work_struct *work)
 
 	/*
 	 * No more jid bits set in lvb, all recovery is done, unblock locks
-	 * (unless a new recover_prep callback has occurred blocking locks
+	 * (unless a new recover_prep callback has occured blocking locks
 	 * again while working above)
 	 */
 
@@ -1120,8 +1123,8 @@ static int set_recover_size(struct gfs2_sbd *sdp, struct dlm_slot *slots,
 	if (new_size == old_size)
 		return 0;
 
-	submit = kzalloc_objs(uint32_t, new_size, GFP_NOFS);
-	result = kzalloc_objs(uint32_t, new_size, GFP_NOFS);
+	submit = kcalloc(new_size, sizeof(uint32_t), GFP_NOFS);
+	result = kcalloc(new_size, sizeof(uint32_t), GFP_NOFS);
 	if (!submit || !result) {
 		kfree(submit);
 		kfree(result);

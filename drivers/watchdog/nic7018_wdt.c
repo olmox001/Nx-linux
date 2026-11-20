@@ -8,7 +8,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/stringify.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 
@@ -35,13 +34,13 @@ static unsigned int timeout;
 module_param(timeout, uint, 0);
 MODULE_PARM_DESC(timeout,
 		 "Watchdog timeout in seconds. (default="
-		 __stringify(WDT_DEFAULT_TIMEOUT) ")");
+		 __MODULE_STRING(WDT_DEFAULT_TIMEOUT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		 "Watchdog cannot be stopped once started. (default="
-		 __stringify(WATCHDOG_NOWAYOUT) ")");
+		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 struct nic7018_wdt {
 	u16 io_base;
@@ -174,7 +173,7 @@ static int nic7018_probe(struct platform_device *pdev)
 	struct resource *io_rc;
 	int ret;
 
-	wdt = devm_kzalloc_obj(dev, *wdt);
+	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
 

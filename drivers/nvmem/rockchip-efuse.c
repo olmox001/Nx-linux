@@ -264,7 +264,8 @@ static int rockchip_efuse_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	efuse = devm_kzalloc_obj(dev, struct rockchip_efuse_chip);
+	efuse = devm_kzalloc(dev, sizeof(struct rockchip_efuse_chip),
+			     GFP_KERNEL);
 	if (!efuse)
 		return -ENOMEM;
 

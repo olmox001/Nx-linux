@@ -849,7 +849,7 @@ static int sdhci_sprd_probe(struct platform_device *pdev)
 
 	sprd_host->flags = host->flags;
 
-	hsq = devm_kzalloc_obj(&pdev->dev, *hsq);
+	hsq = devm_kzalloc(&pdev->dev, sizeof(*hsq), GFP_KERNEL);
 	if (!hsq) {
 		ret = -ENOMEM;
 		goto err_cleanup_host;

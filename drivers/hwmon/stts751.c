@@ -768,7 +768,7 @@ static int stts751_probe(struct i2c_client *client)
 	bool smbus_nto;
 	int rev_id;
 
-	priv = devm_kzalloc_obj(&client->dev, *priv);
+	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

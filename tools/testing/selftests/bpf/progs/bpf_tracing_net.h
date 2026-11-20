@@ -31,12 +31,10 @@
 #define __SO_ACCEPTCON		(1 << 16)
 
 #define IP_TOS			1
-#define IP_TRANSPARENT		19
 
 #define SOL_IPV6		41
 #define IPV6_TCLASS		67
 #define IPV6_AUTOFLOWLABEL	70
-#define IPV6_TRANSPARENT	75
 
 #define TC_ACT_UNSPEC		(-1)
 #define TC_ACT_OK		0
@@ -78,8 +76,6 @@
 #define ETH_P_IPV6		0x86DD
 
 #define NEXTHDR_TCP		6
-
-#define TCPHDR_FIN		0x01
 
 #define TCPOPT_NOP		1
 #define TCPOPT_EOL		0

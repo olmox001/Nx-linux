@@ -1102,7 +1102,8 @@ static void __init sama7g5_pmc_setup(struct device_node *np)
 		struct clk_hw *tmp_parent_hws[8];
 		u32 *mux_table;
 
-		mux_table = kmalloc_objs(*mux_table, num_parents);
+		mux_table = kmalloc_array(num_parents, sizeof(*mux_table),
+					  GFP_KERNEL);
 		if (!mux_table)
 			goto err_free;
 
@@ -1197,7 +1198,8 @@ static void __init sama7g5_pmc_setup(struct device_node *np)
 		struct clk_hw *tmp_parent_hws[8];
 		u32 *mux_table;
 
-		mux_table = kmalloc_objs(*mux_table, num_parents);
+		mux_table = kmalloc_array(num_parents, sizeof(*mux_table),
+					  GFP_KERNEL);
 		if (!mux_table)
 			goto err_free;
 

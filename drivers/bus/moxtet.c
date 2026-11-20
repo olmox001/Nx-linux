@@ -773,7 +773,8 @@ static int moxtet_probe(struct spi_device *spi)
 	if (ret < 0)
 		return ret;
 
-	moxtet = devm_kzalloc_obj(&spi->dev, struct moxtet);
+	moxtet = devm_kzalloc(&spi->dev, sizeof(struct moxtet),
+			      GFP_KERNEL);
 	if (!moxtet)
 		return -ENOMEM;
 

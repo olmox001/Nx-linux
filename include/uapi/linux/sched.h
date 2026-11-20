@@ -53,7 +53,7 @@
  */
 #define UNSHARE_EMPTY_MNTNS 0x00100000 /* Unshare an empty mount namespace. */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 /**
  * struct clone_args - arguments for the clone3 syscall
  * @flags:        Flags for the new process as listed above.

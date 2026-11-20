@@ -522,7 +522,8 @@ static int gxp_i2c_probe(struct platform_device *pdev)
 		regmap_update_bits(i2cg_map, GXP_I2CINTEN, 0x00000FFF, 0);
 	}
 
-	drvdata = devm_kzalloc_obj(&pdev->dev, *drvdata);
+	drvdata = devm_kzalloc(&pdev->dev, sizeof(*drvdata),
+			       GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 
@@ -550,7 +551,7 @@ static int gxp_i2c_probe(struct platform_device *pdev)
 	rc = devm_request_irq(&pdev->dev, drvdata->irq, gxp_i2c_irq_handler,
 			      IRQF_SHARED, gxp_i2c_name[drvdata->engine], drvdata);
 	if (rc < 0)
-		return rc;
+		return dev_err_probe(&pdev->dev, rc, "irq request failed\n");
 
 	i2c_parse_fw_timings(&pdev->dev, &drvdata->t, true);
 

@@ -676,16 +676,21 @@ static const struct address_space_operations z_erofs_cache_aops = {
 
 int z_erofs_init_super(struct super_block *sb)
 {
+	struct inode *inode;
 	int err;
 
 	err = z_erofs_init_pcpu_workers(sb);
 	if (err)
 		return err;
 
-	err = erofs_setup_managed_cache(sb);
-	if (err)
-		return err;
-	EROFS_SB(sb)->managed_cache->i_mapping->a_ops = &z_erofs_cache_aops;
+	inode = new_inode(sb);
+	if (!inode)
+		return -ENOMEM;
+	set_nlink(inode, 1);
+	inode->i_size = OFFSET_MAX;
+	inode->i_mapping->a_ops = &z_erofs_cache_aops;
+	mapping_set_gfp_mask(inode->i_mapping, GFP_KERNEL);
+	EROFS_SB(sb)->managed_cache = inode;
 	xa_init(&EROFS_SB(sb)->managed_pslots);
 	return 0;
 }
@@ -730,7 +735,7 @@ static bool z_erofs_get_pcluster(struct z_erofs_pcluster *pcl)
 		return true;
 
 	spin_lock(&pcl->lockref.lock);
-	if (lockref_is_dead(&pcl->lockref)) {
+	if (__lockref_is_dead(&pcl->lockref)) {
 		spin_unlock(&pcl->lockref.lock);
 		return false;
 	}
@@ -950,7 +955,7 @@ static void z_erofs_put_pcluster(struct erofs_sb_info *sbi,
 	if (lockref_put_or_lock(&pcl->lockref))
 		return;
 
-	DBG_BUGON(lockref_is_dead(&pcl->lockref));
+	DBG_BUGON(__lockref_is_dead(&pcl->lockref));
 	if (!--pcl->lockref.count) {
 		if (try_free && xa_trylock(&sbi->managed_pslots)) {
 			free = __erofs_try_to_release_pcluster(sbi, pcl);
@@ -1420,6 +1425,15 @@ static void z_erofs_decompressqueue_kthread_work(struct kthread_work *work)
 }
 #endif
 
+/* Use (kthread_)work in atomic contexts to minimize scheduling overhead */
+static inline bool z_erofs_in_atomic(void)
+{
+	if (IS_ENABLED(CONFIG_PREEMPTION) && rcu_preempt_depth())
+		return true;
+	if (!IS_ENABLED(CONFIG_PREEMPT_COUNT))
+		return true;
+	return !preemptible();
+}
 
 static void z_erofs_decompress_kickoff(struct z_erofs_decompressqueue *io,
 				       int bios)
@@ -1436,7 +1450,7 @@ static void z_erofs_decompress_kickoff(struct z_erofs_decompressqueue *io,
 
 	if (atomic_add_return(bios, &io->pending_bios))
 		return;
-	if (bio_in_atomic()) {
+	if (z_erofs_in_atomic()) {
 		/* See `sync_decompress` in sysfs-fs-erofs for more details */
 		if (sbi->sync_decompress == EROFS_SYNC_DECOMPRESS_AUTO)
 			sbi->sync_decompress = EROFS_SYNC_DECOMPRESS_FORCE_ON;
@@ -1886,14 +1900,21 @@ static void z_erofs_readahead(struct readahead_control *rac)
 	struct inode *realinode = erofs_real_inode(sharedinode, &need_iput);
 	Z_EROFS_DEFINE_FRONTEND(f, realinode, sharedinode, readahead_pos(rac));
 	unsigned int nrpages = readahead_count(rac);
-	struct folio *folio;
+	struct folio *head = NULL, *folio;
 	int err;
 
 	trace_erofs_readahead(realinode, readahead_index(rac), nrpages, false);
 	z_erofs_pcluster_readmore(&f, rac, true);
+	while ((folio = readahead_folio(rac))) {
+		folio->private = head;
+		head = folio;
+	}
 
-	/* traverse from last to first for best metadata I/O performance */
-	while ((folio = readahead_folio_last(rac))) {
+	/* traverse in reverse order for best metadata I/O performance */
+	while (head) {
+		folio = head;
+		head = folio_get_private(folio);
+
 		err = z_erofs_scan_folio(&f, folio, true);
 		if (err && err != -EINTR)
 			erofs_err(realinode->i_sb, "readahead error at folio %lu @ nid %llu",

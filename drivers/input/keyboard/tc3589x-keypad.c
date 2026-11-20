@@ -329,7 +329,7 @@ tc3589x_keypad_of_probe(struct device *dev)
 	if (!np)
 		return ERR_PTR(-ENODEV);
 
-	plat = devm_kzalloc_obj(dev, *plat);
+	plat = devm_kzalloc(dev, sizeof(*plat), GFP_KERNEL);
 	if (!plat)
 		return ERR_PTR(-ENOMEM);
 
@@ -388,7 +388,8 @@ static int tc3589x_keypad_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	keypad = devm_kzalloc_obj(&pdev->dev, struct tc_keypad);
+	keypad = devm_kzalloc(&pdev->dev, sizeof(struct tc_keypad),
+			      GFP_KERNEL);
 	if (!keypad)
 		return -ENOMEM;
 
@@ -404,6 +405,7 @@ static int tc3589x_keypad_probe(struct platform_device *pdev)
 
 	input->id.bustype = BUS_I2C;
 	input->name = pdev->name;
+	input->dev.parent = &pdev->dev;
 
 	input->open = tc3589x_keypad_open;
 	input->close = tc3589x_keypad_close;

@@ -660,7 +660,8 @@ static int rv8803_probe(struct i2c_client *client)
 		return -EIO;
 	}
 
-	rv8803 = devm_kzalloc_obj(&client->dev, struct rv8803_data);
+	rv8803 = devm_kzalloc(&client->dev, sizeof(struct rv8803_data),
+			      GFP_KERNEL);
 	if (!rv8803)
 		return -ENOMEM;
 

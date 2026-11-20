@@ -10,8 +10,8 @@
 #include <linux/types.h>
 
 struct vs_formats {
-	const u32 *primary_array;
-	unsigned int primary_num;
+	const u32 *array;
+	unsigned int num;
 };
 
 struct vs_chip_identity {

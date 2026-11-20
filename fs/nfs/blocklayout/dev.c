@@ -4,7 +4,6 @@
  */
 #include <linux/sunrpc/svc.h>
 #include <linux/blkdev.h>
-#include <linux/fs_struct.h>
 #include <linux/nfs4.h>
 #include <linux/nfs_fs.h>
 #include <linux/nfs_xdr.h>
@@ -15,7 +14,6 @@
 
 #define NFSDBG_FACILITY		NFSDBG_PNFS_LD
 
-#ifdef CONFIG_PNFS_SCSI_LAYOUT
 static void bl_unregister_scsi(struct pnfs_block_dev *dev)
 {
 	struct block_device *bdev = file_bdev(dev->bdev_file);
@@ -46,16 +44,6 @@ static bool bl_register_scsi(struct pnfs_block_dev *dev)
 	trace_bl_pr_key_reg(bdev, dev->pr_key);
 	return true;
 }
-#else
-static void bl_unregister_scsi(struct pnfs_block_dev *dev)
-{
-}
-
-static bool bl_register_scsi(struct pnfs_block_dev *dev)
-{
-	return false;
-}
-#endif /* CONFIG_PNFS_SCSI_LAYOUT */
 
 static void bl_unregister_dev(struct pnfs_block_dev *dev)
 {
@@ -303,7 +291,7 @@ static int
 bl_parse_deviceid(struct nfs_server *server, struct pnfs_block_dev *d,
 		struct pnfs_block_volume *volumes, int idx, gfp_t gfp_mask);
 
-#ifdef CONFIG_PNFS_BLOCK_LAYOUT
+
 static int
 bl_parse_simple(struct nfs_server *server, struct pnfs_block_dev *d,
 		struct pnfs_block_volume *volumes, int idx, gfp_t gfp_mask)
@@ -331,17 +319,7 @@ bl_parse_simple(struct nfs_server *server, struct pnfs_block_dev *d,
 		file_bdev(bdev_file)->bd_disk->disk_name);
 	return 0;
 }
-#else
-static int
-bl_parse_simple(struct nfs_server *server, struct pnfs_block_dev *d,
-                struct pnfs_block_volume *volumes, int idx, gfp_t gfp_mask)
-{
-	dprintk("unsupported volume type: %d\n", PNFS_BLOCK_VOLUME_SIMPLE);
-	return -EIO;
-}
-#endif /* CONFIG_PNFS_BLOCK_LAYOUT */
 
-#ifdef CONFIG_PNFS_SCSI_LAYOUT
 static bool
 bl_validate_designator(struct pnfs_block_volume *v)
 {
@@ -387,22 +365,15 @@ static struct file *
 bl_open_path(struct pnfs_block_volume *v, const char *prefix)
 {
 	struct file *bdev_file;
-	const char *devname __free(kfree) = NULL;
+	const char *devname;
 
 	devname = kasprintf(GFP_KERNEL, "/dev/disk/by-id/%s%*phN",
 			prefix, v->scsi.designator_len, v->scsi.designator);
 	if (!devname)
 		return ERR_PTR(-ENOMEM);
 
-	if (tsk_is_kthread(current)) {
-		scoped_with_init_fs()
-			bdev_file = bdev_file_open_by_path(devname,
-					BLK_OPEN_READ | BLK_OPEN_WRITE,
-					NULL, NULL);
-	} else {
-		bdev_file = bdev_file_open_by_path(devname,
-				BLK_OPEN_READ | BLK_OPEN_WRITE, NULL, NULL);
-	}
+	bdev_file = bdev_file_open_by_path(devname,
+			BLK_OPEN_READ | BLK_OPEN_WRITE, NULL, NULL);
 	if (IS_ERR(bdev_file)) {
 		dprintk("failed to open device %s (%ld)\n",
 			devname, PTR_ERR(bdev_file));
@@ -411,6 +382,7 @@ bl_open_path(struct pnfs_block_volume *v, const char *prefix)
 			file_bdev(bdev_file)->bd_disk->disk_name);
 	}
 
+	kfree(devname);
 	return bdev_file;
 }
 
@@ -470,15 +442,6 @@ out_blkdev_put:
 	d->bdev_file = NULL;
 	return error;
 }
-#else
-static int
-bl_parse_scsi(struct nfs_server *server, struct pnfs_block_dev *d,
-		struct pnfs_block_volume *volumes, int idx, gfp_t gfp_mask)
-{
-	dprintk("unsupported volume type: %d\n", PNFS_BLOCK_VOLUME_SCSI);
-	return -EIO;
-}
-#endif /* CONFIG_PNFS_SCSI_LAYOUT */
 
 static int
 bl_parse_slice(struct nfs_server *server, struct pnfs_block_dev *d,

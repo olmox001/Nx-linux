@@ -97,6 +97,7 @@ static void tifm_device_remove(struct device *dev)
 		sock->card_event = tifm_dummy_event;
 		sock->data_event = tifm_dummy_event;
 		drv->remove(sock);
+		sock->dev.driver = NULL;
 	}
 
 	put_device(dev);

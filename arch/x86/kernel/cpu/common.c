@@ -339,16 +339,16 @@ bool cpuid_feature(void)
 
 static void squash_the_stupid_serial_number(struct cpuinfo_x86 *c)
 {
-	struct msr val;
+	unsigned long lo, hi;
 
 	if (!cpu_has(c, X86_FEATURE_PN) || !disable_x86_serial_nr)
 		return;
 
 	/* Disable processor serial number: */
 
-	rdmsrq(MSR_IA32_BBL_CR_CTL, val.q);
-	val.l |= 0x200000;
-	wrmsrq(MSR_IA32_BBL_CR_CTL, val.q);
+	rdmsr(MSR_IA32_BBL_CR_CTL, lo, hi);
+	lo |= 0x200000;
+	wrmsr(MSR_IA32_BBL_CR_CTL, lo, hi);
 
 	pr_notice("CPU serial number disabled.\n");
 	clear_cpu_cap(c, X86_FEATURE_PN);
@@ -490,6 +490,9 @@ set_register:
 			  bits_changed);
 	}
 }
+#if IS_MODULE(CONFIG_LKDTM)
+EXPORT_SYMBOL_GPL(native_write_cr4);
+#endif
 
 void cr4_update_irqsoff(unsigned long set, unsigned long clear)
 {
@@ -854,7 +857,7 @@ static void get_model_name(struct cpuinfo_x86 *c)
 
 void cpu_detect_cache_sizes(struct cpuinfo_x86 *c)
 {
-	unsigned int n, dummy, ebx, ecx, edx, l2size, shift __maybe_unused;
+	unsigned int n, dummy, ebx, ecx, edx, l2size;
 
 	n = c->extended_cpuid_level;
 
@@ -874,9 +877,7 @@ void cpu_detect_cache_sizes(struct cpuinfo_x86 *c)
 	l2size = ecx >> 16;
 
 #ifdef CONFIG_X86_64
-	shift = !!cpu_has(c, X86_FEATURE_L2_TLB_SIZE_X32) * 5;
 	c->x86_tlbsize += ((ebx >> 16) & 0xfff) + (ebx & 0xfff);
-	c->x86_tlbsize <<= shift;
 #else
 	/* do processor-specific cache resizing */
 	if (this_cpu->legacy_cache_size)
@@ -941,27 +942,26 @@ void get_cpu_vendor(struct cpuinfo_x86 *c)
 
 void cpu_detect(struct cpuinfo_x86 *c)
 {
-	const struct leaf_0x0_0 *l0 = cpuid_leaf(c, 0x0);
-	const struct leaf_0x1_0 *l1;
-
-	c->cpuid_level = l0->max_std_leaf;
-	*(u32 *)&c->x86_vendor_id[0] = l0->cpu_vendorid_0;
-	*(u32 *)&c->x86_vendor_id[4] = l0->cpu_vendorid_1;
-	*(u32 *)&c->x86_vendor_id[8] = l0->cpu_vendorid_2;
+	/* Get vendor name */
+	cpuid(0x00000000, (unsigned int *)&c->cpuid_level,
+	      (unsigned int *)&c->x86_vendor_id[0],
+	      (unsigned int *)&c->x86_vendor_id[8],
+	      (unsigned int *)&c->x86_vendor_id[4]);
 
 	c->x86 = 4;
+	/* Intel-defined flags: level 0x00000001 */
+	if (c->cpuid_level >= 0x00000001) {
+		u32 junk, tfms, cap0, misc;
 
-	l1 = cpuid_leaf(c, 0x1);
-	if (!l1)
-		return;
+		cpuid(0x00000001, &tfms, &misc, &junk, &cap0);
+		c->x86		= x86_family(tfms);
+		c->x86_model	= x86_model(tfms);
+		c->x86_stepping	= x86_stepping(tfms);
 
-	c->x86		= cpuid_family(l1);
-	c->x86_model	= cpuid_model(l1);
-	c->x86_stepping	= l1->stepping;
-
-	if (l1->clflush) {
-		c->x86_clflush_size	= l1->clflush_size * 8;
-		c->x86_cache_alignment	= c->x86_clflush_size;
+		if (cap0 & (1<<19)) {
+			c->x86_clflush_size = ((misc >> 8) & 0xff) * 8;
+			c->x86_cache_alignment = c->x86_clflush_size;
+		}
 	}
 }
 
@@ -1229,6 +1229,28 @@ static const __initconst struct x86_cpu_id cpu_vuln_whitelist[] = {
 	VULNWL_INTEL(INTEL_ATOM_TREMONT_L,	NO_EIBRS_PBRSB),
 	VULNWL_INTEL(INTEL_ATOM_TREMONT_D,	NO_ITLB_MULTIHIT | NO_EIBRS_PBRSB),
 
+	/*
+	 * CPUs without eIBRS can be impacted by BHI. However, the default
+	 * Spectre v2 mitigations will also mitigate BHI. So X86_BUG_BHI is
+	 * not set on these CPUs and no extra BHI mitigation is applied.
+	 *
+	 * However, this logic is not applied in a vitual machine because the
+	 * VM can't know if the CPU doesn't effectively have eIBRS, or if eIBRS
+	 * was hidden by the hypervisor. So the VM might apply extra BHI
+	 * mitigation while this is not needed.
+	 *
+	 * To avoid OCI and Exadata VMs from using unnecessary BHI mitigation
+	 * (and avoid the associated performance impact), we explicitly mark the
+	 * Intel CPUs used by OCI and Exadata which do not have eIBRS with NO_BHI
+	 * so that no extra BHI mitigation is used even in VMs.
+	 *
+	 * Intel CPUs without eIBRS used by OCI and Exadata are Haswell Server,
+	 * Broadwell Server and Skylake Server.
+	 */
+	VULNWL_INTEL(INTEL_HASWELL_X,		NO_BHI),
+	VULNWL_INTEL(INTEL_BROADWELL_X,		NO_BHI),
+	VULNWL_INTEL(INTEL_SKYLAKE_X,		NO_BHI),
+
 	/* AMD Family 0xf - 0x12 */
 	VULNWL_AMD(0x0f,	NO_MELTDOWN | NO_SSB | NO_L1TF | NO_MDS | NO_SWAPGS | NO_ITLB_MULTIHIT | NO_MMIO | NO_BHI),
 	VULNWL_AMD(0x10,	NO_MELTDOWN | NO_SSB | NO_L1TF | NO_MDS | NO_SWAPGS | NO_ITLB_MULTIHIT | NO_MMIO | NO_BHI),
@@ -1340,7 +1362,7 @@ static const struct x86_cpu_id cpu_vuln_blacklist[] __initconst = {
 	VULNBL_AMD(0x17, RETBLEED | SMT_RSB | SRSO | VMSCAPE),
 	VULNBL_HYGON(0x18, RETBLEED | SMT_RSB | SRSO | VMSCAPE),
 	VULNBL_AMD(0x19, SRSO | TSA | VMSCAPE),
-	VULNBL_AMD(0x1a, SRSO | TSA | VMSCAPE),
+	VULNBL_AMD(0x1a, SRSO | VMSCAPE),
 	{}
 };
 
@@ -1426,7 +1448,7 @@ static bool __init vulnerable_to_its(u64 x86_arch_cap_msr)
 	return false;
 }
 
-static const struct x86_cpu_id cpu_latest_microcode[] __initconst = {
+static struct x86_cpu_id cpu_latest_microcode[] = {
 #include "microcode/intel-ucode-defs.h"
 	{}
 };
@@ -1605,8 +1627,7 @@ static void __init cpu_set_bug_bits(struct cpuinfo_x86 *c)
 
 	if (c->x86_vendor == X86_VENDOR_AMD) {
 		if (!cpu_has(c, X86_FEATURE_TSA_SQ_NO) ||
-		    !cpu_has(c, X86_FEATURE_TSA_L1_NO) ||
-		    !cpu_has(c, X86_FEATURE_TSA_FILL_NO)) {
+		    !cpu_has(c, X86_FEATURE_TSA_L1_NO)) {
 			if (cpu_matches(cpu_vuln_blacklist, TSA) ||
 			    /* Enable bug on Zen guests to allow for live migration. */
 			    (cpu_has(c, X86_FEATURE_HYPERVISOR) && cpu_has(c, X86_FEATURE_ZEN)))
@@ -1661,7 +1682,7 @@ static inline bool parse_set_clear_cpuid(char *arg, bool set)
 	int taint = 0;
 
 	while (arg) {
-		bool found = false;
+		bool found __maybe_unused = false;
 		unsigned int bit;
 
 		opt = strsep(&arg, ",");
@@ -1782,50 +1803,25 @@ static void __init cpu_parse_early_param(void)
 	}
 }
 
-static void init_cpu_info(struct cpuinfo_x86 *c)
-{
-	c->x86_cache_size = 0;
-	c->x86_vendor = X86_VENDOR_UNKNOWN;
-	c->x86_model = c->x86_stepping = 0;	/* So far unknown... */
-	c->x86_vendor_id[0] = '\0'; /* Unset */
-	c->x86_model_id[0] = '\0';  /* Unset */
-#ifdef CONFIG_X86_64
-	c->x86_clflush_size = 64;
-	c->x86_phys_bits = 36;
-	c->x86_virt_bits = 48;
-#else
-	c->cpuid_level = -1;	/* CPUID not detected */
-	c->x86_clflush_size = 32;
-	c->x86_phys_bits = 32;
-	c->x86_virt_bits = 32;
-#endif
-	c->x86_cache_alignment = c->x86_clflush_size;
-	memset(&c->x86_capability, 0, sizeof(c->x86_capability));
-	memset(&c->cpuid, 0, sizeof(c->cpuid));
-#ifdef CONFIG_X86_VMX_FEATURE_NAMES
-	memset(&c->vmx_capability, 0, sizeof(c->vmx_capability));
-#endif
-	c->extended_cpuid_level = 0;
-}
-
 /*
  * Do minimum CPU detection early.
  * Fields really needed: vendor, cpuid_level, family, model, mask,
  * cache alignment.
- * The others are reset to their defaults here and only filled in later,
- * by identify_cpu().
+ * The others are not touched to avoid unwanted side effects.
  *
  * WARNING: this function is only called on the boot CPU.  Don't add code
  * here that is supposed to run on all CPUs.
  */
 static void __init early_identify_cpu(struct cpuinfo_x86 *c)
 {
-	init_cpu_info(c);
+	memset(&c->x86_capability, 0, sizeof(c->x86_capability));
+	memset(&c->cpuid, 0, sizeof(c->cpuid));
+	c->extended_cpuid_level = 0;
 
 	if (!cpuid_feature())
 		identify_cpu_without_cpuid(c);
 
-	/* Cyrix could have CPUID enabled via c_identify(). */
+	/* cyrix could have cpuid enabled via c_identify()*/
 	if (cpuid_feature()) {
 		cpuid_scan_cpu(c);
 		cpu_detect(c);
@@ -1989,21 +1985,16 @@ void check_null_seg_clears_base(struct cpuinfo_x86 *c)
 	set_cpu_bug(c, X86_BUG_NULL_SEG);
 }
 
-/*
- * This does the hard work of actually picking apart the CPU stuff...
- */
-static void identify_cpu(struct cpuinfo_x86 *c)
+static void generic_identify(struct cpuinfo_x86 *c)
 {
-	int i;
-
-	c->loops_per_jiffy = loops_per_jiffy;
+	c->extended_cpuid_level = 0;
 
 	if (!cpuid_feature())
 		identify_cpu_without_cpuid(c);
 
-	/* Cyrix could have CPUID enabled via c_identify(). */
+	/* cyrix could have cpuid enabled via c_identify()*/
 	if (!cpuid_feature())
-		goto no_cpuid;
+		return;
 
 	cpuid_scan_cpu(c);
 	cpu_detect(c);
@@ -2031,8 +2022,40 @@ static void identify_cpu(struct cpuinfo_x86 *c)
 #ifdef CONFIG_X86_32
 	set_cpu_bug(c, X86_BUG_ESPFIX);
 #endif
+}
 
-no_cpuid:
+/*
+ * This does the hard work of actually picking apart the CPU stuff...
+ */
+static void identify_cpu(struct cpuinfo_x86 *c)
+{
+	int i;
+
+	c->loops_per_jiffy = loops_per_jiffy;
+	c->x86_cache_size = 0;
+	c->x86_vendor = X86_VENDOR_UNKNOWN;
+	c->x86_model = c->x86_stepping = 0;	/* So far unknown... */
+	c->x86_vendor_id[0] = '\0'; /* Unset */
+	c->x86_model_id[0] = '\0';  /* Unset */
+#ifdef CONFIG_X86_64
+	c->x86_clflush_size = 64;
+	c->x86_phys_bits = 36;
+	c->x86_virt_bits = 48;
+#else
+	c->cpuid_level = -1;	/* CPUID not detected */
+	c->x86_clflush_size = 32;
+	c->x86_phys_bits = 32;
+	c->x86_virt_bits = 32;
+#endif
+	c->x86_cache_alignment = c->x86_clflush_size;
+	memset(&c->x86_capability, 0, sizeof(c->x86_capability));
+	memset(&c->cpuid, 0, sizeof(c->cpuid));
+#ifdef CONFIG_X86_VMX_FEATURE_NAMES
+	memset(&c->vmx_capability, 0, sizeof(c->vmx_capability));
+#endif
+
+	generic_identify(c);
+
 	cpu_parse_topology(c);
 
 	if (this_cpu->c_identify)
@@ -2124,9 +2147,6 @@ no_cpuid:
 	mcheck_cpu_init(c);
 
 	numa_add_cpu(smp_processor_id());
-
-	if (IS_ENABLED(CONFIG_X86_32))
-		enable_sep_cpu();
 }
 
 /*
@@ -2164,6 +2184,9 @@ static __init void identify_boot_cpu(void)
 	identify_cpu(&boot_cpu_data);
 	if (HAS_KERNEL_IBT && cpu_feature_enabled(X86_FEATURE_IBT))
 		pr_info("CET detected: Indirect Branch Tracking enabled\n");
+#ifdef CONFIG_X86_32
+	enable_sep_cpu();
+#endif
 	cpu_detect_tlb(&boot_cpu_data);
 	setup_cr_pinning();
 
@@ -2182,8 +2205,10 @@ void identify_secondary_cpu(unsigned int cpu)
 		*c = boot_cpu_data;
 	c->cpu_index = cpu;
 
-	init_cpu_info(c);
 	identify_cpu(c);
+#ifdef CONFIG_X86_32
+	enable_sep_cpu();
+#endif
 	x86_spec_ctrl_setup_ap();
 	update_srbds_msr();
 	if (boot_cpu_has_bug(X86_BUG_GDS))
@@ -2242,7 +2267,7 @@ DEFINE_PER_CPU_CACHE_HOT(struct task_struct *, current_task) = &init_task;
 EXPORT_PER_CPU_SYMBOL(current_task);
 EXPORT_PER_CPU_SYMBOL(const_current_task);
 
-DEFINE_PER_CPU_CACHE_HOT(unsigned long, __preempt_count) = INIT_PREEMPT_COUNT;
+DEFINE_PER_CPU_CACHE_HOT(int, __preempt_count) = INIT_PREEMPT_COUNT;
 EXPORT_PER_CPU_SYMBOL(__preempt_count);
 
 DEFINE_PER_CPU_CACHE_HOT(unsigned long, cpu_current_top_of_stack) = TOP_OF_INIT_STACK;
@@ -2305,10 +2330,8 @@ static inline void idt_syscall_init(void)
 /* May not be marked __init: used by software suspend */
 void syscall_init(void)
 {
-	struct msr val = { .h = (__USER32_CS << 16) | __KERNEL_CS };
-
 	/* The default user and kernel segments */
-	wrmsrq(MSR_STAR, val.q);
+	wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
 
 	/*
 	 * Except the IA32_STAR MSR, there is NO need to setup SYSCALL and

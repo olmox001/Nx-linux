@@ -148,7 +148,8 @@ static int snd_acp3x_probe(struct pci_dev *pci,
 		goto disable_pci;
 	}
 
-	adata = devm_kzalloc_obj(&pci->dev, struct acp3x_dev_data);
+	adata = devm_kzalloc(&pci->dev, sizeof(struct acp3x_dev_data),
+			     GFP_KERNEL);
 	if (!adata) {
 		ret = -ENOMEM;
 		goto release_regions;

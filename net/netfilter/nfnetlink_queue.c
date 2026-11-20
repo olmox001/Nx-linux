@@ -28,23 +28,15 @@
 #include <linux/netfilter/nfnetlink.h>
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <linux/netfilter/nf_conntrack_common.h>
-#include <linux/icmp.h>
-#include <linux/icmpv6.h>
-#include <linux/ip.h>
 #include <linux/list.h>
-#include <linux/sctp.h>
 #include <linux/cgroup-defs.h>
 #include <linux/rhashtable.h>
 #include <linux/jhash.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
-#include <net/gre.h>
 #include <net/gso.h>
 #include <net/ip.h>
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <net/netfilter/nf_queue.h>
-#include <net/net_debug.h>
 #include <net/netns/generic.h>
 
 #include <linux/atomic.h>
@@ -366,30 +358,21 @@ static void nf_reinject(struct nf_queue_entry *entry, unsigned int verdict)
 	const struct nf_hook_entry *hook_entry;
 	const struct nf_hook_entries *hooks;
 	struct sk_buff *skb = entry->skb;
-	bool old_in_nf_duplicate;
 	const struct net *net;
 	unsigned int i;
 	int err;
 	u8 pf;
 
-	DEBUG_NET_WARN_ONCE(current->in_nf_duplicate &&
-			    !entry->in_nf_duplicate,
-			    "%s called with unexpected duplication guard",
-			    __func__);
-	local_bh_disable();
-	old_in_nf_duplicate = current->in_nf_duplicate;
-
 	net = entry->state.net;
 	pf = entry->state.pf;
 
-	current->in_nf_duplicate = entry->in_nf_duplicate;
 	hooks = nf_hook_entries_head(net, pf, entry->state.hook);
 
 	i = entry->hook_index;
 	if (!hooks || i >= hooks->num_hook_entries) {
 		kfree_skb_reason(skb, SKB_DROP_REASON_NETFILTER_DROP);
 		nf_queue_entry_free(entry);
-		goto out;
+		return;
 	}
 
 	hook_entry = &hooks->hooks[i];
@@ -412,7 +395,9 @@ next_hook:
 	switch (verdict & NF_VERDICT_MASK) {
 	case NF_ACCEPT:
 	case NF_STOP:
+		local_bh_disable();
 		entry->state.okfn(entry->state.net, entry->state.sk, skb);
+		local_bh_enable();
 		break;
 	case NF_QUEUE:
 		err = nf_queue(skb, &entry->state, i, verdict);
@@ -426,9 +411,6 @@ next_hook:
 	}
 
 	nf_queue_entry_free(entry);
-out:
-	current->in_nf_duplicate = old_in_nf_duplicate;
-	local_bh_enable();
 }
 
 /* return true if the entry has an unconfirmed conntrack attached that isn't owned by us
@@ -1231,62 +1213,10 @@ static bool nfqnl_validate_ipopts(const struct iphdr *iph_new,
 	return memcmp(iph_new + 1, ip_hdr(e->skb) + 1, ihl - sizeof(*iph_orig)) == 0;
 }
 
-static bool nfqnl_validate_l4(const u8 *data, unsigned int data_len,
-			      const struct nf_queue_entry *e, u8 proto,
-			      bool fragment)
-{
-#if IS_ENABLED(CONFIG_NF_CONNTRACK)
-	enum ip_conntrack_info ctinfo;
-	const struct nf_conn *ct;
-
-	ct = nf_ct_get(e->skb, &ctinfo);
-	if (ct && !nf_ct_is_template(ct)) {
-		if (fragment || nf_ct_protonum(ct) != proto)
-			return false;
-	}
-#endif
-
-	if (fragment)
-		return true;
-
-	switch (proto) {
-	case IPPROTO_TCP: {
-		const struct tcphdr *th = (const struct tcphdr *)data;
-		unsigned int thlen;
-
-		if (data_len < sizeof(*th))
-			return false;
-
-		thlen = __tcp_hdrlen(th);
-		if (thlen < sizeof(*th) || data_len < thlen)
-			return false;
-
-		return true;
-	}
-	case IPPROTO_UDP:
-		return data_len >= sizeof(struct udphdr);
-	case IPPROTO_ICMP:
-		return data_len >= sizeof(struct icmphdr);
-	case IPPROTO_ICMPV6:
-		return data_len >= sizeof(struct icmp6hdr);
-	case IPPROTO_SCTP:
-		return data_len >= sizeof(struct sctphdr);
-	case IPPROTO_GRE:
-		return data_len >= sizeof(struct gre_base_hdr);
-	case IPPROTO_AH:
-		return data_len >= sizeof(struct ip_auth_hdr);
-	case IPPROTO_ESP:
-		return data_len >= sizeof(struct ip_esp_hdr);
-	}
-
-	return true;
-}
-
 static bool nfqnl_validate_ip4(const struct iphdr *iph, unsigned int data_len,
 			       const struct nf_queue_entry *e)
 {
 	unsigned int ihl;
-	bool fragment;
 
 	if (data_len < sizeof(*iph))
 		return false;
@@ -1303,14 +1233,10 @@ static bool nfqnl_validate_ip4(const struct iphdr *iph, unsigned int data_len,
 	if (ntohs(iph->tot_len) != data_len)
 		return false;
 
-	fragment = iph->frag_off & htons(IP_MF | IP_OFFSET);
-
 	/* support for ipopts mangling would require
 	 * recompile + skb transport header update.
 	 */
-	return nfqnl_validate_ipopts(iph, e) &&
-	       nfqnl_validate_l4((const u8 *)iph + ihl, data_len - ihl, e,
-				 iph->protocol, fragment);
+	return nfqnl_validate_ipopts(iph, e);
 }
 
 static bool nfqnl_validate_one_exthdr(const u8 *data,
@@ -1354,7 +1280,6 @@ static bool nfqnl_validate_exthdr(const struct ipv6hdr *ip6_new,
 	const u8 *data = (const u8 *)ip6_new;
 	u8 orig_nexthdr = ip6_orig->nexthdr;
 	u8 new_nexthdr = ip6_new->nexthdr;
-	bool fragment = false;
 
 	if (new_nexthdr != orig_nexthdr)
 		return false;
@@ -1368,8 +1293,7 @@ static bool nfqnl_validate_exthdr(const struct ipv6hdr *ip6_new,
 		int hdrlen;
 
 		if (orig_nexthdr == NEXTHDR_NONE)
-			return nfqnl_validate_l4(data, data_len, e,
-						 new_nexthdr, fragment);
+			return true;
 
 		if (unlikely(exthdr_cnt++ >= IP6_MAX_EXT_HDRS_CNT))
 			return false;
@@ -1380,7 +1304,6 @@ static bool nfqnl_validate_exthdr(const struct ipv6hdr *ip6_new,
 
 		switch (orig_nexthdr) {
 		case NEXTHDR_FRAGMENT:
-			fragment = true;
 			hdrlen = sizeof(struct frag_hdr);
 			break;
 		case NEXTHDR_AUTH:
@@ -1407,7 +1330,7 @@ static bool nfqnl_validate_exthdr(const struct ipv6hdr *ip6_new,
 		data += hdrlen;
 	}
 
-	return nfqnl_validate_l4(data, data_len, e, new_nexthdr, fragment);
+	return true;
 }
 
 static bool nfqnl_validate_ip6(const struct ipv6hdr *ip6, unsigned int data_len,
@@ -1577,39 +1500,9 @@ static struct notifier_block nfqnl_dev_notifier = {
 	.notifier_call	= nfqnl_rcv_dev_event,
 };
 
-/* Match the entries whose hook_index points into the hook array that
- * __nf_unregister_net_hook() replaces when it removes @ops.
- *
- * ops->pf/hooknum name the hook as registered; entry->state.pf/hook
- * name the array actually traversed - they differ only for NFPROTO_INET.
- * Every other family uses the array of its own name.
- */
-static int nf_hook_cmp(struct nf_queue_entry *entry, unsigned long ops_ptr)
-{
-	const struct nf_hook_ops *ops = (const struct nf_hook_ops *)ops_ptr;
-	unsigned int hooknum = ops->hooknum;
-	u8 pf = ops->pf;
-
-	/* same translation as nf_static_key_inc() */
-	if (pf == NFPROTO_INET && hooknum == NF_INET_INGRESS) {
-		pf = NFPROTO_NETDEV;
-		hooknum = NF_NETDEV_INGRESS;
-	}
-
-	if (entry->state.hook != hooknum)
-		return 0;
-
-	if (pf == NFPROTO_INET)
-		return entry->state.pf == NFPROTO_IPV4 ||
-		       entry->state.pf == NFPROTO_IPV6;
-
-	return entry->state.pf == pf;
-}
-
-static void nfqnl_nf_hook_drop(struct net *net, const struct nf_hook_ops *ops)
+static void nfqnl_nf_hook_drop(struct net *net)
 {
 	struct nfnl_queue_net *q = nfnl_queue_pernet(net);
-	nfqnl_cmpfn cmpfn = NULL;
 	int i;
 
 	/* This function is also called on net namespace error unwind,
@@ -1622,19 +1515,12 @@ static void nfqnl_nf_hook_drop(struct net *net, const struct nf_hook_ops *ops)
 	if (!q)
 		return;
 
-	/* ops is NULL when the caller is not unregistering a hook but
-	 * removing an object queued packets may reference, every entry
-	 * has to go
-	 */
-	if (ops)
-		cmpfn = nf_hook_cmp;
-
 	for (i = 0; i < INSTANCE_BUCKETS; i++) {
 		struct nfqnl_instance *inst;
 		struct hlist_head *head = &q->instance_table[i];
 
 		hlist_for_each_entry_rcu(inst, head, hlist)
-			nfqnl_flush(inst, cmpfn, (unsigned long)ops);
+			nfqnl_flush(inst, NULL, 0);
 	}
 }
 

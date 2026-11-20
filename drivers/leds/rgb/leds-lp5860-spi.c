@@ -51,7 +51,8 @@ static int lp5860_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	lp5860 = devm_kzalloc_flex(dev, *lp5860, leds, multi_leds);
+	lp5860 = devm_kzalloc(dev, struct_size(lp5860, leds, multi_leds),
+			      GFP_KERNEL);
 	if (!lp5860)
 		return -ENOMEM;
 

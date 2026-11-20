@@ -739,24 +739,11 @@ static int tegra210_i2s_hw_params(struct snd_pcm_substream *substream,
 					      cif_conf.client_ch);
 }
 
-static const u64 tegra210_i2s_selectable_formats =
-	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
-	SND_SOC_POSSIBLE_DAIFMT_DSP_B	|
-	SND_SOC_POSSIBLE_DAIFMT_I2S	|
-	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_NB_IF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_NF	|
-	SND_SOC_POSSIBLE_DAIFMT_IB_IF;
-
 static const struct snd_soc_dai_ops tegra210_i2s_dai_ops = {
 	.set_fmt	= tegra210_i2s_set_fmt,
 	.hw_params	= tegra210_i2s_hw_params,
 	.set_bclk_ratio	= tegra210_i2s_set_dai_bclk_ratio,
 	.set_tdm_slot	= tegra210_i2s_set_tdm_slot,
-	.auto_selectable_formats	= &tegra210_i2s_selectable_formats,
-	.num_auto_selectable_formats	= 1,
 };
 
 static struct snd_soc_dai_driver tegra210_i2s_dais[] = {
@@ -1084,7 +1071,7 @@ static int tegra210_i2s_probe(struct platform_device *pdev)
 	void __iomem *regs;
 	int err, id;
 
-	i2s = devm_kzalloc_obj(dev, *i2s);
+	i2s = devm_kzalloc(dev, sizeof(*i2s), GFP_KERNEL);
 	if (!i2s)
 		return -ENOMEM;
 
@@ -1103,13 +1090,13 @@ static int tegra210_i2s_probe(struct platform_device *pdev)
 				     "can't retrieve I2S bit clock\n");
 
 	/*
-	 * This clock is optional and is only needed when another I/O uses
-	 * the current I2S instance as its input clock, as configured in DT.
+	 * Not an error, as this clock is needed only when some other I/O
+	 * requires input clock from current I2S instance, which is
+	 * configurable from DT.
 	 */
-	i2s->clk_sync_input = devm_clk_get_optional(dev, "sync_input");
+	i2s->clk_sync_input = devm_clk_get(dev, "sync_input");
 	if (IS_ERR(i2s->clk_sync_input))
-		return dev_err_probe(dev, PTR_ERR(i2s->clk_sync_input),
-				     "can't retrieve I2S sync input clock\n");
+		dev_dbg(dev, "can't retrieve I2S sync input clock\n");
 
 	regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(regs))

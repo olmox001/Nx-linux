@@ -136,7 +136,9 @@ of_get_gpio_regulator_config(struct device *dev, struct device_node *np,
 	int ngpios;
 	int ret;
 
-	config = devm_kzalloc_obj(dev, struct gpio_regulator_config);
+	config = devm_kzalloc(dev,
+			sizeof(struct gpio_regulator_config),
+			GFP_KERNEL);
 	if (!config)
 		return ERR_PTR(-ENOMEM);
 
@@ -191,8 +193,10 @@ of_get_gpio_regulator_config(struct device *dev, struct device_node *np,
 		return ERR_PTR(-EINVAL);
 	}
 
-	config->states = devm_kzalloc_objs(dev, struct gpio_regulator_state,
-					   proplen / 2);
+	config->states = devm_kcalloc(dev,
+				proplen / 2,
+				sizeof(struct gpio_regulator_state),
+				GFP_KERNEL);
 	if (!config->states)
 		return ERR_PTR(-ENOMEM);
 
@@ -238,7 +242,8 @@ static int gpio_regulator_probe(struct platform_device *pdev)
 	enum gpiod_flags gflags;
 	int ptr, state, i;
 
-	drvdata = devm_kzalloc_obj(dev, struct gpio_regulator_data);
+	drvdata = devm_kzalloc(dev, sizeof(struct gpio_regulator_data),
+			       GFP_KERNEL);
 	if (drvdata == NULL)
 		return -ENOMEM;
 
@@ -255,8 +260,8 @@ static int gpio_regulator_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	drvdata->gpiods = devm_kzalloc_objs(dev, struct gpio_desc *,
-					    config->ngpios);
+	drvdata->gpiods = devm_kcalloc(dev, config->ngpios,
+				       sizeof(struct gpio_desc *), GFP_KERNEL);
 	if (!drvdata->gpiods)
 		return -ENOMEM;
 

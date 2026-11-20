@@ -6589,7 +6589,8 @@ _base_allocate_memory_pools(struct MPT3SAS_ADAPTER *ioc)
 			     ioc->internal,
 			     ioc->internal_depth, ioc->internal_smid));
 
-	ioc->io_queue_num = kzalloc_objs(u16, ioc->scsiio_depth);
+	ioc->io_queue_num = kcalloc(ioc->scsiio_depth,
+	    sizeof(u16), GFP_KERNEL);
 	if (!ioc->io_queue_num)
 		goto out;
 	/*
@@ -8373,7 +8374,11 @@ _base_make_ioc_operational(struct MPT3SAS_ADAPTER *ioc)
 		return r; /* scan_start and scan_finished support */
 	}
 
-	return _base_send_port_enable(ioc);
+	r = _base_send_port_enable(ioc);
+	if (r)
+		return r;
+
+	return r;
 }
 
 /**

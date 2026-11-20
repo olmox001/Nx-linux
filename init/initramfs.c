@@ -6,7 +6,6 @@
 #include <linux/fcntl.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/fs_struct.h>
 #include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/init_syscalls.h>
@@ -80,7 +79,7 @@ static __initdata struct hash {
 	int ino, minor, major;
 	umode_t mode;
 	struct hash *next;
-	char name[];
+	char name[N_ALIGN(PATH_MAX)];
 } *head[32];
 static __initdata bool hardlink_seen;
 
@@ -92,7 +91,7 @@ static inline int hash(int major, int minor, int ino)
 }
 
 static char __init *find_link(int major, int minor, int ino,
-			      umode_t mode, const char *name, size_t nlen)
+			      umode_t mode, char *name)
 {
 	struct hash **p, *q;
 	for (p = head + hash(major, minor, ino); *p; p = &(*p)->next) {
@@ -106,15 +105,14 @@ static char __init *find_link(int major, int minor, int ino,
 			continue;
 		return (*p)->name;
 	}
-
-	q = kmalloc_flex(struct hash, name, nlen);
+	q = kmalloc_obj(struct hash);
 	if (!q)
 		panic_show_mem("can't allocate link hash entry");
 	q->major = major;
 	q->minor = minor;
 	q->ino = ino;
 	q->mode = mode;
-	strscpy(q->name, name, nlen);
+	strscpy(q->name, name);
 	q->next = NULL;
 	*p = q;
 	hardlink_seen = true;
@@ -356,7 +354,7 @@ static void __init clean_path(char *path, umode_t fmode)
 static int __init maybe_link(void)
 {
 	if (nlink >= 2) {
-		char *old = find_link(major, minor, ino, mode, collected, name_len);
+		char *old = find_link(major, minor, ino, mode, collected);
 		if (old) {
 			clean_path(collected, 0);
 			return (init_link(old, collected) < 0) ? -1 : 1;
@@ -620,7 +618,7 @@ void __init reserve_initrd_mem(void)
 	phys_addr_t start;
 	unsigned long size;
 
-	/* Ignore the virtual address computed during device tree parsing */
+	/* Ignore the virtul address computed during device tree parsing */
 	initrd_start = initrd_end = 0;
 
 	if (!phys_initrd_size)
@@ -718,7 +716,7 @@ static void __init populate_initrd_image(char *err)
 }
 #endif /* CONFIG_BLK_DEV_RAM */
 
-static void __init unpack_initramfs(async_cookie_t cookie)
+static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 {
 	/* Load the built in initramfs */
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
@@ -726,7 +724,7 @@ static void __init unpack_initramfs(async_cookie_t cookie)
 		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
 
 	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
-		return;
+		goto done;
 
 	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
@@ -741,14 +739,9 @@ static void __init unpack_initramfs(async_cookie_t cookie)
 		printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
 #endif
 	}
-}
 
-static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
-{
-	scoped_with_init_fs() {
-		unpack_initramfs(cookie);
-		security_initramfs_populated();
-	}
+done:
+	security_initramfs_populated();
 
 	/*
 	 * If the initrd region is overlapped with crashkernel reserved region,

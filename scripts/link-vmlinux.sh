@@ -38,7 +38,7 @@ is_enabled() {
 }
 
 # Nice output in kbuild format
-# Will be suppressed by "make -s"
+# Will be supressed by "make -s"
 info()
 {
 	printf "  %-7s %s\n" "${1}" "${2}"
@@ -96,11 +96,6 @@ vmlinux_link()
 		ldflags="${ldflags} ${wl}--strip-debug"
 	fi
 
-	# Only the final link actually requires the relocations.
-	if [ "${output}" = "${VMLINUX}" ] && is_enabled CONFIG_ARCH_VMLINUX_NEEDS_RELOCS; then
-		ldflags="${ldflags} ${wl}--emit-relocs"
-	fi
-
 	if [ -n "${generate_map}" ];  then
 		ldflags="${ldflags} ${wl}-Map=vmlinux.map"
 	fi
@@ -123,15 +118,11 @@ kallsymso_changed()
 	! cmp -s "${kallsymso_prev}.sym" "${kallsymso}.sym"
 }
 
-# Create ${2}.o with the kallsyms tables for ${1} (the vmlinux, or an empty
-# listing for the first pass); list the symbols used in ${3} if given.
+# Create ${2}.o file with all symbols from the ${1} object file
 kallsyms()
 {
 	local kallsymopt;
 
-	if [ -n "${3:-}" ]; then
-		kallsymopt="--sysmap=${3}"
-	fi
 	if is_enabled CONFIG_KALLSYMS_ALL; then
 		kallsymopt="${kallsymopt} --all-symbols"
 	fi
@@ -141,7 +132,7 @@ kallsyms()
 	fi
 
 	info KSYMS "${2}.S"
-	scripts/kallsyms ${kallsymopt} "${1}" "${2}.bin" > "${2}.S"
+	scripts/kallsyms ${kallsymopt} "${1}" > "${2}.S"
 
 	info AS "${2}.o"
 	${CC} ${NOSTDINC_FLAGS} ${LINUXINCLUDE} ${KBUILD_CPPFLAGS} \
@@ -154,20 +145,23 @@ kallsyms()
 # Perform kallsyms for the given temporary vmlinux.
 sysmap_and_kallsyms()
 {
-	kallsyms "${1}" "${1}.kallsyms" "${1}.syms"
+	mksysmap "${1}" "${1}.syms"
+	kallsyms "${1}.syms" "${1}.kallsyms"
+
 	kallsyms_sysmap=${1}.syms
 }
 
 # Create map file with all symbols from ${1}
+# See mksymap for additional details
 mksysmap()
 {
-	info SYSMAP ${2}
-	scripts/kallsyms --sysmap="${2}" "${1}"
+	info NM ${2}
+	${NM} -n "${1}" | sed -f "${srctree}/scripts/mksysmap" > "${2}"
 }
 
 sorttable()
 {
-	${NM} -p -S ${1} > .tmp_vmlinux.nm-sort
+	${NM} -S ${1} > .tmp_vmlinux.nm-sort
 	${objtree}/scripts/sorttable -s .tmp_vmlinux.nm-sort ${1}
 }
 
@@ -295,13 +289,7 @@ vmlinux_link "${VMLINUX}"
 
 if is_enabled CONFIG_DEBUG_INFO_BTF; then
 	info BTFIDS ${VMLINUX}
-	if [ "${BTF_INLINE}" = "m" ]; then
-		${RESOLVE_BTFIDS} --patch_btfids ${btfids_vmlinux} \
-			--btf_link .BTF.inline:btf_vmlinux_inline:vmlinux.BTF.inline \
-			${VMLINUX}
-	else
-		${RESOLVE_BTFIDS} --patch_btfids ${btfids_vmlinux} ${VMLINUX}
-	fi
+	${RESOLVE_BTFIDS} --patch_btfids ${btfids_vmlinux} ${VMLINUX}
 fi
 
 mksysmap "${VMLINUX}" System.map

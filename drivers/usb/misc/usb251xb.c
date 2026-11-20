@@ -700,7 +700,7 @@ static int usb251xb_i2c_probe(struct i2c_client *i2c)
 {
 	struct usb251xb *hub;
 
-	hub = devm_kzalloc_obj(&i2c->dev, struct usb251xb);
+	hub = devm_kzalloc(&i2c->dev, sizeof(struct usb251xb), GFP_KERNEL);
 	if (!hub)
 		return -ENOMEM;
 
@@ -773,7 +773,7 @@ static int usb251xb_plat_probe(struct platform_device *pdev)
 {
 	struct usb251xb *hub;
 
-	hub = devm_kzalloc_obj(&pdev->dev, *hub);
+	hub = devm_kzalloc(&pdev->dev, sizeof(*hub), GFP_KERNEL);
 	if (!hub)
 		return -ENOMEM;
 

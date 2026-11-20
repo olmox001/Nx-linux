@@ -16,8 +16,6 @@
 #include <linux/dm-kcopyd.h>
 #include <linux/jiffies.h>
 #include <linux/init.h>
-#include <linux/kstrtox.h>
-#include <linux/math64.h>
 #include <linux/mempool.h>
 #include <linux/module.h>
 #include <linux/rwsem.h>
@@ -2384,7 +2382,9 @@ static int create_cache_policy(struct cache *cache, struct cache_args *ca,
 static bool too_many_discard_blocks(sector_t discard_block_size,
 				    sector_t origin_size)
 {
-	return div64_u64(origin_size, discard_block_size) > MAX_DISCARD_BLOCKS;
+	(void) sector_div(origin_size, discard_block_size);
+
+	return origin_size > MAX_DISCARD_BLOCKS;
 }
 
 static sector_t calculate_discard_block_size(sector_t cache_block_size,
@@ -2421,7 +2421,6 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	struct cache *cache;
 	struct dm_target *ti = ca->ti;
 	dm_block_t origin_blocks;
-	sector_t discard_block_size;
 	struct dm_cache_metadata *cmd;
 	bool may_format = ca->features.mode == CM_WRITE;
 
@@ -2521,15 +2520,9 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	}
 	clear_bitset(cache->dirty_bitset, from_cblock(cache->cache_size));
 
-	discard_block_size =
+	cache->discard_block_size =
 		calculate_discard_block_size(cache->sectors_per_block,
 					     cache->origin_sectors);
-	if (discard_block_size > U32_MAX) {
-		*error = "Discard block size exceeds 32 bits";
-		r = -EOVERFLOW;
-		goto bad;
-	}
-	cache->discard_block_size = discard_block_size;
 	cache->discard_nr_blocks = to_dblock(dm_sector_div_up(cache->origin_sectors,
 							      cache->discard_block_size));
 	cache->discard_bitset = alloc_bitset(from_dblock(cache->discard_nr_blocks));
@@ -2550,7 +2543,6 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	if (IS_ERR(cache->copier)) {
 		*error = "could not create kcopyd client";
 		r = PTR_ERR(cache->copier);
-		cache->copier = NULL;
 		goto bad;
 	}
 
@@ -2617,7 +2609,7 @@ static int copy_ctr_args(struct cache *cache, int argc, const char **argv)
 	unsigned int i;
 	const char **copy;
 
-	copy = kzalloc_objs(*copy, argc);
+	copy = kcalloc(argc, sizeof(*copy), GFP_KERNEL);
 	if (!copy)
 		return -ENOMEM;
 	for (i = 0; i < argc; i++) {
@@ -3322,46 +3314,42 @@ struct cblock_range {
 	dm_cblock_t end;
 };
 
-static inline dm_cblock_t cblock_succ(dm_cblock_t b)
-{
-	return to_cblock(from_cblock(b) + 1);
-}
-
 /*
  * A cache block range can take two forms:
  *
  * i) A single cblock, eg. '3456'
  * ii) A begin and end cblock with a dash between, eg. 123-234
  */
-static int parse_cblock_range(struct cache *cache, char *str,
+static int parse_cblock_range(struct cache *cache, const char *str,
 			      struct cblock_range *result)
 {
-	char *blocknr = strsep(&str, "-");
-	unsigned int b, e;
+	char dummy;
+	uint64_t b, e;
 	int r;
 
-	r = kstrtouint(blocknr, 10, &b);
-	if (r)
-		goto bad;
+	/*
+	 * Try and parse form (ii) first.
+	 */
+	r = sscanf(str, "%llu-%llu%c", &b, &e, &dummy);
 
-	result->begin = to_cblock(b);
-
-	if (str) {
-		blocknr = str;
-
-		r = kstrtouint(blocknr, 10, &e);
-		if (r)
-			goto bad;
-
+	if (r == 2) {
+		result->begin = to_cblock(b);
 		result->end = to_cblock(e);
-	} else {
-		result->end = cblock_succ(result->begin);
+		return 0;
 	}
 
-	return 0;
+	/*
+	 * That didn't work, try form (i).
+	 */
+	r = sscanf(str, "%llu%c", &b, &dummy);
 
-bad:
-	DMERR("%s: invalid cblock range '%s'", cache_device_name(cache), blocknr);
+	if (r == 1) {
+		result->begin = to_cblock(b);
+		result->end = to_cblock(from_cblock(result->begin) + 1u);
+		return 0;
+	}
+
+	DMERR("%s: invalid cblock range '%s'", cache_device_name(cache), str);
 	return -EINVAL;
 }
 
@@ -3392,6 +3380,11 @@ static int validate_cblock_range(struct cache *cache, struct cblock_range *range
 	return 0;
 }
 
+static inline dm_cblock_t cblock_succ(dm_cblock_t b)
+{
+	return to_cblock(from_cblock(b) + 1);
+}
+
 static int request_invalidation(struct cache *cache, struct cblock_range *range)
 {
 	int r = 0;
@@ -3415,7 +3408,7 @@ static int request_invalidation(struct cache *cache, struct cblock_range *range)
 }
 
 static int process_invalidate_cblocks_message(struct cache *cache, unsigned int count,
-					      char **cblock_ranges)
+					      const char **cblock_ranges)
 {
 	int r = 0;
 	unsigned int i;
@@ -3470,7 +3463,7 @@ static int cache_message(struct dm_target *ti, unsigned int argc, char **argv,
 	}
 
 	if (!strcasecmp(argv[0], "invalidate_cblocks"))
-		return process_invalidate_cblocks_message(cache, argc - 1, argv + 1);
+		return process_invalidate_cblocks_message(cache, argc - 1, (const char **) argv + 1);
 
 	if (argc != 2)
 		return -EINVAL;

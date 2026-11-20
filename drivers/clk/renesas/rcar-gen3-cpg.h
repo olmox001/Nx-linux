@@ -76,7 +76,8 @@ struct rcar_gen3_cpg_pll_config {
 	u8 osc_prediv;
 };
 
-#define CPG_RCKCR		0x240	/* RCLK Frequency Control Register */
+#define CPG_RPCCKCR	0x238
+#define CPG_RCKCR	0x240
 
 struct clk *rcar_gen3_cpg_clk_register(struct device *dev,
 	const struct cpg_core_clk *core, const struct cpg_mssr_info *info,

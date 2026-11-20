@@ -2,7 +2,6 @@
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,7 +34,6 @@
 
 #include "../browsers/hists.h"
 #include "../helpline.h"
-#include "../keysyms.h"
 #include "../util.h"
 #include "../ui.h"
 #include "map.h"
@@ -2360,6 +2358,7 @@ static int hists_browser__scnprintf_title(struct hist_browser *browser, char *bf
 
 struct popup_action {
 	unsigned long		time;
+	struct thread		*thread;
 	int (*fn)(struct hist_browser *browser, struct popup_action *act);
 	struct map_symbol	ms;
 	int			socket;
@@ -2822,7 +2821,7 @@ add_script_opt(struct hist_browser *browser,
 	       struct popup_action *act, char **optstr,
 	       struct thread *thread, struct symbol *sym)
 {
-	int n, j, ret;
+	int n, j;
 	struct hist_entry *he;
 
 	n = add_script_opt_2(act, optstr, thread, sym, "");
@@ -2830,26 +2829,17 @@ add_script_opt(struct hist_browser *browser,
 	he = hist_browser__selected_entry(browser);
 	if (sort_order && strstr(sort_order, "time")) {
 		char tstr[128];
-		struct popup_action *time_act = act;
-		char **time_optstr = optstr;
 
-		if (n > 0) {
-			time_optstr++;
-			time_act++;
-		}
-		if (he == NULL)
-			return n;
+		optstr++;
+		act++;
 		j = sprintf(tstr, " in ");
 		j += timestamp__scnprintf_usec(he->time, tstr + j,
 					       sizeof tstr - j);
 		j += sprintf(tstr + j, "-");
 		timestamp__scnprintf_usec(he->time + symbol_conf.time_quantum,
 				          tstr + j, sizeof tstr - j);
-		ret = add_script_opt_2(time_act, time_optstr, thread, sym, tstr);
-		if (ret > 0) {
-			time_act->time = he->time;
-			n += ret;
-		}
+		n += add_script_opt_2(act, optstr, thread, sym, tstr);
+		act->time = he->time;
 	}
 	return n;
 }
@@ -3257,10 +3247,7 @@ do_hotkey:		 // key came straight from options ui__popup_menu()
 					"To remove the filter later, press / + ENTER.",
 					buf, "ENTER: OK, ESC: Cancel",
 					delay_secs * 2) == K_ENTER) {
-				char *new_filter = *buf ? strdup(buf) : NULL;
-
-				zfree(&hists->symbol_filter_str);
-				hists->symbol_filter_str = new_filter;
+				hists->symbol_filter_str = *buf ? buf : NULL;
 				hists__filter_by_symbol(hists);
 				hist_browser__reset(browser);
 			}
@@ -3580,12 +3567,9 @@ static int perf_evsel_menu__run(struct evsel_menu *menu,
 	const char *title = "Available samples";
 	int delay_secs = hbt ? hbt->refresh : 0;
 	int key;
-	const char *help_text = "ESC: exit, ENTER|->: Browse histograms";
 
-	if (!symbol_conf.hybrid_merge && evlist__can_merge_hybrid(evlist, menu->env))
-		help_text = "ESC: exit, ENTER|->: Browse. Try --hybrid-merge to combine events.";
-
-	if (ui_browser__show(&menu->b, title, help_text) < 0)
+	if (ui_browser__show(&menu->b, title,
+			     "ESC: exit, ENTER|->: Browse histograms") < 0)
 		return -1;
 
 	while (1) {

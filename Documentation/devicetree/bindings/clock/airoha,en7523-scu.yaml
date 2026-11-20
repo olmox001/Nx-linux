@@ -23,7 +23,6 @@ description: |
 
   All these identifiers can be found in:
   [1]: <include/dt-bindings/clock/en7523-clk.h>.
-  [2]: <include/dt-bindings/soc/airoha,scu-ssr.h>.
 
   The clocks are provided inside a system controller node.
 
@@ -51,12 +50,6 @@ properties:
     description: ID of the controller reset line
     const: 1
 
-  '#phy-cells':
-    description:
-      The first cell indicates the serdes phy number, see [2] for the
-      available serdes port.
-    const: 1
-
 required:
   - compatible
   - reg
@@ -72,23 +65,12 @@ allOf:
         reg:
           minItems: 2
 
-        '#phy-cells': false
-
   - if:
       properties:
         compatible:
-          const: econet,en751221-scu
-    then:
-      properties:
-        reg:
-          maxItems: 1
-
-        '#phy-cells': false
-
-  - if:
-      properties:
-        compatible:
-          const: airoha,en7581-scu
+          enum:
+            - airoha,en7581-scu
+            - econet,en751221-scu
     then:
       properties:
         reg:

@@ -215,7 +215,7 @@ static int surface_hotplug_probe(struct platform_device *pdev)
 	if (status)
 		return status;
 
-	sdev = devm_kzalloc_obj(&pdev->dev, *sdev);
+	sdev = devm_kzalloc(&pdev->dev, sizeof(*sdev), GFP_KERNEL);
 	if (!sdev)
 		return -ENOMEM;
 

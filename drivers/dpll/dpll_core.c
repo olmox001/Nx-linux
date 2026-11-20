@@ -882,11 +882,7 @@ dpll_pin_register(struct dpll_device *dpll, struct dpll_pin *pin,
 	if (WARN_ON(!ops) ||
 	    WARN_ON(!ops->state_on_dpll_get) ||
 	    WARN_ON(!ops->direction_get) ||
-	    WARN_ON(ops->supported_ffo && !ops->ffo_get) ||
-	    WARN_ON((pin->prop.capabilities &
-		     DPLL_PIN_CAPABILITIES_STATE_CONNECTED_OVERRIDE) &&
-		    !(pin->prop.capabilities &
-		      DPLL_PIN_CAPABILITIES_STATE_CAN_CHANGE)))
+	    WARN_ON(ops->supported_ffo && !ops->ffo_get))
 		return -EINVAL;
 
 	mutex_lock(&dpll_lock);
@@ -1081,8 +1077,7 @@ int dpll_pin_ref_sync_pair_add(struct dpll_pin *pin,
 	mutex_lock(&dpll_lock);
 	ret = xa_insert(&pin->ref_sync_pins, ref_sync_pin->id,
 			ref_sync_pin, GFP_KERNEL);
-	if (!ret)
-		__dpll_pin_change_ntf(pin);
+	__dpll_pin_change_ntf(pin);
 	mutex_unlock(&dpll_lock);
 
 	return ret;

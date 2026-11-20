@@ -44,6 +44,7 @@
 #include "dm.h"
 #include "mlx5_ib.h"
 #include "umr.h"
+#include "data_direct.h"
 #include "dmah.h"
 
 static int mkey_max_umr_order(struct mlx5_ib_dev *dev)
@@ -338,7 +339,7 @@ static int mlx5r_build_frmr_key(struct ib_device *device,
 	return 0;
 }
 
-static const struct ib_frmr_pool_ops mlx5r_frmr_pool_ops = {
+static struct ib_frmr_pool_ops mlx5r_frmr_pool_ops = {
 	.create_frmrs = mlx5r_create_mkeys,
 	.destroy_frmrs = mlx5r_destroy_mkeys,
 	.build_key = mlx5r_build_frmr_key,
@@ -586,7 +587,7 @@ static struct mlx5_ib_mr *reg_create(struct ib_pd *pd, struct ib_umem *umem,
 				      populate ? pd : dev->umrc.pd);
 	/* In case a data direct flow, overwrite the pdn field by its internal kernel PD */
 	if (umem->is_dmabuf && ksm_mode)
-		MLX5_SET(mkc, mkc, pd, dev->mdev->data_direct->pdn);
+		MLX5_SET(mkc, mkc, pd, dev->ddr.pdn);
 
 	MLX5_SET(mkc, mkc, free, !populate);
 	MLX5_SET(mkc, mkc, access_mode_1_0, access_mode);
@@ -897,8 +898,8 @@ static void mlx5_ib_dmabuf_invalidate_cb(struct dma_buf_attachment *attach)
 	ib_umem_dmabuf_unmap_pages(umem_dmabuf);
 }
 
-static const struct dma_buf_attach_ops mlx5_ib_dmabuf_attach_ops = {
-	.allow_peer2peer = true,
+static struct dma_buf_attach_ops mlx5_ib_dmabuf_attach_ops = {
+	.allow_peer2peer = 1,
 	.invalidate_mappings = mlx5_ib_dmabuf_invalidate_cb,
 };
 
@@ -996,7 +997,7 @@ reg_user_mr_dmabuf_by_data_direct(struct ib_pd *pd, u64 offset,
 		return ERR_PTR(-EOPNOTSUPP);
 
 	mutex_lock(&dev->data_direct_lock);
-	data_direct_dev = mlx5_data_direct_get_dev(dev->mdev->data_direct);
+	data_direct_dev = dev->data_direct_dev;
 	if (!data_direct_dev) {
 		ret = -EINVAL;
 		goto end;
@@ -1005,7 +1006,7 @@ reg_user_mr_dmabuf_by_data_direct(struct ib_pd *pd, u64 offset,
 	/* If no device's 'data direct mkey' with RO flags exists
 	 * mask it out accordingly.
 	 */
-	if (!dev->mdev->data_direct->mkey_ro_valid)
+	if (!dev->ddr.mkey_ro_valid)
 		access_flags &= ~IB_ACCESS_RELAXED_ORDERING;
 	crossed_mr = reg_user_mr_dmabuf(pd, &data_direct_dev->pdev->dev,
 					offset, length, virt_addr, fd,
@@ -1787,6 +1788,73 @@ struct ib_mr *mlx5_ib_alloc_mr_integrity(struct ib_pd *pd,
 	return __mlx5_ib_alloc_mr(pd, IB_MR_TYPE_INTEGRITY, max_num_sg,
 				  max_num_meta_sg);
 }
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+
+struct mlx5_ib_shpd {
+	struct ib_shpd ibshpd;
+	u32 pdn;
+};
+
+struct ib_shpd *mlx5_ib_alloc_shpd(struct ib_device *ibdev,
+				   struct ib_pd *pd)
+{
+	struct mlx5_ib_shpd *shpd_p;
+
+	shpd_p = kzalloc(sizeof(*shpd_p), GFP_KERNEL);
+	if (!shpd_p)
+		return ERR_PTR(-ENOMEM);
+
+	shpd_p->pdn = to_mpd(pd)->pdn;
+
+	return &shpd_p->ibshpd;
+}
+
+struct ib_pd *mlx5_ib_share_pd(struct ib_device *ibdev,
+			       struct ib_ucontext *context,
+			       struct ib_udata *udata,
+			       struct ib_shpd *ibshpd)
+{
+	struct mlx5_ib_shpd *shpd_p = container_of(ibshpd, struct mlx5_ib_shpd,
+						   ibshpd);
+	struct mlx5_ib_pd *pd_p;
+
+	pd_p = kzalloc(sizeof(*pd_p), GFP_KERNEL);
+	if (!pd_p)
+		return ERR_PTR(-ENOMEM);
+
+	pd_p->pdn = shpd_p->pdn;
+
+	if (context) {
+		if (ib_copy_to_udata(udata, &pd_p->pdn, sizeof(pd_p->pdn))) {
+			kfree(pd_p);
+			return ERR_PTR(-EFAULT);
+		}
+	}
+
+	return &pd_p->ibpd;
+}
+
+int mlx5_ib_remove_shpd(struct ib_device *ibdev,
+			struct ib_shpd *ibshpd,
+			int atinit)
+{
+	struct mlx5_ib_shpd *shpd_p = container_of(ibshpd, struct mlx5_ib_shpd,
+						   ibshpd);
+
+	/*
+	 * if remove shpd is called during shpd creation time itself, then
+	 * pd should not be freed from device. it will be freed when dealloc_pd
+	 * is called
+	 */
+	if (!atinit)
+		mlx5_core_dealloc_pd(to_mdev(ibdev)->mdev, shpd_p->pdn);
+	kfree(ibshpd);
+
+	return 0;
+}
+
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 int mlx5_ib_alloc_mw(struct ib_mw *ibmw, struct ib_udata *udata)
 {

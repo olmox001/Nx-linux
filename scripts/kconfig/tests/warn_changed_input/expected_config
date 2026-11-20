@@ -4,4 +4,3 @@
 #
 # CONFIG_DEP is not set
 CONFIG_NUM=20
-CONFIG_HEX_RANGE=0xfffffffffffffffe

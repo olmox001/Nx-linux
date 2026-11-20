@@ -329,12 +329,13 @@ xchk_bmap_rt_iextent_xref(
 	int			error;
 
 	error = xchk_rtgroup_init_existing(info->sc,
-			xfs_rtb_to_rgno(ip->i_mount, irec->br_startblock));
+			xfs_rtb_to_rgno(ip->i_mount, irec->br_startblock),
+			&info->sc->sr);
 	if (!xchk_fblock_process_error(info->sc, info->whichfork,
 			irec->br_startoff, &error))
 		return;
 
-	error = xchk_rtgroup_lock(info->sc, XCHK_RTGLOCK_ALL);
+	error = xchk_rtgroup_lock(info->sc, &info->sc->sr, XCHK_RTGLOCK_ALL);
 	if (!xchk_fblock_process_error(info->sc, info->whichfork,
 			irec->br_startoff, &error))
 		goto out_free;
@@ -372,9 +373,9 @@ xchk_bmap_rt_iextent_xref(
 		break;
 	}
 out_cur:
-	xchk_rtgroup_btcur_free(info->sc);
+	xchk_rtgroup_btcur_free(&info->sc->sr);
 out_free:
-	xchk_rtgroup_free(info->sc);
+	xchk_rtgroup_free(info->sc, &info->sc->sr);
 }
 
 /* Cross-reference a single datadev extent record. */
@@ -395,7 +396,7 @@ xchk_bmap_iextent_xref(
 	agbno = XFS_FSB_TO_AGBNO(mp, irec->br_startblock);
 	len = irec->br_blockcount;
 
-	error = xchk_ag_init_existing(info->sc, agno);
+	error = xchk_ag_init_existing(info->sc, agno, &info->sc->sa);
 	if (!xchk_fblock_process_error(info->sc, info->whichfork,
 			irec->br_startoff, &error))
 		goto out_free;
@@ -439,7 +440,7 @@ xchk_bmap_iextent_xref(
 	}
 
 out_free:
-	xchk_ag_free(info->sc);
+	xchk_ag_free(info->sc, &info->sc->sa);
 }
 
 /*
@@ -452,17 +453,18 @@ xchk_bmap_dirattr_extent(
 	struct xchk_bmap_info	*info,
 	struct xfs_bmbt_irec	*irec)
 {
+	struct xfs_mount	*mp = ip->i_mount;
 	xfs_fileoff_t		off;
 
 	if (!S_ISDIR(VFS_I(ip)->i_mode) && info->whichfork != XFS_ATTR_FORK)
 		return;
 
-	if (!xfs_verify_dablk(irec->br_startoff))
+	if (!xfs_verify_dablk(mp, irec->br_startoff))
 		xchk_fblock_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
 	off = irec->br_startoff + irec->br_blockcount - 1;
-	if (!xfs_verify_dablk(off))
+	if (!xfs_verify_dablk(mp, off))
 		xchk_fblock_set_corrupt(info->sc, info->whichfork, off);
 }
 
@@ -484,7 +486,7 @@ xchk_bmap_iextent(
 		xchk_fblock_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
-	if (!xfs_verify_fileext(irec->br_startoff, irec->br_blockcount))
+	if (!xfs_verify_fileext(mp, irec->br_startoff, irec->br_blockcount))
 		xchk_fblock_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
@@ -624,10 +626,6 @@ xchk_bmap_check_rmap(
 	struct xfs_ifork		*ifp;
 	struct xfs_scrub		*sc = sbcri->sc;
 	bool				have_map;
-	int				error = 0;
-
-	if (xchk_should_terminate(sc, &error))
-		return error;
 
 	/* Is this even the right fork? */
 	if (rec->rm_owner != I_INO(sc->ip))
@@ -659,9 +657,6 @@ xchk_bmap_check_rmap(
 	 */
 	check_rec = *rec;
 	while (have_map) {
-		if (xchk_should_terminate(sc, &error))
-			return error;
-
 		if (irec.br_startoff != check_rec.rm_offset)
 			xchk_fblock_set_corrupt(sc, sbcri->whichfork,
 					check_rec.rm_offset);
@@ -882,6 +877,8 @@ xchk_bmap_iextent_delalloc(
 	struct xchk_bmap_info	*info,
 	struct xfs_bmbt_irec	*irec)
 {
+	struct xfs_mount	*mp = info->sc->mp;
+
 	/*
 	 * Check for out-of-order extents.  This record could have come
 	 * from the incore list, for which there is no ordering check.
@@ -891,7 +888,7 @@ xchk_bmap_iextent_delalloc(
 		xchk_fblock_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
-	if (!xfs_verify_fileext(irec->br_startoff, irec->br_blockcount))
+	if (!xfs_verify_fileext(mp, irec->br_startoff, irec->br_blockcount))
 		xchk_fblock_set_corrupt(info->sc, info->whichfork,
 				irec->br_startoff);
 
@@ -1106,9 +1103,8 @@ xchk_bmap(
 	 * the rmap must match the combined mapping exactly.
 	 */
 	while (xchk_bmap_iext_iter(&info, &irec)) {
-		if (xchk_should_terminate(sc, &error))
-			return error;
-		if (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT)
+		if (xchk_should_terminate(sc, &error) ||
+		    (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT))
 			return 0;
 
 		if (irec.br_startoff >= endoff) {

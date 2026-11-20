@@ -150,11 +150,6 @@
 #define PEBS_DATACFG_LBRS	BIT_ULL(3)
 #define PEBS_DATACFG_CNTR	BIT_ULL(4)
 #define PEBS_DATACFG_METRICS	BIT_ULL(5)
-#define PEBS_DATACFG_YMMHS	BIT_ULL(6)
-#define PEBS_DATACFG_OPMASKS	BIT_ULL(7)
-#define PEBS_DATACFG_ZMMHS	BIT_ULL(8)
-#define PEBS_DATACFG_H16ZMMS	BIT_ULL(9)
-#define PEBS_DATACFG_EGPRS	BIT_ULL(10)
 #define PEBS_DATACFG_LBR_SHIFT	24
 #define PEBS_DATACFG_CNTR_SHIFT	32
 #define PEBS_DATACFG_CNTR_MASK	GENMASK_ULL(15, 0)
@@ -552,8 +547,7 @@ struct arch_pebs_header {
 			    rsvd3:7,
 			    xmm:1,
 			    ymmh:1,
-			    egpr:1,
-			    rsvd4:1,
+			    rsvd4:2,
 			    opmask:1,
 			    zmmh:1,
 			    h16zmm:1,
@@ -734,32 +728,7 @@ extern void perf_events_lapic_init(void);
 struct pt_regs;
 struct x86_perf_regs {
 	struct pt_regs	regs;
-	u64		abi;
-	union {
-		u64	*xmm_regs;
-		u32	*xmm_space;	/* for xsaves */
-	};
-	union {
-		u64	*ymmh_regs;
-		struct ymmh_struct *ymmh;
-	};
-	union {
-		u64	*zmmh_regs;
-		struct avx_512_zmm_uppers_state *zmmh;
-	};
-	union {
-		u64	*h16zmm_regs;
-		struct avx_512_hi16_state *h16zmm;
-	};
-	union {
-		u64	*opmask_regs;
-		struct avx_512_opmask_state *opmask;
-	};
-	union {
-		u64	*egpr_regs;
-		struct apx_state *egpr;
-	};
-	u64	*ssp;
+	u64		*xmm_regs;
 };
 
 extern unsigned long perf_arch_instruction_pointer(struct pt_regs *regs);
@@ -819,18 +788,11 @@ extern void perf_load_guest_lvtpc(u32 guest_lvtpc);
 extern void perf_put_guest_lvtpc(void);
 #endif
 
-struct x86_guest_pebs {
-	u64	enable;
-	u64	ds_area;
-	u64	data_cfg;
-};
 #if defined(CONFIG_PERF_EVENTS) && defined(CONFIG_CPU_SUP_INTEL)
-extern struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr,
-							 struct x86_guest_pebs *guest_pebs);
+extern struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr, void *data);
 extern void x86_perf_get_lbr(struct x86_pmu_lbr *lbr);
 #else
-struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr,
-						  struct x86_guest_pebs *guest_pebs);
+struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr, void *data);
 static inline void x86_perf_get_lbr(struct x86_pmu_lbr *lbr)
 {
 	memset(lbr, 0, sizeof(*lbr));

@@ -190,7 +190,7 @@ static void update_attr(struct eventfs_attr *attr, struct iattr *iattr)
 	}
 }
 
-static int eventfs_set_attr(const struct mnt_idmap *idmap, struct dentry *dentry,
+static int eventfs_set_attr(struct mnt_idmap *idmap, struct dentry *dentry,
 			    struct iattr *iattr)
 {
 	const struct eventfs_entry *entry;
@@ -602,10 +602,6 @@ static int eventfs_iterate(struct file *file, struct dir_context *ctx)
 
 	ti = get_tracefs(f_inode);
 	if (!(ti->flags & TRACEFS_EVENT_INODE))
-		return -EINVAL;
-
-	/* Logic should prevent ctx->pos from going out of range */
-	if (WARN_ON_ONCE(ctx->pos < 2 || ctx->pos > 0x7fffffffULL))
 		return -EINVAL;
 
 	c = ctx->pos - 2;

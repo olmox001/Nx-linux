@@ -23,7 +23,6 @@ obj-$(CONFIG_PHY_XGENE)			+= phy-xgene.o
 obj-$(CONFIG_GENERIC_PHY)		+= allwinner/	\
 					   amlogic/	\
 					   apple/	\
-					   aspeed/	\
 					   axiado/	\
 					   broadcom/	\
 					   cadence/	\

@@ -234,7 +234,8 @@ static int zmii_probe(struct platform_device *ofdev)
 	struct zmii_instance *dev;
 	int err;
 
-	dev = devm_kzalloc_obj(&ofdev->dev, struct zmii_instance);
+	dev = devm_kzalloc(&ofdev->dev, sizeof(struct zmii_instance),
+			   GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 

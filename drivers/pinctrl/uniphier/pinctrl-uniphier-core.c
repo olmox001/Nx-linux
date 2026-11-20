@@ -751,7 +751,8 @@ static int uniphier_pinctrl_add_reg_region(struct device *dev,
 
 	nregs = DIV_ROUND_UP(count * width, 32);
 
-	region = devm_kzalloc_flex(dev, *region, vals, nregs);
+	region = devm_kzalloc(dev, struct_size(region, vals, nregs),
+			      GFP_KERNEL);
 	if (!region)
 		return -ENOMEM;
 
@@ -875,7 +876,7 @@ int uniphier_pinctrl_probe(struct platform_device *pdev,
 		return -EINVAL;
 	}
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

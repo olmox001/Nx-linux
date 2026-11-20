@@ -9,10 +9,8 @@
 #include "symbol.h"
 #include <errno.h>
 #include <fcntl.h>
-#include <string.h>
 #include <unistd.h>
 #include <linux/zalloc.h>
-#include <linux/bitops.h>
 
 #ifdef HAVE_LIBLLVM_SUPPORT
 #include "llvm-c-helpers.h"
@@ -44,11 +42,8 @@ int llvm__addr2line(const char *dso_name __maybe_unused, u64 addr __maybe_unused
 	int num_frames = llvm_addr2line(dso_name, addr, file, line,
 					node && unwind_inlines, &inline_frames);
 
-	if (num_frames <= 0 || !inline_frames) {
-		/*
-		 * Error (< 0 -> iterate fallbacks), missing line info (0), or
-		 * we resolved lines without wanting inlines (1).
-		 */
+	if (num_frames == 0 || !inline_frames) {
+		/* Error, or we didn't want inlines. */
 		return num_frames;
 	}
 
@@ -63,11 +58,8 @@ int llvm__addr2line(const char *dso_name __maybe_unused, u64 addr __maybe_unused
 						      inline_frames[i].line);
 		}
 		if (inline_list__append(inline_sym, srcline, node) != 0) {
-			if (file)
-				zfree(file);
-			inline_node__clear_frames(node);
 			free_llvm_inline_frames(inline_frames, num_frames);
-			return -1;
+			return 0;
 		}
 	}
 	free_llvm_inline_frames(inline_frames, num_frames);
@@ -116,16 +108,6 @@ symbol_lookup_callback(void *disinfo, uint64_t value,
 		storage->branch_addr = value;
 	else if (*ref_type == LLVMDisassembler_ReferenceType_In_PCrel_Load)
 		storage->pcrel_load_addr = value;
-	else if (*ref_type == LLVMDisassembler_ReferenceType_In_ARM64_ADRP) {
-		uint64_t adrp_imm;
-
-		/* immhi (bits 23:5) and immlo (bits 30:29) */
-		adrp_imm = ((value & 0x00ffffe0) >> 3) | ((value >> 29) & 0x3);
-		adrp_imm = sign_extend64(adrp_imm, 20);
-
-		/* Calculate the target page address */
-		storage->pcrel_load_addr = (address & ~0xfffULL) + (adrp_imm << 12);
-	}
 	*ref_type = LLVMDisassembler_ReferenceType_InOut_None;
 	return NULL;
 }
@@ -246,42 +228,12 @@ int symbol__disassemble_llvm(const char *filename, struct symbol *sym,
 			}
 		}
 		if (storage.pcrel_load_addr != 0) {
-			char *name;
-
-			if (arch__is_arm64(args->arch)) {
-				/*
-				 * For arm64, replace the immediate operand with
-				 * the resolved address to match objdump's output.
-				 *
-				 * Example conversion:
-				 *   From: adrp  x18, 8014
-				 *   To:   adrp  x18, ffff800081f5f000
-				 */
-				char *s = strchr(disasm_buf, ',');
-
-				if (s == NULL)
-					goto err;
-
-				s++;
-				*s = '\0';
-				disasm_len = strlen(disasm_buf);
-				disasm_len += scnprintf(disasm_buf + disasm_len,
-							sizeof(disasm_buf) - disasm_len,
-							" %"PRIx64,
+			char *name = llvm_name_for_data(dso, filename,
 							storage.pcrel_load_addr);
-			} else {
-				/*
-				 * For other archs, append the resolved address
-				 * as an inline comment.
-				 */
-				disasm_len += scnprintf(disasm_buf + disasm_len,
-							sizeof(disasm_buf) - disasm_len,
-							"  # %#"PRIx64,
-							storage.pcrel_load_addr);
-			}
-
-			/* Append the resolved symbol name if available */
-			name = llvm_name_for_data(dso, filename, storage.pcrel_load_addr);
+			disasm_len += scnprintf(disasm_buf + disasm_len,
+						sizeof(disasm_buf) - disasm_len,
+						"  # %#"PRIx64,
+						storage.pcrel_load_addr);
 			if (name) {
 				disasm_len += scnprintf(disasm_buf + disasm_len,
 							sizeof(disasm_buf) -
@@ -302,10 +254,8 @@ int symbol__disassemble_llvm(const char *filename, struct symbol *sym,
 			       (unsigned int *)&args->line_nr, false, NULL);
 
 		dl = disasm_line__new(args);
-		if (dl == NULL) {
-			free(args->fileloc);
+		if (dl == NULL)
 			goto err;
-		}
 
 		annotation_line__add(&dl->al, &notes->src->source);
 

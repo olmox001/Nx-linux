@@ -542,7 +542,8 @@ static int wm831x_power_probe(struct platform_device *pdev)
 	struct wm831x_power *power;
 	int ret, irq, i;
 
-	power = devm_kzalloc_obj(&pdev->dev, struct wm831x_power);
+	power = devm_kzalloc(&pdev->dev, sizeof(struct wm831x_power),
+			     GFP_KERNEL);
 	if (power == NULL)
 		return -ENOMEM;
 

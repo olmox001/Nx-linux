@@ -88,7 +88,7 @@ static int fwnode_get_u32_prop_for_name(struct fwnode_handle *fwnode,
 	}
 
 	/* We implicitly know idx >= 0 here */
-	props = kzalloc_objs(*props, n_props);
+	props = kcalloc(n_props, sizeof(*props), GFP_KERNEL);
 	if (!props)
 		return -ENOMEM;
 

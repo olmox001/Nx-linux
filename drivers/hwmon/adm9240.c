@@ -774,7 +774,7 @@ static int adm9240_probe(struct i2c_client *client)
 	struct adm9240_data *data;
 	int err;
 
-	data = devm_kzalloc_obj(dev, *data);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

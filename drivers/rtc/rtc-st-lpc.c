@@ -18,6 +18,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 
@@ -197,7 +198,7 @@ static int st_rtc_probe(struct platform_device *pdev)
 	if (mode != ST_LPC_MODE_RTC)
 		return -ENODEV;
 
-	rtc = devm_kzalloc_obj(&pdev->dev, struct st_rtc);
+	rtc = devm_kzalloc(&pdev->dev, sizeof(struct st_rtc), GFP_KERNEL);
 	if (!rtc)
 		return -ENOMEM;
 
@@ -211,9 +212,11 @@ static int st_rtc_probe(struct platform_device *pdev)
 	if (IS_ERR(rtc->ioaddr))
 		return PTR_ERR(rtc->ioaddr);
 
-	rtc->irq = platform_get_irq(pdev, 0);
-	if (rtc->irq < 0)
-		return rtc->irq;
+	rtc->irq = irq_of_parse_and_map(np, 0);
+	if (!rtc->irq) {
+		dev_err(&pdev->dev, "IRQ missing or invalid\n");
+		return -EINVAL;
+	}
 
 	ret = devm_request_irq(&pdev->dev, rtc->irq, st_rtc_handler,
 			       IRQF_NO_AUTOEN, pdev->name, rtc);

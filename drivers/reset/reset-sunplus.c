@@ -169,7 +169,7 @@ static int sp_reset_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	reset = devm_kzalloc_obj(dev, *reset);
+	reset = devm_kzalloc(dev, sizeof(*reset), GFP_KERNEL);
 	if (!reset)
 		return -ENOMEM;
 

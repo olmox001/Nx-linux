@@ -414,7 +414,7 @@ static int stmfx_probe(struct i2c_client *client)
 	struct stmfx *stmfx;
 	int ret;
 
-	stmfx = devm_kzalloc_obj(dev, *stmfx);
+	stmfx = devm_kzalloc(dev, sizeof(*stmfx), GFP_KERNEL);
 	if (!stmfx)
 		return -ENOMEM;
 

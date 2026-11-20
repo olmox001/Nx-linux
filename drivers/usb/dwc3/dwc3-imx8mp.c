@@ -191,7 +191,7 @@ static int dwc3_imx8mp_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	dwc3_imx = devm_kzalloc_obj(dev, *dwc3_imx);
+	dwc3_imx = devm_kzalloc(dev, sizeof(*dwc3_imx), GFP_KERNEL);
 	if (!dwc3_imx)
 		return -ENOMEM;
 
@@ -273,8 +273,10 @@ static int dwc3_imx8mp_probe(struct platform_device *pdev)
 
 	err = devm_request_threaded_irq(dev, irq, NULL, dwc3_imx8mp_interrupt,
 					IRQF_ONESHOT, dev_name(dev), dwc3_imx);
-	if (err)
+	if (err) {
+		dev_err(dev, "failed to request IRQ #%d --> %d\n", irq, err);
 		goto put_dwc3;
+	}
 
 	device_set_wakeup_capable(dev, true);
 	pm_runtime_put(dev);

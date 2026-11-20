@@ -236,11 +236,12 @@ with respect to allocation:
 		user can request.
 
 "bandwidth_gran":
-		The approximate granularity in which the memory bandwidth
-		percentage is allocated. The allocated bandwidth percentage is
-		rounded up or down to the closest control step available on the
-		hardware. The available hardware steps are no larger than this
-		value.
+		The granularity in which the memory bandwidth
+		percentage is allocated. The allocated
+		b/w percentage is rounded off to the next
+		control step available on the hardware. The
+		available bandwidth control steps are:
+		min_bandwidth + N * bandwidth_gran.
 
 "delay_linear":
 		Indicates if the delay scale is linear or
@@ -350,12 +351,12 @@ with the following files:
 "mbm_assign_mode":
 	The supported counter assignment modes. The enclosed brackets indicate which mode
 	is enabled. The MBM events associated with counters may reset when "mbm_assign_mode"
-	is changed. See architecture specific notes below.
+	is changed.
 	::
 
 	  # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
-	  [default]
-	  mbm_event
+	  [mbm_event]
+	  default
 
 	"mbm_event":
 
@@ -373,17 +374,20 @@ with the following files:
 	Moving to mbm_event counter assignment mode requires users to assign the counters
 	to the events. Otherwise, the MBM event counters will return 'Unassigned' when read.
 
-	It is intended for deployments that need to manage counter assignment on
-	platforms where the number of monitoring groups exceeds the available
-	hardware counters. Hardware counters are scarce on these platforms, so
-	mbm_event mode suits workflows that monitor a subset of groups at a time and
-	rotate assignments as needed. The mbm_event mode ensures counters remain
-	assigned even when the corresponding RMID is not actively used.
+	The mode is beneficial for AMD platforms that support more CTRL_MON
+	and MON groups than available hardware counters. By default, this
+	feature is enabled on AMD platforms with the ABMC (Assignable Bandwidth
+	Monitoring Counters) capability, ensuring counters remain assigned even
+	when the corresponding RMID is not actively used by any processor.
 
 	"default":
 
 	In default mode, resctrl assumes there is a hardware counter for each
-	event within every CTRL_MON and MON group.
+	event within every CTRL_MON and MON group. On AMD platforms, it is
+	recommended to use the mbm_event mode, if supported, to prevent reset of MBM
+	events between reads resulting from hardware re-allocating counters. This can
+	result in misleading values or display "Unavailable" if no counter is assigned
+	to the event.
 
 	* To enable "mbm_event" counter assignment mode:
 	  ::
@@ -394,24 +398,6 @@ with the following files:
 	  ::
 
 	    # echo "default" > /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
-
-	In default mode on AMD platforms that support more CTRL_MON and MON groups
-	than hardware counters, hardware dynamically shares a smaller pool of
-	counters among RMIDs. One counter from this pool is used per monitoring
-	group and counts every MBM event of that group's RMID. The size of the pool
-	is not enumerated to software (unlike "num_mbm_cntrs"), and "num_rmids" may
-	be much larger. For example, 64 counters in this pool monitor 64 groups.
-	Newer hardware may provide a larger pool.
-
-	On such platforms, while the number of monitoring groups does not exceed
-	that pool, a counter stays attached to each RMID and readings remain
-	accurate. Creating more groups than the pool can cause hardware to
-	re-allocate those counters between successive reads of an event. Bandwidth
-	values may then be misleading, or a read may return "Unavailable" if no
-	counter is allocated to the RMID. There is no user-visible indication when
-	this begins. Users who need stable readings beyond that pool should switch
-	to mbm_event mode, if supported, and assign counters to the groups of
-	interest (rotating assignments as needed).
 
 "num_mbm_cntrs":
 	The maximum number of counters (total of available and assigned counters) in
@@ -657,7 +643,7 @@ When monitoring is enabled all MON groups will also contain:
 	during execution of instructions summed across all logical CPUs on a
 	package for the current monitoring group.
 
-	"activity" also reports a floating point value (in nanofarads).  This provides
+	"activity" also reports a floating point value (in Farads).  This provides
 	an estimate of work done independent of the frequency that the CPUs used
 	for execution.
 
@@ -895,10 +881,8 @@ The minimum bandwidth percentage value for each cpu model is predefined
 and can be looked up through "info/MB/min_bandwidth". The bandwidth
 granularity that is allocated is also dependent on the cpu model and can
 be looked up at "info/MB/bandwidth_gran". The available bandwidth
-control steps are, approximately, min_bw + N * bw_gran.  The steps may
-appear irregular due to rounding to an exact percentage: bw_gran is the
-maximum interval between the percentage values corresponding to any two
-adjacent steps in the hardware.
+control steps are: min_bw + N * bw_gran. Intermediate values are rounded
+to the next control step available on the hardware.
 
 The bandwidth throttling is a core specific mechanism on some of Intel
 SKUs. Using a high bandwidth and a low bandwidth setting on two threads
@@ -1799,18 +1783,16 @@ View the llc occupancy snapshot::
 Examples on working with mbm_assign_mode
 ========================================
 
-a. Check if MBM counter assignment mode is supported. Enable "mbm_event"
-mode. Switching the mbm_assign_mode may reset all the MBM counters (and
-thus all MBM events) of all the resctrl groups.
+a. Check if MBM counter assignment mode is supported.
 ::
 
-  # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
-  [default]
-  mbm_event
-  # echo "mbm_event" > /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
+  # mount -t resctrl resctrl /sys/fs/resctrl/
+
   # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
   [mbm_event]
   default
+
+The "mbm_event" mode is detected and enabled.
 
 b. Check how many assignable counters are supported.
 ::
@@ -1822,39 +1804,36 @@ c. Check how many assignable counters are available for assignment in each domai
 ::
 
   # cat /sys/fs/resctrl/info/L3_MON/available_mbm_cntrs
-  0=32;1=32
+  0=30;1=30
 
-d. To list the default group's assign states. Counters are unassigned when the mode
-is switched to "mbm_event".
+d. To list the default group's assign states.
 ::
 
   # cat /sys/fs/resctrl/mbm_L3_assignments
-  mbm_total_bytes:0=_;1=_
-  mbm_local_bytes:0=_;1=_
+  mbm_total_bytes:0=e;1=e
+  mbm_local_bytes:0=e;1=e
 
-e. To assign the counter associated with the mbm_total_bytes event on domain 0
-in exclusive mode.
+e.  To unassign the counter associated with the mbm_total_bytes event on domain 0.
 ::
 
-  # echo "mbm_total_bytes:0=e" > /sys/fs/resctrl/mbm_L3_assignments
+  # echo "mbm_total_bytes:0=_" > /sys/fs/resctrl/mbm_L3_assignments
   # cat /sys/fs/resctrl/mbm_L3_assignments
-  mbm_total_bytes:0=e;1=_
-  mbm_local_bytes:0=_;1=_
+  mbm_total_bytes:0=_;1=e
+  mbm_local_bytes:0=e;1=e
 
 f. To unassign the counter associated with the mbm_total_bytes event on all domains.
 ::
 
   # echo "mbm_total_bytes:*=_" > /sys/fs/resctrl/mbm_L3_assignments
-  # cat /sys/fs/resctrl/mbm_L3_assignments
+  # cat /sys/fs/resctrl/mbm_L3_assignment
   mbm_total_bytes:0=_;1=_
-  mbm_local_bytes:0=_;1=_
+  mbm_local_bytes:0=e;1=e
 
-g. To assign a counter associated with the mbm_total_bytes and mbm_local_bytes
-events on all domains in exclusive mode.
+g. To assign a counter associated with the mbm_total_bytes event on all domains in
+exclusive mode.
 ::
 
   # echo "mbm_total_bytes:*=e" > /sys/fs/resctrl/mbm_L3_assignments
-  # echo "mbm_local_bytes:*=e" > /sys/fs/resctrl/mbm_L3_assignments
   # cat /sys/fs/resctrl/mbm_L3_assignments
   mbm_total_bytes:0=e;1=e
   mbm_local_bytes:0=e;1=e
@@ -1911,8 +1890,13 @@ the MBM counters (and thus all MBM events) of all the resctrl groups.
 
   # echo "default" > /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
   # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
-  [default]
   mbm_event
+  [default]
+
+m. Unmount the resctrl filesystem.
+::
+
+  # umount /sys/fs/resctrl/
 
 Intel RDT Errata
 ================

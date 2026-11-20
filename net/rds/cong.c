@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, 2017 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2007, 2021 Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -30,13 +30,14 @@
  * SOFTWARE.
  *
  */
-#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/rbtree.h>
-#include <linux/bitops.h>
-#include <linux/export.h>
+
+#include <asm-generic/bitops/le.h>
 
 #include "rds.h"
+
+#include "trace.h"
 
 /*
  * This file implements the receive side of the unconventional congestion
@@ -78,13 +79,74 @@
  * finds that the saved generation number is smaller than the global generation
  * number, it wakes up the process.
  */
-static atomic_t		rds_cong_generation = ATOMIC_INIT(0);
 
-/*
- * Congestion monitoring
- */
-static LIST_HEAD(rds_cong_monitor);
-static DEFINE_RWLOCK(rds_cong_monitor_lock);
+static void rds_cong_notify_worker(struct work_struct *work)
+{
+	u64 portmask;
+	bool qwork = false;
+	unsigned long flags;
+	struct rds_sock *rs;
+	struct rds_cong_monitor *rds_cong_monitor;
+
+	rds_cong_monitor = container_of(work, struct rds_cong_monitor,
+					rc_notify_work);
+
+	/* take snapshot of portmask for processing */
+	spin_lock_bh(&rds_cong_monitor->rc_notify_lock);
+	portmask = rds_cong_monitor->rc_notify_portmask;
+	rds_cong_monitor->rc_notify_portmask = 0;
+	spin_unlock_bh(&rds_cong_monitor->rc_notify_lock);
+
+	read_lock_irqsave(&rds_cong_monitor->rc_monitor_lock, flags);
+	list_for_each_entry(rs, &rds_cong_monitor->rc_monitor, rs_cong_list) {
+		atomic64_or(atomic64_read(&rs->rs_cong_mask) & portmask, &rs->rs_cong_notify);
+		atomic64_and(~portmask, &rs->rs_cong_mask);
+		if (atomic64_read(&rs->rs_cong_notify)) {
+			trace_rds_cong_notify(rs, NULL, NULL,
+					      "cong map update", 0);
+			rds_wake_sk_sleep(rs);
+		}
+	}
+	read_unlock_irqrestore(&rds_cong_monitor->rc_monitor_lock, flags);
+
+	/* any incoming cong udpates pending? */
+	spin_lock_bh(&rds_cong_monitor->rc_notify_lock);
+	if (rds_cong_monitor->rc_notify_portmask)
+		qwork = true;
+	else
+		rds_cong_monitor->rc_notify_work_scheduled = false;
+	spin_unlock_bh(&rds_cong_monitor->rc_notify_lock);
+
+	if (qwork)
+		queue_work(rds_wq, &rds_cong_monitor->rc_notify_work);
+}
+
+static int rds_cong_monitor_init(struct rds_net *rns)
+{
+	struct rds_cong_monitor *rcm;
+
+	rcm =  kzalloc(sizeof(*rcm), GFP_KERNEL);
+	if (!rcm)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&rcm->rc_monitor);
+	rwlock_init(&rcm->rc_monitor_lock);
+
+	spin_lock_init(&rcm->rc_notify_lock);
+	INIT_WORK(&rcm->rc_notify_work, rds_cong_notify_worker);
+	rcm->rc_rns = rns;
+	rns->rns_cong_monitor = rcm;
+
+	return 0;
+}
+
+static void rds_cong_monitor_free(struct rds_net *rns)
+{
+	struct rds_cong_monitor *rcm = rns->rns_cong_monitor;
+
+	cancel_work_sync(&rcm->rc_notify_work);
+	kfree(rcm);
+}
 
 /*
  * Yes, a global lock.  It's used so infrequently that it's worth keeping it
@@ -98,19 +160,17 @@ static DEFINE_RWLOCK(rds_cong_monitor_lock);
  *  Receive paths can mark ports congested from interrupt context so the
  *  lock masks interrupts.
  */
-static DEFINE_SPINLOCK(rds_cong_lock);
-static struct rb_root rds_cong_tree = RB_ROOT;
 
-static struct rds_cong_map *rds_cong_tree_walk(const struct in6_addr *addr,
+static struct rds_cong_map *rds_cong_tree_walk(struct rds_net *rns,
+					       struct in6_addr *addr,
 					       struct rds_cong_map *insert)
 {
-	struct rb_node **p = &rds_cong_tree.rb_node;
+	struct rb_node **p = &rns->rns_cong_tree.rb_node;
 	struct rb_node *parent = NULL;
 	struct rds_cong_map *map;
 
 	while (*p) {
 		int diff;
-
 		parent = *p;
 		map = rb_entry(parent, struct rds_cong_map, m_rb_node);
 
@@ -125,7 +185,7 @@ static struct rds_cong_map *rds_cong_tree_walk(const struct in6_addr *addr,
 
 	if (insert) {
 		rb_link_node(&insert->m_rb_node, parent, p);
-		rb_insert_color(&insert->m_rb_node, &rds_cong_tree);
+		rb_insert_color(&insert->m_rb_node, &rns->rns_cong_tree);
 	}
 	return NULL;
 }
@@ -135,7 +195,8 @@ static struct rds_cong_map *rds_cong_tree_walk(const struct in6_addr *addr,
  * these bitmaps in the process getting pointers to them.  The bitmaps are only
  * ever freed as the module is removed after all connections have been freed.
  */
-static struct rds_cong_map *rds_cong_from_addr(const struct in6_addr *addr)
+static struct rds_cong_map *rds_cong_from_addr(struct rds_net *rns,
+					       struct in6_addr *addr)
 {
 	struct rds_cong_map *map;
 	struct rds_cong_map *ret = NULL;
@@ -143,10 +204,10 @@ static struct rds_cong_map *rds_cong_from_addr(const struct in6_addr *addr)
 	unsigned long i;
 	unsigned long flags;
 
-	map = kzalloc_obj(struct rds_cong_map);
+	map = kzalloc(sizeof(struct rds_cong_map), GFP_KERNEL);
 	if (!map)
 		return NULL;
-
+	map->m_rns = rns;
 	map->m_addr = *addr;
 	init_waitqueue_head(&map->m_waitq);
 	INIT_LIST_HEAD(&map->m_conn_list);
@@ -158,9 +219,9 @@ static struct rds_cong_map *rds_cong_from_addr(const struct in6_addr *addr)
 		map->m_page_addrs[i] = zp;
 	}
 
-	spin_lock_irqsave(&rds_cong_lock, flags);
-	ret = rds_cong_tree_walk(addr, map);
-	spin_unlock_irqrestore(&rds_cong_lock, flags);
+	spin_lock_irqsave(&rns->rns_cong_lock, flags);
+	ret = rds_cong_tree_walk(rns, addr, map);
+	spin_unlock_irqrestore(&rns->rns_cong_lock, flags);
 
 	if (!ret) {
 		ret = map;
@@ -179,6 +240,31 @@ out:
 	return ret;
 }
 
+static struct rds_message *rds_cong_map_pages(unsigned long *page_addrs, unsigned int total_len)
+{
+	struct rds_message *rm;
+	unsigned int i;
+	int num_sgs = ceil(total_len, RDS_CONG_PAGE_SIZE);
+	int extra_bytes = num_sgs * sizeof(struct scatterlist);
+
+	rm = rds_message_alloc(extra_bytes, GFP_NOWAIT);
+	if (!rm)
+		return ERR_PTR(-ENOMEM);
+
+	rds_set_rm_flag_bit(rm, RDS_MSG_PAGEVEC);
+	rm->m_inc.i_hdr.h_len = cpu_to_be32(total_len);
+	rm->data.op_nents = num_sgs;
+	rm->data.op_sg = rds_message_alloc_sgs(rm, num_sgs);
+
+	for (i = 0; i < rm->data.op_nents; i++) {
+		sg_set_page(&rm->data.op_sg[i],
+			    virt_to_page(page_addrs[i]),
+			    RDS_CONG_PAGE_SIZE, 0);
+	}
+
+	return rm;
+}
+
 /*
  * Put the conn on its local map's list.  This is called when the conn is
  * really added to the hash.  It's nested under the rds_conn_lock, sadly.
@@ -188,9 +274,10 @@ void rds_cong_add_conn(struct rds_connection *conn)
 	unsigned long flags;
 
 	rdsdebug("conn %p now on map %p\n", conn, conn->c_lcong);
-	spin_lock_irqsave(&rds_cong_lock, flags);
+	rds_conn_get(conn); /* put in rds_cong_remove_conn */
+	spin_lock_irqsave(&conn->c_rns->rns_cong_lock, flags);
 	list_add_tail(&conn->c_map_item, &conn->c_lcong->m_conn_list);
-	spin_unlock_irqrestore(&rds_cong_lock, flags);
+	spin_unlock_irqrestore(&conn->c_rns->rns_cong_lock, flags);
 }
 
 void rds_cong_remove_conn(struct rds_connection *conn)
@@ -198,15 +285,16 @@ void rds_cong_remove_conn(struct rds_connection *conn)
 	unsigned long flags;
 
 	rdsdebug("removing conn %p from map %p\n", conn, conn->c_lcong);
-	spin_lock_irqsave(&rds_cong_lock, flags);
+	spin_lock_irqsave(&conn->c_rns->rns_cong_lock, flags);
 	list_del_init(&conn->c_map_item);
-	spin_unlock_irqrestore(&rds_cong_lock, flags);
+	spin_unlock_irqrestore(&conn->c_rns->rns_cong_lock, flags);
+	rds_conn_put(conn); /* get in rds_cong_add_conn */
 }
 
 int rds_cong_get_maps(struct rds_connection *conn)
 {
-	conn->c_lcong = rds_cong_from_addr(&conn->c_laddr);
-	conn->c_fcong = rds_cong_from_addr(&conn->c_faddr);
+	conn->c_lcong = rds_cong_from_addr(conn->c_rns, &conn->c_laddr);
+	conn->c_fcong = rds_cong_from_addr(conn->c_rns, &conn->c_faddr);
 
 	if (!(conn->c_lcong && conn->c_fcong))
 		return -ENOMEM;
@@ -219,73 +307,61 @@ void rds_cong_queue_updates(struct rds_cong_map *map)
 	struct rds_connection *conn;
 	unsigned long flags;
 
-	spin_lock_irqsave(&rds_cong_lock, flags);
+	spin_lock_irqsave(&map->m_rns->rns_cong_lock, flags);
 
 	list_for_each_entry(conn, &map->m_conn_list, c_map_item) {
-		struct rds_conn_path *cp = &conn->c_path[0];
-
-		rcu_read_lock();
-		if (!test_and_set_bit(0, &conn->c_map_queued) &&
-		    !rds_destroy_pending(cp->cp_conn)) {
-			rds_stats_inc(s_cong_update_queued);
-			/* We cannot inline the call to rds_send_xmit() here
-			 * for two reasons (both pertaining to a TCP transport):
-			 * 1. When we get here from the receive path, we
-			 *    are already holding the sock_lock (held by
-			 *    tcp_v4_rcv()). So inlining calls to
-			 *    tcp_setsockopt and/or tcp_sendmsg will deadlock
-			 *    when it tries to get the sock_lock())
-			 * 2. Interrupts are masked so that we can mark the
-			 *    port congested from both send and recv paths.
-			 *    (See comment around declaration of rdc_cong_lock).
-			 *    An attempt to get the sock_lock() here will
-			 *    therefore trigger warnings.
-			 * Defer the xmit to rds_send_worker() instead.
-			 */
-			queue_delayed_work(cp->cp_wq, &cp->cp_send_w, 0);
+		if (!test_and_set_bit(RCMQ_BITOFF_CONGU_PENDING,
+				      &conn->c_map_queued)) {
+			rds_stats_inc(conn->c_stats, s_cong_update_queued);
+			rds_cond_queue_send_work(conn->c_path, 0);
 		}
-		rcu_read_unlock();
 	}
 
-	spin_unlock_irqrestore(&rds_cong_lock, flags);
+	spin_unlock_irqrestore(&map->m_rns->rns_cong_lock, flags);
 }
 
-void rds_cong_map_updated(struct rds_cong_map *map, uint64_t portmask)
+void rds_cong_map_updated(struct rds_connection *conn,
+			  struct rds_cong_map *map, uint64_t portmask)
 {
-	rdsdebug("waking map %p for %pI4\n",
-	  map, &map->m_addr);
-	rds_stats_inc(s_cong_update_received);
-	atomic_inc(&rds_cong_generation);
-	if (wq_has_sleeper(&map->m_waitq))
+	bool qwork = false;
+	struct rds_net *rns;
+	struct rds_cong_monitor *rds_cong_monitor;
+
+	rdsdebug("waking map %p for %pI6c\n",
+		 map, &map->m_addr);
+	rns = map->m_rns;
+	rds_cong_monitor = rns->rns_cong_monitor;
+	rds_stats_inc(conn->c_stats, s_cong_update_received);
+	atomic_inc(&rns->rns_cong_generation);
+	if (waitqueue_active(&map->m_waitq))
 		wake_up(&map->m_waitq);
-	if (wq_has_sleeper(&rds_poll_waitq))
+	if (waitqueue_active(&rds_poll_waitq))
 		wake_up_all(&rds_poll_waitq);
 
-	if (portmask && !list_empty(&rds_cong_monitor)) {
-		unsigned long flags;
-		struct rds_sock *rs;
+	if (!portmask || list_empty(&rds_cong_monitor->rc_monitor))
+		return;
 
-		read_lock_irqsave(&rds_cong_monitor_lock, flags);
-		list_for_each_entry(rs, &rds_cong_monitor, rs_cong_list) {
-			spin_lock(&rs->rs_lock);
-			rs->rs_cong_notify |= (rs->rs_cong_mask & portmask);
-			rs->rs_cong_mask &= ~portmask;
-			spin_unlock(&rs->rs_lock);
-			if (rs->rs_cong_notify)
-				rds_wake_sk_sleep(rs);
-		}
-		read_unlock_irqrestore(&rds_cong_monitor_lock, flags);
+	/* merge incoming cong udpates into global portmask */
+	spin_lock_bh(&rds_cong_monitor->rc_notify_lock);
+	rds_cong_monitor->rc_notify_portmask |= portmask;
+	if (!rds_cong_monitor->rc_notify_work_scheduled) {
+		rds_cong_monitor->rc_notify_work_scheduled = true;
+		qwork = true;
 	}
+	spin_unlock_bh(&rds_cong_monitor->rc_notify_lock);
+
+	if (qwork)
+		queue_work(rds_wq, &rds_cong_monitor->rc_notify_work);
 }
 EXPORT_SYMBOL_GPL(rds_cong_map_updated);
 
-int rds_cong_updated_since(unsigned long *recent)
+int rds_cong_updated_since(struct rds_sock *rs)
 {
-	unsigned long gen = atomic_read(&rds_cong_generation);
+	unsigned long gen = atomic_read(&rs->rs_rns->rns_cong_generation);
 
-	if (likely(*recent == gen))
+	if (likely(rs->rs_cong_track == gen))
 		return 0;
-	*recent = gen;
+	rs->rs_cong_track = gen;
 	return 1;
 }
 
@@ -301,8 +377,8 @@ void rds_cong_set_bit(struct rds_cong_map *map, __be16 port)
 	unsigned long i;
 	unsigned long off;
 
-	rdsdebug("setting congestion for %pI4:%u in map %p\n",
-	  &map->m_addr, ntohs(port), map);
+	rdsdebug("setting congestion for %pI6c:%u in map %p\n",
+		 &map->m_addr, ntohs(port), map);
 
 	i = be16_to_cpu(port) / RDS_CONG_MAP_PAGE_BITS;
 	off = be16_to_cpu(port) % RDS_CONG_MAP_PAGE_BITS;
@@ -315,8 +391,8 @@ void rds_cong_clear_bit(struct rds_cong_map *map, __be16 port)
 	unsigned long i;
 	unsigned long off;
 
-	rdsdebug("clearing congestion for %pI4:%u in map %p\n",
-	  &map->m_addr, ntohs(port), map);
+	rdsdebug("clearing congestion for %pI6c:%u in map %p\n",
+		 &map->m_addr, ntohs(port), map);
 
 	i = be16_to_cpu(port) / RDS_CONG_MAP_PAGE_BITS;
 	off = be16_to_cpu(port) % RDS_CONG_MAP_PAGE_BITS;
@@ -338,26 +414,30 @@ static int rds_cong_test_bit(struct rds_cong_map *map, __be16 port)
 void rds_cong_add_socket(struct rds_sock *rs)
 {
 	unsigned long flags;
+	struct rds_cong_monitor *rds_cong_monitor =
+					rs->rs_rns->rns_cong_monitor;
 
-	write_lock_irqsave(&rds_cong_monitor_lock, flags);
+	write_lock_irqsave(&rds_cong_monitor->rc_monitor_lock, flags);
 	if (list_empty(&rs->rs_cong_list))
-		list_add(&rs->rs_cong_list, &rds_cong_monitor);
-	write_unlock_irqrestore(&rds_cong_monitor_lock, flags);
+		list_add(&rs->rs_cong_list, &rds_cong_monitor->rc_monitor);
+	write_unlock_irqrestore(&rds_cong_monitor->rc_monitor_lock, flags);
 }
 
 void rds_cong_remove_socket(struct rds_sock *rs)
 {
 	unsigned long flags;
 	struct rds_cong_map *map;
+	struct rds_cong_monitor *rds_cong_monitor =
+					rs->rs_rns->rns_cong_monitor;
 
-	write_lock_irqsave(&rds_cong_monitor_lock, flags);
+	write_lock_irqsave(&rds_cong_monitor->rc_monitor_lock, flags);
 	list_del_init(&rs->rs_cong_list);
-	write_unlock_irqrestore(&rds_cong_monitor_lock, flags);
+	write_unlock_irqrestore(&rds_cong_monitor->rc_monitor_lock, flags);
 
 	/* update congestion map for now-closed port */
-	spin_lock_irqsave(&rds_cong_lock, flags);
-	map = rds_cong_tree_walk(&rs->rs_bound_addr, NULL);
-	spin_unlock_irqrestore(&rds_cong_lock, flags);
+	spin_lock_irqsave(&rs->rs_rns->rns_cong_lock, flags);
+	map = rds_cong_tree_walk(rs->rs_rns, &rs->rs_bound_addr, NULL);
+	spin_unlock_irqrestore(&rs->rs_rns->rns_cong_lock, flags);
 
 	if (map && rds_cong_test_bit(map, rs->rs_bound_port)) {
 		rds_cong_clear_bit(map, rs->rs_bound_port);
@@ -368,48 +448,61 @@ void rds_cong_remove_socket(struct rds_sock *rs)
 int rds_cong_wait(struct rds_cong_map *map, __be16 port, int nonblock,
 		  struct rds_sock *rs)
 {
+	struct rds_statistics __percpu *stats;
+
 	if (!rds_cong_test_bit(map, port))
 		return 0;
+
+	if (rs)
+		stats = rs->rs_stats;
+	else
+		stats = __rds_get_mod_stats(rds_ns(current->nsproxy->net_ns),
+					    RDS_MOD_RDS);
 	if (nonblock) {
 		if (rs && rs->rs_cong_monitor) {
-			unsigned long flags;
-
-			/* It would have been nice to have an atomic set_bit on
-			 * a uint64_t. */
-			spin_lock_irqsave(&rs->rs_lock, flags);
-			rs->rs_cong_mask |= RDS_CONG_MONITOR_MASK(ntohs(port));
-			spin_unlock_irqrestore(&rs->rs_lock, flags);
+			atomic64_or(RDS_CONG_MONITOR_MASK(ntohs(port)), &rs->rs_cong_mask);
 
 			/* Test again - a congestion update may have arrived in
 			 * the meantime. */
 			if (!rds_cong_test_bit(map, port))
 				return 0;
 		}
-		rds_stats_inc(s_cong_send_error);
+		rds_stats_inc(stats, s_cong_send_error);
 		return -ENOBUFS;
 	}
 
-	rds_stats_inc(s_cong_send_blocked);
+	rds_stats_inc(stats, s_cong_send_blocked);
 	rdsdebug("waiting on map %p for port %u\n", map, be16_to_cpu(port));
 
 	return wait_event_interruptible(map->m_waitq,
 					!rds_cong_test_bit(map, port));
 }
 
-void rds_cong_exit(void)
+void rds_cong_net_exit(struct rds_net *rns)
 {
 	struct rb_node *node;
 	struct rds_cong_map *map;
 	unsigned long i;
 
-	while ((node = rb_first(&rds_cong_tree))) {
+	while ((node = rb_first(&rns->rns_cong_tree))) {
 		map = rb_entry(node, struct rds_cong_map, m_rb_node);
 		rdsdebug("freeing map %p\n", map);
-		rb_erase(&map->m_rb_node, &rds_cong_tree);
+		rb_erase(&map->m_rb_node, &rns->rns_cong_tree);
 		for (i = 0; i < RDS_CONG_MAP_PAGES && map->m_page_addrs[i]; i++)
 			free_page(map->m_page_addrs[i]);
 		kfree(map);
 	}
+	rds_cong_monitor_free(rns);
+}
+
+int rds_cong_net_init(struct rds_net *rns)
+{
+	rns->rns_cong_generation = ((atomic_t) { (0) });
+	rds_cong_monitor_init(rns);
+	spin_lock_init(&rns->rns_cong_lock);
+	rns->rns_cong_tree = RB_ROOT;
+
+	return 0;
 }
 
 /*
@@ -420,7 +513,7 @@ struct rds_message *rds_cong_update_alloc(struct rds_connection *conn)
 	struct rds_cong_map *map = conn->c_lcong;
 	struct rds_message *rm;
 
-	rm = rds_message_map_pages(map->m_page_addrs, RDS_CONG_MAP_BYTES);
+	rm = rds_cong_map_pages(map->m_page_addrs, RDS_CONG_MAP_BYTES);
 	if (!IS_ERR(rm))
 		rm->m_inc.i_hdr.h_flags = RDS_FLAG_CONG_BITMAP;
 

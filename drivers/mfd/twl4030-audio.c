@@ -189,7 +189,8 @@ static int twl4030_audio_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	audio = devm_kzalloc_obj(&pdev->dev, struct twl4030_audio);
+	audio = devm_kzalloc(&pdev->dev, sizeof(struct twl4030_audio),
+			     GFP_KERNEL);
 	if (!audio)
 		return -ENOMEM;
 

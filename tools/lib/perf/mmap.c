@@ -200,7 +200,7 @@ void perf_mmap__read_done(struct perf_mmap *map)
 	/*
 	 * Check if event was unmapped due to a POLLHUP/POLLERR.
 	 */
-	if (!refcount_read(&map->refcnt) || !map->overwrite)
+	if (!refcount_read(&map->refcnt))
 		return;
 
 	map->prev = perf_mmap__read_head(map);

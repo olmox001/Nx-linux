@@ -169,9 +169,9 @@ static int rda_gpio_irq_set_type(struct irq_data *data, unsigned int flow_type)
 	if (ret)
 		return ret;
 
-	if (flow_type & IRQ_TYPE_LEVEL_MASK)
+	if (flow_type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH))
 		irq_set_handler_locked(data, handle_level_irq);
-	else if (flow_type & IRQ_TYPE_EDGE_BOTH)
+	else if (flow_type & (IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING))
 		irq_set_handler_locked(data, handle_edge_irq);
 
 	return 0;
@@ -216,7 +216,7 @@ static int rda_gpio_probe(struct platform_device *pdev)
 	u32 ngpios;
 	int ret;
 
-	rda_gpio = devm_kzalloc_obj(dev, *rda_gpio);
+	rda_gpio = devm_kzalloc(dev, sizeof(*rda_gpio), GFP_KERNEL);
 	if (!rda_gpio)
 		return -ENOMEM;
 
@@ -266,7 +266,9 @@ static int rda_gpio_probe(struct platform_device *pdev)
 		girq->parent_handler = rda_gpio_irq_handler;
 		girq->parent_handler_data = rda_gpio;
 		girq->num_parents = 1;
-		girq->parents = devm_kzalloc_objs(dev, *girq->parents, 1);
+		girq->parents = devm_kcalloc(dev, 1,
+					     sizeof(*girq->parents),
+					     GFP_KERNEL);
 		if (!girq->parents)
 			return -ENOMEM;
 		girq->parents[0] = rda_gpio->irq;

@@ -42,7 +42,7 @@
 #define		CON_BRD			BIT(8)  /* burst  read */
 #define		CON_BWR			BIT(9)	/* burst  write */
 #define		CON_SEC_SHIFT		(12)
-/* Timing control register */
+/* Timming control register */
 #define NFI_ACCCON		(0x0C)
 #define NFI_INTR_EN		(0x10)
 #define		INTR_AHB_DONE_EN	BIT(6)
@@ -1356,7 +1356,8 @@ static int mtk_nfc_nand_chip_init(struct device *dev, struct mtk_nfc *nfc,
 		return -EINVAL;
 	}
 
-	chip = devm_kzalloc_flex(dev, *chip, sels, nsels);
+	chip = devm_kzalloc(dev, struct_size(chip, sels, nsels),
+			    GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -1510,7 +1511,7 @@ static int mtk_nfc_probe(struct platform_device *pdev)
 	struct mtk_nfc *nfc;
 	int ret, irq;
 
-	nfc = devm_kzalloc_obj(dev, *nfc);
+	nfc = devm_kzalloc(dev, sizeof(*nfc), GFP_KERNEL);
 	if (!nfc)
 		return -ENOMEM;
 

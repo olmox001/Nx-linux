@@ -510,7 +510,9 @@ static int ad5592r_alloc_channels(struct iio_dev *iio_dev)
 			st->channel_offstate[reg] = tmp;
 	}
 
-	channels = devm_kzalloc_objs(st->dev, *channels, 1 + 2 * num_channels);
+	channels = devm_kcalloc(st->dev,
+			1 + 2 * num_channels, sizeof(*channels),
+			GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
 

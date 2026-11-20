@@ -51,7 +51,8 @@ static int sh_pfc_map_resources(struct sh_pfc *pfc,
 		return num_irqs;
 
 	/* Allocate memory windows and IRQs arrays. */
-	windows = devm_kzalloc_objs(pfc->dev, *windows, num_windows);
+	windows = devm_kcalloc(pfc->dev, num_windows, sizeof(*windows),
+			       GFP_KERNEL);
 	if (windows == NULL)
 		return -ENOMEM;
 
@@ -59,7 +60,8 @@ static int sh_pfc_map_resources(struct sh_pfc *pfc,
 	pfc->windows = windows;
 
 	if (num_irqs) {
-		irqs = devm_kzalloc_objs(pfc->dev, *irqs, num_irqs);
+		irqs = devm_kcalloc(pfc->dev, num_irqs, sizeof(*irqs),
+				    GFP_KERNEL);
 		if (irqs == NULL)
 			return -ENOMEM;
 
@@ -405,7 +407,8 @@ static int sh_pfc_init_ranges(struct sh_pfc *pfc)
 		 * continuous and allocate a single range.
 		 */
 		pfc->nr_ranges = 1;
-		pfc->ranges = devm_kzalloc_obj(pfc->dev, *pfc->ranges);
+		pfc->ranges = devm_kzalloc(pfc->dev, sizeof(*pfc->ranges),
+					   GFP_KERNEL);
 		if (pfc->ranges == NULL)
 			return -ENOMEM;
 
@@ -426,7 +429,8 @@ static int sh_pfc_init_ranges(struct sh_pfc *pfc)
 	}
 
 	pfc->nr_ranges = nr_ranges;
-	pfc->ranges = devm_kzalloc_objs(pfc->dev, *pfc->ranges, nr_ranges);
+	pfc->ranges = devm_kcalloc(pfc->dev, nr_ranges, sizeof(*pfc->ranges),
+				   GFP_KERNEL);
 	if (pfc->ranges == NULL)
 		return -ENOMEM;
 
@@ -706,7 +710,9 @@ static int sh_pfc_suspend_init(struct sh_pfc *pfc)
 	if (!n)
 		return 0;
 
-	pfc->saved_regs = devm_kmalloc_objs(pfc->dev, *pfc->saved_regs, n);
+	pfc->saved_regs = devm_kmalloc_array(pfc->dev, n,
+					     sizeof(*pfc->saved_regs),
+					     GFP_KERNEL);
 	if (!pfc->saved_regs)
 		return -ENOMEM;
 
@@ -1129,7 +1135,7 @@ static void __init sh_pfc_check_info(const struct sh_pfc_soc_info *info)
 	}
 
 	/* Check groups and functions */
-	refcnts = kzalloc_objs(*refcnts, info->nr_groups);
+	refcnts = kcalloc(info->nr_groups, sizeof(*refcnts), GFP_KERNEL);
 	if (!refcnts)
 		return;
 
@@ -1271,7 +1277,8 @@ static void __init sh_pfc_check_driver(const struct platform_driver *pdrv)
 	if (!sh_pfc_regs)
 		return;
 
-	sh_pfc_enums = kzalloc_objs(*sh_pfc_enums, SH_PFC_MAX_ENUMS);
+	sh_pfc_enums = kcalloc(SH_PFC_MAX_ENUMS, sizeof(*sh_pfc_enums),
+			      GFP_KERNEL);
 	if (!sh_pfc_enums)
 		goto free_regs;
 
@@ -1308,7 +1315,7 @@ static int sh_pfc_probe(struct platform_device *pdev)
 	else
 		info = (const void *)platform_get_device_id(pdev)->driver_data;
 
-	pfc = devm_kzalloc_obj(&pdev->dev, *pfc);
+	pfc = devm_kzalloc(&pdev->dev, sizeof(*pfc), GFP_KERNEL);
 	if (pfc == NULL)
 		return -ENOMEM;
 

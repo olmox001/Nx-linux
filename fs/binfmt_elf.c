@@ -74,7 +74,7 @@ static int load_elf_binary(struct linux_binprm *bprm);
  * don't even try.
  */
 #ifdef CONFIG_ELF_CORE
-static bool elf_core_dump(struct coredump_params *cprm);
+static int elf_core_dump(struct coredump_params *cprm);
 #else
 #define elf_core_dump	NULL
 #endif
@@ -84,6 +84,8 @@ static bool elf_core_dump(struct coredump_params *cprm);
 #else
 #define ELF_MIN_ALIGN	PAGE_SIZE
 #endif
+
+#define MAX_FILE_NOTE_SIZE (4*1024*1024)
 
 #ifndef ELF_CORE_EFLAGS
 #define ELF_CORE_EFLAGS	0
@@ -179,6 +181,7 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 	unsigned char k_rand_bytes[16];
 	int items;
 	elf_addr_t *elf_info;
+	elf_addr_t flags = 0;
 	int ei_index;
 	const struct cred *cred = current_cred();
 	struct vm_area_struct *vma;
@@ -253,7 +256,9 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 	NEW_AUX_ENT(AT_PHENT, sizeof(struct elf_phdr));
 	NEW_AUX_ENT(AT_PHNUM, exec->e_phnum);
 	NEW_AUX_ENT(AT_BASE, interp_load_addr);
-	NEW_AUX_ENT(AT_FLAGS, bprm_at_flags(bprm));
+	if (bprm->interp_flags & BINPRM_FLAGS_PRESERVE_ARGV0)
+		flags |= AT_FLAGS_PRESERVE_ARGV0;
+	NEW_AUX_ENT(AT_FLAGS, flags);
 	NEW_AUX_ENT(AT_ENTRY, e_entry);
 	NEW_AUX_ENT(AT_UID, from_kuid_munged(cred->user_ns, cred->uid));
 	NEW_AUX_ENT(AT_EUID, from_kuid_munged(cred->user_ns, cred->euid));
@@ -285,6 +290,9 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 #ifdef CONFIG_RSEQ
 	NEW_AUX_ENT(AT_RSEQ_FEATURE_SIZE, offsetof(struct rseq, end));
 	NEW_AUX_ENT(AT_RSEQ_ALIGN, rseq_alloc_align());
+#endif
+#ifdef CONFIG_64BIT
+	NEW_AUX_ENT(AT_VA_RESERVATION, 1);
 #endif
 #undef NEW_AUX_ENT
 	/* AT_NULL is zero; clear the rest too */
@@ -826,6 +834,205 @@ static int parse_elf_properties(struct file *f, const struct elf_phdr *phdr,
 	return ret == -ENOENT ? 0 : ret;
 }
 
+#ifdef CONFIG_64BIT
+static int get_elf_notes(struct linux_binprm *bprm, struct elf_phdr *phdr, char **notes, size_t *notes_sz)
+{
+	char *data;
+	size_t datasz;
+	int ret;
+
+	if (!phdr)
+		return 0;
+
+	datasz = phdr->p_filesz;
+	/* Ignore a malformed note segment */
+	if ((datasz > MAX_FILE_NOTE_SIZE) || (datasz < sizeof(struct elf_note)))
+		return 0;
+
+	data = kvmalloc(datasz, GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	ret = elf_read(bprm->file, data, datasz, phdr->p_offset);
+	if (ret < 0) {
+		kvfree(data);
+		return ret;
+	}
+
+	*notes = data;
+	*notes_sz = datasz;
+	return 0;
+}
+
+#define PRESERVED_MEM_OK_STRING		"preserved-mem-ok"
+#define SZ_PRESERVED_MEM_OK_STRING	sizeof(PRESERVED_MEM_OK_STRING)
+
+static int check_preserved_mem_ok(struct linux_binprm *bprm, const char *data, const size_t datasz)
+{
+	size_t off = 0;
+	size_t remain;
+
+	if (!data)
+		return 0;
+
+	while (off < datasz) {
+		const struct elf_note *nhdr;
+		const char *name;
+
+		remain = datasz - off;
+
+		if (remain < sizeof(*nhdr))
+			break;
+
+		nhdr = (struct elf_note *)(data + off);
+		off += sizeof(*nhdr);
+		remain -= sizeof(*nhdr);
+
+		if (nhdr->n_type != 0x07c1feed)
+			goto cont_loop;
+
+		if (nhdr->n_namesz != SZ_PRESERVED_MEM_OK_STRING)
+			goto cont_loop;
+
+		name =  data + off;
+		if (remain < SZ_PRESERVED_MEM_OK_STRING ||
+		    strncmp(name, PRESERVED_MEM_OK_STRING, SZ_PRESERVED_MEM_OK_STRING))
+			goto cont_loop;
+
+		bprm->accepts_preserved_mem = 1;
+		break;
+
+cont_loop:
+		off += roundup(nhdr->n_namesz, 4) + roundup(nhdr->n_descsz, 4);
+	}
+
+	return 0;
+}
+
+#define MAX_RSVD_VA_RANGES	64
+#define RSVD_VA_STRING		"Reserved VA"
+#define SZ_RSVD_VA_STRING	sizeof(RSVD_VA_STRING)
+#define NT_RSVD_VA		0x07c10001
+
+static int reserve_va_range(const char *note_seg, const size_t note_seg_size)
+{
+	const char *note_seg_end = note_seg + note_seg_size;
+	struct elf_note *note;
+	int retval = 0;
+	int nr_total_ranges = 0;
+
+	if (!note_seg || !note_seg_size)
+		return 0;
+
+	note = (struct elf_note *)note_seg;
+	while (((char *)note + sizeof(struct elf_note)) < note_seg_end) {
+		char *note_end, *name;
+		unsigned long *val;
+		unsigned long nentry, i;
+		int nr_ranges;
+
+		note_end = ((char *)note + sizeof(struct elf_note) +
+				roundup((unsigned long)note->n_namesz, 4) +
+				roundup((unsigned long)note->n_descsz, 4));
+
+		/*
+		 * The ELF spec says that both name and type must be
+		 * recognized before assuming the format of note descriptor
+		 * data. Ignore notes where either value does not or
+		 * cannot be matched.
+		 */
+		if (note->n_type != NT_RSVD_VA)
+			goto cont_loop;
+
+		if (note->n_namesz != SZ_RSVD_VA_STRING)
+			goto cont_loop;
+
+		name = (char *)note + sizeof(struct elf_note);
+		if (name + SZ_RSVD_VA_STRING > note_seg_end)
+			goto cont_loop;
+
+		if (strncmp(name, RSVD_VA_STRING, SZ_RSVD_VA_STRING) != 0)
+			goto cont_loop;
+
+		/*
+		 * Does the ELF note header plus the advertised sizes for
+		 * the name and data associated with it fit within the note
+		 * segment?
+		 */
+		if (note_end > note_seg_end) {
+			retval = -ENOEXEC;
+			goto out;
+		}
+
+		/*
+		 * The descriptor data is expected to contain one or more
+		 * pairs of 8-byte addresses with each pair representing the
+		 * start and end addresses of a VA range to reserve.
+		 */
+		if (!IS_ALIGNED(note->n_descsz, sizeof(void *) * 2)) {
+			retval = -ENOEXEC;
+			goto out;
+		}
+
+		nentry = note->n_descsz / sizeof(void *);
+		nr_ranges = nentry / 2;
+		if (nr_total_ranges + nr_ranges > MAX_RSVD_VA_RANGES) {
+			retval = -ENOEXEC;
+			goto out;
+		}
+
+		val = (unsigned long *)(name + roundup(note->n_namesz, 4));
+		for (i = 0 ; i < nentry; i += 2) {
+			unsigned long range1, range2, size;
+			struct mm_struct *mm = current->mm;
+
+			range1 = PAGE_ALIGN_DOWN(*val++);
+			range2 = PAGE_ALIGN(*val++);
+			size = range2 - range1;
+
+			/* Validate the address range being reserved */
+			if ((range2 <= range1) ||
+			    (!access_ok((void *)range1, size))) {
+				retval = -ENOEXEC;
+				goto out;
+			}
+
+			/*
+			 * install_rsvd_mapping() requires the mmap
+			 * write lock be held by the caller.
+			 */
+			mmap_write_lock(mm);
+			retval = install_rsvd_mapping(mm, range1, size);
+			mmap_write_unlock(mm);
+
+			if (retval < 0)
+				goto out;
+		}
+		nr_total_ranges += nr_ranges;
+cont_loop:
+		note = (struct elf_note *)note_end;
+	}
+
+out:
+	return retval;
+}
+#else
+static int get_elf_notes(struct linux_binprm *bprm, struct elf_phdr *phdr,
+		char **notes, size_t *notes_sz)
+{
+	return 0;
+}
+static int check_preserved_mem_ok(struct linux_binprm *bprm,
+				const char *data, const size_t datasz)
+{
+	return 0;
+}
+static int reserve_va_range(const char *note_seg, const size_t note_seg_size)
+{
+	return 0;
+}
+#endif /* CONFIG_64BIT */
+
 static int load_elf_binary(struct linux_binprm *bprm)
 {
 	struct file *interpreter = NULL; /* to shut gcc up */
@@ -834,6 +1041,9 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	unsigned long error;
 	struct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;
 	struct elf_phdr *elf_property_phdata = NULL;
+	struct elf_phdr *elf_notes_phdata = NULL;
+	char *elf_notes = NULL;
+	size_t elf_notes_sz = 0;
 	unsigned long elf_brk;
 	bool brk_moved = false;
 	int retval, i;
@@ -901,7 +1111,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 		if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')
 			goto out_free_interp;
 
-		interpreter = bprm_open_interpreter(bprm, elf_interpreter);
+		interpreter = open_exec(elf_interpreter);
 		kfree(elf_interpreter);
 		retval = PTR_ERR(interpreter);
 		if (IS_ERR(interpreter))
@@ -932,9 +1142,6 @@ out_free_interp:
 		goto out_free_ph;
 	}
 
-	/* No PT_INTERP to substitute for: the override does not apply. */
-	bprm_drop_loader(bprm);
-
 	elf_ppnt = elf_phdata;
 	for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++)
 		switch (elf_ppnt->p_type) {
@@ -943,6 +1150,10 @@ out_free_interp:
 				executable_stack = EXSTACK_ENABLE_X;
 			else
 				executable_stack = EXSTACK_DISABLE_X;
+			break;
+
+		case PT_NOTE:
+			elf_notes_phdata = elf_ppnt;
 			break;
 
 		case PT_LOPROC ... PT_HIPROC:
@@ -1006,6 +1217,14 @@ out_free_interp:
 	if (retval)
 		goto out_free_dentry;
 
+	retval = get_elf_notes(bprm, elf_notes_phdata, &elf_notes, &elf_notes_sz);
+	if (retval)
+		goto out_free_dentry;
+
+	retval = check_preserved_mem_ok(bprm, elf_notes, elf_notes_sz);
+	if (retval)
+		goto out_free_dentry;
+
 	/* Flush all traces of the currently running executable */
 	retval = begin_new_exec(bprm);
 	if (retval)
@@ -1036,6 +1255,10 @@ out_free_interp:
 	end_code = 0;
 	start_data = 0;
 	end_data = 0;
+
+	retval = reserve_va_range(elf_notes, elf_notes_sz);
+	if (retval < 0)
+		goto out_free_dentry;
 
 	/* Now we do a little grungy work by mmapping the ELF image into
 	   the correct location in memory. */
@@ -1283,6 +1506,7 @@ out_free_interp:
 		}
 	}
 
+	kvfree(elf_notes);
 	kfree(elf_phdata);
 
 	set_binfmt(&elf_format);
@@ -1353,8 +1577,11 @@ out_free_interp:
 		   emulate the SVr4 behavior. Sigh. */
 		error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,
 				MAP_FIXED | MAP_PRIVATE, 0);
-		if (!error)
-			mseal_mmap_page_zero();
+
+		retval = do_mseal(0, PAGE_SIZE, 0);
+		if (retval)
+			pr_warn_ratelimited("pid=%d, couldn't seal address 0, ret=%d.\n",
+					    task_pid_nr(current), retval);
 	}
 
 	regs = current_pt_regs();
@@ -1387,6 +1614,7 @@ out_free_file:
 	if (interpreter)
 		fput(interpreter);
 out_free_ph:
+	kvfree(elf_notes);
 	kfree(elf_phdata);
 	goto out;
 }
@@ -1875,7 +2103,7 @@ static int fill_note_info(struct elfhdr *elf, int phdrs,
 		return 0;
 
 	info->thread->task = dump_task;
-	for (ct = dump_task->signal->core_state->tasks; ct; ct = ct->next) {
+	for (ct = dump_task->signal->core_state->dumper.next; ct; ct = ct->next) {
 		t = kzalloc_flex(*t, notes, info->thread_notes);
 		if (unlikely(!t))
 			return 0;
@@ -1987,9 +2215,9 @@ static void fill_extnum_info(struct elfhdr *elf, struct elf_shdr *shdr4extnum,
  * and then they are actually written out.  If we run out of core limit
  * we just truncate.
  */
-static bool elf_core_dump(struct coredump_params *cprm)
+static int elf_core_dump(struct coredump_params *cprm)
 {
-	bool ret = false;
+	int has_dumped = 0;
 	int segs, i;
 	struct elfhdr elf;
 	loff_t offset = 0, dataoff;
@@ -2020,7 +2248,7 @@ static bool elf_core_dump(struct coredump_params *cprm)
 	if (!fill_note_info(&elf, e_phnum, &info, cprm))
 		goto end_coredump;
 
-	cprm->state |= COREDUMP_STATE_STARTED;
+	has_dumped = 1;
 
 	offset += sizeof(elf);				/* ELF header */
 	offset += segs * sizeof(struct elf_phdr);	/* Program headers */
@@ -2029,7 +2257,7 @@ static bool elf_core_dump(struct coredump_params *cprm)
 	{
 		size_t sz = info.size;
 
-		/* For x86 xstate */
+		/* For cell spufs and x86 xstate */
 		sz += elf_coredump_extra_notes_size();
 
 		phdr4note = kmalloc_obj(*phdr4note);
@@ -2093,7 +2321,7 @@ static bool elf_core_dump(struct coredump_params *cprm)
 	if (!write_note_info(&info, cprm))
 		goto end_coredump;
 
-	/* For x86 xstate */
+	/* For cell spufs and x86 xstate */
 	if (elf_coredump_extra_notes_write(cprm))
 		goto end_coredump;
 
@@ -2115,13 +2343,11 @@ static bool elf_core_dump(struct coredump_params *cprm)
 			goto end_coredump;
 	}
 
-	ret = true;
-
 end_coredump:
 	free_note_info(&info);
 	kfree(shdr4extnum);
 	kfree(phdr4note);
-	return ret;
+	return has_dumped;
 }
 
 #endif		/* CONFIG_ELF_CORE */

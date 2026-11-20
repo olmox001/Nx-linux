@@ -461,7 +461,7 @@ static u32 sdhci_am654_cqhci_irq(struct sdhci_host *host, u32 intmask)
 	if (!sdhci_cqe_irq(host, intmask, &cmd_error, &data_error))
 		return intmask;
 
-	cqhci_irq(host->mmc, cmd_error, data_error);
+	cqhci_irq(host->mmc, intmask, cmd_error, data_error);
 
 	return 0;
 }
@@ -718,7 +718,8 @@ static int sdhci_am654_cqe_add_host(struct sdhci_host *host)
 {
 	struct cqhci_host *cq_host;
 
-	cq_host = devm_kzalloc_obj(mmc_dev(host->mmc), struct cqhci_host);
+	cq_host = devm_kzalloc(mmc_dev(host->mmc), sizeof(struct cqhci_host),
+			       GFP_KERNEL);
 	if (!cq_host)
 		return -ENOMEM;
 

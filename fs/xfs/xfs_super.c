@@ -400,8 +400,8 @@ xfs_blkdev_get(
 	blk_mode_t		mode;
 
 	mode = sb_open_mode(mp->m_super->s_flags);
-	*bdev_filep = fs_bdev_file_open_by_path(name, mode,
-			mp->m_super, mp->m_super);
+	*bdev_filep = bdev_file_open_by_path(name, mode,
+			mp->m_super, &fs_holder_ops);
 	if (IS_ERR(*bdev_filep)) {
 		error = PTR_ERR(*bdev_filep);
 		*bdev_filep = NULL;
@@ -445,7 +445,7 @@ xfs_shutdown_devices(
 		blkdev_issue_flush(mp->m_logdev_targp->bt_bdev);
 		invalidate_bdev(mp->m_logdev_targp->bt_bdev);
 	}
-	if (mp->m_rtdev_targp && mp->m_rtdev_targp != mp->m_ddev_targp) {
+	if (mp->m_rtdev_targp) {
 		blkdev_issue_flush(mp->m_rtdev_targp->bt_bdev);
 		invalidate_bdev(mp->m_rtdev_targp->bt_bdev);
 	}
@@ -526,7 +526,7 @@ xfs_open_devices(
 		mp->m_logdev_targp = mp->m_ddev_targp;
 		/* Handle won't be used, drop it */
 		if (logdev_file)
-			fs_bdev_file_release(logdev_file, mp->m_super);
+			bdev_fput(logdev_file);
 	}
 
 	return 0;
@@ -541,10 +541,10 @@ xfs_open_devices(
 	mp->m_ddev_targp = NULL;
  out_close_rtdev:
 	 if (rtdev_file)
-		fs_bdev_file_release(rtdev_file, mp->m_super);
+		bdev_fput(rtdev_file);
  out_close_logdev:
 	if (logdev_file)
-		fs_bdev_file_release(logdev_file, mp->m_super);
+		bdev_fput(logdev_file);
 	return error;
 }
 
@@ -1889,7 +1889,7 @@ xfs_fs_fill_super(
 	 * Avoid integer overflow by comparing the maximum bmbt offset to the
 	 * maximum pagecache offset in units of fs blocks.
 	 */
-	if (!xfs_verify_fileoff(XFS_B_TO_FSBT(mp, MAX_LFS_FILESIZE))) {
+	if (!xfs_verify_fileoff(mp, XFS_B_TO_FSBT(mp, MAX_LFS_FILESIZE))) {
 		xfs_warn(mp,
 "MAX_LFS_FILESIZE block offset (%llu) exceeds extent map maximum (%llu)!",
 			 XFS_B_TO_FSBT(mp, MAX_LFS_FILESIZE),
@@ -2317,7 +2317,6 @@ xfs_init_fs_context(
 	mp->m_logbufs = -1;
 	mp->m_logbsize = -1;
 	mp->m_allocsize_log = 16; /* 64k */
-	mp->m_read_bounce = XFS_READ_BOUNCE_LAZY;
 
 	xfs_hooks_init(&mp->m_dir_update_hooks);
 

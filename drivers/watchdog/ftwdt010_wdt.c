@@ -140,7 +140,7 @@ static int ftwdt010_wdt_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	gwdt = devm_kzalloc_obj(dev, *gwdt);
+	gwdt = devm_kzalloc(dev, sizeof(*gwdt), GFP_KERNEL);
 	if (!gwdt)
 		return -ENOMEM;
 

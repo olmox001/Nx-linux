@@ -5,7 +5,7 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <drm/drm_edid.h>
-#include <drm/drm_panel_quirks.h>
+#include <drm/drm_utils.h>
 
 struct drm_panel_match {
 	enum dmi_field field;

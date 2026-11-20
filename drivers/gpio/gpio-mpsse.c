@@ -521,7 +521,7 @@ static void gpio_mpsse_irq_enable(struct irq_data *irqd)
 		 * Can't be devm because it uses a non-raw spinlock (illegal in
 		 * this context, where a raw spinlock is held by our caller)
 		 */
-		worker = kzalloc_obj(*worker, GFP_NOWAIT);
+		worker = kzalloc(sizeof(*worker), GFP_NOWAIT);
 		if (!worker)
 			return;
 
@@ -602,7 +602,7 @@ static int gpio_mpsse_probe(struct usb_interface *interface,
 	struct mpsse_quirk *quirk = (void *)id->driver_info;
 
 	dev = &interface->dev;
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

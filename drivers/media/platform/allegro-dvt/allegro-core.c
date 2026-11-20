@@ -802,7 +802,7 @@ static struct allegro_mbox *allegro_mbox_init(struct allegro_dev *dev,
 {
 	struct allegro_mbox *mbox;
 
-	mbox = devm_kmalloc_obj(&dev->plat_dev->dev, *mbox);
+	mbox = devm_kmalloc(&dev->plat_dev->dev, sizeof(*mbox), GFP_KERNEL);
 	if (!mbox)
 		return ERR_PTR(-ENOMEM);
 
@@ -3105,7 +3105,7 @@ static int allegro_open(struct file *file)
 	unsigned int cpb_size_max;
 	unsigned int cpb_size_def;
 
-	channel = kzalloc_obj(*channel);
+	channel = kzalloc(sizeof(*channel), GFP_KERNEL);
 	if (!channel)
 		return -ENOMEM;
 
@@ -3895,7 +3895,7 @@ static int allegro_probe(struct platform_device *pdev)
 	int irq;
 	void __iomem *regs, *sram_regs;
 
-	dev = devm_kzalloc_obj(&pdev->dev, *dev);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 	dev->plat_dev = pdev;

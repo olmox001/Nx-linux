@@ -481,7 +481,6 @@ static void dmub_psr_construct(struct dmub_psr *psr, struct dc_context *ctx)
 {
 	psr->ctx = ctx;
 	psr->funcs = &psr_funcs;
-	psr->inst = 0;
 }
 
 /*

@@ -124,11 +124,25 @@ static char mlx4_version[] =
 	DRV_NAME ": Mellanox ConnectX core driver v"
 	DRV_VERSION "\n";
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+#define MLX4_LOG_NUM_MTT 20
+/* We limit to 30 as of a bit map issue which uses int and not uint.
+ * see mlx4_buddy_init -> bitmap_zero which gets int.
+ */
+#define MLX4_MAX_LOG_NUM_MTT 30
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
+
 static const struct mlx4_profile default_profile = {
 	.num_qp		= 1 << 18,
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	.num_srq	= 1 << 16,
 	.rdmarc_per_qp	= 1 << 4,
 	.num_cq		= 1 << 16,
+#else
+	.num_srq	= 1 << 18,
+	.rdmarc_per_qp	= 1 << 3,
+	.num_cq		= 1 << 18,
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	.num_mcg	= 1 << 13,
 	.num_mpt	= 1 << 19,
 	.num_mtt	= 1 << 20, /* It is really num mtt segments */
@@ -136,7 +150,11 @@ static const struct mlx4_profile default_profile = {
 
 static const struct mlx4_profile low_mem_profile = {
 	.num_qp		= 1 << 17,
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	.num_srq	= 1 << 6,
+#else
+	.num_srq	= 1 << 7,
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	.rdmarc_per_qp	= 1 << 4,
 	.num_cq		= 1 << 8,
 	.num_mcg	= 1 << 8,
@@ -170,6 +188,13 @@ static int arr_argc = 2;
 module_param_array(port_type_array, int, &arr_argc, 0444);
 MODULE_PARM_DESC(port_type_array, "Array of port types: HW_DEFAULT (0) is default "
 				"1 for IB, 2 for Ethernet");
+
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+enum {
+	MLX4_IF_STATE_BASIC,
+	MLX4_IF_STATE_EXTENDED
+};
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 static atomic_t pf_loading = ATOMIC_INIT(0);
 
@@ -2321,6 +2346,9 @@ static int mlx4_init_hca(struct mlx4_dev *dev)
 	u64 icm_size;
 	struct mlx4_config_dev_params params;
 	int err;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	struct sysinfo si;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	if (!mlx4_is_slave(dev)) {
 		dev_cap = kzalloc_obj(*dev_cap);
@@ -2356,6 +2384,28 @@ static int mlx4_init_hca(struct mlx4_dev *dev)
 			profile = low_mem_profile;
 		} else {
 			profile = default_profile;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+			pr_info("mlx4_core: Effective log_num_qp is now set to %d.\n",
+				ilog2(profile.num_qp));
+			pr_info("mlx4_core: Effective log_num_srq is now set to %d.\n",
+				ilog2(profile.num_srq));
+			pr_info("mlx4_core: Effective log_rdmarc_per_qp is now set to %d.\n",
+				ilog2(profile.rdmarc_per_qp));
+			pr_info("mlx4_core: Effective log_num_cq is now set to %d.\n",
+				ilog2(profile.num_cq));
+			si_meminfo(&si);
+			profile.num_mtt =
+				roundup_pow_of_two(max_t(unsigned int,
+							 1 << (MLX4_LOG_NUM_MTT -
+							      log_mtts_per_seg),
+							 min(1UL <<
+							    (MLX4_MAX_LOG_NUM_MTT -
+							     log_mtts_per_seg),
+							    (si.totalram << 1)
+							    >> log_mtts_per_seg)));
+			pr_info("mlx4_core: log_num_mtt is scaled dynamically. Effective log_num_mtt is now set to %d.\n",
+				ilog2(profile.num_mtt));
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		}
 		if (dev->caps.steering_mode ==
 		    MLX4_STEERING_MODE_DEVICE_MANAGED)
@@ -2522,6 +2572,9 @@ static int mlx4_init_counters_table(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	int nent_pow2;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	int res;
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 	if (!(dev->caps.flags & MLX4_DEV_CAP_FLAG_COUNTERS))
 		return -ENOENT;
@@ -2531,9 +2584,32 @@ static int mlx4_init_counters_table(struct mlx4_dev *dev)
 
 	nent_pow2 = roundup_pow_of_two(dev->caps.max_counters);
 	/* reserve last counter index for sink counter */
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	return mlx4_bitmap_init(&priv->counters_bitmap, nent_pow2,
 				nent_pow2 - 1, 0,
 				nent_pow2 - dev->caps.max_counters + 1);
+#else
+	res = mlx4_bitmap_init(&priv->counters_bitmap, nent_pow2,
+				nent_pow2 - 1, 0,
+				nent_pow2 - dev->caps.max_counters + 1);
+	if (res)
+		return res;
+
+	if (mlx4_is_slave(dev))
+		return 0;
+
+	if (!(dev->caps.flags & MLX4_DEV_CAP_FLAG_COUNTERS_EXT))
+		return 0;
+
+	res = mlx4_cmd(dev, MLX4_IF_STATE_EXTENDED, 0, 0,
+		MLX4_CMD_SET_IF_STAT,
+		MLX4_CMD_TIME_CLASS_A, MLX4_CMD_NATIVE);
+
+	if (res)
+		mlx4_err(dev, "Failed to set extended counters (err=%d)\n",
+				res);
+	return res;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 }
 
 static void mlx4_cleanup_counters_table(struct mlx4_dev *dev)
@@ -2856,10 +2932,14 @@ static int mlx4_setup_hca(struct mlx4_dev *dev)
 				}
 			}
 
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 			if (mlx4_is_mfunc(dev))
 				dev->caps.port_ib_mtu[port] = IB_MTU_2048;
 			else
 				dev->caps.port_ib_mtu[port] = IB_MTU_4096;
+#else
+			dev->caps.port_ib_mtu[port] = IB_MTU_2048;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 			err = mlx4_SET_PORT(dev, port, mlx4_is_master(dev) ?
 					    dev->caps.pkey_table_len[port] : -1);
@@ -2953,14 +3033,24 @@ static void mlx4_enable_msi_x(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct msix_entry *entries;
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	int i;
+#else
+	int i, nreq = 0;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	int port = 0;
 
 	if (msi_x) {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		int nreq = min3(dev->caps.num_ports *
 				(int)num_online_cpus() + 1,
 				dev->caps.num_eqs - dev->caps.reserved_eqs,
 				MAX_MSIX);
+#else
+		nreq = min3(dev->caps.num_ports * (int)num_online_cpus() + 1,
+			    dev->caps.num_eqs - dev->caps.reserved_eqs,
+			    MAX_MSIX);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 		if (msi_x > 1)
 			nreq = min_t(int, nreq, msi_x);
@@ -2972,6 +3062,11 @@ static void mlx4_enable_msi_x(struct mlx4_dev *dev)
 		for (i = 0; i < nreq; ++i)
 			entries[i].entry = i;
 
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		mlx4_info(dev, "Enabling %d MSI-X vectors, eqs %d rsvd_eqs %d msi_x %d\n",
+			  nreq, dev->caps.num_eqs, dev->caps.reserved_eqs,
+			  msi_x);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 		nreq = pci_enable_msix_range(dev->persist->pdev, entries, 2,
 					     nreq);
 
@@ -3026,12 +3121,20 @@ static void mlx4_enable_msi_x(struct mlx4_dev *dev)
 		}
 
 		dev->flags |= MLX4_FLAG_MSI_X;
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+		mlx4_info(dev, "Successfully allocated %d MSI-X vectors\n",
+			  nreq);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 
 		kfree(entries);
 		return;
 	}
 
 no_msi:
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+	mlx4_info(dev, "No MSI-X vectors, nreq/errno %d msi_x %d\n",
+		  nreq, msi_x);
+#endif /* !WITHOUT_ORACLE_EXTENSIONS */
 	dev->caps.num_comp_vectors = 1;
 
 	BUG_ON(MLX4_EQ_ASYNC >= 2);
@@ -3863,8 +3966,12 @@ static int __mlx4_init_one(struct pci_dev *pdev, int pci_dev_data,
 
 	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (err) {
-		dev_err(&pdev->dev, "Can't set PCI DMA mask, aborting\n");
-		goto err_release_regions;
+		dev_warn(&pdev->dev, "Warning: couldn't set 64-bit PCI DMA mask\n");
+		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		if (err) {
+			dev_err(&pdev->dev, "Can't set PCI DMA mask, aborting\n");
+			goto err_release_regions;
+		}
 	}
 
 	/* Allow large DMA segments, up to the firmware limit of 1 GB */

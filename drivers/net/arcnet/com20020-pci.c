@@ -136,7 +136,8 @@ static int com20020pci_probe(struct pci_dev *pdev,
 	if (pci_enable_device(pdev))
 		return -EIO;
 
-	priv = devm_kzalloc_obj(&pdev->dev, struct com20020_priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(struct com20020_priv),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -238,7 +239,8 @@ static int com20020pci_probe(struct pci_dev *pdev,
 		if (ret)
 			goto err_free_arcdev;
 
-		card = devm_kzalloc_obj(&pdev->dev, struct com20020_dev);
+		card = devm_kzalloc(&pdev->dev, sizeof(struct com20020_dev),
+				    GFP_KERNEL);
 		if (!card) {
 			ret = -ENOMEM;
 			goto err_free_arcdev;

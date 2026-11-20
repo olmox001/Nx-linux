@@ -177,8 +177,13 @@ static int smb_block_read(struct rmi_transport_dev *xport,
 	struct rmi_smb_xport *rmi_smb =
 		container_of(xport, struct rmi_smb_xport, xport);
 	struct i2c_client *client = rmi_smb->client;
+	int retval;
 
-	return i2c_smbus_read_block_data(client, commandcode, buf);
+	retval = i2c_smbus_read_block_data(client, commandcode, buf);
+	if (retval < 0)
+		return retval;
+
+	return retval;
 }
 
 static int rmi_smb_read_block(struct rmi_transport_dev *xport, u16 rmiaddr,
@@ -303,7 +308,8 @@ static int rmi_smb_probe(struct i2c_client *client)
 		return client->irq ? client->irq : -ENODEV;
 	}
 
-	rmi_smb = devm_kzalloc_obj(&client->dev, struct rmi_smb_xport);
+	rmi_smb = devm_kzalloc(&client->dev, sizeof(struct rmi_smb_xport),
+				GFP_KERNEL);
 	if (!rmi_smb)
 		return -ENOMEM;
 

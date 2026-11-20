@@ -74,8 +74,11 @@ static int _c4iw_write_mem_dma_aligned(struct c4iw_rdev *rdev, u32 addr,
 		c4iw_init_wr_wait(wr_waitp);
 	wr_len = roundup(sizeof(*req) + sizeof(*sgl), 16);
 
-	if (!skb)
+	if (!skb) {
 		skb = alloc_skb(wr_len, GFP_KERNEL | __GFP_NOFAIL);
+		if (!skb)
+			return -ENOMEM;
+	}
 	set_wr_txq(skb, CPL_PRIORITY_CONTROL, 0);
 
 	req = __skb_put_zero(skb, wr_len);
@@ -131,8 +134,11 @@ static int _c4iw_write_mem_inline(struct c4iw_rdev *rdev, u32 addr, u32 len,
 					 roundup(copy_len, T4_ULPTX_MIN_IO),
 				 16);
 
-		if (!skb)
+		if (!skb) {
 			skb = alloc_skb(wr_len, GFP_KERNEL | __GFP_NOFAIL);
+			if (!skb)
+				return -ENOMEM;
+		}
 		set_wr_txq(skb, CPL_PRIORITY_CONTROL, 0);
 
 		req = __skb_put_zero(skb, wr_len);
@@ -525,7 +531,7 @@ struct ib_mr *c4iw_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	if (err)
 		goto err_umem_release;
 
-	pages = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	pages = (__be64 *) __get_free_page(GFP_KERNEL);
 	if (!pages) {
 		err = -ENOMEM;
 		goto err_pbl_free;
@@ -552,7 +558,7 @@ struct ib_mr *c4iw_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 				mhp->wr_waitp);
 
 pbl_done:
-	kfree(pages);
+	free_page((unsigned long) pages);
 	if (err)
 		goto err_pbl_free;
 

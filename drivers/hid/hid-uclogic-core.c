@@ -214,7 +214,7 @@ static int uclogic_probe(struct hid_device *hdev,
 	hdev->quirks |= HID_QUIRK_HIDINPUT_FORCE;
 
 	/* Allocate and assign driver data */
-	drvdata = devm_kzalloc_obj(&hdev->dev, *drvdata);
+	drvdata = devm_kzalloc(&hdev->dev, sizeof(*drvdata), GFP_KERNEL);
 	if (drvdata == NULL) {
 		rc = -ENOMEM;
 		goto failure;

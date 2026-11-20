@@ -123,7 +123,8 @@ At mount time, the two directories given as mount options "lowerdir" and
   mount -t overlay overlay -olowerdir=/lower,upperdir=/upper,\
   workdir=/work /merged
 
-The "workdir" needs to be a directory on the same filesystem as upperdir.
+The "workdir" needs to be an empty directory on the same filesystem
+as upperdir.
 
 Then whenever a lookup is requested in such a merged directory, the
 lookup is performed in each actual directory and the combined result
@@ -236,19 +237,14 @@ Module options (can also be changed through /sys/module/overlay/parameters/):
 Mount options:
 
 - "redirect_dir=on":
-    Redirects are created and followed.
+    Redirects are enabled.
 - "redirect_dir=follow":
     Redirects are not created, but followed.
-- "redirect_dir=followdata":
-    Redirects are not created.
-    Only redirects from lower to lowerdata are followed.
 - "redirect_dir=nofollow":
     Redirects are not created and not followed.
 - "redirect_dir=off":
-    Redirects are not created.
-    Which redirects are followed depends on "redirect_always_follow" in the
-    kernel/module config, on data-only lower layers and on the "userxattr"
-    mount option.
+    If "redirect_always_follow" is enabled in the kernel/module config,
+    this "off" translates to "follow", otherwise it translates to "nofollow".
 
 When the NFS export feature is enabled, every copied up directory is
 indexed by the file handle of the lower inode and a file handle of the
@@ -351,22 +347,6 @@ The resulting access permissions should be the same.  The difference is in
 the time of copy (on-demand vs. up-front).
 
 
-Idmapped mounts
----------------
-
-The overlay mount itself can be turned into an idmapped mount by applying an
-idmapping to it with mount_setattr(2) and MOUNT_ATTR_IDMAP, just like for
-other filesystems that support idmapped mounts.
-
-The mount idmapping only changes how ownership and permissions of the overlay
-inodes are presented to and interpreted for the caller.  It does not change
-how overlayfs accesses the underlying layers: those are still accessed with
-the stashed mounter's credentials through their own mounts, which may
-themselves be idmapped.  The overlay mount idmapping and any layer idmapping
-compose, an underlying id is first mapped according to the relevant layer
-idmapping and then according to the overlay mount idmapping.
-
-
 Multiple lower layers
 ---------------------
 
@@ -423,8 +403,8 @@ pointed by REDIRECT. This should not be possible on local system as setting
 "trusted." xattrs will require CAP_SYS_ADMIN. But it should be possible
 for untrusted layers like from a pen drive.
 
-Note: redirect_dir={off|nofollow|followdata|follow[*]} and nfs_export=on
-mount options conflict with metacopy=on, and will result in an error.
+Note: redirect_dir={off|nofollow|follow[*]} and nfs_export=on mount options
+conflict with metacopy=on, and will result in an error.
 
 [*] redirect_dir=follow only conflicts with metacopy=on if upperdir=... is
 given.
@@ -465,11 +445,10 @@ to the absolute path of the "lower data" file in the "data-only" lower layer.
 
 Instead of explicitly enabling "metacopy=on" it is sufficient to specify at
 least one data-only layer to enable redirection of data to a data-only layer.
-In this case other forms of metacopy are rejected.  A data-only layer selects
-"redirect_dir=followdata", unless "redirect_dir=follow" or "redirect_dir=on" is
-in effect.  Note: this way, data-only layers may be used together with
-"userxattr", in which case careful attention must be given to privileges needed
-to change the "user.overlay.redirect" xattr to prevent misuse.
+In this case other forms of metacopy are rejected.  Note: this way, data-only
+layers may be used together with "userxattr", in which case careful attention
+must be given to privileges needed to change the "user.overlay.redirect" xattr
+to prevent misuse.
 
 Since kernel version v6.8, "data-only" lower layers can also be added using
 the "datadir+" mount options and the fsconfig syscall from new mount api.
@@ -737,8 +716,7 @@ When decoding an overlay file handle, the following steps are followed:
 
  1. Find underlying layer by UUID and path type information.
  2. Decode the underlying filesystem file handle to underlying dentry.
- 3. For a lower file handle, encode the decoded underlying inode again and
-    lookup that handle in index directory by name.
+ 3. For a lower file handle, lookup the handle in index directory by name.
  4. If a whiteout is found in index, return ESTALE. This represents an
     overlay object that was deleted after its file handle was encoded.
  5. For a non-directory, instantiate a disconnected overlay dentry from the

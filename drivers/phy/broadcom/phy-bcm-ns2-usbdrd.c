@@ -3,6 +3,7 @@
 
 #include <linux/delay.h>
 #include <linux/extcon-provider.h>
+#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -285,11 +286,13 @@ static int ns2_drd_phy_probe(struct platform_device *pdev)
 	int ret;
 	u32 val;
 
-	driver = devm_kzalloc_obj(dev, struct ns2_phy_driver);
+	driver = devm_kzalloc(dev, sizeof(struct ns2_phy_driver),
+			      GFP_KERNEL);
 	if (!driver)
 		return -ENOMEM;
 
-	driver->data = devm_kzalloc_obj(dev, struct ns2_phy_data);
+	driver->data = devm_kzalloc(dev, sizeof(struct ns2_phy_data),
+				  GFP_KERNEL);
 	if (!driver->data)
 		return -ENOMEM;
 

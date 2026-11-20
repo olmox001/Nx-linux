@@ -16,7 +16,6 @@
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
-#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pm_runtime.h>
@@ -363,10 +362,6 @@ static int tsl2591_wait_adc_complete(struct tsl2591_chip *chip)
  * Scale values to get more representative value of lux i.e.
  * lux = ((C0DATA - C1DATA) * (1000 - ((C1DATA * 1000) / C0DATA))) / CPL
  *
- * CPL is not computed on its own: at 1x gain it is below 1 for integration
- * times under 500 ms, so the division by LUX DF is folded into the final
- * division instead.
- *
  * Channel 0 = IR + Visible
  * Channel 1 = IR only
  */
@@ -378,10 +373,8 @@ static int tsl2591_read_channel_data(struct iio_dev *indio_dev,
 	struct tsl2591_als_settings *settings = &chip->als_settings;
 	struct i2c_client *client = chip->client;
 	u8 als_data[TSL2591_NUM_DATA_REGISTERS];
-	int int_time_fval, gain_multi;
+	int counts_per_lux, int_time_fval, gain_multi, lux;
 	u16 als_ch0, als_ch1;
-	u64 lux;
-	u32 rem;
 	int ret;
 
 	ret = tsl2591_wait_adc_complete(chip);
@@ -417,28 +410,23 @@ static int tsl2591_read_channel_data(struct iio_dev *indio_dev,
 			return gain_multi;
 		}
 
-		/* No visible light, this also catches C0DATA == 0 */
-		if (als_ch0 <= als_ch1) {
-			*val = 0;
-			*val2 = 0;
-			break;
-		}
-
 		int_time_fval = TSL2591_FVAL_TO_MSEC(settings->als_int_time);
+		/* Calculate counts per lux value */
+		counts_per_lux = (int_time_fval * gain_multi) / TSL2591_LUX_COEFFICIENT;
+
+		dev_dbg(&client->dev, "Counts Per Lux: %d\n", counts_per_lux);
 
 		/* Calculate lux value */
-		lux = (u64)(als_ch0 - als_ch1) *
-		      (1000 - ((als_ch1 * 1000) / als_ch0)) *
-		      TSL2591_LUX_COEFFICIENT;
-		lux = div_u64(lux, int_time_fval * gain_multi);
+		lux = ((als_ch0 - als_ch1) *
+		       (1000 - ((als_ch1 * 1000) / als_ch0))) / counts_per_lux;
 
-		dev_dbg(&client->dev, "Raw lux calculation: %llu\n", lux);
+		dev_dbg(&client->dev, "Raw lux calculation: %d\n", lux);
 
 		/* Divide by 1000 to get real lux value before scaling */
-		*val = div_u64_rem(lux, 1000, &rem);
+		*val = lux / 1000;
 
 		/* Get the decimal part of lux reading */
-		*val2 = rem * 1000;
+		*val2 = (lux - (*val * 1000)) * 1000;
 
 		break;
 	default:

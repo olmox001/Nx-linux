@@ -1962,7 +1962,7 @@ static void edma_dma_init(struct edma_cc *ecc, bool legacy_mode)
 	INIT_LIST_HEAD(&s_ddev->channels);
 
 	if (memcpy_channels) {
-		m_ddev = devm_kzalloc_obj(ecc->dev, *m_ddev);
+		m_ddev = devm_kzalloc(ecc->dev, sizeof(*m_ddev), GFP_KERNEL);
 		if (!m_ddev) {
 			dev_warn(ecc->dev, "memcpy is disabled due to OoM\n");
 			memcpy_channels = NULL;
@@ -2064,8 +2064,8 @@ static int edma_setup_from_hw(struct device *dev, struct edma_soc_info *pdata,
 	 * priority. So Q0 is the highest priority queue and the last queue has
 	 * the lowest priority.
 	 */
-	queue_priority_map = devm_kzalloc_objs(dev, *queue_priority_map,
-					       ecc->num_tc + 1);
+	queue_priority_map = devm_kcalloc(dev, ecc->num_tc + 1,
+					  sizeof(*queue_priority_map), GFP_KERNEL);
 	if (!queue_priority_map)
 		return -ENOMEM;
 
@@ -2137,7 +2137,7 @@ static struct edma_soc_info *edma_setup_info_from_dt(struct device *dev,
 	struct property *prop;
 	int sz, ret;
 
-	info = devm_kzalloc_obj(dev, struct edma_soc_info);
+	info = devm_kzalloc(dev, sizeof(struct edma_soc_info), GFP_KERNEL);
 	if (!info)
 		return ERR_PTR(-ENOMEM);
 
@@ -2159,7 +2159,8 @@ static struct edma_soc_info *edma_setup_info_from_dt(struct device *dev,
 		size_t nelm = sz / sizeof(s32);
 		s32 *memcpy_ch;
 
-		memcpy_ch = devm_kzalloc_objs(dev, s32, nelm + 1);
+		memcpy_ch = devm_kcalloc(dev, nelm + 1, sizeof(s32),
+					 GFP_KERNEL);
 		if (!memcpy_ch)
 			return ERR_PTR(-ENOMEM);
 
@@ -2185,17 +2186,18 @@ static struct edma_soc_info *edma_setup_info_from_dt(struct device *dev,
 		if (!nelm)
 			return info;
 
-		tmp = kzalloc_objs(*tmp, nelm);
+		tmp = kcalloc(nelm, sizeof(*tmp), GFP_KERNEL);
 		if (!tmp)
 			return ERR_PTR(-ENOMEM);
 
-		rsv_info = devm_kzalloc_obj(dev, *rsv_info);
+		rsv_info = devm_kzalloc(dev, sizeof(*rsv_info), GFP_KERNEL);
 		if (!rsv_info) {
 			kfree(tmp);
 			return ERR_PTR(-ENOMEM);
 		}
 
-		rsv_slots = devm_kzalloc_objs(dev, *rsv_slots, nelm + 1);
+		rsv_slots = devm_kcalloc(dev, nelm + 1, sizeof(*rsv_slots),
+					 GFP_KERNEL);
 		if (!rsv_slots) {
 			kfree(tmp);
 			return ERR_PTR(-ENOMEM);
@@ -2316,7 +2318,7 @@ static int edma_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ecc = devm_kzalloc_obj(dev, *ecc);
+	ecc = devm_kzalloc(dev, sizeof(*ecc), GFP_KERNEL);
 	if (!ecc)
 		return -ENOMEM;
 
@@ -2356,14 +2358,15 @@ static int edma_probe(struct platform_device *pdev)
 		goto err_disable_pm;
 
 	/* Allocate memory based on the information we got from the IP */
-	ecc->slave_chans = devm_kzalloc_objs(dev, *ecc->slave_chans,
-					     ecc->num_channels);
+	ecc->slave_chans = devm_kcalloc(dev, ecc->num_channels,
+					sizeof(*ecc->slave_chans), GFP_KERNEL);
 
-	ecc->slot_inuse = devm_kzalloc_objs(dev, unsigned long,
-					    BITS_TO_LONGS(ecc->num_slots));
+	ecc->slot_inuse = devm_kcalloc(dev, BITS_TO_LONGS(ecc->num_slots),
+				       sizeof(unsigned long), GFP_KERNEL);
 
-	ecc->channels_mask = devm_kzalloc_objs(dev, unsigned long,
-					       BITS_TO_LONGS(ecc->num_channels));
+	ecc->channels_mask = devm_kcalloc(dev,
+					   BITS_TO_LONGS(ecc->num_channels),
+					   sizeof(unsigned long), GFP_KERNEL);
 	if (!ecc->slave_chans || !ecc->slot_inuse || !ecc->channels_mask) {
 		ret = -ENOMEM;
 		goto err_disable_pm;
@@ -2454,8 +2457,8 @@ static int edma_probe(struct platform_device *pdev)
 		unsigned int array_max;
 		struct of_phandle_args tc_args;
 
-		ecc->tc_list = devm_kzalloc_objs(dev, *ecc->tc_list,
-						 ecc->num_tc);
+		ecc->tc_list = devm_kcalloc(dev, ecc->num_tc,
+					    sizeof(*ecc->tc_list), GFP_KERNEL);
 		if (!ecc->tc_list) {
 			ret = -ENOMEM;
 			goto err_reg1;

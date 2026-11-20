@@ -624,15 +624,11 @@ static int ads1018_trigger_setup(struct iio_dev *indio_dev)
 
 static int ads1018_spi_probe(struct spi_device *spi)
 {
-	const struct ads1018_chip_info *info;
+	const struct ads1018_chip_info *info = spi_get_device_match_data(spi);
 	struct device *dev = &spi->dev;
 	struct iio_dev *indio_dev;
 	struct ads1018 *ads1018;
 	int ret;
-
-	info = spi_get_device_match_data(spi);
-	if (!info)
-		return -ENODATA;
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*ads1018));
 	if (!indio_dev)
@@ -721,8 +717,8 @@ static const struct of_device_id ads1018_of_match[] = {
 MODULE_DEVICE_TABLE(of, ads1018_of_match);
 
 static const struct spi_device_id ads1018_spi_match[] = {
-	{ .name = "ads1018", .driver_data = (kernel_ulong_t)&ads1018_chip_info },
-	{ .name = "ads1118", .driver_data = (kernel_ulong_t)&ads1118_chip_info },
+	{ "ads1018", (kernel_ulong_t)&ads1018_chip_info },
+	{ "ads1118", (kernel_ulong_t)&ads1118_chip_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, ads1018_spi_match);

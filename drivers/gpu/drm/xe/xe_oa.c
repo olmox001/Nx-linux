@@ -5,7 +5,6 @@
 
 #include <linux/anon_inodes.h>
 #include <linux/delay.h>
-#include <linux/error-injection.h>
 #include <linux/nospec.h>
 #include <linux/poll.h>
 
@@ -1714,12 +1713,11 @@ static int xe_oa_release(struct inode *inode, struct file *file)
 static int xe_oa_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct xe_oa_stream *stream = file->private_data;
-	int ret = xe_observation_paranoid_check();
 	struct xe_bo *bo = stream->oa_buffer.bo;
 
-	if (ret) {
+	if (xe_observation_paranoid && !perfmon_capable()) {
 		drm_dbg(&stream->oa->xe->drm, "Insufficient privilege to map OA buffer\n");
-		return ret;
+		return -EACCES;
 	}
 
 	/* Can mmap the entire OA buffer or nothing (no partial OA buffer mmaps) */
@@ -2093,12 +2091,10 @@ int xe_oa_stream_open_ioctl(struct drm_device *dev, u64 data, struct drm_file *f
 		privileged_op = true;
 	}
 
-	if (privileged_op) {
-		ret = xe_observation_paranoid_check();
-		if (ret) {
-			drm_dbg(&oa->xe->drm, "Insufficient privileges to open xe OA stream\n");
-			goto err_exec_q;
-		}
+	if (privileged_op && xe_observation_paranoid && !perfmon_capable()) {
+		drm_dbg(&oa->xe->drm, "Insufficient privileges to open xe OA stream\n");
+		ret = -EACCES;
+		goto err_exec_q;
 	}
 
 	if (!param.exec_q && !param.sample) {
@@ -2380,10 +2376,9 @@ int xe_oa_add_config_ioctl(struct drm_device *dev, u64 data, struct drm_file *fi
 		return -ENODEV;
 	}
 
-	err = xe_observation_paranoid_check();
-	if (err) {
+	if (xe_observation_paranoid && !perfmon_capable()) {
 		drm_dbg(&oa->xe->drm, "Insufficient privileges to add xe OA config\n");
-		return err;
+		return -EACCES;
 	}
 
 	err = copy_from_user(&param, u64_to_user_ptr(data), sizeof(param));
@@ -2485,10 +2480,9 @@ int xe_oa_remove_config_ioctl(struct drm_device *dev, u64 data, struct drm_file 
 		return -ENODEV;
 	}
 
-	ret = xe_observation_paranoid_check();
-	if (ret) {
+	if (xe_observation_paranoid && !perfmon_capable()) {
 		drm_dbg(&oa->xe->drm, "Insufficient privileges to remove xe OA config\n");
-		return ret;
+		return -EACCES;
 	}
 
 	ret = get_user(arg, ptr);
@@ -2591,11 +2585,10 @@ static u32 __hwe_oam_unit(struct xe_hw_engine *hwe)
 		return XE_OA_UNIT_INVALID;
 	else if (!IS_DGFX(gt_to_xe(hwe->gt)))
 		return XE_OAM_UNIT_SCMI_0;
-	else if (hwe->class == XE_ENGINE_CLASS_VIDEO_ENHANCE &&
-		 MEDIA_VERx100(gt_to_xe(hwe->gt)) < 3500)
-		return (hwe->instance & 0x1) + 1;
-	else
+	else if (hwe->class == XE_ENGINE_CLASS_VIDEO_DECODE)
 		return (hwe->instance / 2 & 0x1) + 1;
+	else if (hwe->class == XE_ENGINE_CLASS_VIDEO_ENHANCE)
+		return (hwe->instance & 0x1) + 1;
 
 	return XE_OA_UNIT_INVALID;
 }

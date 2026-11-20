@@ -483,17 +483,10 @@ lock:
 		goto out_unlock;
 	}
 
-	if (tm_list) {
+	if (tm_list)
 		ret = tree_mod_log_free_eb(fs_info, tm_list, nritems);
-		if (ret)
-			goto out_unlock;
-	}
-
-	ret = tree_mod_log_insert(fs_info, tm);
-	if (ret && tm_list) {
-		for (i = 0; i < nritems; i++)
-			rb_erase(&tm_list[i]->node, &fs_info->tree_mod_log);
-	}
+	if (!ret)
+		ret = tree_mod_log_insert(fs_info, tm);
 
 out_unlock:
 	write_unlock(&fs_info->tree_mod_log_lock);

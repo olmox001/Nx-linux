@@ -60,7 +60,8 @@ struct scmi_reset_issued_notify_payld {
 struct reset_dom_info {
 	bool async_reset;
 	bool reset_notify;
-	struct scmi_reset_domain_info info;
+	u32 latency_us;
+	char name[SCMI_MAX_STR_SIZE];
 };
 
 struct scmi_reset_info {
@@ -133,10 +134,10 @@ scmi_reset_domain_attributes_get(const struct scmi_protocol_handle *ph,
 		if (pinfo->notify_reset_cmd)
 			dom_info->reset_notify =
 				SUPPORTS_NOTIFY_RESET(attributes);
-		dom_info->info.latency_us = le32_to_cpu(attr->latency);
-		if (dom_info->info.latency_us == U32_MAX)
-			dom_info->info.latency_us = 0;
-		strscpy(dom_info->info.name, attr->name, SCMI_SHORT_NAME_MAX_SIZE);
+		dom_info->latency_us = le32_to_cpu(attr->latency);
+		if (dom_info->latency_us == U32_MAX)
+			dom_info->latency_us = 0;
+		strscpy(dom_info->name, attr->name, SCMI_SHORT_NAME_MAX_SIZE);
 	}
 
 	ph->xops->xfer_put(ph, t);
@@ -148,7 +149,7 @@ scmi_reset_domain_attributes_get(const struct scmi_protocol_handle *ph,
 	if (!ret && PROTOCOL_REV_MAJOR(ph->version) >= 0x3 &&
 	    SUPPORTS_EXTENDED_NAMES(attributes))
 		ph->hops->extended_name_get(ph, RESET_DOMAIN_NAME_GET, domain,
-					    NULL, dom_info->info.name,
+					    NULL, dom_info->name,
 					    SCMI_MAX_STR_SIZE);
 
 	return ret;
@@ -161,16 +162,28 @@ static int scmi_reset_num_domains_get(const struct scmi_protocol_handle *ph)
 	return pi->num_domains;
 }
 
-static const struct scmi_reset_domain_info *
-scmi_reset_info_get(const struct scmi_protocol_handle *ph, u32 domain)
+static const char *
+scmi_reset_name_get(const struct scmi_protocol_handle *ph, u32 domain)
 {
 	struct reset_dom_info *dom_info;
 
 	dom_info = scmi_reset_domain_lookup(ph, domain);
 	if (IS_ERR(dom_info))
-		return NULL;
+		return "unknown";
 
-	return &dom_info->info;
+	return dom_info->name;
+}
+
+static int scmi_reset_latency_get(const struct scmi_protocol_handle *ph,
+				  u32 domain)
+{
+	struct reset_dom_info *dom_info;
+
+	dom_info = scmi_reset_domain_lookup(ph, domain);
+	if (IS_ERR(dom_info))
+		return PTR_ERR(dom_info);
+
+	return dom_info->latency_us;
 }
 
 static int scmi_domain_reset(const struct scmi_protocol_handle *ph, u32 domain,
@@ -228,7 +241,8 @@ scmi_reset_domain_deassert(const struct scmi_protocol_handle *ph, u32 domain)
 
 static const struct scmi_reset_proto_ops reset_proto_ops = {
 	.num_domains_get = scmi_reset_num_domains_get,
-	.info_get = scmi_reset_info_get,
+	.name_get = scmi_reset_name_get,
+	.latency_get = scmi_reset_latency_get,
 	.reset = scmi_reset_domain_reset,
 	.assert = scmi_reset_domain_assert,
 	.deassert = scmi_reset_domain_deassert,
@@ -345,7 +359,7 @@ static int scmi_reset_protocol_init(const struct scmi_protocol_handle *ph)
 	dev_dbg(ph->dev, "Reset Version %d.%d\n",
 		PROTOCOL_REV_MAJOR(ph->version), PROTOCOL_REV_MINOR(ph->version));
 
-	pinfo = devm_kzalloc_obj(ph->dev, *pinfo);
+	pinfo = devm_kzalloc(ph->dev, sizeof(*pinfo), GFP_KERNEL);
 	if (!pinfo)
 		return -ENOMEM;
 
@@ -353,8 +367,8 @@ static int scmi_reset_protocol_init(const struct scmi_protocol_handle *ph)
 	if (ret)
 		return ret;
 
-	pinfo->dom_info = devm_kzalloc_objs(ph->dev, *pinfo->dom_info,
-					    pinfo->num_domains);
+	pinfo->dom_info = devm_kcalloc(ph->dev, pinfo->num_domains,
+				       sizeof(*pinfo->dom_info), GFP_KERNEL);
 	if (!pinfo->dom_info)
 		return -ENOMEM;
 

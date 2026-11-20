@@ -41,6 +41,7 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 	clock-frequency = <400000>;
+	status = "okay";
 
 	pwmhat: pwm@1a {
 		compatible = "argon40,fan-hat";

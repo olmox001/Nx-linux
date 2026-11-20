@@ -288,7 +288,7 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	struct input_dev *idev;
 	int err;
 
-	pad = devm_kzalloc_obj(&spi->dev, struct psxpad);
+	pad = devm_kzalloc(&spi->dev, sizeof(struct psxpad), GFP_KERNEL);
 	if (!pad)
 		return -ENOMEM;
 

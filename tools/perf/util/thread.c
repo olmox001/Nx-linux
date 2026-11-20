@@ -296,12 +296,12 @@ int thread__set_comm_from_proc(struct thread *thread)
 		       thread__pid(thread), thread__tid(thread)) >= (int)sizeof(path)) &&
 	    procfs__read_str(path, &comm, &sz) == 0) {
 		/* sz==0: read got nothing, e.g. race during exit teardown */
-		if (sz > 0) {
-			comm[sz - 1] = '\0';
-			err = thread__set_comm(thread, comm, 0);
+		if (sz == 0) {
+			free(comm);
+			return -1;
 		}
-		/* thread__set_comm() copies the string, so release the buffer. */
-		free(comm);
+		comm[sz - 1] = '\0';
+		err = thread__set_comm(thread, comm, 0);
 	}
 
 	return err;
@@ -531,10 +531,12 @@ uint16_t thread__e_machine_endian(struct thread *thread, struct machine *machine
 		bool is_live = machine->machines == NULL;
 
 		if (!is_live) {
-			/* Check if the session has a data file (assume no session is a test). */
-			struct perf_session *session = machines__session(machine->machines);
+			/* Check if the session has a data file. */
+			struct perf_session *session = container_of(machine->machines,
+								    struct perf_session,
+								    machines);
 
-			is_live = !session || !session->data;
+			is_live = !!session->data;
 		}
 		/* Read from /proc/pid/exe if live. */
 		if (is_live) {

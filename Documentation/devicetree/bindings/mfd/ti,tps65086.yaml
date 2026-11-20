@@ -90,6 +90,7 @@ required:
   - reg
   - gpio-controller
   - '#gpio-cells'
+  - regulators
 
 examples:
   - |

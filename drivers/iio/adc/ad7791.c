@@ -435,9 +435,7 @@ static int ad7791_probe(struct spi_device *spi)
 		return ret;
 
 	st->info = &ad7791_chip_infos[spi_get_device_id(spi)->driver_data];
-	ret = ad_sd_init(&st->sd, indio_dev, spi, &ad7791_sigma_delta_info);
-	if (ret)
-		return ret;
+	ad_sd_init(&st->sd, indio_dev, spi, &ad7791_sigma_delta_info);
 
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -460,11 +458,11 @@ static int ad7791_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad7791_spi_ids[] = {
-	{ .name = "ad7787", .driver_data = AD7787 },
-	{ .name = "ad7788", .driver_data = AD7788 },
-	{ .name = "ad7789", .driver_data = AD7789 },
-	{ .name = "ad7790", .driver_data = AD7790 },
-	{ .name = "ad7791", .driver_data = AD7791 },
+	{ "ad7787", AD7787 },
+	{ "ad7788", AD7788 },
+	{ "ad7789", AD7789 },
+	{ "ad7790", AD7790 },
+	{ "ad7791", AD7791 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, ad7791_spi_ids);

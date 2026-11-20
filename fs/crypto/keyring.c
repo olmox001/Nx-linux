@@ -145,19 +145,6 @@ static inline bool valid_key_spec(const struct fscrypt_key_specifier *spec)
 	return master_key_spec_len(spec) != 0;
 }
 
-/*
- * fscrypt_master_key_user - a user's claim to a master key
- */
-struct fscrypt_master_key_user {
-	struct list_head link;
-	kuid_t uid;
-	/*
-	 * This 'struct key' contains no secret.  It exists solely to charge the
-	 * appropriate user's key quota.
-	 */
-	struct key *quota_key;
-};
-
 static int fscrypt_user_key_instantiate(struct key *key,
 					struct key_preparsed_payload *prep)
 {
@@ -510,7 +497,7 @@ static int do_add_master_key(struct super_block *sb,
 	struct fscrypt_master_key *mk;
 	int err;
 
-	guard(mutex)(&fscrypt_add_key_mutex); /* serialize find + link */
+	mutex_lock(&fscrypt_add_key_mutex); /* serialize find + link */
 
 	mk = fscrypt_find_master_key(sb, mk_spec);
 	if (!mk) {
@@ -537,6 +524,7 @@ static int do_add_master_key(struct super_block *sb,
 		}
 		fscrypt_put_master_key(mk);
 	}
+	mutex_unlock(&fscrypt_add_key_mutex);
 	return err;
 }
 
@@ -561,10 +549,8 @@ static int add_master_key(struct super_block *sb,
 		if (secret->is_hw_wrapped) {
 			err = fscrypt_derive_sw_secret(sb, secret->bytes,
 						       secret->size, sw_secret);
-			if (err) {
-				memzero_explicit(sw_secret, sizeof(sw_secret));
+			if (err)
 				return err;
-			}
 			kdf_key = sw_secret;
 			kdf_key_size = sizeof(sw_secret);
 			/*
@@ -1235,19 +1221,21 @@ out:
 }
 EXPORT_SYMBOL_GPL(fscrypt_ioctl_get_key_status);
 
-void __init fscrypt_init_keyring(void)
+int __init fscrypt_init_keyring(void)
 {
 	int err;
 
-	/*
-	 * Note that register_key_type() fails only if a key type with the same
-	 * name already exists, which should never happen here.
-	 */
 	err = register_key_type(&key_type_fscrypt_user);
 	if (err)
-		panic("failed to register .fscrypt key type (%d)", err);
+		return err;
+
 	err = register_key_type(&key_type_fscrypt_provisioning);
 	if (err)
-		panic("failed to register fscrypt-provisioning key type (%d)",
-		      err);
+		goto err_unregister_fscrypt_user;
+
+	return 0;
+
+err_unregister_fscrypt_user:
+	unregister_key_type(&key_type_fscrypt_user);
+	return err;
 }

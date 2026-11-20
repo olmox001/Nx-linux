@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2017 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2020 Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -34,7 +34,8 @@
 #include <linux/in.h>
 #include <net/tcp.h>
 
-#include "rds_single_path.h"
+#include "trace.h"
+
 #include "rds.h"
 #include "tcp.h"
 
@@ -56,22 +57,23 @@ void rds_tcp_xmit_path_complete(struct rds_conn_path *cp)
 static int rds_tcp_sendmsg(struct socket *sock, void *data, unsigned int len)
 {
 	struct kvec vec = {
-		.iov_base = data,
-		.iov_len = len,
+                .iov_base = data,
+                .iov_len = len,
 	};
-	struct msghdr msg = {
-		.msg_flags = MSG_DONTWAIT | MSG_NOSIGNAL,
-	};
+        struct msghdr msg = {
+                .msg_flags = MSG_DONTWAIT | MSG_NOSIGNAL,
+        };
 
 	return kernel_sendmsg(sock, &msg, &vec, 1, vec.iov_len);
 }
 
 /* the core send_sem serializes this with other xmit and shutdown */
 int rds_tcp_xmit(struct rds_connection *conn, struct rds_message *rm,
-		 unsigned int hdr_off, unsigned int sg, unsigned int off)
+	         unsigned int hdr_off, unsigned int sg, unsigned int off)
 {
 	struct rds_conn_path *cp = rm->m_inc.i_conn_path;
 	struct rds_tcp_connection *tc = cp->cp_transport_data;
+	char *reason = NULL;
 	struct msghdr msg = {};
 	struct bio_vec bvec;
 	int done = 0;
@@ -87,7 +89,7 @@ int rds_tcp_xmit(struct rds_connection *conn, struct rds_message *rm,
 				sizeof(struct rds_header) +
 				be32_to_cpu(rm->m_inc.i_hdr.h_len) - 1;
 		smp_mb__before_atomic();
-		set_bit(RDS_MSG_HAS_ACK_SEQ, &rm->m_flags);
+		rds_set_rm_flag_bit(rm, RDS_MSG_HAS_ACK_SEQ);
 		tc->t_last_expected_una = rm->m_ack_seq + 1;
 
 		if (test_bit(RDS_MSG_RETRANSMITTED, &rm->m_flags))
@@ -100,13 +102,15 @@ int rds_tcp_xmit(struct rds_connection *conn, struct rds_message *rm,
 
 	if (hdr_off < sizeof(struct rds_header)) {
 		/* see rds_tcp_write_space() */
-		sk_set_nospace(tc->t_sock->sk);
+		set_bit(SOCK_NOSPACE, &tc->t_sock->sk->sk_socket->flags);
 
 		ret = rds_tcp_sendmsg(tc->t_sock,
 				      (void *)&rm->m_inc.i_hdr + hdr_off,
 				      sizeof(rm->m_inc.i_hdr) - hdr_off);
-		if (ret < 0)
+		if (ret < 0) {
+			reason = "sendmsg err";
 			goto out;
+		}
 		done += ret;
 		if (hdr_off + done != sizeof(struct rds_header))
 			goto out;
@@ -123,11 +127,14 @@ int rds_tcp_xmit(struct rds_connection *conn, struct rds_message *rm,
 		iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, &bvec, 1,
 			      rm->data.op_sg[sg].length - off);
 		ret = sock_sendmsg(tc->t_sock, &msg);
-		rdsdebug("tcp sendpage %p:%u:%u ret %d\n", (void *)sg_page(&rm->data.op_sg[sg]),
+		rdsdebug("tcp sock_sendmsg %p:%u:%u ret %d\n", (void *)sg_page(&rm->data.op_sg[sg]),
 			 rm->data.op_sg[sg].offset + off, rm->data.op_sg[sg].length - off,
 			 ret);
-		if (ret <= 0)
+		if (ret <= 0) {
+			if (ret < 0)
+				reason = "sock_sendmsg err";
 			break;
+		}
 
 		off += ret;
 		done += ret;
@@ -139,9 +146,13 @@ int rds_tcp_xmit(struct rds_connection *conn, struct rds_message *rm,
 
 out:
 	if (ret <= 0) {
+		if (reason)
+			trace_rds_drop_egress(rm, rm->m_rs, conn, cp,
+					      &conn->c_laddr, &conn->c_faddr,
+					      reason);
 		/* write_space will hit after EAGAIN, all else fatal */
 		if (ret == -EAGAIN) {
-			rds_tcp_stats_inc(s_tcp_sndbuf_full);
+			rds_tcp_stats_inc(tc->t_stats, s_tcp_sndbuf_full);
 			ret = 0;
 		} else {
 			/* No need to disconnect/reconnect if path_drop
@@ -153,7 +164,7 @@ out:
 					"returned %d, "
 					"disconnecting and reconnecting\n",
 					&conn->c_faddr, cp->cp_index, ret);
-				rds_conn_path_drop(cp, false);
+				rds_conn_path_drop(cp, DR_TCP_SEND_FAIL, ret);
 			}
 		}
 	}
@@ -192,17 +203,14 @@ void rds_tcp_write_space(struct sock *sk)
 	tc = cp->cp_transport_data;
 	rdsdebug("write_space for tc %p\n", tc);
 	write_space = tc->t_orig_write_space;
-	rds_tcp_stats_inc(s_tcp_write_space_calls);
+	rds_tcp_stats_inc(tc->t_stats, s_tcp_write_space_calls);
 
 	rdsdebug("tcp una %u\n", rds_tcp_snd_una(tc));
 	tc->t_last_seen_una = rds_tcp_snd_una(tc);
 	rds_send_path_drop_acked(cp, rds_tcp_snd_una(tc), rds_tcp_is_acked);
 
-	rcu_read_lock();
-	if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf &&
-	    !rds_destroy_pending(cp->cp_conn))
-		queue_delayed_work(cp->cp_wq, &cp->cp_send_w, 0);
-	rcu_read_unlock();
+        if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf)
+		rds_cond_queue_send_work(cp, 0);
 
 out:
 	read_unlock_bh(&sk->sk_callback_lock);
@@ -221,5 +229,6 @@ out:
 	 */
 	write_space(sk);
 
-	sk_set_nospace(sk);
+	if (sk->sk_socket)
+		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 }

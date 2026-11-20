@@ -1128,23 +1128,23 @@ static void mdp5_crtc_destroy_state(struct drm_crtc *crtc, struct drm_crtc_state
 	kfree(mdp5_cstate);
 }
 
-static struct drm_crtc_state *mdp5_crtc_create_state(struct drm_crtc *crtc)
+static void mdp5_crtc_reset(struct drm_crtc *crtc)
 {
-	struct mdp5_crtc_state *mdp5_cstate;
+	struct mdp5_crtc_state *mdp5_cstate = kzalloc_obj(*mdp5_cstate);
 
-	mdp5_cstate = kzalloc_obj(*mdp5_cstate);
-	if (!mdp5_cstate)
-		return ERR_PTR(-ENOMEM);
+	if (crtc->state)
+		mdp5_crtc_destroy_state(crtc, crtc->state);
 
-	__drm_atomic_helper_crtc_state_init(&mdp5_cstate->base, crtc);
-
-	return &mdp5_cstate->base;
+	if (mdp5_cstate)
+		__drm_atomic_helper_crtc_reset(crtc, &mdp5_cstate->base);
+	else
+		__drm_atomic_helper_crtc_reset(crtc, NULL);
 }
 
 static const struct drm_crtc_funcs mdp5_crtc_no_lm_cursor_funcs = {
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
-	.atomic_create_state = mdp5_crtc_create_state,
+	.reset = mdp5_crtc_reset,
 	.atomic_duplicate_state = mdp5_crtc_duplicate_state,
 	.atomic_destroy_state = mdp5_crtc_destroy_state,
 	.atomic_print_state = mdp5_crtc_atomic_print_state,
@@ -1157,7 +1157,7 @@ static const struct drm_crtc_funcs mdp5_crtc_no_lm_cursor_funcs = {
 static const struct drm_crtc_funcs mdp5_crtc_funcs = {
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
-	.atomic_create_state = mdp5_crtc_create_state,
+	.reset = mdp5_crtc_reset,
 	.atomic_duplicate_state = mdp5_crtc_duplicate_state,
 	.atomic_destroy_state = mdp5_crtc_destroy_state,
 	.cursor_set = mdp5_crtc_cursor_set,

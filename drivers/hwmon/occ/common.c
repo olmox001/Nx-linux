@@ -860,13 +860,15 @@ static int occ_setup_sensor_attrs(struct occ *occ)
 		sensors->extended.num_sensors = 0;
 	}
 
-	occ->attrs = devm_kzalloc_objs(dev, *occ->attrs, num_attrs);
+	occ->attrs = devm_kcalloc(dev, num_attrs, sizeof(*occ->attrs),
+				  GFP_KERNEL);
 	if (!occ->attrs)
 		return -ENOMEM;
 
 	/* null-terminated list */
-	occ->group.attrs = devm_kzalloc_objs(dev, *occ->group.attrs,
-					     num_attrs + 1);
+	occ->group.attrs = devm_kcalloc(dev, num_attrs + 1,
+					sizeof(*occ->group.attrs),
+					GFP_KERNEL);
 	if (!occ->group.attrs)
 		return -ENOMEM;
 

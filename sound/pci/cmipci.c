@@ -3170,7 +3170,7 @@ static int snd_cmipci_probe(struct pci_dev *pci,
 			    const struct pci_device_id *pci_id)
 {
 	static int dev;
-	struct snd_card *card __free(snd_card_free) = NULL;
+	struct snd_card *card;
 	int err;
 
 	if (dev >= SNDRV_CARDS)
@@ -3201,16 +3201,19 @@ static int snd_cmipci_probe(struct pci_dev *pci,
 
 	err = snd_cmipci_create(card, pci, dev);
 	if (err < 0)
-		return err;
+		goto error;
 
 	err = snd_card_register(card);
 	if (err < 0)
-		return err;
+		goto error;
 
 	pci_set_drvdata(pci, card);
-	card = NULL; /* probe succeeded, don't release as error */
 	dev++;
 	return 0;
+
+ error:
+	snd_card_free(card);
+	return err;
 }
 
 /*

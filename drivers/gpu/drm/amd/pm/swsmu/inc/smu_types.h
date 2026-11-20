@@ -285,7 +285,6 @@
 	__SMU_DUMMY_MAP(GetStaticMetricsTable), \
 	__SMU_DUMMY_MAP(GetSystemMetricsTable), \
 	__SMU_DUMMY_MAP(GetRASTableVersion), \
-	__SMU_DUMMY_MAP(GetRmaStatus),    \
 	__SMU_DUMMY_MAP(GetBadPageCount), \
 	__SMU_DUMMY_MAP(GetBadPageMcaAddr), \
 	__SMU_DUMMY_MAP(SetTimestamp), \
@@ -298,16 +297,11 @@
 	__SMU_DUMMY_MAP(GetSmartShiftStatus), \
 	__SMU_DUMMY_MAP(EnableLSdma), \
 	__SMU_DUMMY_MAP(DisableLSdma), \
-	__SMU_DUMMY_MAP(GetMetricsTableVersion), \
-	__SMU_DUMMY_MAP(GetMetricsTableLogSample), \
-	__SMU_DUMMY_MAP(GetMetricsTableLogDramAddr), \
 	__SMU_DUMMY_MAP(InitializeGfx), \
 	__SMU_DUMMY_MAP(SetSoftMaxFclk), \
 	__SMU_DUMMY_MAP(SetSoftMaxGl2clk), \
 	__SMU_DUMMY_MAP(SetSoftMinGl2clk), \
-	__SMU_DUMMY_MAP(GetSystemMetricsVersion), \
-	__SMU_DUMMY_MAP(SetNpmLimit), \
-	__SMU_DUMMY_MAP(PrepareNodeForUnload),
+	__SMU_DUMMY_MAP(GetSystemMetricsVersion),
 
 #undef __SMU_DUMMY_MAP
 #define __SMU_DUMMY_MAP(type)	SMU_MSG_##type

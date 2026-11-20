@@ -487,12 +487,6 @@ int sdca_irq_populate_early(struct device *dev, struct regmap *regmap,
 				}
 				break;
 			case SDCA_CTL_TYPE_S(HIDE, HIDTX_CURRENTOWNER):
-				interrupt->free_priv = sdca_destroy_hid_device;
-
-				ret = sdca_add_hid_device(interrupt);
-				if (ret)
-					return ret;
-
 				interrupt->handler = hid_handler;
 				break;
 			default:
@@ -642,7 +636,7 @@ struct sdca_interrupt_info *devm_sdca_irq_allocate(struct device *sdev,
 	struct sdca_interrupt_info *info;
 	int ret, i;
 
-	info = devm_kzalloc_obj(sdev, *info);
+	info = devm_kzalloc(sdev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return ERR_PTR(-ENOMEM);
 

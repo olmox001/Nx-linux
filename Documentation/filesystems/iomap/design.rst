@@ -43,7 +43,7 @@ as:
  * lseek ``SEEK_DATA`` and ``SEEK_HOLE``
  * swapfile activation
 
-The origins of this library is the file I/O path that XFS once used; it
+This origins of this library is the file I/O path that XFS once used; it
 has now been extended to cover several other operations.
 
 Who Should Read This?
@@ -75,10 +75,7 @@ At a high level, an iomap operation `looks like this
 
 1. For each byte in the operation range...
 
-   1. Obtain the next space mapping via the ``iomap_iter_next_fn`` callback.
-      From the second iteration onwards this same callback first finishes
-      the previous mapping (committing or unreserving space as needed)
-      and then produces the next one.
+   1. Obtain a space mapping via ``->iomap_begin``
 
    2. For each sub-unit of work...
 
@@ -89,13 +86,7 @@ At a high level, an iomap operation `looks like this
 
    3. Increment operation cursor
 
-iomap repeats this until the range is fully consumed.  The ``iomap_iter_next_fn``
-callback returns ``1`` while there is more of the range left to process,
-``0`` once it is fully consumed, or a negative errno on error.
-Filesystems rarely implement this callback by hand. The ``iomap_iter_next``
-helper implements the finish-then-produce sequence in terms of two smaller
-callbacks, ``begin`` and ``end``. See `The Mapping Callback`_ below for more
-info.
+   4. Release the mapping via ``->iomap_end``, if necessary
 
 Each iomap operation will be covered in more detail below.
 This library was covered previously by an `LWN article
@@ -198,7 +189,7 @@ The fields are as follows:
    * **IOMAP_DELALLOC**: A promise to allocate space at a later time
      ("delayed allocation").
      If the filesystem returns IOMAP_F_NEW here and the write fails, the
-     ``end`` function must delete the reservation.
+     ``->iomap_end`` function must delete the reservation.
      The ``addr`` field must be set to ``IOMAP_NULL_ADDR``.
 
    * **IOMAP_MAPPED**: The file range maps to specific space on the
@@ -217,11 +208,12 @@ The fields are as follows:
 
    * **IOMAP_INLINE**: The file range maps to the memory buffer
      specified by ``inline_data``.
-     For write operation, the ``end`` function must persist the data.
+     For write operation, the ``->iomap_end`` function presumably
+     handles persisting the data.
      The ``addr`` field must be set to ``IOMAP_NULL_ADDR``.
 
  * ``flags`` describe the status of the space mapping.
-   These flags should be set by the filesystem in ``begin``:
+   These flags should be set by the filesystem in ``->iomap_begin``:
 
    * **IOMAP_F_NEW**: The space under the mapping is newly allocated.
      Areas that will not be written to must be zeroed.
@@ -270,15 +262,15 @@ The fields are as follows:
      update.
 
    These flags can be set by iomap itself during file operations.
-   The filesystem should supply an ``end`` function if it needs
+   The filesystem should supply an ``->iomap_end`` function if it needs
    to observe these flags:
 
    * **IOMAP_F_SIZE_CHANGED**: The file size has changed as a result of
      using this mapping.
 
    * **IOMAP_F_STALE**: The mapping was found to be stale.
-     iomap will call ``end`` on this mapping and then ``begin`` to obtain a
-     new mapping.
+     iomap will call ``->iomap_end`` on this mapping and then
+     ``->iomap_begin`` to obtain a new mapping.
 
    Currently, these flags are only set by pagecache operations.
 
@@ -297,103 +289,41 @@ The fields are as follows:
 
  * ``private`` is a pointer to `filesystem-private information
    <https://lore.kernel.org/all/20180619164137.13720-7-hch@lst.de/>`_.
-   This value will be passed unchanged to ``end``.
+   This value will be passed unchanged to ``->iomap_end``.
 
  * ``validity_cookie`` is a magic freshness value set by the filesystem
    that should be used to detect stale mappings.
    For pagecache operations this is critical for correct operation
    because page faults can occur, which implies that filesystem locks
-   should not be held between ``begin`` and ``end``.
+   should not be held between ``->iomap_begin`` and ``->iomap_end``.
    Filesystems with completely static mappings need not set this value.
    Only pagecache operations revalidate mappings; see the section about
    ``iomap_valid`` for details.
 
-The Mapping Callback
+``struct iomap_ops``
 --------------------
 
-Every iomap operation takes an ``iomap_iter_next_fn`` callback from the
-filesystem. iomap calls it once per iteration of the file range:
+Every iomap function requires the filesystem to pass an operations
+structure to obtain a mapping and (optionally) to release the mapping:
 
 .. code-block:: c
 
- typedef int (*iomap_iter_next_fn)(const struct iomap_iter *iter,
-                              struct iomap *iomap, struct iomap *srcmap);
+ struct iomap_ops {
+     int (*iomap_begin)(struct inode *inode, loff_t pos, loff_t length,
+                        unsigned flags, struct iomap *iomap,
+                        struct iomap *srcmap);
 
-``iomap_iter_next_fn``
-~~~~~~~~~~~~~~~~~~~~~~
+     int (*iomap_end)(struct inode *inode, loff_t pos, loff_t length,
+                      ssize_t written, unsigned flags,
+                      struct iomap *iomap);
+ };
 
-This must finish the previous mapping, if any, and then produce the next
-mapping for the current iteration position described by ``iter``.
-The mapping is returned through ``iomap`` (and through ``srcmap`` for
-operations that read from one mapping while writing to another; see
-``begin`` below).
+``->iomap_begin``
+~~~~~~~~~~~~~~~~~
 
-The callback returns ``1`` to continue iterating, ``0`` once the file
-range has been fully consumed, or a negative errno on error.
-
-Most filesystems are not expected to implement all of these behaviors
-in this callback themselves.  They should instead call ``iomap_iter_next`` as
-described below.
-
-``iomap_iter_next``
-~~~~~~~~~~~~~~~~~~~
-
-Filesystems rarely need a hand-written ``iomap_iter_next_fn`` callback.  The
-``iomap_iter_next`` helper implements the finish-then-produce sequence in
-terms of two smaller callbacks, ``begin`` and ``end``, so most
-``iomap_iter_next_fn`` implementations are simply:
-
-.. code-block:: c
-
- static int my_iomap_next(const struct iomap_iter *iter,
-                          struct iomap *iomap, struct iomap *srcmap)
- {
-         return iomap_iter_next(iter, iomap, srcmap,
-                                my_iomap_begin, my_iomap_end);
- }
-
-This boilerplate is normally generated with the ``DEFINE_IOMAP_ITER_NEXT()``
-and ``DEFINE_IOMAP_ITER_NEXT_END()`` macros rather than written by hand.  Use
-``DEFINE_IOMAP_ITER_NEXT()`` for the common case with no ``end`` callback, and
-``DEFINE_IOMAP_ITER_NEXT_END()`` when an ``end`` callback is needed:
-
-.. code-block:: c
-
- /* no end() callback */
- static DEFINE_IOMAP_ITER_NEXT(my_iomap_next, my_iomap_begin);
-
- /* with an end() callback */
- static DEFINE_IOMAP_ITER_NEXT_END(my_iomap_next, my_iomap_begin,
-                                   my_iomap_end);
-
-The macro generates a function with external linkage.  Prefix the invocation
-with ``static`` for a file-local callback, or leave it non-``static`` and add
-a matching declaration to a header when the callback is referenced from
-another file.
-
-``end`` may be ``NULL`` when the filesystem has nothing to finish.
-The two callbacks have these prototypes:
-
-.. code-block:: c
-
- typedef int (*iomap_begin_fn)(struct inode *inode, loff_t pos,
-                               loff_t length, unsigned flags,
-                               struct iomap *iomap, struct iomap *srcmap);
-
- typedef int (*iomap_end_fn)(struct inode *inode, loff_t pos,
-                             loff_t length, ssize_t written,
-                             unsigned flags, struct iomap *iomap);
-
-``iomap_iter_next`` is an inline helper, so when it is called with fixed
-``begin`` and ``end`` functions the compiler can inline both into the
-filesystem's ``iomap_iter_next_fn`` callback, keeping indirect calls out of the
-iteration hot path.  The two callbacks are described next.
-
-``begin``
-~~~~~~~~~
-
-The ``begin`` callback obtains one file mapping for the range of bytes
-specified by ``pos`` and ``length`` for the file ``inode``.
+iomap operations call ``->iomap_begin`` to obtain one file mapping for
+the range of bytes specified by ``pos`` and ``length`` for the file
+``inode``.
 This mapping should be returned through the ``iomap`` pointer.
 The mapping must cover at least the first byte of the supplied file
 range, but it does not need to cover the entire requested range.
@@ -447,18 +377,18 @@ information via ``srcmap``.
 Only pagecache and fsdax operations support reading from one mapping and
 writing to another.
 
-``end``
-~~~~~~~
+``->iomap_end``
+~~~~~~~~~~~~~~~
 
-After the operation completes, the ``end`` callback, if present, is called to
-signal that iomap is finished with a mapping.
+After the operation completes, the ``->iomap_end`` function, if present,
+is called to signal that iomap is finished with a mapping.
 Typically, implementations will use this function to tear down any
-context that was set up in ``begin``.
+context that were set up in ``->iomap_begin``.
 For example, a write might wish to commit the reservations for the bytes
 that were operated upon and unreserve any space that was not operated
 upon.
 ``written`` might be zero if no bytes were touched.
-``flags`` will contain the same value passed to ``begin``.
+``flags`` will contain the same value passed to ``->iomap_begin``.
 iomap ops for reads are not likely to need to supply this function.
 
 Both functions should return a negative errno code on error, or zero on
@@ -491,8 +421,8 @@ iomap is concerned:
    accessing the folio until writeback is underway.
 
    * The **lower** level primitive is taken by the filesystem in the
-     ``begin`` and ``end`` functions to coordinate access to the file space
-     mapping information.
+     ``->iomap_begin`` and ``->iomap_end`` functions to coordinate
+     access to the file space mapping information.
      The fields of the iomap object should be filled out while holding
      this primitive.
      The upper level synchronization primitive, if any, remains held

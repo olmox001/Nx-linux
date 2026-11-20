@@ -669,9 +669,11 @@ static int cpts_of_mux_clk_setup(struct cpts *cpts, struct device_node *node)
 		goto mux_fail;
 	}
 
-	parent_names = devm_kzalloc_objs(cpts->dev, *parent_names, num_parents);
+	parent_names = devm_kcalloc(cpts->dev, num_parents,
+				    sizeof(*parent_names), GFP_KERNEL);
 
-	mux_table = devm_kzalloc_objs(cpts->dev, *mux_table, num_parents);
+	mux_table = devm_kcalloc(cpts->dev, num_parents, sizeof(*mux_table),
+				 GFP_KERNEL);
 	if (!mux_table || !parent_names) {
 		ret = -ENOMEM;
 		goto mux_fail;
@@ -747,7 +749,7 @@ struct cpts *cpts_create(struct device *dev, void __iomem *regs,
 	struct cpts *cpts;
 	int ret;
 
-	cpts = devm_kzalloc_obj(dev, *cpts);
+	cpts = devm_kzalloc(dev, sizeof(*cpts), GFP_KERNEL);
 	if (!cpts)
 		return ERR_PTR(-ENOMEM);
 

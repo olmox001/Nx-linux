@@ -11,6 +11,7 @@
 #ifndef	_LINUX_CDROM_H
 #define	_LINUX_CDROM_H
 
+#include <linux/fs.h>		/* not really needed, later.. */
 #include <linux/list.h>
 #include <linux/blkdev.h>
 #include <scsi/scsi_common.h>

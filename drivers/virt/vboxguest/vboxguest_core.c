@@ -377,8 +377,8 @@ static void vbg_balloon_work(struct work_struct *work)
 	 */
 	if (!gdev->mem_balloon.max_chunks) {
 		gdev->mem_balloon.pages =
-			devm_kzalloc_objs(gdev->dev, struct page **,
-					  req->phys_mem_chunks);
+			devm_kcalloc(gdev->dev, req->phys_mem_chunks,
+				     sizeof(struct page **), GFP_KERNEL);
 		if (!gdev->mem_balloon.pages)
 			return;
 

@@ -215,8 +215,10 @@ cifs_buf_get(void)
 void
 cifs_buf_release(void *buf_to_free)
 {
-	if (!buf_to_free)
+	if (buf_to_free == NULL) {
+		/* cifs_dbg(FYI, "Null buffer passed to cifs_buf_release\n");*/
 		return;
+	}
 	mempool_free(buf_to_free, cifs_req_poolp);
 
 	atomic_dec(&buf_alloc_count);
@@ -1073,17 +1075,7 @@ int cifs_inval_name_dfs_link_error(const unsigned int xid,
 }
 #endif
 
-static bool reco_wait_done(struct TCP_Server_Info *server,
-			   struct cifs_tcon *tcon, int aborts)
-{
-	return server->tcpStatus != CifsNeedReconnect ||
-		atomic_read(&tcon->umount_aborts) != aborts ||
-		cifs_tcon_dying(tcon);
-}
-
-int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server,
-				   struct cifs_tcon *tcon, int aborts,
-				   bool nowait)
+int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server, bool retry)
 {
 	int timeout = 10;
 	int rc;
@@ -1092,10 +1084,6 @@ int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server,
 	if (server->tcpStatus != CifsNeedReconnect) {
 		spin_unlock(&server->srv_lock);
 		return 0;
-	}
-	if (nowait) {
-		spin_unlock(&server->srv_lock);
-		return -EAGAIN;
 	}
 	timeout *= server->nr_targets;
 	spin_unlock(&server->srv_lock);
@@ -1110,9 +1098,7 @@ int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server,
 	 */
 	do {
 		rc = wait_event_interruptible_timeout(server->response_q,
-						      reco_wait_done(server,
-								     tcon,
-								     aborts),
+						      (server->tcpStatus != CifsNeedReconnect),
 						      timeout * HZ);
 		if (rc < 0) {
 			cifs_dbg(FYI, "%s: aborting reconnect due to received signal\n",
@@ -1127,7 +1113,7 @@ int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server,
 			return 0;
 		}
 		spin_unlock(&server->srv_lock);
-	} while (cifs_tcon_retry(tcon, aborts));
+	} while (retry);
 
 	cifs_dbg(FYI, "%s: gave up waiting on reconnect\n", __func__);
 	return -EHOSTDOWN;

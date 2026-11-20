@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Oracle.  All rights reserved.
+ * Copyright (c) 2006, 2023, Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -43,11 +43,63 @@ static unsigned long rds_sysctl_reconnect_max = ~0UL;
 
 unsigned long rds_sysctl_reconnect_min_jiffies;
 unsigned long rds_sysctl_reconnect_max_jiffies = HZ;
+unsigned long rds_sysctl_reconnect_passive_min_jiffies;
+
+unsigned int rds_sysctl_reconnect_backoff_after_secs = 600;
+unsigned int rds_sysctl_reconnect_backoff_max_interval_secs = 600;
 
 unsigned int  rds_sysctl_max_unacked_packets = 8;
 unsigned int  rds_sysctl_max_unacked_bytes = (16 << 20);
 
 unsigned int rds_sysctl_ping_enable = 1;
+
+unsigned int rds_sysctl_shutdown_trace_start_time;
+unsigned int rds_sysctl_shutdown_trace_end_time;
+
+unsigned int rds_sock_max_peers_min = 128;
+unsigned int rds_sock_max_peers_max = 65536;
+unsigned int rds_sock_max_peers = 8192;
+
+/* Heartbeat timeout in seconds. That is the time from a heartbeat ping
+ * is sent, before the heartbeat mechanism drops the connection, unless
+ * a heartbeat pong has been received.
+ */
+unsigned int rds_sysctl_min_conn_hb_timeout;
+unsigned int rds_sysctl_max_conn_hb_timeout = 60;
+unsigned int rds_sysctl_conn_hb_timeout = 10;
+
+/* Heartbeat interval in seconds. The time from a successful heartbeat
+ * pong has been received until a new heartbeat ping is sent out is
+ * pseudo randomly chosen in the interval 50% to 150% of
+ * rds_sysctl_min_conn_hb_interval.
+ */
+unsigned int rds_sysctl_min_conn_hb_interval = 10;
+unsigned int rds_sysctl_max_conn_hb_interval = 600;
+unsigned int rds_sysctl_conn_hb_interval = 60;
+
+/* Reap a dropped connection after n seconds. 0 to disable reaping. */
+unsigned int rds_sysctl_conn_reap_after_drop_secs;
+
+/* Upper bound to how long "rds_send_drop_to"
+ * (and therefore "RDS_CANCEL_SENT_TO") waits for messages to be unmapped.
+ */
+unsigned long rds_sysctl_dr_sock_cancel_jiffies;
+
+/*
+ * We have official values, but must maintain the sysctl interface for existing
+ * software that expects to find these values here.
+ */
+static int rds_sysctl_pf_rds = PF_RDS;
+static int rds_sysctl_sol_rds = SOL_RDS;
+
+unsigned int rds_sysctl_enable_payload_csum;
+
+unsigned int rds_sysctl_cfu_cache_cap = 512;
+
+unsigned int rds_cfu_cache_gc_interval = 1;
+
+/* Disallow connection reaping via SO RDS_CONN_REAP by default. */
+unsigned int rds_sysctl_conn_user_reap_enable;
 
 static struct ctl_table rds_sysctl_rds_table[] = {
 	{
@@ -67,6 +119,41 @@ static struct ctl_table rds_sysctl_rds_table[] = {
 		.proc_handler   = proc_doulongvec_ms_jiffies_minmax,
 		.extra1		= &rds_sysctl_reconnect_min_jiffies,
 		.extra2		= &rds_sysctl_reconnect_max,
+	},
+	{
+		.procname       = "reconnect_passive_min_delay_ms",
+		.data		= &rds_sysctl_reconnect_passive_min_jiffies,
+		.maxlen         = sizeof(unsigned long),
+		.mode           = 0644,
+		.proc_handler   = proc_doulongvec_ms_jiffies_minmax,
+	},
+	{
+		.procname       = "reconnect_backoff_after_secs",
+		.data		= &rds_sysctl_reconnect_backoff_after_secs,
+		.maxlen         = sizeof(rds_sysctl_reconnect_backoff_after_secs),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec,
+	},
+	{
+		.procname       = "reconnect_backoff_max_interval_secs",
+		.data		= &rds_sysctl_reconnect_backoff_max_interval_secs,
+		.maxlen         = sizeof(rds_sysctl_reconnect_backoff_max_interval_secs),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec,
+	},
+	{
+		.procname       = "pf_rds",
+		.data		= &rds_sysctl_pf_rds,
+		.maxlen         = sizeof(int),
+		.mode           = 0444,
+		.proc_handler   = proc_dointvec,
+	},
+	{
+		.procname       = "sol_rds",
+		.data		= &rds_sysctl_sol_rds,
+		.maxlen         = sizeof(int),
+		.mode           = 0444,
+		.proc_handler   = proc_dointvec,
 	},
 	{
 		.procname	= "max_unacked_packets",
@@ -89,6 +176,89 @@ static struct ctl_table rds_sysctl_rds_table[] = {
 		.mode           = 0644,
 		.proc_handler   = proc_dointvec,
 	},
+	{
+		.procname       = "shutdown_trace_start_time",
+		.data           = &rds_sysctl_shutdown_trace_start_time,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = &proc_dointvec,
+	},
+	{
+		.procname       = "shutdown_trace_end_time",
+		.data           = &rds_sysctl_shutdown_trace_end_time,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = &proc_dointvec,
+	},
+	{
+		.procname       = "sock_max_peers",
+		.data           = &rds_sock_max_peers,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = &proc_dointvec_minmax,
+		.extra1		= &rds_sock_max_peers_min,
+		.extra2		= &rds_sock_max_peers_max
+	},
+	{
+		.procname       = "conn_heartbeat_timeout_secs",
+		.data           = &rds_sysctl_conn_hb_timeout,
+		.maxlen         = sizeof(rds_sysctl_conn_hb_timeout),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec_minmax,
+		.extra1		= &rds_sysctl_min_conn_hb_timeout,
+		.extra2		= &rds_sysctl_max_conn_hb_timeout,
+	},
+	{
+		.procname       = "conn_heartbeat_interval_secs",
+		.data           = &rds_sysctl_conn_hb_interval,
+		.maxlen         = sizeof(rds_sysctl_conn_hb_interval),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec_minmax,
+		.extra1		= &rds_sysctl_min_conn_hb_interval,
+		.extra2		= &rds_sysctl_max_conn_hb_interval,
+	},
+	{
+		.procname	= "conn_reap_after_drop_secs",
+		.data		= &rds_sysctl_conn_reap_after_drop_secs,
+		.maxlen		= sizeof(rds_sysctl_conn_reap_after_drop_secs),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec,
+	},
+	{
+		.procname       = "dr_sock_cancel_delay_ms",
+		.data           = &rds_sysctl_dr_sock_cancel_jiffies,
+		.maxlen         = sizeof(unsigned long),
+		.mode           = 0644,
+		.proc_handler   = proc_doulongvec_ms_jiffies_minmax,
+	},
+	{
+		.procname       = "enable_payload_csum",
+		.data           = &rds_sysctl_enable_payload_csum,
+		.maxlen         = sizeof(rds_sysctl_enable_payload_csum),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec,
+	},
+	{
+		.procname       = "copy_from_user_per_cpu_cache_cap",
+		.data           = &rds_sysctl_cfu_cache_cap,
+		.maxlen         = sizeof(rds_sysctl_cfu_cache_cap),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec,
+	},
+	{
+		.procname       = "copy_from_user_gc_interval_secs",
+		.data           = &rds_cfu_cache_gc_interval,
+		.maxlen         = sizeof(rds_cfu_cache_gc_interval),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec,
+	},
+	{
+		.procname	= "conn_user_reap_enable",
+		.data		= &rds_sysctl_conn_user_reap_enable,
+		.maxlen		= sizeof(rds_sysctl_conn_user_reap_enable),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec,
+	},
 };
 
 void rds_sysctl_exit(void)
@@ -100,10 +270,11 @@ int rds_sysctl_init(void)
 {
 	rds_sysctl_reconnect_min = msecs_to_jiffies(1);
 	rds_sysctl_reconnect_min_jiffies = rds_sysctl_reconnect_min;
+	rds_sysctl_reconnect_passive_min_jiffies = msecs_to_jiffies(3000);
+	rds_sysctl_dr_sock_cancel_jiffies = msecs_to_jiffies(6000);
 
-	rds_sysctl_reg_table =
-		register_net_sysctl(&init_net, "net/rds", rds_sysctl_rds_table);
-	if (!rds_sysctl_reg_table && IS_ENABLED(CONFIG_SYSCTL))
+	rds_sysctl_reg_table = register_net_sysctl(&init_net, "net/rds", rds_sysctl_rds_table);
+	if (!rds_sysctl_reg_table)
 		return -ENOMEM;
 	return 0;
 }

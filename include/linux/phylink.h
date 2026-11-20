@@ -791,7 +791,6 @@ static inline int phylink_get_link_timer_ns(phy_interface_t interface)
 {
 	switch (interface) {
 	case PHY_INTERFACE_MODE_SGMII:
-	case PHY_INTERFACE_MODE_PSGMII:
 	case PHY_INTERFACE_MODE_QSGMII:
 	case PHY_INTERFACE_MODE_USXGMII:
 	case PHY_INTERFACE_MODE_10G_QXGMII:
@@ -842,7 +841,5 @@ void phylink_decode_usxgmii_word(struct phylink_link_state *state,
 void phylink_replay_link_begin(struct phylink *pl);
 
 void phylink_replay_link_end(struct phylink *pl);
-
-void phylink_update_mac_pause_capabilities(struct phylink *pl, unsigned long mac_pause);
 
 #endif

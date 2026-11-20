@@ -53,15 +53,10 @@ enum {
 	NFSD_STATS_FIRST_NFS4_OP,	/* count of individual nfsv4 operations */
 	NFSD_STATS_LAST_NFS4_OP = NFSD_STATS_FIRST_NFS4_OP + LAST_NFS4_OP,
 #define NFSD_STATS_NFS4_OP(op)	(NFSD_STATS_FIRST_NFS4_OP + (op))
+	NFSD_STATS_WDELEG_GETATTR,	/* count of getattr conflict with wdeleg */
 #endif
 	NFSD_STATS_COUNTERS_NUM
 };
-
-/*
- * Per-netns NFSv4 callback (backchannel) per-operation counters, indexed
- * directly by RFC 8881 callback opcode (OP_CB_GETATTR..OP_CB_OFFLOAD).
- */
-#define NFSD_STATS_CB_OPS_NUM	(OP_CB_OFFLOAD + 1)
 
 /*
  * Represents a nfsd "container". With respect to nfsv4 state tracking, the
@@ -205,11 +200,6 @@ struct nfsd_net {
 	/* Per-netns stats counters */
 	struct percpu_counter    counter[NFSD_STATS_COUNTERS_NUM];
 
-#ifdef CONFIG_NFSD_V4
-	/* Per-netns NFSv4 callback (backchannel) per-operation counters */
-	struct percpu_counter    cb_counter[NFSD_STATS_CB_OPS_NUM];
-#endif
-
 	/* sunrpc svc stats */
 	struct svc_stat          nfsd_svcstats;
 
@@ -238,21 +228,8 @@ struct nfsd_net {
 	int			nfs4_max_clients;
 
 	atomic_t		nfsd_courtesy_clients;
-	/* per-namespace; num_delegations in nfs4state.c is host-wide */
-	atomic_long_t		nfsd_delegations;
-	struct shrinker		*nfsd_courtesy_shrinker;
-	struct shrinker		*nfsd_deleg_shrinker;
-	struct work_struct	nfsd_courtesy_work;
-	struct work_struct	nfsd_deleg_work;
-
-	/* courtesy scan requests the reaper has not retired yet */
-	atomic_long_t		nfsd_shrink_backlog;
-
-	/* delegation scan requests the reaper has not retired yet */
-	atomic_long_t		nfsd_deleg_backlog;
-
-	/* when deleg_reaper() last swept the client list */
-	time64_t		nfsd_last_recall_any;
+	struct shrinker		*nfsd_client_shrinker;
+	struct work_struct	nfsd_shrinker_work;
 
 	/* last time an admin-revoke happened for NFSv4.0 */
 	time64_t		nfs40_last_revoke;

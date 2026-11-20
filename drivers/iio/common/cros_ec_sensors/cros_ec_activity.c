@@ -244,7 +244,8 @@ static int cros_ec_sensors_probe(struct platform_device *pdev)
 
 	/* Allocate a channel per activity and one for timestamp */
 	nb_activities = hweight_long(activities) + 1;
-	st->channels = devm_kzalloc_objs(dev, *st->channels, nb_activities);
+	st->channels = devm_kcalloc(dev, nb_activities,
+				    sizeof(*st->channels), GFP_KERNEL);
 	if (!st->channels)
 		return -ENOMEM;
 

@@ -77,9 +77,6 @@ xbitmap64_clear(
 	struct xbitmap64_node	*new_bn;
 	uint64_t		last = start + len - 1;
 
-	if (!len)
-		return 0;
-
 	while ((bn = xbitmap64_tree_iter_first(&bitmap->xb_root, start, last))) {
 		if (bn->bn_start < start && bn->bn_last > last) {
 			uint64_t	old_last = bn->bn_last;
@@ -125,19 +122,15 @@ xbitmap64_set(
 	uint64_t		start,
 	uint64_t		len)
 {
-	struct xbitmap64_node	*left = NULL;
-	struct xbitmap64_node	*right = NULL;
+	struct xbitmap64_node	*left;
+	struct xbitmap64_node	*right;
 	uint64_t		last = start + len - 1;
 	int			error;
-
-	if (!len)
-		return 0;
 
 	/* Is this whole range already set? */
 	left = xbitmap64_tree_iter_first(&bitmap->xb_root, start, last);
 	if (left && left->bn_start <= start && left->bn_last >= last)
 		return 0;
-	left = NULL;
 
 	/* Clear out everything in the range we want to set. */
 	error = xbitmap64_clear(bitmap, start, len);
@@ -145,15 +138,11 @@ xbitmap64_set(
 		return error;
 
 	/* Do we have a left-adjacent extent? */
-	if (start > 0)
-		left = xbitmap64_tree_iter_first(&bitmap->xb_root, start - 1,
-				start - 1);
+	left = xbitmap64_tree_iter_first(&bitmap->xb_root, start - 1, start - 1);
 	ASSERT(!left || left->bn_last + 1 == start);
 
 	/* Do we have a right-adjacent extent? */
-	if (last < U64_MAX)
-		right = xbitmap64_tree_iter_first(&bitmap->xb_root, last + 1,
-				last + 1);
+	right = xbitmap64_tree_iter_first(&bitmap->xb_root, last + 1, last + 1);
 	ASSERT(!right || right->bn_start == last + 1);
 
 	if (left && right) {
@@ -229,8 +218,6 @@ xbitmap64_disunion(
 	struct xbitmap64_node	*bn;
 	int			error;
 
-	ASSERT(bitmap != sub);
-
 	if (xbitmap64_empty(bitmap) || xbitmap64_empty(sub))
 		return 0;
 
@@ -294,8 +281,6 @@ xbitmap64_test(
 {
 	struct xbitmap64_node	*bn;
 	uint64_t		last = start + *len - 1;
-
-	ASSERT(*len > 0);
 
 	bn = xbitmap64_tree_iter_first(&bitmap->xb_root, start, last);
 	if (!bn)
@@ -367,9 +352,6 @@ xbitmap32_clear(
 	struct xbitmap32_node	*new_bn;
 	uint32_t		last = start + len - 1;
 
-	if (!len)
-		return 0;
-
 	while ((bn = xbitmap32_tree_iter_first(&bitmap->xb_root, start, last))) {
 		if (bn->bn_start < start && bn->bn_last > last) {
 			uint32_t	old_last = bn->bn_last;
@@ -415,19 +397,15 @@ xbitmap32_set(
 	uint32_t		start,
 	uint32_t		len)
 {
-	struct xbitmap32_node	*left = NULL;
-	struct xbitmap32_node	*right = NULL;
+	struct xbitmap32_node	*left;
+	struct xbitmap32_node	*right;
 	uint32_t		last = start + len - 1;
 	int			error;
-
-	if (!len)
-		return 0;
 
 	/* Is this whole range already set? */
 	left = xbitmap32_tree_iter_first(&bitmap->xb_root, start, last);
 	if (left && left->bn_start <= start && left->bn_last >= last)
 		return 0;
-	left = NULL;
 
 	/* Clear out everything in the range we want to set. */
 	error = xbitmap32_clear(bitmap, start, len);
@@ -435,15 +413,11 @@ xbitmap32_set(
 		return error;
 
 	/* Do we have a left-adjacent extent? */
-	if (start > 0)
-		left = xbitmap32_tree_iter_first(&bitmap->xb_root, start - 1,
-				start - 1);
+	left = xbitmap32_tree_iter_first(&bitmap->xb_root, start - 1, start - 1);
 	ASSERT(!left || left->bn_last + 1 == start);
 
 	/* Do we have a right-adjacent extent? */
-	if (last < U32_MAX)
-		right = xbitmap32_tree_iter_first(&bitmap->xb_root, last + 1,
-				last + 1);
+	right = xbitmap32_tree_iter_first(&bitmap->xb_root, last + 1, last + 1);
 	ASSERT(!right || right->bn_start == last + 1);
 
 	if (left && right) {
@@ -519,8 +493,6 @@ xbitmap32_disunion(
 	struct xbitmap32_node	*bn;
 	int			error;
 
-	ASSERT(bitmap != sub);
-
 	if (xbitmap32_empty(bitmap) || xbitmap32_empty(sub))
 		return 0;
 
@@ -584,8 +556,6 @@ xbitmap32_test(
 {
 	struct xbitmap32_node	*bn;
 	uint32_t		last = start + *len - 1;
-
-	ASSERT(*len > 0);
 
 	bn = xbitmap32_tree_iter_first(&bitmap->xb_root, start, last);
 	if (!bn)

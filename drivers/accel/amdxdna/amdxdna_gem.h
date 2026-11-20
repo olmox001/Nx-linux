@@ -14,6 +14,7 @@
 struct amdxdna_umap {
 	struct mmu_interval_notifier	notifier;
 	struct hmm_range		range;
+	struct work_struct		hmm_unreg_work;
 	struct amdxdna_gem_obj		*abo;
 	struct list_head		node;
 	struct kref			refcnt;
@@ -42,11 +43,11 @@ struct amdxdna_gem_obj {
 	struct mutex			lock; /* Protects: pinned, mem.kva, open_ref */
 	struct amdxdna_mem		mem;
 	int				open_ref;
-	struct work_struct		hmm_unreg_work;
 
 	/* Below members are initialized when needed */
 	struct drm_mm_node		mm_node; /* For AMDXDNA_BO_DEV */
-	struct xarray			heap_xa;
+	u32				heap_start_id;
+	u32				heap_end_id;
 	u64				dev_addr; /* For heap bo */
 	u32				assigned_hwctx;
 	struct dma_buf			*dma_buf;
@@ -103,7 +104,6 @@ static inline u64 amdxdna_obj_dma_addr(struct amdxdna_gem_obj *abo)
 }
 
 void amdxdna_umap_put(struct amdxdna_umap *mapp);
-void amdxdna_gem_heap_free(struct amdxdna_client *client, struct amdxdna_gem_obj *abo);
 
 struct drm_gem_object *
 amdxdna_gem_create_shmem_object_cb(struct drm_device *dev, size_t size);

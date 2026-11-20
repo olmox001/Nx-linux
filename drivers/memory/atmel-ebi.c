@@ -332,7 +332,8 @@ static int atmel_ebi_dev_setup(struct atmel_ebi *ebi, struct device_node *np,
 		return -EINVAL;
 	}
 
-	ebid = devm_kzalloc_flex(ebi->dev, *ebid, configs, numcs);
+	ebid = devm_kzalloc(ebi->dev, struct_size(ebid, configs, numcs),
+			    GFP_KERNEL);
 	if (!ebid)
 		return -ENOMEM;
 
@@ -497,7 +498,7 @@ static int atmel_ebi_dev_disable(struct atmel_ebi *ebi, struct device_node *np)
 	struct device *dev = ebi->dev;
 	struct property *newprop;
 
-	newprop = devm_kzalloc_obj(dev, *newprop);
+	newprop = devm_kzalloc(dev, sizeof(*newprop), GFP_KERNEL);
 	if (!newprop)
 		return -ENOMEM;
 
@@ -523,7 +524,7 @@ static int atmel_ebi_probe(struct platform_device *pdev)
 	struct clk *clk;
 	u32 val;
 
-	ebi = devm_kzalloc_obj(dev, *ebi);
+	ebi = devm_kzalloc(dev, sizeof(*ebi), GFP_KERNEL);
 	if (!ebi)
 		return -ENOMEM;
 

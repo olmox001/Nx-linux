@@ -546,7 +546,8 @@ static int cros_usbpd_charger_probe(struct platform_device *pd)
 	int ret = -EINVAL;
 	int i;
 
-	charger = devm_kzalloc_obj(dev, struct charger_data);
+	charger = devm_kzalloc(dev, sizeof(struct charger_data),
+			       GFP_KERNEL);
 	if (!charger)
 		return -ENOMEM;
 
@@ -612,7 +613,7 @@ static int cros_usbpd_charger_probe(struct platform_device *pd)
 	for (i = 0; i < charger->num_charger_ports; i++) {
 		struct power_supply_config psy_cfg = {};
 
-		port = devm_kzalloc_obj(dev, struct port_data);
+		port = devm_kzalloc(dev, sizeof(struct port_data), GFP_KERNEL);
 		if (!port) {
 			ret = -ENOMEM;
 			goto fail;

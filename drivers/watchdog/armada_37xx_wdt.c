@@ -16,7 +16,6 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <linux/stringify.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 
@@ -71,7 +70,7 @@ MODULE_PARM_DESC(timeout, "Watchdog timeout in seconds");
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-			   __stringify(WATCHDOG_NOWAYOUT) ")");
+			   __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 struct armada_37xx_watchdog {
 	struct watchdog_device wdt;
@@ -252,7 +251,8 @@ static int armada_37xx_wdt_probe(struct platform_device *pdev)
 	struct regmap *regmap;
 	int ret;
 
-	dev = devm_kzalloc_obj(&pdev->dev, struct armada_37xx_watchdog);
+	dev = devm_kzalloc(&pdev->dev, sizeof(struct armada_37xx_watchdog),
+			   GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 

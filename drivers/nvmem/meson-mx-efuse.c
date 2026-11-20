@@ -198,7 +198,7 @@ static int meson_mx_efuse_probe(struct platform_device *pdev)
 	if (!drvdata)
 		return -EINVAL;
 
-	efuse = devm_kzalloc_obj(&pdev->dev, *efuse);
+	efuse = devm_kzalloc(&pdev->dev, sizeof(*efuse), GFP_KERNEL);
 	if (!efuse)
 		return -ENOMEM;
 

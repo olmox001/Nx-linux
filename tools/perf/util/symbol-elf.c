@@ -228,8 +228,7 @@ bool filename__has_section(const char *filename, const char *sec)
 	if (gelf_getehdr(elf, &ehdr) == NULL)
 		goto elf_out;
 
-	found = !!elf_section_by_name(elf, &ehdr, &shdr, sec, NULL) &&
-		shdr.sh_type == SHT_PROGBITS;
+	found = !!elf_section_by_name(elf, &ehdr, &shdr, sec, NULL);
 
 elf_out:
 	elf_end(elf);
@@ -1682,13 +1681,8 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 			continue;
 
 		sec = elf_getscn(syms_ss->elf, sym.st_shndx);
-		if (!sec) {
-			if (dynsym && ehdr.e_shnum &&
-			    sym.st_shndx < SHN_LORESERVE &&
-			    sym.st_shndx >= ehdr.e_shnum)
-				continue;
+		if (!sec)
 			goto out_elf_end;
-		}
 
 		gelf_getshdr(sec, &shdr);
 
@@ -2220,10 +2214,6 @@ static int kcore_copy__process_kallsyms(void *arg, const char *name, char type,
 	struct kcore_copy_info *kci = arg;
 
 	if (!kallsyms__is_function(type))
-		return 0;
-
-	/* Ignore livepatch symbols */
-	if (is_livepatch_symbol(name))
 		return 0;
 
 	if (strchr(name, '[')) {

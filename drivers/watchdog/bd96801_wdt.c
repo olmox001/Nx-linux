@@ -337,7 +337,7 @@ static int bd96801_wdt_probe(struct platform_device *pdev)
 	int ret, irq;
 	unsigned int val;
 
-	w = devm_kzalloc_obj(&pdev->dev, *w);
+	w = devm_kzalloc(&pdev->dev, sizeof(*w), GFP_KERNEL);
 	if (!w)
 		return -ENOMEM;
 
@@ -389,7 +389,8 @@ static int bd96801_wdt_probe(struct platform_device *pdev)
 						IRQF_ONESHOT,  "bd96801-wdg",
 						NULL);
 		if (ret)
-			return ret;
+			return dev_err_probe(&pdev->dev, ret,
+					     "Failed to register IRQ\n");
 	}
 
 	return devm_watchdog_register_device(&pdev->dev, &w->wdt);

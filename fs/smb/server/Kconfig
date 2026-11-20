@@ -16,7 +16,6 @@ config SMB_SERVER
 	select CRYPTO_AEAD2
 	select CRYPTO_CCM
 	select CRYPTO_GCM
-	select CRYPTO_AES
 	select ASN1
 	select OID_REGISTRY
 	select CRC32
@@ -72,5 +71,3 @@ config SMB_SERVER_KERBEROS5
 	bool "Support for Kerberos 5"
 	depends on SMB_SERVER
 	default y
-
-source "fs/smb/server/tests/Kconfig"

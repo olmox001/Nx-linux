@@ -574,9 +574,6 @@ static int rproc_handle_trace(struct rproc *rproc, void *ptr,
 	/* create the debugfs entry */
 	trace->tfile = rproc_create_trace_file(name, rproc, trace);
 
-	/* keep the name for the diagnostic in rproc_trace_read() */
-	strscpy(trace->trace_mem.name, name, sizeof(trace->trace_mem.name));
-
 	list_add_tail(&trace->node, &rproc->traces);
 
 	rproc->num_traces++;
@@ -1102,8 +1099,6 @@ static int rproc_start_subdevices(struct rproc *rproc)
 		}
 	}
 
-	rproc->subdevs_started = true;
-
 	return 0;
 
 unroll_registration:
@@ -1119,15 +1114,10 @@ static void rproc_stop_subdevices(struct rproc *rproc, bool crashed)
 {
 	struct rproc_subdev *subdev;
 
-	if (!rproc->subdevs_started)
-		return;
-
 	list_for_each_entry_reverse(subdev, &rproc->subdevs, node) {
 		if (subdev->stop)
 			subdev->stop(subdev, crashed);
 	}
-
-	rproc->subdevs_started = false;
 }
 
 static void rproc_unprepare_subdevices(struct rproc *rproc)
@@ -1662,21 +1652,49 @@ disable_iommu:
 }
 
 /*
- * Boot or attach the remote processor in the background: rproc_add()
- * runs in probe context and must not block while the firmware image is
- * read from storage.  rproc_boot() dispatches on the processor state,
- * so this covers both a firmware boot and an attach to a processor
- * started by another entity.
+ * take a firmware and boot it up.
  *
- * Note: rproc_del() waits for this work to complete with
- * cancel_work_sync(), so the rproc instance remains valid for the
- * entire lifetime of this function.
+ * Note: this function is called asynchronously upon registration of the
+ * remote processor (so we must wait until it completes before we try
+ * to unregister the device. one other option is just to use kref here,
+ * that might be cleaner).
  */
-static void rproc_boot_work(struct work_struct *work)
+static void rproc_auto_boot_callback(const struct firmware *fw, void *context)
 {
-	struct rproc *rproc = container_of(work, struct rproc, boot_work);
+	struct rproc *rproc = context;
 
 	rproc_boot(rproc);
+
+	release_firmware(fw);
+}
+
+static void rproc_attach_work(struct work_struct *work)
+{
+	struct rproc *rproc = container_of(work, struct rproc, attach_work);
+
+	rproc_boot(rproc);
+}
+
+static int rproc_trigger_auto_boot(struct rproc *rproc)
+{
+	int ret;
+
+	if (rproc->state == RPROC_DETACHED) {
+		schedule_work(&rproc->attach_work);
+		return 0;
+	}
+
+	/*
+	 * We're initiating an asynchronous firmware loading, so we can
+	 * be built-in kernel code, without hanging the boot process.
+	 */
+	ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
+				      rproc->firmware, &rproc->dev, GFP_KERNEL,
+				      rproc, rproc_auto_boot_callback);
+	if (ret < 0)
+		dev_err(&rproc->dev, "request_firmware_nowait err: %d\n", ret);
+
+	return ret;
 }
 
 static int rproc_stop(struct rproc *rproc, bool crashed)
@@ -1761,20 +1779,7 @@ static int rproc_attach_recovery(struct rproc *rproc)
 	if (ret)
 		return ret;
 
-	/* clean up all acquired resources */
-	rproc_resource_cleanup(rproc);
-
-	/* release HW resources if needed */
-	rproc_unprepare_device(rproc);
-
-	rproc_disable_iommu(rproc);
-
-	/* Free the copy of the resource table */
-	kfree(rproc->cached_table);
-	rproc->cached_table = NULL;
-	rproc->table_ptr = NULL;
-
-	return rproc_attach(rproc);
+	return __rproc_attach(rproc);
 }
 
 static int rproc_boot_recovery(struct rproc *rproc)
@@ -1963,54 +1968,6 @@ unlock_mutex:
 }
 EXPORT_SYMBOL(rproc_boot);
 
-static int __rproc_shutdown(struct rproc *rproc, bool force)
-{
-	struct device *dev = &rproc->dev;
-	bool crashed;
-	int ret;
-
-	ret = mutex_lock_interruptible(&rproc->lock);
-	if (ret) {
-		dev_err(dev, "can't lock rproc %s: %d\n", rproc->name, ret);
-		return ret;
-	}
-
-	if (rproc->state != RPROC_RUNNING &&
-	    rproc->state != RPROC_ATTACHED &&
-	    rproc->state != RPROC_CRASHED) {
-		ret = -EINVAL;
-		goto out;
-	}
-	crashed = rproc->state == RPROC_CRASHED;
-
-	if (!atomic_dec_and_test(&rproc->power) && !force) {
-		/* The remote processor is still needed by another user. */
-		goto out;
-	}
-
-	ret = rproc_stop(rproc, crashed);
-	if (ret) {
-		atomic_inc(&rproc->power);
-		goto out;
-	}
-
-	/* clean up all acquired resources */
-	rproc_resource_cleanup(rproc);
-
-	/* release HW resources if needed */
-	rproc_unprepare_device(rproc);
-
-	rproc_disable_iommu(rproc);
-
-	/* Free the copy of the resource table */
-	kfree(rproc->cached_table);
-	rproc->cached_table = NULL;
-	rproc->table_ptr = NULL;
-out:
-	mutex_unlock(&rproc->lock);
-	return ret;
-}
-
 /**
  * rproc_shutdown() - power off the remote processor
  * @rproc: the remote processor
@@ -2034,7 +1991,49 @@ out:
  */
 int rproc_shutdown(struct rproc *rproc)
 {
-	return __rproc_shutdown(rproc, false);
+	struct device *dev = &rproc->dev;
+	bool crashed;
+	int ret;
+
+	ret = mutex_lock_interruptible(&rproc->lock);
+	if (ret) {
+		dev_err(dev, "can't lock rproc %s: %d\n", rproc->name, ret);
+		return ret;
+	}
+
+	if (rproc->state != RPROC_RUNNING &&
+	    rproc->state != RPROC_ATTACHED &&
+	    rproc->state != RPROC_CRASHED) {
+		ret = -EINVAL;
+		goto out;
+	}
+	crashed = rproc->state == RPROC_CRASHED;
+
+	/* if the remote proc is still needed, bail out */
+	if (!atomic_dec_and_test(&rproc->power))
+		goto out;
+
+	ret = rproc_stop(rproc, crashed);
+	if (ret) {
+		atomic_inc(&rproc->power);
+		goto out;
+	}
+
+	/* clean up all acquired resources */
+	rproc_resource_cleanup(rproc);
+
+	/* release HW resources if needed */
+	rproc_unprepare_device(rproc);
+
+	rproc_disable_iommu(rproc);
+
+	/* Free the copy of the resource table */
+	kfree(rproc->cached_table);
+	rproc->cached_table = NULL;
+	rproc->table_ptr = NULL;
+out:
+	mutex_unlock(&rproc->lock);
+	return ret;
 }
 EXPORT_SYMBOL(rproc_shutdown);
 
@@ -2320,8 +2319,11 @@ int rproc_add(struct rproc *rproc)
 	rproc_create_debug_dir(rproc);
 
 	/* if rproc is marked always-on, request it to boot */
-	if (rproc->auto_boot)
-		schedule_work(&rproc->boot_work);
+	if (rproc->auto_boot) {
+		ret = rproc_trigger_auto_boot(rproc);
+		if (ret < 0)
+			goto rproc_remove_dev;
+	}
 
 	/* expose to rproc_get_by_phandle users */
 	mutex_lock(&rproc_list_mutex);
@@ -2330,6 +2332,9 @@ int rproc_add(struct rproc *rproc)
 
 	return 0;
 
+rproc_remove_dev:
+	rproc_delete_debug_dir(rproc);
+	device_del(dev);
 rproc_remove_cdev:
 	rproc_char_device_remove(rproc);
 	return ret;
@@ -2378,7 +2383,6 @@ static void rproc_type_release(struct device *dev)
 
 	dev_info(&rproc->dev, "releasing %s\n", rproc->name);
 
-	cleanup_srcu_struct(&rproc->vq_srcu);
 	idr_destroy(&rproc->notifyids);
 
 	if (rproc->index >= 0)
@@ -2476,11 +2480,6 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	if (!rproc)
 		return NULL;
 
-	if (init_srcu_struct(&rproc->vq_srcu)) {
-		kfree(rproc);
-		return NULL;
-	}
-
 	rproc->priv = &rproc[1];
 	rproc->auto_boot = true;
 	rproc->elf_class = ELFCLASSNONE;
@@ -2523,7 +2522,7 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	INIT_LIST_HEAD(&rproc->subdevs);
 	INIT_LIST_HEAD(&rproc->dump_segments);
 
-	INIT_WORK(&rproc->boot_work, rproc_boot_work);
+	INIT_WORK(&rproc->attach_work, rproc_attach_work);
 	INIT_WORK(&rproc->crash_handler, rproc_crash_handler_work);
 	spin_lock_init(&rproc->crash_handler_lock);
 
@@ -2545,9 +2544,6 @@ EXPORT_SYMBOL(rproc_alloc);
  *
  * If no one holds any reference to rproc anymore, then its refcount would
  * now drop to zero, and it would be freed.
- *
- * Context: Any context, but the last reference must not be dropped from
- * atomic context.
  */
 void rproc_free(struct rproc *rproc)
 {
@@ -2563,9 +2559,6 @@ EXPORT_SYMBOL(rproc_free);
  *
  * If no one holds any reference to rproc anymore, then its refcount would
  * now drop to zero, and it would be freed.
- *
- * Context: Any context, but the last reference must not be dropped from
- * atomic context.
  */
 void rproc_put(struct rproc *rproc)
 {
@@ -2607,10 +2600,8 @@ int rproc_del(struct rproc *rproc)
 	if (cancel_work_sync(&rproc->crash_handler))
 		pm_relax(rproc->dev.parent);
 
-	/* auto-boot may still be fetching firmware: wait for it here */
-	cancel_work_sync(&rproc->boot_work);
-
-	__rproc_shutdown(rproc, true);
+	/* TODO: make sure this works with rproc->power > 1 */
+	rproc_shutdown(rproc);
 
 	rproc_delete_debug_dir(rproc);
 

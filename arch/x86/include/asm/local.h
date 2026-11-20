@@ -32,14 +32,14 @@ static inline void local_add(long i, local_t *l)
 {
 	asm volatile(_ASM_ADD "%1,%0"
 		     : "+m" (l->a.counter)
-		     : "er" (i));
+		     : "ir" (i));
 }
 
 static inline void local_sub(long i, local_t *l)
 {
 	asm volatile(_ASM_SUB "%1,%0"
 		     : "+m" (l->a.counter)
-		     : "er" (i));
+		     : "ir" (i));
 }
 
 /**

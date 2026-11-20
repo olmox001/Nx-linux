@@ -1025,9 +1025,7 @@ struct kernel_ethtool_ts_info {
  *	types should be set in @supported_coalesce_params.
  *	Returns a negative error code or zero.
  * @get_ringparam: Report ring sizes
- * @set_ringparam: Set ring sizes. The &struct ethtool_ringparam argument is
- *	also an output; drivers which normalize requested sizes must update it
- *	with the applied sizes. Returns a negative error code or zero.
+ * @set_ringparam: Set ring sizes.  Returns a negative error code or zero.
  * @get_pause_stats: Report pause frame statistics. Drivers must not zero
  *	statistics which they don't report. The stats structure is initialized
  *	to ETHTOOL_STAT_NOT_SET indicating driver does not report statistics.
@@ -1061,12 +1059,6 @@ struct kernel_ethtool_ts_info {
  * @get_sset_count: Get number of strings that @get_strings will write.
  * @get_rxnfc: Get RX flow classification rules.  Returns a negative
  *	error code or zero.
- *	Note that for %ETHTOOL_GRXCLSRLALL rule_cnt and size of the arrays
- *	is user-provided, and not guaranteed to match what driver would
- *	have reported via %ETHTOOL_GRXCLSRLCNT. Drivers must return -%EMSGSIZE
- *	when rule_cnt is too small. rule_locs is %NULL when rule_cnt is zero.
- *	On success drivers must set rule_cnt to the number of locations they
- *	filled in, the core copies out exactly that many.
  * @set_rxnfc: Set RX flow classification rules.  Returns a negative
  *	error code or zero.
  * @flash_device: Write a firmware image to device's flash memory.

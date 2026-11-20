@@ -1581,8 +1581,10 @@ static void ql_link_state_machine_work(struct work_struct *work)
  */
 static void ql_get_phy_owner(struct ql3_adapter *qdev)
 {
-	assign_bit(QL_LINK_MASTER, &qdev->flags,
-		   ql_this_adapter_controls_port(qdev));
+	if (ql_this_adapter_controls_port(qdev))
+		set_bit(QL_LINK_MASTER, &qdev->flags);
+	else
+		clear_bit(QL_LINK_MASTER, &qdev->flags);
 }
 
 /*
@@ -3341,8 +3343,10 @@ static void ql_set_mac_info(struct ql3_adapter *qdev)
 		qdev->mac_ob_opcode = OUTBOUND_MAC_IOCB | func_number;
 		qdev->mb_bit_mask = FN0_MA_BITS_MASK;
 		qdev->PHYAddr = PORT0_PHY_ADDRESS;
-		assign_bit(QL_LINK_OPTICAL, &qdev->flags,
-			   port_status & PORT_STATUS_SM0);
+		if (port_status & PORT_STATUS_SM0)
+			set_bit(QL_LINK_OPTICAL, &qdev->flags);
+		else
+			clear_bit(QL_LINK_OPTICAL, &qdev->flags);
 		break;
 
 	case ISP_CONTROL_FN1_NET:
@@ -3350,8 +3354,10 @@ static void ql_set_mac_info(struct ql3_adapter *qdev)
 		qdev->mac_ob_opcode = OUTBOUND_MAC_IOCB | func_number;
 		qdev->mb_bit_mask = FN1_MA_BITS_MASK;
 		qdev->PHYAddr = PORT1_PHY_ADDRESS;
-		assign_bit(QL_LINK_OPTICAL, &qdev->flags,
-			   port_status & PORT_STATUS_SM1);
+		if (port_status & PORT_STATUS_SM1)
+			set_bit(QL_LINK_OPTICAL, &qdev->flags);
+		else
+			clear_bit(QL_LINK_OPTICAL, &qdev->flags);
 		break;
 
 	case ISP_CONTROL_FN0_SCSI:
@@ -3910,7 +3916,6 @@ static void ql3xxx_remove(struct pci_dev *pdev)
 	iounmap(qdev->mem_map_registers);
 	pci_release_regions(pdev);
 	free_netdev(ndev);
-	pci_disable_device(pdev);
 }
 
 static struct pci_driver ql3xxx_driver = {

@@ -84,7 +84,6 @@ struct snd_device {
 struct snd_refcount {
 	atomic_t count;
 	wait_queue_head_t waiter;
-	spinlock_t lock;
 };
 
 void snd_refcount_init(struct snd_refcount *ref);
@@ -109,8 +108,8 @@ struct snd_card {
 	char longname[80];		/* name of this soundcard */
 	char irq_descr[32];		/* Interrupt description */
 	char mixername[80];		/* mixer name */
-	char *components;		/* card components, space-delimited */
-	unsigned int components_alloc_size;	/* current allocation size of components */
+	char components[128];		/* card components delimited with
+								space */
 	struct module *module;		/* top-level module */
 
 	void *private_data;		/* private data for soundcard */
@@ -301,8 +300,7 @@ int snd_card_locked(int card);
 #define SND_MIXER_OSS_NOTIFY_REGISTER	0
 #define SND_MIXER_OSS_NOTIFY_DISCONNECT	1
 #define SND_MIXER_OSS_NOTIFY_FREE	2
-void snd_mixer_oss_set_notify(int (*callback)(struct snd_card *card, int cmd));
-void snd_mixer_oss_notify(struct snd_card *card, int cmd);
+extern int (*snd_mixer_oss_notify_callback)(struct snd_card *card, int cmd);
 #endif
 
 int snd_card_new(struct device *parent, int idx, const char *xid,
@@ -316,6 +314,7 @@ void snd_card_disconnect(struct snd_card *card);
 void snd_card_disconnect_sync(struct snd_card *card);
 void snd_card_free(struct snd_card *card);
 void snd_card_free_when_closed(struct snd_card *card);
+int snd_card_free_on_error(struct device *dev, int ret);
 void snd_card_set_id(struct snd_card *card, const char *id);
 int snd_card_register(struct snd_card *card);
 int snd_card_info_init(void);

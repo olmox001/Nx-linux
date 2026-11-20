@@ -56,6 +56,7 @@
 
 #define FUJITSU_LCD_N_LEVELS		8
 
+#define ACPI_FUJITSU_CLASS		"fujitsu"
 #define ACPI_FUJITSU_BL_HID		"FUJ02B1"
 #define ACPI_FUJITSU_BL_DRIVER_NAME	"Fujitsu laptop FUJ02B1 ACPI brightness driver"
 #define ACPI_FUJITSU_BL_DEVICE_NAME	"Fujitsu FUJ02B1"
@@ -465,7 +466,7 @@ static int acpi_fujitsu_bl_input_setup(struct device *dev)
 	snprintf(priv->phys, sizeof(priv->phys), "%s/video/input0",
 		 acpi_device_hid(device));
 
-	priv->input->name = ACPI_FUJITSU_BL_DEVICE_NAME;
+	priv->input->name = acpi_device_name(device);
 	priv->input->phys = priv->phys;
 	priv->input->id.bustype = BUS_HOST;
 	priv->input->id.product = 0x06;
@@ -540,16 +541,18 @@ static int acpi_fujitsu_bl_probe(struct platform_device *pdev)
 	if (acpi_video_get_backlight_type() != acpi_backlight_vendor)
 		return -ENODEV;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	fujitsu_bl = priv;
+	strscpy(acpi_device_name(device), ACPI_FUJITSU_BL_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
 
 	platform_set_drvdata(pdev, priv);
 
-	pr_info("ACPI: %s [%s]\n", ACPI_FUJITSU_BL_DEVICE_NAME,
-		acpi_device_bid(device));
+	pr_info("ACPI: %s [%s]\n",
+		acpi_device_name(device), acpi_device_bid(device));
 
 	if (get_max_brightness(&pdev->dev) <= 0)
 		priv->max_brightness = FUJITSU_LCD_N_LEVELS;
@@ -678,7 +681,7 @@ static int acpi_fujitsu_laptop_input_setup(struct device *dev)
 	snprintf(priv->phys, sizeof(priv->phys), "%s/input0",
 		 acpi_device_hid(device));
 
-	priv->input->name = ACPI_FUJITSU_LAPTOP_DEVICE_NAME;
+	priv->input->name = acpi_device_name(device);
 	priv->input->phys = priv->phys;
 	priv->input->id.bustype = BUS_HOST;
 
@@ -846,7 +849,7 @@ static int acpi_fujitsu_laptop_leds_register(struct device *dev)
 	int ret;
 
 	if (call_fext_func(dev, FUNC_LEDS, 0x0, 0x0, 0x0) & LOGOLAMP_POWERON) {
-		led = devm_kzalloc_obj(dev, *led);
+		led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 		if (!led)
 			return -ENOMEM;
 
@@ -860,7 +863,7 @@ static int acpi_fujitsu_laptop_leds_register(struct device *dev)
 
 	if ((call_fext_func(dev, FUNC_LEDS, 0x0, 0x0, 0x0) & KEYBOARD_LAMPS) &&
 	    (call_fext_func(dev, FUNC_BUTTONS, 0x0, 0x0, 0x0) == 0x0)) {
-		led = devm_kzalloc_obj(dev, *led);
+		led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 		if (!led)
 			return -ENOMEM;
 
@@ -882,7 +885,7 @@ static int acpi_fujitsu_laptop_leds_register(struct device *dev)
 	 * whether given model has a radio toggle button.
 	 */
 	if (priv->flags_supported & BIT(17)) {
-		led = devm_kzalloc_obj(dev, *led);
+		led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 		if (!led)
 			return -ENOMEM;
 
@@ -902,7 +905,7 @@ static int acpi_fujitsu_laptop_leds_register(struct device *dev)
 	 */
 	if ((call_fext_func(dev, FUNC_LEDS, 0x0, 0x0, 0x0) & BIT(14)) &&
 	    (call_fext_func(dev, FUNC_LEDS, 0x2, ECO_LED, 0x0) != UNSUPPORTED_CMD)) {
-		led = devm_kzalloc_obj(dev, *led);
+		led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 		if (!led)
 			return -ENOMEM;
 
@@ -1002,12 +1005,15 @@ static int acpi_fujitsu_laptop_probe(struct platform_device *pdev)
 	if (!device)
 		return -ENODEV;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	WARN_ONCE(fext, "More than one FUJ02E3 ACPI device was found.  Driver may not work as intended.");
 	fext = &pdev->dev;
+
+	strscpy(acpi_device_name(device), ACPI_FUJITSU_LAPTOP_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
 
 	platform_set_drvdata(pdev, priv);
 
@@ -1018,8 +1024,8 @@ static int acpi_fujitsu_laptop_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	pr_info("ACPI: %s [%s]\n", ACPI_FUJITSU_LAPTOP_DEVICE_NAME,
-		acpi_device_bid(device));
+	pr_info("ACPI: %s [%s]\n",
+		acpi_device_name(device), acpi_device_bid(device));
 
 	while (call_fext_func(fext, FUNC_BUTTONS, 0x1, 0x0, 0x0) != 0 &&
 	       i++ < MAX_HOTKEY_RINGBUFFER_SIZE)

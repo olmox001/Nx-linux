@@ -108,7 +108,7 @@ static int plic_irq_set_type(struct irq_data *d, unsigned int type);
 static void __plic_toggle(struct plic_handler *handler, int hwirq, int enable)
 {
 	u32 __iomem *base = handler->enable_base;
-	u32 hwirq_mask = BIT(hwirq % 32);
+	u32 hwirq_mask = 1 << (hwirq % 32);
 	int group = hwirq / 32;
 	u32 value;
 
@@ -452,7 +452,7 @@ static irq_hw_number_t cp100_get_hwirq(struct plic_handler *handler, void __iome
 		return 0;
 
 	/*
-	 * Interrupts delivered to hardware still become pending, but only
+	 * Interrupts delievered to hardware still become pending, but only
 	 * interrupts that are both pending and enabled can be claimed.
 	 * Clearing the enable bit for all interrupts but the first pending
 	 * one avoids a hardware bug that occurs during read from the claim
@@ -538,8 +538,8 @@ static const struct of_device_id plic_match[] = {
 #ifdef CONFIG_ACPI
 
 static const struct acpi_device_id plic_acpi_match[] = {
-	{ .id = "RSCV0001" },
-	{ }
+	{ "RSCV0001", 0 },
+	{}
 };
 MODULE_DEVICE_TABLE(acpi, plic_acpi_match);
 
@@ -643,11 +643,13 @@ static int plic_probe(struct fwnode_handle *fwnode)
 
 	error = plic_parse_nr_irqs_and_contexts(fwnode, &nr_irqs, &nr_contexts, &gsi_base, &id);
 	if (error)
-		return error;
+		goto fail_free_regs;
 
 	priv = kzalloc_obj(*priv);
-	if (!priv)
-		return -ENOMEM;
+	if (!priv) {
+		error = -ENOMEM;
+		goto fail_free_regs;
+	}
 
 	priv->fwnode = fwnode;
 	priv->plic_quirks = plic_quirks;
@@ -666,8 +668,10 @@ static int plic_probe(struct fwnode_handle *fwnode)
 	priv->acpi_plic_id = id;
 
 	priv->prio_save = bitmap_zalloc(nr_irqs, GFP_KERNEL);
-	if (!priv->prio_save)
-		return -ENOMEM;
+	if (!priv->prio_save) {
+		error = -ENOMEM;
+		goto fail_free_priv;
+	}
 
 	for (i = 0; i < nr_contexts; i++) {
 		error = plic_parse_context_parent(fwnode, i, &parent_hwirq, &cpu,
@@ -729,10 +733,12 @@ static int plic_probe(struct fwnode_handle *fwnode)
 			context_id * CONTEXT_ENABLE_SIZE;
 		handler->priv = priv;
 
-		handler->enable_save = kzalloc_objs(*handler->enable_save,
-						    priv->irq_groups);
-		if (!handler->enable_save)
-			return -ENOMEM;
+		handler->enable_save = kcalloc(priv->irq_groups, sizeof(*handler->enable_save),
+					       GFP_KERNEL);
+		if (!handler->enable_save) {
+			error = -ENOMEM;
+			goto fail_cleanup_contexts;
+		}
 done:
 		for_each_device_irq(hwirq, priv) {
 			plic_toggle(handler, hwirq, 0);
@@ -742,8 +748,10 @@ done:
 	}
 
 	priv->irqdomain = irq_domain_create_linear(fwnode, nr_irqs, &plic_irqdomain_ops, priv);
-	if (!priv->irqdomain)
-		return -ENOMEM;
+	if (WARN_ON(!priv->irqdomain)) {
+		error = -ENOMEM;
+		goto fail_cleanup_contexts;
+	}
 
 	/*
 	 * We can have multiple PLIC instances so setup global state
@@ -791,13 +799,33 @@ done:
 	pr_info("%pfwP: mapped %d interrupts with %d handlers for %d contexts.\n",
 		fwnode, nr_irqs, nr_handlers, nr_contexts);
 	return 0;
+
+fail_cleanup_contexts:
+	for (i = 0; i < nr_contexts; i++) {
+		if (plic_parse_context_parent(fwnode, i, &parent_hwirq, &cpu, priv->acpi_plic_id))
+			continue;
+		if (parent_hwirq != RV_IRQ_EXT || cpu < 0)
+			continue;
+
+		handler = per_cpu_ptr(&plic_handlers, cpu);
+		handler->present = false;
+		handler->hart_base = NULL;
+		handler->enable_base = NULL;
+		kfree(handler->enable_save);
+		handler->enable_save = NULL;
+		handler->priv = NULL;
+	}
+	bitmap_free(priv->prio_save);
+fail_free_priv:
+	kfree(priv);
+fail_free_regs:
+	iounmap(regs);
+	return error;
 }
 
 static int plic_platform_probe(struct platform_device *pdev)
 {
-	if (plic_probe(pdev->dev.fwnode))
-		panic("%pfwP: Failed to initialize\n", pdev->dev.fwnode);
-	return 0;
+	return plic_probe(pdev->dev.fwnode);
 }
 
 static struct platform_driver plic_driver = {
@@ -814,9 +842,7 @@ builtin_platform_driver(plic_driver);
 static int __init plic_early_probe(struct device_node *node,
 				   struct device_node *parent)
 {
-	if (plic_probe(&node->fwnode))
-		panic("%pfwP: Failed to initialize\n", &node->fwnode);
-	return 0;
+	return plic_probe(&node->fwnode);
 }
 
 IRQCHIP_DECLARE(riscv, "allwinner,sun20i-d1-plic", plic_early_probe);

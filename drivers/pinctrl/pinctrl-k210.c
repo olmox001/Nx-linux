@@ -927,7 +927,7 @@ static int k210_fpioa_probe(struct platform_device *pdev)
 
 	dev_info(dev, "K210 FPIOA pin controller\n");
 
-	pdata = devm_kzalloc_obj(dev, *pdata);
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 

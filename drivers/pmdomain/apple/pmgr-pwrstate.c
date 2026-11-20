@@ -205,7 +205,7 @@ static int apple_pmgr_ps_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	ps = devm_kzalloc_obj(dev, *ps);
+	ps = devm_kzalloc(dev, sizeof(*ps), GFP_KERNEL);
 	if (!ps)
 		return -ENOMEM;
 

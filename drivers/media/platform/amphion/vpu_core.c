@@ -299,22 +299,21 @@ static void vpu_core_put_vpu(struct vpu_core *core)
 	core->vpu->put_vpu(core->vpu);
 }
 
-static void vpu_core_cancel_work(struct vpu_core *core);
-
 static int vpu_core_unregister(struct device *dev, struct vpu_core *core)
 {
 	list_del_init(&core->list);
-
-	if (core->workqueue) {
-		vpu_core_cancel_work(core);
-		destroy_workqueue(core->workqueue);
-		core->workqueue = NULL;
-	}
 
 	vpu_core_put_vpu(core);
 	core->vpu = NULL;
 	kfree(core->msg_buffer);
 	core->msg_buffer = NULL;
+
+	if (core->workqueue) {
+		cancel_work_sync(&core->msg_work);
+		cancel_delayed_work_sync(&core->msg_delayed_work);
+		destroy_workqueue(core->workqueue);
+		core->workqueue = NULL;
+	}
 
 	return 0;
 }
@@ -601,7 +600,7 @@ static int vpu_core_probe(struct platform_device *pdev)
 	dev_dbg(dev, "probe\n");
 	if (!vpu)
 		return -EINVAL;
-	core = devm_kzalloc_obj(dev, *core);
+	core = devm_kzalloc(dev, sizeof(*core), GFP_KERNEL);
 	if (!core)
 		return -ENOMEM;
 
@@ -644,7 +643,7 @@ static int vpu_core_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	iface = devm_kzalloc_obj(dev, *iface);
+	iface = devm_kzalloc(dev, sizeof(*iface), GFP_KERNEL);
 	if (!iface)
 		return -ENOMEM;
 
@@ -667,6 +666,7 @@ static int vpu_core_probe(struct platform_device *pdev)
 	pm_runtime_enable(dev);
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret) {
+		pm_runtime_put_noidle(dev);
 		pm_runtime_set_suspended(dev);
 		goto err_runtime_disable;
 	}
@@ -694,8 +694,6 @@ static void vpu_core_remove(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct vpu_core *core = platform_get_drvdata(pdev);
 	int ret;
-
-	WARN_ON(!list_empty(&core->instances));
 
 	vpu_core_remove_dbgfs_file(core);
 	ret = pm_runtime_resume_and_get(dev);
@@ -847,7 +845,6 @@ static struct platform_driver amphion_vpu_core_driver = {
 	.remove = vpu_core_remove,
 	.driver = {
 		.name = "amphion-vpu-core",
-		.suppress_bind_attrs = true,
 		.of_match_table = vpu_core_dt_match,
 		.pm = &vpu_core_pm_ops,
 	},

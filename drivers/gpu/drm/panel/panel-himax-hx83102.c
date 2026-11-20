@@ -17,7 +17,6 @@
 #include <drm/drm_connector.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_mipi_dsi.h>
-#include <drm/drm_of.h>
 #include <drm/drm_panel.h>
 
 #include <video/mipi_display.h>
@@ -1265,7 +1264,7 @@ static int hx83102_panel_add(struct hx83102 *ctx)
 
 	ctx->base.prepare_prev_first = true;
 
-	err = drm_of_get_panel_orientation(dev->of_node, &ctx->orientation);
+	err = of_drm_get_panel_orientation(dev->of_node, &ctx->orientation);
 	if (err < 0)
 		return dev_err_probe(dev, err, "failed to get orientation\n");
 
@@ -1284,7 +1283,9 @@ static int hx83102_panel_add(struct hx83102 *ctx)
 	ctx->base.funcs = &hx83102_drm_funcs;
 	ctx->base.dev = &ctx->dsi->dev;
 
-	return devm_drm_panel_add(dev, &ctx->base);
+	drm_panel_add(&ctx->base);
+
+	return 0;
 }
 
 static int hx83102_probe(struct mipi_dsi_device *dsi)
@@ -1316,7 +1317,24 @@ static int hx83102_probe(struct mipi_dsi_device *dsi)
 
 	mipi_dsi_set_drvdata(dsi, ctx);
 
-	return devm_mipi_dsi_attach(&dsi->dev, dsi);
+	ret = mipi_dsi_attach(dsi);
+	if (ret)
+		drm_panel_remove(&ctx->base);
+
+	return ret;
+}
+
+static void hx83102_remove(struct mipi_dsi_device *dsi)
+{
+	struct hx83102 *ctx = mipi_dsi_get_drvdata(dsi);
+	int ret;
+
+	ret = mipi_dsi_detach(dsi);
+	if (ret < 0)
+		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", ret);
+
+	if (ctx->base.dev)
+		drm_panel_remove(&ctx->base);
 }
 
 static const struct of_device_id hx83102_of_match[] = {
@@ -1350,6 +1368,7 @@ MODULE_DEVICE_TABLE(of, hx83102_of_match);
 
 static struct mipi_dsi_driver hx83102_driver = {
 	.probe	= hx83102_probe,
+	.remove = hx83102_remove,
 	.driver = {
 		.name = "panel-himax-hx83102",
 		.of_match_table = hx83102_of_match,

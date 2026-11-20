@@ -341,8 +341,7 @@ static int nilfs_btree_node_broken(const struct nilfs_btree_node *node,
 				   sector_t blocknr)
 {
 	int level, flags, nchildren;
-	__u64 key, prev_key;
-	int i;
+	int ret = 0;
 
 	level = nilfs_btree_node_get_level(node);
 	flags = nilfs_btree_node_get_flags(node);
@@ -357,21 +356,9 @@ static int nilfs_btree_node_broken(const struct nilfs_btree_node *node,
 			   "bad btree node (ino=%llu, blocknr=%llu): level = %d, flags = 0x%x, nchildren = %d",
 			   inode->i_ino, (unsigned long long)blocknr, level,
 			   flags, nchildren);
-		return 1;
+		ret = 1;
 	}
-
-	for (i = 1, prev_key = nilfs_btree_node_get_key(node, 0);
-	     i < nchildren; i++, prev_key = key) {
-		key = nilfs_btree_node_get_key(node, i);
-		if (unlikely(key <= prev_key)) {
-			nilfs_crit(inode->i_sb,
-				"bad btree node (ino=%llu, blocknr=%llu): unsorted keys at index %d (%llu) and %d (%llu)",
-				inode->i_ino, (unsigned long long)blocknr,
-				i - 1, prev_key, i, key);
-			return 1;
-		}
-	}
-	return 0;
+	return ret;
 }
 
 /**

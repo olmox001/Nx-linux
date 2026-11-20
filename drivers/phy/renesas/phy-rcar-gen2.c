@@ -358,7 +358,7 @@ static int rcar_gen2_phy_probe(struct platform_device *pdev)
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
-	drv = devm_kzalloc_obj(dev, *drv);
+	drv = devm_kzalloc(dev, sizeof(*drv), GFP_KERNEL);
 	if (!drv)
 		return -ENOMEM;
 
@@ -372,8 +372,9 @@ static int rcar_gen2_phy_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	drv->num_channels = of_get_child_count(dev->of_node);
-	drv->channels = devm_kzalloc_objs(dev, struct rcar_gen2_channel,
-					  drv->num_channels);
+	drv->channels = devm_kcalloc(dev, drv->num_channels,
+				     sizeof(struct rcar_gen2_channel),
+				     GFP_KERNEL);
 	if (!drv->channels)
 		return -ENOMEM;
 

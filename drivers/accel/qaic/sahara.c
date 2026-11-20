@@ -3,7 +3,6 @@
 /* Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries. */
 
 #include <linux/devcoredump.h>
-#include <linux/device-id/mhi.h>
 #include <linux/firmware.h>
 #include <linux/limits.h>
 #include <linux/mhi.h>
@@ -800,7 +799,7 @@ static int sahara_mhi_probe(struct mhi_device *mhi_dev, const struct mhi_device_
 	int ret;
 	int i;
 
-	context = devm_kzalloc_obj(&mhi_dev->dev, *context);
+	context = devm_kzalloc(&mhi_dev->dev, sizeof(*context), GFP_KERNEL);
 	if (!context)
 		return -ENOMEM;
 
@@ -881,7 +880,6 @@ static void sahara_mhi_remove(struct mhi_device *mhi_dev)
 
 	cancel_work_sync(&context->fw_work);
 	cancel_work_sync(&context->dump_work);
-	cancel_work_sync(&context->read_data_work);
 	vfree(context->mem_dump);
 	sahara_release_image(context);
 	mhi_unprepare_from_transfer(mhi_dev);

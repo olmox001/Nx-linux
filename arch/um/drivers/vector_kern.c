@@ -111,26 +111,19 @@ static void vector_reset_stats(struct vector_private *vp)
 	 * in vector_poll.
 	 */
 
-	if (vp->rx_queue)
-		spin_lock(&vp->rx_queue->head_lock);
-
+	spin_lock(&vp->rx_queue->head_lock);
 	vp->estats.rx_queue_max = 0;
 	vp->estats.rx_queue_running_average = 0;
 	vp->estats.rx_encaps_errors = 0;
 	vp->estats.sg_ok = 0;
 	vp->estats.sg_linearized = 0;
-
-	if (vp->rx_queue)
-		spin_unlock(&vp->rx_queue->head_lock);
-
+	spin_unlock(&vp->rx_queue->head_lock);
 
 	/* TX stats are modified with TX head_lock held
 	 * in vector_send.
 	 */
 
-	if (vp->tx_queue)
-		spin_lock(&vp->tx_queue->head_lock);
-
+	spin_lock(&vp->tx_queue->head_lock);
 	vp->estats.tx_timeout_count = 0;
 	vp->estats.tx_restart_queue = 0;
 	vp->estats.tx_kicks = 0;
@@ -138,10 +131,7 @@ static void vector_reset_stats(struct vector_private *vp)
 	vp->estats.tx_flow_control_xoff = 0;
 	vp->estats.tx_queue_max = 0;
 	vp->estats.tx_queue_running_average = 0;
-
-	if (vp->tx_queue)
-		spin_unlock(&vp->tx_queue->head_lock);
-
+	spin_unlock(&vp->tx_queue->head_lock);
 }
 
 static int get_mtu(struct arglist *def)
@@ -481,6 +471,8 @@ static void destroy_queue(struct vector_queue *qi)
 	struct vector_private *vp = netdev_priv(qi->dev);
 	struct mmsghdr *mmsg_vector;
 
+	if (qi == NULL)
+		return;
 	/* deallocate any skbuffs - we rely on any unused to be
 	 * set to NULL.
 	 */
@@ -1174,15 +1166,15 @@ static int vector_poll(struct napi_struct *napi, int budget)
 
 	if ((vp->options & VECTOR_TX) != 0)
 		tx_enqueued = (vector_send(vp->tx_queue) > 0);
-	if ((vp->options & VECTOR_RX) > 0) {
-		spin_lock(&vp->rx_queue->head_lock);
+	spin_lock(&vp->rx_queue->head_lock);
+	if ((vp->options & VECTOR_RX) > 0)
 		err = vector_mmsg_rx(vp, budget);
-		spin_unlock(&vp->rx_queue->head_lock);
-	} else {
+	else {
 		err = vector_legacy_rx(vp);
 		if (err > 0)
 			err = 1;
 	}
+	spin_unlock(&vp->rx_queue->head_lock);
 	if (err > 0)
 		work_done += err;
 
@@ -1568,16 +1560,13 @@ static void vector_setup_etheraddr(struct net_device *dev, char *str)
 			"Attempt to assign an invalid ethernet address to a device disallowed\n");
 		goto random;
 	}
-
-	eth_hw_addr_set(dev, addr);
-
 	if (!is_local_ether_addr(addr)) {
-		addr[0] |= 0x02;
 		netdev_warn(dev, "Warning: Assigning a globally valid ethernet address to a device\n");
 		netdev_warn(dev, "You should set the 2nd rightmost bit in the first byte of the MAC,\n");
-		netdev_warn(dev, "i.e. %pM\n", addr);
+		netdev_warn(dev, "i.e. %02x:%02x:%02x:%02x:%02x:%02x\n",
+			addr[0] | 0x02, addr[1], addr[2], addr[3], addr[4], addr[5]);
 	}
-
+	eth_hw_addr_set(dev, addr);
 	return;
 
 random:

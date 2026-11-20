@@ -151,7 +151,7 @@ static int arizona_haptics_probe(struct platform_device *pdev)
 	struct arizona_haptics *haptics;
 	int ret;
 
-	haptics = devm_kzalloc_obj(&pdev->dev, *haptics);
+	haptics = devm_kzalloc(&pdev->dev, sizeof(*haptics), GFP_KERNEL);
 	if (!haptics)
 		return -ENOMEM;
 

@@ -69,9 +69,6 @@ properties:
     items:
       - const: stmmaceth
 
-  power-domains:
-    maxItems: 1
-
   phy-mode:
     enum:
       - rmii

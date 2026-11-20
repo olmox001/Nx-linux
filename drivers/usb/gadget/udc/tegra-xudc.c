@@ -3497,18 +3497,18 @@ static int tegra_xudc_phy_get(struct tegra_xudc *xudc)
 	int err = 0, usb3_companion_port;
 	unsigned int i, j;
 
-	xudc->utmi_phy = devm_kzalloc_objs(xudc->dev, *xudc->utmi_phy,
-					   xudc->soc->num_phys);
+	xudc->utmi_phy = devm_kcalloc(xudc->dev, xudc->soc->num_phys,
+					   sizeof(*xudc->utmi_phy), GFP_KERNEL);
 	if (!xudc->utmi_phy)
 		return -ENOMEM;
 
-	xudc->usb3_phy = devm_kzalloc_objs(xudc->dev, *xudc->usb3_phy,
-					   xudc->soc->num_phys);
+	xudc->usb3_phy = devm_kcalloc(xudc->dev, xudc->soc->num_phys,
+					   sizeof(*xudc->usb3_phy), GFP_KERNEL);
 	if (!xudc->usb3_phy)
 		return -ENOMEM;
 
-	xudc->usbphy = devm_kzalloc_objs(xudc->dev, *xudc->usbphy,
-					 xudc->soc->num_phys);
+	xudc->usbphy = devm_kcalloc(xudc->dev, xudc->soc->num_phys,
+					   sizeof(*xudc->usbphy), GFP_KERNEL);
 	if (!xudc->usbphy)
 		return -ENOMEM;
 
@@ -3770,7 +3770,7 @@ static int tegra_xudc_probe(struct platform_device *pdev)
 	unsigned int i;
 	int err;
 
-	xudc = devm_kzalloc_obj(&pdev->dev, *xudc);
+	xudc = devm_kzalloc(&pdev->dev, sizeof(*xudc), GFP_KERNEL);
 	if (!xudc)
 		return -ENOMEM;
 
@@ -3803,11 +3803,14 @@ static int tegra_xudc_probe(struct platform_device *pdev)
 
 	err = devm_request_irq(&pdev->dev, xudc->irq, tegra_xudc_irq, 0,
 			       dev_name(&pdev->dev), xudc);
-	if (err < 0)
+	if (err < 0) {
+		dev_err(xudc->dev, "failed to claim IRQ#%u: %d\n", xudc->irq,
+			err);
 		return err;
+	}
 
-	xudc->clks = devm_kzalloc_objs(&pdev->dev, *xudc->clks,
-				       xudc->soc->num_clks);
+	xudc->clks = devm_kcalloc(&pdev->dev, xudc->soc->num_clks, sizeof(*xudc->clks),
+				  GFP_KERNEL);
 	if (!xudc->clks)
 		return -ENOMEM;
 
@@ -3820,8 +3823,8 @@ static int tegra_xudc_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	xudc->supplies = devm_kzalloc_objs(&pdev->dev, *xudc->supplies,
-					   xudc->soc->num_supplies);
+	xudc->supplies = devm_kcalloc(&pdev->dev, xudc->soc->num_supplies,
+				      sizeof(*xudc->supplies), GFP_KERNEL);
 	if (!xudc->supplies)
 		return -ENOMEM;
 

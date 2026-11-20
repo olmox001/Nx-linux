@@ -603,7 +603,7 @@ static bool ghes_handle_arm_hw_error(struct acpi_hest_generic_data *gdata,
 		 * and don't filter out 'corrected' error here.
 		 */
 		if (is_cache && has_pa) {
-			queued |= ghes_do_memory_failure(err_info->physical_fault_addr, flags);
+			queued = ghes_do_memory_failure(err_info->physical_fault_addr, flags);
 			p += err_info->length;
 			continue;
 		}
@@ -642,14 +642,11 @@ static void ghes_handle_aer(struct acpi_hest_generic_data *gdata)
 #ifdef CONFIG_ACPI_APEI_PCIEAER
 	struct cper_sec_pcie *pcie_err = acpi_hest_get_payload(gdata);
 
-	if (gdata->error_data_length < sizeof(*pcie_err))
-		return;
-
 	if (pcie_err->validation_bits & CPER_PCIE_VALID_DEVICE_ID &&
 	    pcie_err->validation_bits & CPER_PCIE_VALID_AER_INFO) {
-		struct aer_capability_regs *aer_info;
 		unsigned int devfn;
 		int aer_severity;
+		u8 *aer_info;
 
 		devfn = PCI_DEVFN(pcie_err->device_id.device,
 				  pcie_err->device_id.function);
@@ -667,12 +664,13 @@ static void ghes_handle_aer(struct acpi_hest_generic_data *gdata)
 						  sizeof(struct aer_capability_regs));
 		if (!aer_info)
 			return;
-
-		aer_cap_regs_unpack(aer_info, pcie_err->aer_info, sizeof(pcie_err->aer_info));
+		memcpy(aer_info, pcie_err->aer_info, sizeof(struct aer_capability_regs));
 
 		aer_recover_queue(pcie_err->device_id.segment,
 				  pcie_err->device_id.bus,
-				  devfn, aer_severity, aer_info);
+				  devfn, aer_severity,
+				  (struct aer_capability_regs *)
+				  aer_info);
 	}
 #endif
 }
@@ -754,13 +752,13 @@ static DEFINE_KFIFO(cxl_cper_prot_err_fifo, struct cxl_cper_prot_err_work_data,
 static DEFINE_RAW_SPINLOCK(cxl_cper_prot_err_work_lock);
 struct work_struct *cxl_cper_prot_err_work;
 
-void cxl_cper_post_prot_err(struct cxl_cper_sec_prot_err *prot_err,
-			    int severity, u32 len)
+static void cxl_cper_post_prot_err(struct cxl_cper_sec_prot_err *prot_err,
+				   int severity)
 {
 #ifdef CONFIG_ACPI_APEI_PCIEAER
 	struct cxl_cper_prot_err_work_data wd;
 
-	if (cxl_cper_sec_prot_err_valid(prot_err, len))
+	if (cxl_cper_sec_prot_err_valid(prot_err))
 		return;
 
 	guard(raw_spinlock_irqsave)(&cxl_cper_prot_err_work_lock);
@@ -779,43 +777,42 @@ void cxl_cper_post_prot_err(struct cxl_cper_sec_prot_err *prot_err,
 	schedule_work(cxl_cper_prot_err_work);
 #endif
 }
-EXPORT_SYMBOL_FOR_MODULES(cxl_cper_post_prot_err, "acpi_extlog");
 
-void cxl_cper_register_prot_err_work(struct work_struct *work)
+int cxl_cper_register_prot_err_work(struct work_struct *work)
 {
 	guard(raw_spinlock_irqsave)(&cxl_cper_prot_err_work_lock);
 
 	if (WARN_ONCE(cxl_cper_prot_err_work,
 		      "CPER-CXL kfifo consumer already registered\n"))
-		return;
+		return -EINVAL;
 	cxl_cper_prot_err_work = work;
+	return 0;
 }
-EXPORT_SYMBOL_FOR_MODULES(cxl_cper_register_prot_err_work, "cxl_core");
+EXPORT_SYMBOL_NS_GPL(cxl_cper_register_prot_err_work, "CXL");
 
-void cxl_cper_unregister_prot_err_work(void)
+int cxl_cper_unregister_prot_err_work(struct work_struct *work)
 {
-	struct work_struct *old;
-
 	scoped_guard(raw_spinlock_irqsave, &cxl_cper_prot_err_work_lock) {
-		WARN_ONCE(!cxl_cper_prot_err_work,
-			  "CPER-CXL kfifo consumer not registered on unregister\n");
-		old = cxl_cper_prot_err_work;
+		if (WARN_ONCE(cxl_cper_prot_err_work != work,
+			      "CPER-CXL kfifo consumer mismatch on unregister\n"))
+			return -EINVAL;
 		cxl_cper_prot_err_work = NULL;
 	}
 
-	if (old)
-		cancel_work_sync(old);
+	cancel_work_sync(work);
 
 	/* Discard stale entries so they are not replayed on next module load */
 	kfifo_reset(&cxl_cper_prot_err_fifo);
+
+	return 0;
 }
-EXPORT_SYMBOL_FOR_MODULES(cxl_cper_unregister_prot_err_work, "cxl_core");
+EXPORT_SYMBOL_NS_GPL(cxl_cper_unregister_prot_err_work, "CXL");
 
 int cxl_cper_prot_err_kfifo_get(struct cxl_cper_prot_err_work_data *wd)
 {
 	return kfifo_get(&cxl_cper_prot_err_fifo, wd);
 }
-EXPORT_SYMBOL_FOR_MODULES(cxl_cper_prot_err_kfifo_get, "cxl_core");
+EXPORT_SYMBOL_NS_GPL(cxl_cper_prot_err_kfifo_get, "CXL");
 
 /* Room for 8 entries for each of the 4 event log queues */
 #define CXL_CPER_FIFO_DEPTH 32
@@ -826,14 +823,9 @@ static DEFINE_RAW_SPINLOCK(cxl_cper_work_lock);
 struct work_struct *cxl_cper_work;
 
 static void cxl_cper_post_event(enum cxl_event_type event_type,
-				struct cxl_cper_event_rec *rec, u32 len)
+				struct cxl_cper_event_rec *rec)
 {
 	struct cxl_cper_work_data wd;
-
-	if (len < sizeof(*rec)) {
-		pr_err(FW_WARN "CXL CPER section too small (%u)\n", len);
-		return;
-	}
 
 	if (rec->hdr.length <= sizeof(rec->hdr) ||
 	    rec->hdr.length > sizeof(*rec)) {
@@ -875,12 +867,12 @@ int cxl_cper_register_work(struct work_struct *work)
 }
 EXPORT_SYMBOL_NS_GPL(cxl_cper_register_work, "CXL");
 
-void cxl_cper_unregister_work(struct work_struct *work)
+int cxl_cper_unregister_work(struct work_struct *work)
 {
 	scoped_guard(raw_spinlock_irqsave, &cxl_cper_work_lock) {
 		if (WARN_ONCE(cxl_cper_work != work,
 			      "CXL CPER kfifo consumer mismatch on unregister\n"))
-			return;
+			return -EINVAL;
 		cxl_cper_work = NULL;
 	}
 
@@ -888,6 +880,8 @@ void cxl_cper_unregister_work(struct work_struct *work)
 
 	/* Discard stale entries so they are not replayed on next module load */
 	kfifo_reset(&cxl_cper_fifo);
+
+	return 0;
 }
 EXPORT_SYMBOL_NS_GPL(cxl_cper_unregister_work, "CXL");
 
@@ -899,7 +893,7 @@ EXPORT_SYMBOL_NS_GPL(cxl_cper_kfifo_get, "CXL");
 
 static void ghes_log_hwerr(int sev, guid_t *sec_type)
 {
-	if (sev != GHES_SEV_RECOVERABLE)
+	if (sev != CPER_SEV_RECOVERABLE)
 		return;
 
 	if (guid_equal(sec_type, &CPER_SEC_PROC_ARM) ||
@@ -931,28 +925,6 @@ static void ghes_log_hwerr(int sev, guid_t *sec_type)
 	hwerr_log_error_type(HWERR_RECOV_OTHERS);
 }
 
-/*
- * The fields from "extended" on are absent from the 73-byte UEFI 2.1/2.2
- * layout that older firmware still emits. Return the length needed for the
- * fields the validation bits claim, so over-claiming is rejected without
- * rejecting an honest short record.
- */
-static u32 ghes_mem_err_min_len(u64 validation_bits)
-{
-	u32 len = sizeof(struct cper_sec_mem_err_old);
-
-	if (validation_bits & (CPER_MEM_VALID_ROW_EXT | CPER_MEM_VALID_CHIP_ID))
-		len = offsetof(struct cper_sec_mem_err, rank);
-	if (validation_bits & CPER_MEM_VALID_RANK_NUMBER)
-		len = offsetof(struct cper_sec_mem_err, mem_array_handle);
-	if (validation_bits & CPER_MEM_VALID_CARD_HANDLE)
-		len = offsetof(struct cper_sec_mem_err, mem_dev_handle);
-	if (validation_bits & CPER_MEM_VALID_MODULE_HANDLE)
-		len = sizeof(struct cper_sec_mem_err);
-
-	return len;
-}
-
 static void ghes_do_proc(struct ghes *ghes,
 			 const struct acpi_hest_generic_status *estatus)
 {
@@ -978,53 +950,30 @@ static void ghes_do_proc(struct ghes *ghes,
 		if (guid_equal(sec_type, &CPER_SEC_PLATFORM_MEM)) {
 			struct cper_sec_mem_err *mem_err = acpi_hest_get_payload(gdata);
 
-			/*
-			 * Check once for all three consumers below. The 73-byte
-			 * UEFI 2.1/2.2 layout is the floor, matching
-			 * cper_estatus_print_section() and making
-			 * validation_bits safe to read.
-			 */
-			if (gdata->error_data_length <
-			    sizeof(struct cper_sec_mem_err_old))
-				continue;
-
-			/* Then require what the claimed fields actually need. */
-			if (gdata->error_data_length <
-			    ghes_mem_err_min_len(mem_err->validation_bits)) {
-				pr_warn_ratelimited(FW_WARN GHES_PFX
-						    "memory error section too small (%u) for the fields it claims\n",
-						    gdata->error_data_length);
-				continue;
-			}
-
 			atomic_notifier_call_chain(&ghes_report_chain, sev, mem_err);
 
 			arch_apei_report_mem_error(sev, mem_err);
-			queued |= ghes_handle_memory_failure(gdata, sev, sync);
+			queued = ghes_handle_memory_failure(gdata, sev, sync);
 		} else if (guid_equal(sec_type, &CPER_SEC_PCIE)) {
 			ghes_handle_aer(gdata);
 		} else if (guid_equal(sec_type, &CPER_SEC_PROC_ARM)) {
-			queued |= ghes_handle_arm_hw_error(gdata, sev, sync);
+			queued = ghes_handle_arm_hw_error(gdata, sev, sync);
 		} else if (guid_equal(sec_type, &CPER_SEC_CXL_PROT_ERR)) {
 			struct cxl_cper_sec_prot_err *prot_err = acpi_hest_get_payload(gdata);
 
-			cxl_cper_post_prot_err(prot_err, gdata->error_severity,
-					       gdata->error_data_length);
+			cxl_cper_post_prot_err(prot_err, gdata->error_severity);
 		} else if (guid_equal(sec_type, &CPER_SEC_CXL_GEN_MEDIA_GUID)) {
 			struct cxl_cper_event_rec *rec = acpi_hest_get_payload(gdata);
 
-			cxl_cper_post_event(CXL_CPER_EVENT_GEN_MEDIA, rec,
-					    gdata->error_data_length);
+			cxl_cper_post_event(CXL_CPER_EVENT_GEN_MEDIA, rec);
 		} else if (guid_equal(sec_type, &CPER_SEC_CXL_DRAM_GUID)) {
 			struct cxl_cper_event_rec *rec = acpi_hest_get_payload(gdata);
 
-			cxl_cper_post_event(CXL_CPER_EVENT_DRAM, rec,
-					    gdata->error_data_length);
+			cxl_cper_post_event(CXL_CPER_EVENT_DRAM, rec);
 		} else if (guid_equal(sec_type, &CPER_SEC_CXL_MEM_MODULE_GUID)) {
 			struct cxl_cper_event_rec *rec = acpi_hest_get_payload(gdata);
 
-			cxl_cper_post_event(CXL_CPER_EVENT_MEM_MODULE, rec,
-					    gdata->error_data_length);
+			cxl_cper_post_event(CXL_CPER_EVENT_MEM_MODULE, rec);
 		} else {
 			void *err = acpi_hest_get_payload(gdata);
 
@@ -1450,16 +1399,8 @@ static int ghes_in_nmi_queue_one_entry(struct ghes *ghes,
 	ghes_clear_estatus(ghes, &tmp_header, buf_paddr, fixmap_idx);
 
 	/* This error has been reported before, don't process it again. */
-	if (ghes_estatus_cached(estatus)) {
-		/*
-		 * Return failure on duplicate SEA entries so that the
-		 * subsequent SEA handler invocation sends a SIGBUS signal to
-		 * the task to prevent it from re-entering the handler loop.
-		 */
-		if (is_hest_sync_notify(ghes))
-			rc = -ECANCELED;
+	if (ghes_estatus_cached(estatus))
 		goto no_work;
-	}
 
 	llist_add(&estatus_node->llnode, &ghes_estatus_llist);
 
@@ -1472,8 +1413,8 @@ no_work:
 	return rc;
 }
 
-static int __maybe_unused ghes_in_nmi_spool_from_list(struct list_head *rcu_list,
-			       enum fixed_addresses fixmap_idx)
+static int ghes_in_nmi_spool_from_list(struct list_head *rcu_list,
+				       enum fixed_addresses fixmap_idx)
 {
 	int ret = -ENOENT;
 	struct ghes *ghes;

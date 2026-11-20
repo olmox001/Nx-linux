@@ -1121,7 +1121,7 @@ static int dsicm_probe(struct platform_device *pdev)
 	if (!pdev->dev.of_node)
 		return -ENODEV;
 
-	ddata = devm_kzalloc_obj(dev, *ddata);
+	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
 		return -ENOMEM;
 
@@ -1185,8 +1185,10 @@ static int dsicm_probe(struct platform_device *pdev)
 				IRQF_TRIGGER_RISING,
 				"taal vsync", ddata);
 
-		if (r)
+		if (r) {
+			dev_err(dev, "IRQ request failed\n");
 			return r;
+		}
 
 		INIT_DEFERRABLE_WORK(&ddata->te_timeout_work,
 					dsicm_te_timeout_work_callback);

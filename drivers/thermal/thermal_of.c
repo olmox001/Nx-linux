@@ -63,23 +63,22 @@ static int thermal_of_get_trip_type(struct device_node *np,
 static int thermal_of_populate_trip(struct device_node *np,
 				    struct thermal_trip *trip)
 {
-	u32 hysteresis;
-	s32 temperature;
+	int prop;
 	int ret;
 
-	ret = of_property_read_s32(np, "temperature", &temperature);
+	ret = of_property_read_u32(np, "temperature", &prop);
 	if (ret < 0) {
 		pr_err("missing temperature property\n");
 		return ret;
 	}
-	trip->temperature = temperature;
+	trip->temperature = prop;
 
-	ret = of_property_read_u32(np, "hysteresis", &hysteresis);
+	ret = of_property_read_u32(np, "hysteresis", &prop);
 	if (ret < 0) {
 		pr_err("missing hysteresis property\n");
 		return ret;
 	}
-	trip->hysteresis = hysteresis;
+	trip->hysteresis = prop;
 
 	ret = thermal_of_get_trip_type(np, &trip->type);
 	if (ret < 0) {
@@ -350,10 +349,10 @@ out:
 }
 
 /**
- * thermal_of_zone_unregister - Cleanup the specific allocated resources
+ * thermal_of_zone_unregister - Cleanup the specific allocated ressources
  *
  * This function disables the thermal zone and frees the different
- * resources allocated specific to the thermal OF.
+ * ressources allocated specific to the thermal OF.
  *
  * @tz: a pointer to the thermal zone structure
  */
@@ -445,7 +444,7 @@ static struct thermal_zone_device *thermal_of_zone_register(struct device_node *
 
 	ret = thermal_zone_device_enable(tz);
 	if (ret) {
-		pr_err("Failed to enable thermal zone '%s', id=%d: %d\n",
+		pr_err("Failed to enabled thermal zone '%s', id=%d: %d\n",
 		       tz->type, tz->id, ret);
 		thermal_of_zone_unregister(tz);
 		return ERR_PTR(ret);
@@ -562,7 +561,7 @@ thermal_of_cooling_device_register(struct device_node *np, u32 cdev_id,
 	cdev->np = np;
 	cdev->cdev_id = cdev_id;
 
-	ret = thermal_cooling_device_add(cdev, NULL, devdata);
+	ret = thermal_cooling_device_add(cdev, devdata);
 	if (ret)
 		return ERR_PTR(ret);
 

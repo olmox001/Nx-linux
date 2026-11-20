@@ -228,7 +228,7 @@ static int micro_batt_probe(struct platform_device *pdev)
 	struct micro_battery *mb;
 	int ret;
 
-	mb = devm_kzalloc_obj(&pdev->dev, *mb);
+	mb = devm_kzalloc(&pdev->dev, sizeof(*mb), GFP_KERNEL);
 	if (!mb)
 		return -ENOMEM;
 

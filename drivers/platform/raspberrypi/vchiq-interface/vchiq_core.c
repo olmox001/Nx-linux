@@ -2350,7 +2350,8 @@ recycle_func(void *v)
 
 	length = sizeof(*found) * BITSET_SIZE(VCHIQ_MAX_SERVICES);
 
-	found = kmalloc_objs(*found, BITSET_SIZE(VCHIQ_MAX_SERVICES));
+	found = kmalloc_array(BITSET_SIZE(VCHIQ_MAX_SERVICES), sizeof(*found),
+			      GFP_KERNEL);
 	if (!found)
 		return -ENOMEM;
 

@@ -261,24 +261,22 @@ static int mtk_tdm_bck_en_event(struct snd_soc_dapm_widget *w,
 	struct mt8189_afe_private *afe_priv = afe->platform_priv;
 	int dai_id = get_tdm_id_by_name(w->name);
 	struct mtk_afe_tdm_priv *tdm_priv = afe_priv->dai_priv[dai_id];
-	int ret;
 
 	dev_dbg(cmpnt->dev, "name %s, event 0x%x, dai_id %d, bck: %d\n",
 		w->name, event, dai_id, tdm_priv->bck_rate);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		ret = mt8189_mck_enable(afe, tdm_priv->bck_id, tdm_priv->bck_rate);
+		mt8189_mck_enable(afe, tdm_priv->bck_id, tdm_priv->bck_rate);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		ret = mt8189_mck_disable(afe, tdm_priv->bck_id);
+		mt8189_mck_disable(afe, tdm_priv->bck_id);
 		break;
 	default:
-		ret = 0;
 		break;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int mtk_tdm_mck_en_event(struct snd_soc_dapm_widget *w,
@@ -290,25 +288,23 @@ static int mtk_tdm_mck_en_event(struct snd_soc_dapm_widget *w,
 	struct mt8189_afe_private *afe_priv = afe->platform_priv;
 	int dai_id = get_tdm_id_by_name(w->name);
 	struct mtk_afe_tdm_priv *tdm_priv = afe_priv->dai_priv[dai_id];
-	int ret;
 
 	dev_dbg(cmpnt->dev, "name %s, event 0x%x, dai_id %d, mclk %d\n",
 		w->name, event, dai_id, tdm_priv->mclk_rate);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		ret = mt8189_mck_enable(afe, tdm_priv->mclk_id, tdm_priv->mclk_rate);
+		mt8189_mck_enable(afe, tdm_priv->mclk_id, tdm_priv->mclk_rate);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		tdm_priv->mclk_rate = 0;
-		ret = mt8189_mck_disable(afe, tdm_priv->mclk_id);
+		mt8189_mck_disable(afe, tdm_priv->mclk_id);
 		break;
 	default:
-		ret = 0;
 		break;
 	}
 
-	return ret;
+	return 0;
 }
 
 static const struct snd_soc_dapm_widget mtk_dai_tdm_widgets[] = {
@@ -382,9 +378,6 @@ static int mtk_dai_tdm_cal_mclk(struct mtk_base_afe *afe,
 {
 	int apll;
 	int apll_rate;
-
-	if (freq <= 0)
-		return -EINVAL;
 
 	apll = mt8189_get_apll_by_rate(afe, freq);
 	apll_rate = mt8189_get_apll_rate(afe, apll);
@@ -627,7 +620,8 @@ static struct mtk_afe_tdm_priv *init_tdm_priv_data(struct mtk_base_afe *afe,
 {
 	struct mtk_afe_tdm_priv *tdm_priv;
 
-	tdm_priv = devm_kzalloc_obj(afe->dev, struct mtk_afe_tdm_priv);
+	tdm_priv = devm_kzalloc(afe->dev, sizeof(struct mtk_afe_tdm_priv),
+				GFP_KERNEL);
 	if (!tdm_priv)
 		return NULL;
 
@@ -648,7 +642,7 @@ int mt8189_dai_tdm_register(struct mtk_base_afe *afe)
 	struct mtk_afe_tdm_priv *tdm_priv, *tdm_dptx_priv;
 	struct mtk_base_afe_dai *dai;
 
-	dai = devm_kzalloc_obj(afe->dev, *dai);
+	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
 	if (!dai)
 		return -ENOMEM;
 

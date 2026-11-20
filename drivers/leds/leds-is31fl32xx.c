@@ -378,23 +378,23 @@ static int is31fl32xx_init_regs(struct is31fl32xx_priv *priv)
 }
 
 static int is31fl32xx_parse_child_dt(const struct device *dev,
-				     const struct fwnode_handle *child,
+				     const struct device_node *child,
 				     struct is31fl32xx_led_data *led_data)
 {
 	struct led_classdev *cdev = &led_data->cdev;
 	int ret = 0;
 	u32 reg;
 
-	ret = fwnode_property_read_u32(child, "reg", &reg);
+	ret = of_property_read_u32(child, "reg", &reg);
 	if (ret || reg < 1 || reg > led_data->priv->cdef->channels) {
 		dev_err(dev,
-			"Child node %pfwP does not have a valid reg property\n",
+			"Child node %pOF does not have a valid reg property\n",
 			child);
 		return -EINVAL;
 	}
 	led_data->channel = reg;
 
-	fwnode_property_read_u32(child, "led-max-microamp", &led_data->max_microamp);
+	of_property_read_u32(child, "led-max-microamp", &led_data->max_microamp);
 
 	cdev->brightness_set_blocking = is31fl32xx_brightness_set;
 
@@ -422,7 +422,7 @@ static int is31fl32xx_parse_dt(struct device *dev,
 	int ret = 0;
 
 	if ((cdef->output_frequency_setting_reg != IS31FL32XX_REG_NONE) &&
-	    device_property_read_bool(dev, "issi,22khz-pwm")) {
+	    of_property_read_bool(dev_of_node(dev), "issi,22khz-pwm")) {
 
 		ret = is31fl32xx_write(priv, cdef->output_frequency_setting_reg,
 				       IS31FL32XX_PWM_FREQUENCY_22KHZ);
@@ -433,7 +433,7 @@ static int is31fl32xx_parse_dt(struct device *dev,
 		}
 	}
 
-	device_for_each_child_node_scoped(dev, child) {
+	for_each_available_child_of_node_scoped(dev_of_node(dev), child) {
 		struct led_init_data init_data = {};
 		struct is31fl32xx_led_data *led_data =
 			&priv->leds[priv->num_leds];
@@ -451,17 +451,17 @@ static int is31fl32xx_parse_dt(struct device *dev,
 							  led_data->channel);
 		if (other_led_data) {
 			dev_err(dev,
-				"Node %pfwP 'reg' conflicts with another LED\n",
+				"Node %pOF 'reg' conflicts with another LED\n",
 				child);
 			return -EINVAL;
 		}
 
-		init_data.fwnode = child;
+		init_data.fwnode = of_fwnode_handle(child);
 
 		ret = devm_led_classdev_register_ext(dev, &led_data->cdev,
 						     &init_data);
 		if (ret) {
-			dev_err(dev, "Failed to register LED for %pfwP: %d\n",
+			dev_err(dev, "Failed to register LED for %pOF: %d\n",
 				child, ret);
 			return ret;
 		}
@@ -576,11 +576,12 @@ static int is31fl32xx_probe(struct i2c_client *client)
 
 	cdef = device_get_match_data(dev);
 
-	count = device_get_child_node_count(dev);
+	count = of_get_available_child_count(dev_of_node(dev));
 	if (!count)
 		return -EINVAL;
 
-	priv = devm_kzalloc_flex(dev, *priv, leds, count);
+	priv = devm_kzalloc(dev, struct_size(priv, leds, count),
+			    GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

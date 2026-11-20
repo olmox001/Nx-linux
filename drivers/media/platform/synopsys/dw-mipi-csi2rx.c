@@ -479,7 +479,6 @@ dw_mipi_csi2rx_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int dw_mipi_csi2rx_set_fmt(struct v4l2_subdev *sd,
-				  const struct v4l2_subdev_client_info *ci,
 				  struct v4l2_subdev_state *state,
 				  struct v4l2_subdev_format *format)
 {
@@ -956,7 +955,7 @@ static int dw_mipi_csi2rx_probe(struct platform_device *pdev)
 	struct dw_mipi_csi2rx_device *csi2;
 	int ret;
 
-	csi2 = devm_kzalloc_obj(dev, *csi2);
+	csi2 = devm_kzalloc(dev, sizeof(*csi2), GFP_KERNEL);
 	if (!csi2)
 		return -ENOMEM;
 	csi2->dev = dev;

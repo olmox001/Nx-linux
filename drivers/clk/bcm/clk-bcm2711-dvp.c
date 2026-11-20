@@ -29,12 +29,14 @@ static int clk_dvp_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	dvp = devm_kzalloc_obj(&pdev->dev, *dvp);
+	dvp = devm_kzalloc(&pdev->dev, sizeof(*dvp), GFP_KERNEL);
 	if (!dvp)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, dvp);
 
-	dvp->data = devm_kzalloc_flex(&pdev->dev, *dvp->data, hws, NR_CLOCKS);
+	dvp->data = devm_kzalloc(&pdev->dev,
+				 struct_size(dvp->data, hws, NR_CLOCKS),
+				 GFP_KERNEL);
 	if (!dvp->data)
 		return -ENOMEM;
 	data = dvp->data;

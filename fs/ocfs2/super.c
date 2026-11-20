@@ -52,6 +52,7 @@
 #include "super.h"
 #include "sysfile.h"
 #include "uptodate.h"
+#include "ver.h"
 #include "xattr.h"
 #include "quota.h"
 #include "refcounttree.h"
@@ -68,7 +69,6 @@ static struct dentry *ocfs2_debugfs_root;
 
 MODULE_AUTHOR("Oracle");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("OCFS2 cluster file system");
 
 struct mount_options
 {
@@ -387,7 +387,6 @@ static ssize_t ocfs2_debug_read(struct file *file, char __user *buf,
 #endif	/* CONFIG_DEBUG_FS */
 
 static const struct file_operations ocfs2_osb_debug_fops = {
-	.owner =	THIS_MODULE,
 	.open =		ocfs2_osb_debug_open,
 	.release =	ocfs2_debug_release,
 	.read =		ocfs2_debug_read,
@@ -1163,23 +1162,15 @@ static int ocfs2_fill_super(struct super_block *sb, struct fs_context *fc)
 out_dismount:
 	atomic_set(&osb->vol_state, VOLUME_DISABLED);
 	wake_up(&osb->osb_mount_event);
+	ocfs2_free_replay_slots(osb);
 	ocfs2_dismount_volume(sb, 1);
 	goto out;
 
 out_debugfs:
 	debugfs_remove_recursive(osb->osb_debug_root);
 out_super:
-	/*
-	 * A recovery thread launched by a node failure event may still be
-	 * waiting for the volume to be mounted.  Set VOLUME_DISABLED and
-	 * wake it up, then wait for it to exit before osb is freed,
-	 * otherwise the kthread would leak and stay blocked on the wait
-	 * queue embedded in the freed osb.
-	 */
-	atomic_set(&osb->vol_state, VOLUME_DISABLED);
-	wake_up(&osb->osb_mount_event);
 	ocfs2_release_system_inodes(osb);
-	ocfs2_recovery_exit(osb);
+	kfree(osb->recovery_map);
 	ocfs2_delete_osb(osb);
 	kfree(osb);
 out:
@@ -1215,6 +1206,13 @@ static int ocfs2_init_fs_context(struct fs_context *fc)
 
 	mopt->commit_interval = 0;
 	mopt->mount_opt = OCFS2_MOUNT_NOINTR;
+
+	/*
+	 * Make 'buffered' as default coherency option. This is to keep the
+	 * default behaviour unchanged(same as in UEK1)
+	 */
+	mopt->mount_opt |= OCFS2_MOUNT_COHERENCY_BUFFERED;
+
 	mopt->atime_quantum = OCFS2_DEFAULT_ATIME_QUANTUM;
 	mopt->slot = OCFS2_INVALID_SLOT;
 	mopt->localalloc_opt = -1;
@@ -1512,6 +1510,7 @@ static int __init ocfs2_init(void)
 {
 	int status;
 
+	ocfs2_print_version();
 	status = init_ocfs2_uptodate_cache();
 	if (status < 0)
 		goto out1;
@@ -1776,18 +1775,17 @@ static int ocfs2_mount_volume(struct super_block *sb)
 	status = ocfs2_truncate_log_init(osb);
 	if (status < 0) {
 		mlog_errno(status);
-		goto out_system_inodes;
+		goto out_check_volume;
 	}
 
 	ocfs2_super_unlock(osb, 1);
 	return 0;
 
+out_check_volume:
+	ocfs2_free_replay_slots(osb);
 out_system_inodes:
 	if (osb->local_alloc_state == OCFS2_LA_ENABLED)
 		ocfs2_shutdown_local_alloc(osb);
-	/* Drain pending suballoc reclaim work before the journal goes away */
-	if (osb->ocfs2_wq)
-		flush_workqueue(osb->ocfs2_wq);
 	ocfs2_release_system_inodes(osb);
 	/* before journal shutdown, we should release slot_info */
 	ocfs2_free_slot_info(osb);
@@ -1831,9 +1829,6 @@ static void ocfs2_dismount_volume(struct super_block *sb, int mnt_err)
 	/* Wait for worker to be done with the work structure in osb */
 	cancel_work_sync(&osb->dquot_drop_work);
 
-	/* Stop recovery producers before releasing their local allocators. */
-	ocfs2_recovery_stop(osb);
-
 	ocfs2_shutdown_local_alloc(osb);
 
 	ocfs2_truncate_log_shutdown(osb);
@@ -1860,14 +1855,6 @@ static void ocfs2_dismount_volume(struct super_block *sb, int mnt_err)
 
 	if (osb->cconn)
 		ocfs2_super_unlock(osb, 1);
-
-	/*
-	 * Drain pending suballoc reclaim work while the system inodes and
-	 * the journal are still alive, since the worker needs to look up
-	 * the global bitmap inode and start a transaction.
-	 */
-	if (osb->ocfs2_wq)
-		flush_workqueue(osb->ocfs2_wq);
 
 	ocfs2_release_system_inodes(osb);
 
@@ -1903,6 +1890,7 @@ static void ocfs2_dismount_volume(struct super_block *sb, int mnt_err)
 
 	ocfs2_delete_osb(osb);
 	kfree(osb);
+	sb->s_dev = 0;
 	sb->s_fs_info = NULL;
 }
 
@@ -2048,7 +2036,6 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	}
 
 	init_waitqueue_head(&osb->checkpoint_event);
-	init_rwsem(&osb->journal_shutdown_sem);
 
 	osb->s_atime_quantum = OCFS2_DEFAULT_ATIME_QUANTUM;
 
@@ -2073,7 +2060,8 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	}
 
 	osb->slot_recovery_generations =
-		kzalloc_objs(*osb->slot_recovery_generations, osb->max_slots);
+		kcalloc(osb->max_slots, sizeof(*osb->slot_recovery_generations),
+			GFP_KERNEL);
 	if (!osb->slot_recovery_generations) {
 		status = -ENOMEM;
 		mlog_errno(status);
@@ -2081,8 +2069,9 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	}
 
 	init_waitqueue_head(&osb->osb_wipe_event);
-	osb->osb_orphan_wipes = kzalloc_objs(*osb->osb_orphan_wipes,
-					     osb->max_slots);
+	osb->osb_orphan_wipes = kcalloc(osb->max_slots,
+					sizeof(*osb->osb_orphan_wipes),
+					GFP_KERNEL);
 	if (!osb->osb_orphan_wipes) {
 		status = -ENOMEM;
 		mlog_errno(status);
@@ -2153,11 +2142,6 @@ static int ocfs2_initialize_super(struct super_block *sb,
 
 	INIT_WORK(&osb->dquot_drop_work, ocfs2_drop_dquot_refs);
 	init_llist_head(&osb->dquot_drop_list);
-
-	spin_lock_init(&osb->os_suballoc_reclaim_lock);
-	INIT_LIST_HEAD(&osb->os_suballoc_reclaim_list);
-	INIT_WORK(&osb->os_suballoc_reclaim_work,
-		  ocfs2_suballoc_reclaim_worker);
 
 	/* get some pseudo constants for clustersize bits */
 	osb->s_clustersize_bits =

@@ -164,22 +164,7 @@ int ksmbd_verify_smb_message(struct ksmbd_work *work)
 	hdr = smb_get_msg(work->request_buf);
 	if (*(__le32 *)hdr->Protocol == SMB1_PROTO_NUMBER &&
 	    hdr->Command == SMB_COM_NEGOTIATE) {
-		struct ksmbd_conn *conn = work->conn;
-
-		conn->outstanding_credits++;
-		/*
-		 * A legacy SMB1 multi-protocol negotiate occupies sequence
-		 * number 0 but does not pass through
-		 * ksmbd_smb2_check_message(). Consume it here so that, after
-		 * the connection is upgraded to SMB2, the command sequence
-		 * window can advance instead of staying pinned at 0.
-		 */
-		spin_lock(&conn->credits_lock);
-		if (conn->seq_low == 0) {
-			__clear_bit(0, conn->seq_bitmap);
-			conn->seq_low = 1;
-		}
-		spin_unlock(&conn->credits_lock);
+		work->conn->outstanding_credits++;
 		return 0;
 	}
 
@@ -467,7 +452,7 @@ int ksmbd_populate_dot_dotdot_entries(struct ksmbd_work *work, int info_level,
 {
 	int i, rc = 0;
 	struct ksmbd_conn *conn = work->conn;
-	const struct mnt_idmap *idmap = file_mnt_idmap(dir->filp);
+	struct mnt_idmap *idmap = file_mnt_idmap(dir->filp);
 
 	for (i = 0; i < 2; i++) {
 		struct kstat kstat;
@@ -478,17 +463,16 @@ int ksmbd_populate_dot_dotdot_entries(struct ksmbd_work *work, int info_level,
 			if (i == 0) {
 				d_info->name = ".";
 				d_info->name_len = 1;
-				dentry = dget(dir->filp->f_path.dentry);
+				dentry = dir->filp->f_path.dentry;
 			} else {
 				d_info->name = "..";
 				d_info->name_len = 2;
-				dentry = dget_parent(dir->filp->f_path.dentry);
+				dentry = dir->filp->f_path.dentry->d_parent;
 			}
 
 			if (!match_pattern(d_info->name, d_info->name_len,
 					   search_pattern)) {
 				dir->dot_dotdot[i] = 1;
-				dput(dentry);
 				continue;
 			}
 
@@ -497,7 +481,6 @@ int ksmbd_populate_dot_dotdot_entries(struct ksmbd_work *work, int info_level,
 							 idmap,
 							 dentry,
 							 &ksmbd_kstat);
-			dput(dentry);
 			if (rc)
 				break;
 
@@ -525,6 +508,8 @@ int ksmbd_populate_dot_dotdot_entries(struct ksmbd_work *work, int info_level,
  * @shortname:	destination short filename
  *
  * Return:	shortname length or 0 when source long name is '.' or '..'
+ * TODO: Though this function conforms the restriction of 8.3 Filename spec,
+ * but the result is different with Windows 7's one. need to check.
  */
 int ksmbd_extract_shortname(struct ksmbd_conn *conn, const char *longname,
 			    char *shortname)
@@ -588,7 +573,7 @@ int ksmbd_extract_shortname(struct ksmbd_conn *conn, const char *longname,
 	if (dot_present)
 		memcpy(out + baselen + 4, extension, 4);
 	else
-		out[baselen + 3] = '\0';
+		out[baselen + 4] = '\0';
 	smbConvertToUTF16((__le16 *)shortname, out, PATH_MAX,
 			  conn->local_nls, 0);
 	len = strlen(out) * 2;
@@ -695,24 +680,10 @@ static void smb_shared_mode_error(int error, struct ksmbd_file *prev_fp,
 		    prev_fp->saccess, curr_fp->daccess);
 }
 
-/*
- * Sharing checks use fp->daccess plus the FILE_WRITE_DATA that MS-FSA
- * grants an open that overwrites data or creates a named stream.
- * fp->daccess keeps the open's own access.
- */
-__le32 ksmbd_sharing_daccess(const struct ksmbd_file *fp)
-{
-	if (fp->implied_write)
-		return fp->daccess | FILE_WRITE_DATA_LE;
-	return fp->daccess;
-}
-
 int ksmbd_smb_check_shared_mode(struct file *filp, struct ksmbd_file *curr_fp)
 {
 	int rc = 0;
 	struct ksmbd_file *prev_fp;
-	__le32 curr_access = ksmbd_sharing_daccess(curr_fp);
-	__le32 access;
 
 	/*
 	 * Lookup fp in master fp list, and check desired access and
@@ -731,24 +702,6 @@ int ksmbd_smb_check_shared_mode(struct file *filp, struct ksmbd_file *curr_fp)
 				continue;
 
 		if (prev_fp->attrib_only != curr_fp->attrib_only)
-			continue;
-
-		/*
-		 * MS-FSA checks sharing per stream, so a named stream open's
-		 * implied write is not a write against the primary stream.
-		 * It still decides whether the pair is checked.
-		 */
-		access = curr_access;
-		if (ksmbd_stream_fd(curr_fp) && !ksmbd_stream_fd(prev_fp))
-			access = curr_fp->daccess;
-
-		/*
-		 * Two opens conflict only if both hold a right in
-		 * FILE_SHARE_CHECKED_ACCESS_LE (MS-FSA 2.1.5.1.2.1 and
-		 * 2.1.5.1.2.2)
-		 */
-		if (!(ksmbd_sharing_daccess(prev_fp) & FILE_SHARE_CHECKED_ACCESS_LE) ||
-		    !(curr_access & FILE_SHARE_CHECKED_ACCESS_LE))
 			continue;
 
 		if (!(prev_fp->saccess & FILE_SHARE_DELETE_LE) &&
@@ -777,7 +730,7 @@ int ksmbd_smb_check_shared_mode(struct file *filp, struct ksmbd_file *curr_fp)
 		}
 
 		if (!(prev_fp->saccess & FILE_SHARE_WRITE_LE) &&
-		    access & (FILE_WRITE_DATA_LE | FILE_APPEND_DATA_LE)) {
+		    curr_fp->daccess & (FILE_WRITE_DATA_LE | FILE_APPEND_DATA_LE)) {
 			smb_shared_mode_error(SHARE_WRITE_ERROR,
 					      prev_fp,
 					      curr_fp);

@@ -397,7 +397,8 @@ static int s10_clkmgr_init(struct platform_device *pdev)
 	}
 
 	num_clks = STRATIX10_NUM_CLKS;
-	clk_data = devm_kzalloc_flex(dev, *clk_data, clk_data.hws, num_clks);
+	clk_data = devm_kzalloc(dev, struct_size(clk_data, clk_data.hws,
+						 num_clks), GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
 

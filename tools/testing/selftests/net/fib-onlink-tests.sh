@@ -6,7 +6,6 @@
 source lib.sh
 PAUSE_ON_FAIL=${PAUSE_ON_FAIL:=no}
 VERBOSE=0
-ret=0
 
 # Network interfaces
 # - odd in current namespace; even in peer ns
@@ -86,7 +85,23 @@ PBR_TABLE=101
 
 log_test()
 {
-	log_test_expected "$1" "$2" "$3"
+	local rc=$1
+	local expected=$2
+	local msg="$3"
+
+	if [ ${rc} -eq ${expected} ]; then
+		nsuccess=$((nsuccess+1))
+		printf "    TEST: %-50s  [ OK ]\n" "${msg}"
+	else
+		nfail=$((nfail+1))
+		printf "    TEST: %-50s  [FAIL]\n" "${msg}"
+		if [ "${PAUSE_ON_FAIL}" = "yes" ]; then
+			echo
+			echo "hit enter to continue, 'q' to quit"
+			read a
+			[ "$a" = "q" ] && exit 1
+		fi
+	fi
 }
 
 log_section()
@@ -474,5 +489,3 @@ if [ "$TESTS" != "none" ]; then
 	printf "\nTests passed: %3d\n" ${nsuccess}
 	printf "Tests failed: %3d\n"   ${nfail}
 fi
-
-exit $ret

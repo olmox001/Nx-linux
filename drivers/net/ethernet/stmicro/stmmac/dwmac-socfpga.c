@@ -539,11 +539,8 @@ static int socfpga_dwmac_pcs_init(struct stmmac_priv *priv)
 
 static void socfpga_dwmac_pcs_exit(struct stmmac_priv *priv)
 {
-	if (!priv->hw->phylink_pcs)
-		return;
-
-	lynx_pcs_destroy(priv->hw->phylink_pcs);
-	priv->hw->phylink_pcs = NULL;
+	if (priv->hw->phylink_pcs)
+		lynx_pcs_destroy(priv->hw->phylink_pcs);
 }
 
 static struct phylink_pcs *socfpga_dwmac_select_pcs(struct stmmac_priv *priv,
@@ -619,7 +616,7 @@ static int socfpga_dwmac_probe(struct platform_device *pdev)
 	if (IS_ERR(plat_dat))
 		return PTR_ERR(plat_dat);
 
-	dwmac = devm_kzalloc_obj(dev, *dwmac);
+	dwmac = devm_kzalloc(dev, sizeof(*dwmac), GFP_KERNEL);
 	if (!dwmac)
 		return -ENOMEM;
 

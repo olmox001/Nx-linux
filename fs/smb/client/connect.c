@@ -130,11 +130,8 @@ void smb2_query_server_interfaces(struct work_struct *work)
 #define set_need_reco(server) \
 do { \
 	spin_lock(&server->srv_lock); \
-	if (server->tcpStatus != CifsExiting) { \
-		if (server->tcpStatus != CifsNeedReconnect) \
-			server->need_sock_shutdown = true; \
+	if (server->tcpStatus != CifsExiting) \
 		server->tcpStatus = CifsNeedReconnect; \
-	} \
 	spin_unlock(&server->srv_lock); \
 } while (0)
 
@@ -352,13 +349,10 @@ cifs_abort_connection(struct TCP_Server_Info *server)
 		mid_execute_callback(server, mid);
 		release_mid(server, mid);
 	}
-	wake_up_all(&server->request_q);
 }
 
 static bool cifs_tcp_ses_needs_reconnect(struct TCP_Server_Info *server, int num_targets)
 {
-	bool shutdown;
-
 	spin_lock(&server->srv_lock);
 	server->nr_targets = num_targets;
 	if (server->tcpStatus == CifsExiting) {
@@ -371,25 +365,9 @@ static bool cifs_tcp_ses_needs_reconnect(struct TCP_Server_Info *server, int num
 	cifs_dbg(FYI, "Mark tcp session as need reconnect\n");
 	trace_smb3_reconnect(server->current_mid, server->conn_id,
 			     server->hostname);
-
-	/*
-	 * Cover cases where sender tasks didn't manage to shutdown the socket
-	 * for some reason.
-	 */
-	shutdown = server->tcpStatus != CifsNeedReconnect ||
-		   server->need_sock_shutdown;
-	server->need_sock_shutdown = false;
 	server->tcpStatus = CifsNeedReconnect;
+
 	spin_unlock(&server->srv_lock);
-
-	if (shutdown) {
-		cifs_server_lock(server);
-		if (server->ssocket)
-			/* Don't release it here/yet! */
-			kernel_sock_shutdown(server->ssocket, SHUT_RDWR);
-		cifs_server_unlock(server);
-	}
-
 	return true;
 }
 
@@ -1084,19 +1062,6 @@ cifs_enable_signing(struct TCP_Server_Info *server, bool mnt_sign_required)
 	return 0;
 }
 
-static void cifs_tcp_server_put(struct TCP_Server_Info *server)
-{
-	if (!refcount_dec_and_test(&server->obj_refs))
-		return;
-
-	cifs_crypto_secmech_release(server);
-	kfree_sensitive(server->session_key.response);
-	put_net(cifs_net_ns(server));
-	kfree(server->leaf_fullpath);
-	kfree(server->hostname);
-	kfree_sensitive(server);
-}
-
 static noinline_for_stack void
 clean_demultiplex_info(struct TCP_Server_Info *server)
 {
@@ -1182,11 +1147,14 @@ clean_demultiplex_info(struct TCP_Server_Info *server)
 		 */
 	}
 
+	put_net(cifs_net_ns(server));
+	kfree(server->leaf_fullpath);
+	kfree(server->hostname);
+	kfree(server);
+
 	length = atomic_dec_return(&tcpSesAllocCount);
 	if (length > 0)
 		mempool_resize(cifs_req_poolp, length + cifs_min_rcv);
-
-	cifs_tcp_server_put(server);
 }
 
 static int
@@ -1260,7 +1228,8 @@ cifs_handle_standard(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 	return 0;
 }
 
-void smb2_add_credits_from_hdr(char *buffer, struct TCP_Server_Info *server)
+static void
+smb2_add_credits_from_hdr(char *buffer, struct TCP_Server_Info *server)
 {
 	struct smb2_hdr *shdr = (struct smb2_hdr *)buffer;
 	int scredits, in_flight;
@@ -1432,14 +1401,12 @@ next_pdu:
 					mid_execute_callback(server, mids[i]);
 
 				release_mid(server, mids[i]);
-			} else if (bufs[i] && server->ops->is_oplock_break &&
+			} else if (server->ops->is_oplock_break &&
 				   server->ops->is_oplock_break(bufs[i],
 								server)) {
 				smb2_add_credits_from_hdr(bufs[i], server);
 				cifs_dbg(FYI, "Received oplock break\n");
 			} else {
-				if (!bufs[i])
-					continue;
 				cifs_server_dbg(VFS, "No task to wake, unknown frame received! NumMids %d\n",
 						atomic_read(&mid_count));
 				cifs_dump_mem("Received Data is: ", bufs[i],
@@ -1762,7 +1729,7 @@ cifs_put_tcp_session(struct TCP_Server_Info *server, int from_reconnect)
 	else
 		cancel_delayed_work_sync(&server->reconnect);
 
-	/* For secondary channels, drop the reference on the primary server */
+	/* For secondary channels, we pick up ref-count on the primary server */
 	if (SERVER_IS_CHAN(server))
 		cifs_put_tcp_session(server->primary_server, from_reconnect);
 
@@ -1770,11 +1737,15 @@ cifs_put_tcp_session(struct TCP_Server_Info *server, int from_reconnect)
 	server->tcpStatus = CifsExiting;
 	spin_unlock(&server->srv_lock);
 
+	cifs_crypto_secmech_release(server);
+
+	kfree_sensitive(server->session_key.response);
+	server->session_key.response = NULL;
+	server->session_key.len = 0;
+
 	task = xchg(&server->tsk, NULL);
 	if (task)
 		send_sig(SIGKILL, task, 1);
-
-	cifs_tcp_server_put(server);
 }
 
 struct TCP_Server_Info *
@@ -1796,7 +1767,6 @@ cifs_get_tcp_session(struct smb3_fs_context *ctx,
 		rc = -ENOMEM;
 		goto out_err;
 	}
-	refcount_set(&tcp_ses->obj_refs, 1);
 
 	tcp_ses->hostname = kstrdup(ctx->server_hostname, GFP_KERNEL);
 	if (!tcp_ses->hostname) {
@@ -1935,8 +1905,6 @@ smbd_connected:
 		module_put(THIS_MODULE);
 		goto out_err_crypto_release;
 	}
-	/* Keep the server alive until the demultiplex thread has exited */
-	refcount_inc(&tcp_ses->obj_refs);
 	/* thread created, put it on the list */
 	spin_lock(&cifs_tcp_ses_lock);
 	list_add(&tcp_ses->tcp_ses_list, &cifs_tcp_ses_list);
@@ -2096,7 +2064,7 @@ struct cifs_tcon *cifs_setup_ipc(struct cifs_ses *ses, bool seal)
 	tcon->ses = ses;
 	tcon->ipc = true;
 	tcon->seal = seal;
-	rc = server->ops->tree_connect(xid, ses, unc, tcon);
+	rc = server->ops->tree_connect(xid, ses, unc, tcon, ses->local_nls);
 	free_xid(xid);
 
 	if (rc) {
@@ -2201,8 +2169,7 @@ void __cifs_put_smb_ses(struct cifs_ses *ses)
 			kref_put(&ses->chans[i].iface->refcount, release_iface);
 			ses->chans[i].iface = NULL;
 		}
-		if (ses->chans[i].server)
-			cifs_put_tcp_session(ses->chans[i].server, 0);
+		cifs_put_tcp_session(ses->chans[i].server, 0);
 		ses->chans[i].server = NULL;
 	}
 
@@ -2415,7 +2382,8 @@ retry_old_session:
 				return ERR_PTR(rc);
 			}
 
-			rc = cifs_setup_session(xid, ses, server);
+			rc = cifs_setup_session(xid, ses, server,
+						ctx->local_nls);
 			if (rc) {
 				if (((rc == -EACCES) || (rc == -EKEYEXPIRED) ||
 					(rc == -EKEYREVOKED)) && !retries && ses->password2) {
@@ -2532,7 +2500,7 @@ retry_new_session:
 	mutex_lock(&ses->session_mutex);
 	rc = cifs_negotiate_protocol(xid, ses, server);
 	if (!rc)
-		rc = cifs_setup_session(xid, ses, server);
+		rc = cifs_setup_session(xid, ses, server, ctx->local_nls);
 	mutex_unlock(&ses->session_mutex);
 
 	/* each channel uses a different signing key */
@@ -2612,21 +2580,18 @@ static int match_tcon(struct cifs_tcon *tcon, struct smb3_fs_context *ctx)
 }
 
 static struct cifs_tcon *
-cifs_find_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx,
-	       bool unlinked)
+cifs_find_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx)
 {
 	struct cifs_tcon *tcon;
 
 	spin_lock(&cifs_tcp_ses_lock);
 	list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
 		spin_lock(&tcon->tc_lock);
-		if (!match_tcon(tcon, ctx) || cifs_tcon_dying(tcon)) {
+		if (!match_tcon(tcon, ctx)) {
 			spin_unlock(&tcon->tc_lock);
 			continue;
 		}
 		++tcon->tc_count;
-		++tcon->mnt_refs;
-		tcon->mnt_unlinked += unlinked;
 		trace_smb3_tcon_ref(tcon->debug_id, tcon->tc_count,
 				    netfs_trace_tcon_ref_get_find);
 		spin_unlock(&tcon->tc_lock);
@@ -2700,47 +2665,10 @@ cifs_put_tcon(struct cifs_tcon *tcon, enum smb3_tcon_ref_trace trace)
 #endif
 }
 
-void cifs_wake_ses_waiters(struct cifs_ses *ses)
-{
-	guard(spinlock)(&ses->chan_lock);
-	for (size_t i = 0; i < ses->chan_count; i++) {
-		struct TCP_Server_Info *server = ses->chans[i].server;
-
-		if (!server)
-			continue;
-		wake_up_all(&server->request_q);
-		wake_up_all(&server->response_q);
-	}
-}
-
-static void drop_mnt_ref(struct cifs_tcon *tcon)
-{
-	scoped_guard(spinlock, &tcon->tc_lock) {
-		if (--tcon->mnt_refs)
-			return;
-	}
-	cifs_wake_ses_waiters(tcon->ses);
-}
-
-static void put_mnt_tcon(struct cifs_tcon *tcon, enum smb3_tcon_ref_trace trace)
-{
-	drop_mnt_ref(tcon);
-	cifs_put_tcon(tcon, trace);
-}
-
-static void erase_tlink(struct cifs_sb_info *cifs_sb, struct tcon_link *tlink)
-{
-	clear_bit(TCON_LINK_IN_TREE, &tlink->tl_flags);
-	rb_erase(&tlink->tl_rbnode, &cifs_sb->tlink_tree);
-	if (!IS_ERR(tlink_tcon(tlink)))
-		drop_mnt_ref(tlink_tcon(tlink));
-}
-
 /**
  * cifs_get_tcon - get a tcon matching @ctx data from @ses
  * @ses: smb session to issue the request on
  * @ctx: the superblock configuration context to use for building the
- * @unlinked: the mount reference is for a tlink not yet in a superblock's tree
  *
  * - tcon refcount is the number of mount points using the tcon.
  * - ses refcount is the number of tcon using the session.
@@ -2760,13 +2688,13 @@ static void erase_tlink(struct cifs_sb_info *cifs_sb, struct tcon_link *tlink)
  *    decrement the ses refcount.
  */
 static struct cifs_tcon *
-cifs_get_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx, bool unlinked)
+cifs_get_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx)
 {
 	struct cifs_tcon *tcon;
 	bool nohandlecache;
 	int rc, xid;
 
-	tcon = cifs_find_tcon(ses, ctx, unlinked);
+	tcon = cifs_find_tcon(ses, ctx);
 	if (tcon) {
 		/*
 		 * tcon has refcount already incremented but we need to
@@ -2792,8 +2720,6 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx, bool unlinked)
 		rc = -ENOMEM;
 		goto out_fail;
 	}
-	tcon->mnt_refs = 1;
-	tcon->mnt_unlinked = unlinked;
 	tcon->nohandlecache = nohandlecache;
 
 	if (ctx->snapshot_time) {
@@ -2869,7 +2795,8 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx, bool unlinked)
 	}
 
 	xid = get_xid();
-	rc = ses->server->ops->tree_connect(xid, ses, ctx->UNC, tcon);
+	rc = ses->server->ops->tree_connect(xid, ses, ctx->UNC, tcon,
+					    ctx->local_nls);
 	free_xid(xid);
 	cifs_dbg(FYI, "Tcon rc = %d\n", rc);
 	if (rc)
@@ -3620,7 +3547,7 @@ void cifs_mount_put_conns(struct cifs_mount_ctx *mnt_ctx)
 	int rc = 0;
 
 	if (mnt_ctx->tcon)
-		put_mnt_tcon(mnt_ctx->tcon, netfs_trace_tcon_ref_put_mnt_ctx);
+		cifs_put_tcon(mnt_ctx->tcon, netfs_trace_tcon_ref_put_mnt_ctx);
 	else if (mnt_ctx->ses)
 		cifs_put_smb_ses(mnt_ctx->ses);
 	else if (mnt_ctx->server)
@@ -3700,7 +3627,7 @@ int cifs_mount_get_tcon(struct cifs_mount_ctx *mnt_ctx)
 	cifs_sb = mnt_ctx->cifs_sb;
 
 	/* search for existing tcon to this server share */
-	tcon = cifs_get_tcon(mnt_ctx->ses, ctx, false);
+	tcon = cifs_get_tcon(mnt_ctx->ses, ctx);
 	if (IS_ERR(tcon)) {
 		rc = PTR_ERR(tcon);
 		tcon = NULL;
@@ -4076,13 +4003,17 @@ cifs_umount(struct cifs_sb_info *cifs_sb)
 	while ((node = rb_first(root))) {
 		tlink = rb_entry(node, struct tcon_link, tl_rbnode);
 		cifs_get_tlink(tlink);
-		erase_tlink(cifs_sb, tlink);
+		clear_bit(TCON_LINK_IN_TREE, &tlink->tl_flags);
+		rb_erase(node, root);
 
 		spin_unlock(&cifs_sb->tlink_tree_lock);
 		cifs_put_tlink(tlink);
 		spin_lock(&cifs_sb->tlink_tree_lock);
 	}
 	spin_unlock(&cifs_sb->tlink_tree_lock);
+
+	flush_workqueue(serverclose_wq);
+	flush_workqueue(fileinfo_put_wq);
 
 	kfree(cifs_sb->prepath);
 	call_rcu(&cifs_sb->rcu, delayed_free);
@@ -4144,8 +4075,10 @@ retry:
 	return rc;
 }
 
-int cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
-		       struct TCP_Server_Info *server)
+int
+cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
+		   struct TCP_Server_Info *server,
+		   struct nls_table *nls_info)
 {
 	int rc = 0;
 	struct TCP_Server_Info *pserver = SERVER_IS_CHAN(server) ? server->primary_server : server;
@@ -4237,19 +4170,15 @@ int cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
 
 	if (!rc) {
 		if (server->ops->sess_setup)
-			rc = server->ops->sess_setup(xid, ses, server);
+			rc = server->ops->sess_setup(xid, ses, server, nls_info);
 		else
 			rc = -ENOSYS;
 	}
 
 	if (rc) {
 		if (new_ses) {
-			enum securityEnum sectype;
-
-			sectype = server->ops->select_sectype(server,
-							      ses->sectype);
 			cifs_server_dbg(VFS, "failed to create a new SMB session with %s: %d\n",
-					get_security_type_str(sectype), rc);
+					get_security_type_str(ses->sectype), rc);
 		}
 		spin_lock(&ses->ses_lock);
 		if (ses->ses_status == SES_IN_SETUP)
@@ -4364,7 +4293,7 @@ cifs_construct_tcon(struct cifs_sb_info *cifs_sb, kuid_t fsuid)
 	}
 #endif
 
-	tcon = cifs_get_tcon(ses, ctx, true);
+	tcon = cifs_get_tcon(ses, ctx);
 	if (IS_ERR(tcon)) {
 		cifs_put_smb_ses(ses);
 		goto out;
@@ -4467,7 +4396,6 @@ cifs_sb_tlink(struct cifs_sb_info *cifs_sb)
 {
 	struct tcon_link *tlink, *newtlink;
 	kuid_t fsuid = current_fsuid();
-	struct cifs_tcon *tcon;
 	int err;
 
 	if (!(cifs_sb_flags(cifs_sb) & CIFS_MOUNT_MULTIUSER))
@@ -4525,16 +4453,7 @@ wait_for_construction:
 			goto wait_for_construction;
 	}
 
-	tcon = cifs_construct_tcon(cifs_sb, fsuid);
-	scoped_guard(spinlock, &cifs_sb->tlink_tree_lock) {
-		tlink->tl_tcon = tcon;
-		if (!IS_ERR(tcon)) {
-			scoped_guard(spinlock, &tcon->tc_lock)
-				tcon->mnt_unlinked--;
-			if (!test_bit(TCON_LINK_IN_TREE, &tlink->tl_flags))
-				drop_mnt_ref(tcon);
-		}
-	}
+	tlink->tl_tcon = cifs_construct_tcon(cifs_sb, fsuid);
 	clear_bit(TCON_LINK_PENDING, &tlink->tl_flags);
 	wake_up_bit(&tlink->tl_flags, TCON_LINK_PENDING);
 
@@ -4583,7 +4502,8 @@ cifs_prune_tlinks(struct work_struct *work)
 			continue;
 
 		cifs_get_tlink(tlink);
-		erase_tlink(cifs_sb, tlink);
+		clear_bit(TCON_LINK_IN_TREE, &tlink->tl_flags);
+		rb_erase(tmp, root);
 
 		spin_unlock(&cifs_sb->tlink_tree_lock);
 		cifs_put_tlink(tlink);
@@ -4622,7 +4542,8 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon)
 	tcon->status = TID_IN_TCON;
 	spin_unlock(&tcon->tc_lock);
 
-	rc = ops->tree_connect(xid, tcon->ses, tcon->tree_name, tcon);
+	rc = ops->tree_connect(xid, tcon->ses, tcon->tree_name,
+			       tcon, tcon->ses->local_nls);
 	if (rc) {
 		spin_lock(&tcon->tc_lock);
 		if (tcon->status == TID_IN_TCON)

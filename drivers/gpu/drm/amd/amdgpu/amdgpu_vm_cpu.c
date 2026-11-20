@@ -21,7 +21,6 @@
  */
 
 #include "amdgpu_vm.h"
-#include "amdgpu_vm_internal.h"
 #include "amdgpu.h"
 #include "amdgpu_reset.h"
 #include "amdgpu_object.h"

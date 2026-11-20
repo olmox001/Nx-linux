@@ -160,9 +160,10 @@ static int max77705_add_led(struct device *dev, struct regmap *regmap, struct fw
 	struct max77705_led *led;
 	struct led_classdev *cdev;
 	struct mc_subled *info;
+	struct fwnode_handle *child;
 	struct led_init_data init_data = {};
 
-	led = devm_kzalloc_obj(dev, *led);
+	led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 
@@ -181,7 +182,7 @@ static int max77705_add_led(struct device *dev, struct regmap *regmap, struct fw
 		if (ret || reg >= MAX77705_LED_NUM_LEDS)
 			return -EINVAL;
 
-		info = devm_kzalloc_objs(dev, *info, num_channels);
+		info = devm_kcalloc(dev, num_channels, sizeof(*info), GFP_KERNEL);
 		if (!info)
 			return -ENOMEM;
 
@@ -190,7 +191,7 @@ static int max77705_add_led(struct device *dev, struct regmap *regmap, struct fw
 		cdev->brightness_set_blocking = max77705_led_brightness_set_multi;
 		cdev->blink_set = max77705_rgb_blink;
 
-		fwnode_for_each_child_node_scoped(np, child) {
+		fwnode_for_each_child_node(np, child) {
 			ret = max77705_parse_subled(dev, child, &info[i]);
 			if (ret < 0)
 				return ret;
@@ -211,7 +212,7 @@ static int max77705_add_led(struct device *dev, struct regmap *regmap, struct fw
 		if (ret)
 			return ret;
 	} else {
-		info = devm_kzalloc_obj(dev, *info);
+		info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
 		if (!info)
 			return -ENOMEM;
 

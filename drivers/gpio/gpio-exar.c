@@ -173,7 +173,7 @@ static int gpio_exar_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	exar_gpio = devm_kzalloc_obj(dev, *exar_gpio);
+	exar_gpio = devm_kzalloc(dev, sizeof(*exar_gpio), GFP_KERNEL);
 	if (!exar_gpio)
 		return -ENOMEM;
 

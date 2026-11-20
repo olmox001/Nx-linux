@@ -2605,7 +2605,7 @@ static int lm93_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	data = devm_kzalloc_obj(dev, struct lm93_data);
+	data = devm_kzalloc(dev, sizeof(struct lm93_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 

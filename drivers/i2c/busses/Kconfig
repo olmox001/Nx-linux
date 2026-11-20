@@ -99,6 +99,16 @@ config I2C_AMD_ASF
 	  To compile this driver as a module, choose M here: the module will
 	  be called i2c_amd_asf_plat.
 
+config I2C_ASF
+        tristate "AMD ASF controller works as SMBus master and slave"
+        depends on PCI && ACPI
+        help
+	  If you say yes to this option, support will be included for the
+	  SMBus controller found in the AMD EPIC family.
+
+	  This driver can also be built as modules.  If so, the modules will
+	  be called i2c-asf.
+
 config I2C_HIX5HD2
 	tristate "Hix5hd2 high-speed I2C driver"
 	depends on ARCH_HISI || ARCH_HIX5HD2 || COMPILE_TEST
@@ -793,7 +803,7 @@ config I2C_JZ4780
 config I2C_K1
 	tristate "SpacemiT K1 I2C adapter"
 	depends on ARCH_SPACEMIT || COMPILE_TEST
-	depends on OF && COMMON_CLK
+	depends on OF
 	default ARCH_SPACEMIT
 	help
 	  This option enables support for the I2C interface on the SpacemiT K1
@@ -962,17 +972,6 @@ config I2C_NPCM
 	  controllers.
 	  Driver can also support slave mode (select I2C_SLAVE).
 
-config I2C_NT72676
-	tristate "Novatek NT72676 I2C controller"
-	depends on OF
-	depends on COMMON_CLK || COMPILE_TEST
-	help
-	  Say Y here if you want to enable I2C bus controller on
-	  Novatek NT72676 SoC.
-	  This driver performs fundamental read/write functions
-	  as an I2C bus controller and supports Standard-mode and
-	  Fast-mode. Default operation is Standard-mode.
-
 config I2C_OCORES
 	tristate "OpenCores I2C Controller"
 	help
@@ -1061,7 +1060,6 @@ config I2C_PXA_SLAVE
 config I2C_QCOM_CCI
 	tristate "Qualcomm Camera Control Interface"
 	depends on ARCH_QCOM || COMPILE_TEST
-	select PM_OPP
 	help
 	  If you say yes to this option, support will be included for the
 	  built-in camera control interface on the Qualcomm SoCs.

@@ -5,7 +5,6 @@ use core::{
     array,
     convert::Infallible,
     ffi::FromBytesUntilNulError,
-    ops::Range,
     str::Utf8Error, //
 };
 
@@ -34,7 +33,6 @@ use crate::{
         },
     },
     sbuffer::SBufferIter,
-    vgpu::VgpuState, //
 };
 
 /// The `GspSetSystemInfo` command.
@@ -73,7 +71,7 @@ pub(crate) struct SetRegistry {
 
 impl SetRegistry {
     /// Creates a new `SetRegistry` command, using a set of hardcoded entries.
-    pub(crate) fn new(vgpu_state: VgpuState) -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let mut entries = KVec::new();
 
         // RMSecBusResetEnable - enables PCI secondary bus reset
@@ -104,17 +102,6 @@ impl SetRegistry {
             },
             GFP_KERNEL,
         )?;
-
-        if matches!(vgpu_state, VgpuState::Enabled { .. }) {
-            // RMSetSriovMode - required when vGPU is enabled.
-            entries.push(
-                RegistryEntry {
-                    key: "RMSetSriovMode",
-                    value: 1,
-                },
-                GFP_KERNEL,
-            )?;
-        }
 
         Ok(Self { entries })
     }
@@ -187,8 +174,14 @@ impl MessageFromGsp for GspInitDone {
 }
 
 /// Waits for GSP initialization to complete.
-pub(crate) fn wait_gsp_init_done(cmdq: &Cmdq<'_>) -> Result {
-    cmdq.await_msg::<GspInitDone>().map(|_| ())
+pub(crate) fn wait_gsp_init_done(cmdq: &Cmdq) -> Result {
+    loop {
+        match cmdq.receive_msg::<GspInitDone>(Cmdq::RECEIVE_TIMEOUT) {
+            Ok(_) => break Ok(()),
+            Err(ERANGE) => continue,
+            Err(e) => break Err(e),
+        }
+    }
 }
 
 /// The `GetGspStaticInfo` command.
@@ -205,53 +198,34 @@ impl CommandToGsp for GetGspStaticInfo {
     }
 }
 
-/// The reply from the GSP to the [`GetGspStaticInfo`] command.
-pub struct GetGspStaticInfoReply {
+/// The reply from the GSP to the [`GetGspInfo`] command.
+pub(crate) struct GetGspStaticInfoReply {
     gpu_name: [u8; 64],
-    gpu_short_name: [u8; 64],
-    /// The 16-byte SHA-1 based GPU identifier (GID) reported by GSP-RM.
-    pub gpu_gid: [u8; 16],
-    /// BAR1 Page Directory Entry base address.
-    pub(crate) bar1_pde_base: u64,
-    /// Usable FB (VRAM) regions for driver memory allocation.
-    pub(crate) usable_fb_regions: KVec<Range<u64>>,
-    /// Exclusive end of the FB physical address space.
-    pub(crate) total_fb_end: u64,
 }
 
 impl MessageFromGsp for GetGspStaticInfoReply {
     const FUNCTION: MsgFunction = MsgFunction::GetGspStaticInfo;
     type Message = fw::commands::GspStaticConfigInfo;
-    type InitError = Error;
+    type InitError = Infallible;
 
     fn read(
         msg: &Self::Message,
         _sbuffer: &mut SBufferIter<array::IntoIter<&[u8], 2>>,
     ) -> Result<Self, Self::InitError> {
-        let mut usable_fb_regions = KVec::new();
-        for region in msg.usable_fb_regions() {
-            usable_fb_regions.push(region, GFP_KERNEL)?;
-        }
-        let total_fb_end = msg.total_fb_end().ok_or(EINVAL)?;
-
         Ok(GetGspStaticInfoReply {
             gpu_name: msg.gpu_name_str(),
-            gpu_short_name: msg.gpu_short_name_str(),
-            gpu_gid: msg.gpu_gid(),
-            bar1_pde_base: msg.bar1_pde_base(),
-            usable_fb_regions,
-            total_fb_end,
         })
     }
 }
 
 /// Error type for [`GetGspStaticInfoReply::gpu_name`].
 #[derive(Debug)]
-pub enum GpuNameError {
+pub(crate) enum GpuNameError {
     /// The GPU name string does not contain a null terminator.
     NoNullTerminator(FromBytesUntilNulError),
 
     /// The GPU name string contains invalid UTF-8.
+    #[expect(dead_code)]
     InvalidUtf8(Utf8Error),
 }
 
@@ -260,30 +234,11 @@ impl GetGspStaticInfoReply {
     ///
     /// Returns an error if the string given by the GSP does not contain a null terminator or
     /// contains invalid UTF-8.
-    pub fn gpu_name(&self) -> Result<&str, GpuNameError> {
+    pub(crate) fn gpu_name(&self) -> core::result::Result<&str, GpuNameError> {
         CStr::from_bytes_until_nul(&self.gpu_name)
             .map_err(GpuNameError::NoNullTerminator)?
             .to_str()
             .map_err(GpuNameError::InvalidUtf8)
-    }
-
-    /// Returns the short name of the GPU as a string.
-    ///
-    /// Returns an error if the string given by the GSP does not contain a null terminator or
-    /// contains invalid UTF-8.
-    pub fn gpu_short_name(&self) -> core::result::Result<&str, GpuNameError> {
-        CStr::from_bytes_until_nul(&self.gpu_short_name)
-            .map_err(GpuNameError::NoNullTerminator)?
-            .to_str()
-            .map_err(GpuNameError::InvalidUtf8)
-    }
-
-    /// Returns the total usable VRAM size in bytes, i.e. the summed lengths of all usable FB
-    /// regions.
-    pub fn vram_size(&self) -> u64 {
-        self.usable_fb_regions.iter().fold(0, |size, region| {
-            size.saturating_add(region.end - region.start)
-        })
     }
 }
 

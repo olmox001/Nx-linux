@@ -64,9 +64,7 @@ r535_gsp_intr(struct nvkm_inth *inth)
 	u32 intr = nvkm_falcon_rd32(&gsp->falcon, 0x0008);
 	u32 inte = nvkm_falcon_rd32(&gsp->falcon, gsp->falcon.func->addr2 +
 						  gsp->falcon.func->riscv_irqmask);
-	u32 dest = nvkm_falcon_rd32(&gsp->falcon, gsp->falcon.func->addr2 +
-						  gsp->falcon.func->riscv_irqdest);
-	u32 stat = intr & inte & dest;
+	u32 stat = intr & inte;
 
 	if (!stat) {
 		nvkm_debug(subdev, "inte %08x %08x\n", intr, inte);
@@ -1781,23 +1779,6 @@ r535_gsp_fini(struct nvkm_gsp *gsp, enum nvkm_suspend_state suspend)
 	);
 
 	gsp->running = false;
-	return 0;
-}
-
-int
-r535_gsp_get_static_memsys_info(struct nvkm_gsp *gsp)
-{
-	NV2080_CTRL_INTERNAL_MEMSYS_GET_STATIC_CONFIG_PARAMS *ctrl;
-
-	ctrl = nvkm_gsp_rm_ctrl_rd(&gsp->internal.device.subdevice,
-				    NV2080_CTRL_CMD_INTERNAL_MEMSYS_GET_STATIC_CONFIG,
-				    sizeof(*ctrl));
-	if (IS_ERR(ctrl))
-		return PTR_ERR(ctrl);
-
-	gsp->memsys.use_raw_mode_comptagline_alloc = ctrl->bUseRawModeComptaglineAllocation;
-
-	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
 	return 0;
 }
 

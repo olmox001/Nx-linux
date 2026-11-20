@@ -575,24 +575,12 @@ static void sierra_instat_callback(struct urb *urb)
 				__func__);
 			return;
 		}
-		if (urb->actual_length < sizeof(*req_pkt)) {
-			dev_err(&port->dev, "%s: short transfer\n",
-				__func__);
-			return;
-		}
 		if ((req_pkt->bRequestType == 0xA1) &&
 				(req_pkt->bRequest == 0x20)) {
 			int old_dcd_state;
-			unsigned char signals;
-
-			if (urb->actual_length < sizeof(*req_pkt) + 1) {
-				dev_err(&port->dev,
-					"%s: short interrupt transfer\n",
-					__func__);
-				return;
-			}
-			signals = *((unsigned char *)urb->transfer_buffer +
-					sizeof(*req_pkt));
+			unsigned char signals = *((unsigned char *)
+					urb->transfer_buffer +
+					sizeof(struct usb_ctrlrequest));
 
 			dev_dbg(&port->dev, "%s: signal x%x\n", __func__,
 				signals);
@@ -984,13 +972,12 @@ static int sierra_submit_delayed_urbs(struct usb_serial_port *port)
 			intfdata->in_flight--;
 			usb_unanchor_urb(urb);
 			kfree(urb->transfer_buffer);
+			usb_free_urb(urb);
 
 			spin_lock(&portdata->lock);
 			portdata->outstanding_urbs--;
 			spin_unlock(&portdata->lock);
 		}
-
-		usb_put_urb(urb);
 	}
 
 	if (ec)

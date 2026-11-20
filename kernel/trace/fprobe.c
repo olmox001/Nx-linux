@@ -190,7 +190,7 @@ static inline void read_fprobe_header(unsigned long *stack,
 struct __fprobe_header {
 	struct fprobe *fp;
 	unsigned long size_words;
-};
+} __packed;
 
 #define FPROBE_HEADER_SIZE_IN_LONG	SIZE_IN_LONG(sizeof(struct __fprobe_header))
 
@@ -476,8 +476,15 @@ static bool fprobe_exists_on_hash(unsigned long ip, bool ftrace)
 #ifdef CONFIG_MODULES
 static void fprobe_remove_ips(unsigned long *ips, unsigned int cnt)
 {
-	fprobe_graph_remove_ips(ips, cnt);
-	fprobe_ftrace_remove_ips(ips, cnt);
+	if (!nr_fgraph_fprobes)
+		__fprobe_graph_unregister();
+	else if (cnt)
+		ftrace_set_filter_ips(&fprobe_graph_ops.ops, ips, cnt, 1, 0);
+
+	if (!nr_ftrace_fprobes)
+		__fprobe_ftrace_unregister();
+	else if (cnt)
+		ftrace_set_filter_ips(&fprobe_ftrace_ops, ips, cnt, 1, 0);
 }
 #endif
 #else
@@ -745,7 +752,7 @@ static int fprobe_module_callback(struct notifier_block *nb,
 	if (val != MODULE_STATE_GOING)
 		return NOTIFY_DONE;
 
-	alist.addrs = kzalloc_objs(*alist.addrs, alist.size);
+	alist.addrs = kcalloc(alist.size, sizeof(*alist.addrs), GFP_KERNEL);
 	/*
 	 * If failed to alloc memory, ftrace_ops will not be able to remove ips from
 	 * hash, but we can still remove nodes from fprobe_ip_table, so we can avoid
@@ -815,7 +822,7 @@ static unsigned long *get_ftrace_locations(const char **syms, int num)
 	unsigned long *addrs;
 
 	/* Convert symbols to symbol address */
-	addrs = kzalloc_objs(*addrs, num);
+	addrs = kcalloc(num, sizeof(*addrs), GFP_KERNEL);
 	if (!addrs)
 		return ERR_PTR(-ENOMEM);
 
@@ -966,7 +973,7 @@ int register_fprobe(struct fprobe *fp, const char *filter, const char *notfilter
 	if (num < 0)
 		return num;
 
-	addrs = kzalloc_objs(*addrs, num);
+	addrs = kcalloc(num, sizeof(*addrs), GFP_KERNEL);
 	if (!addrs)
 		return -ENOMEM;
 
@@ -1082,7 +1089,7 @@ static int unregister_fprobe_nolock(struct fprobe *fp)
 	unsigned long *addrs = NULL;
 	int i, count;
 
-	addrs = kzalloc_objs(unsigned long, hlist_array->size);
+	addrs = kcalloc(hlist_array->size, sizeof(unsigned long), GFP_KERNEL);
 	/*
 	 * This will remove fprobe_hash_node from the hash table even if
 	 * memory allocation fails. However, ftrace_ops will not be updated.

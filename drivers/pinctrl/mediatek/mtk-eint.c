@@ -216,7 +216,7 @@ static int mtk_eint_set_type(struct irq_data *d, unsigned int type)
 		writel(mask, reg);
 	}
 
-	if (type & IRQ_TYPE_EDGE_BOTH) {
+	if (type & (IRQ_TYPE_EDGE_RISING | IRQ_TYPE_EDGE_FALLING)) {
 		reg = mtk_eint_get_offset(eint, d->hwirq, eint->regs->sens_clr);
 		writel(mask, reg);
 	} else {
@@ -540,8 +540,8 @@ int mtk_eint_do_init(struct mtk_eint *eint, struct mtk_eint_pin *eint_pin)
 	if (!eint->regs)
 		eint->regs = &mtk_generic_eint_regs;
 
-	eint->base_pin_num = devm_kmalloc_objs(eint->dev, u16, eint->nbase,
-					       GFP_KERNEL | __GFP_ZERO);
+	eint->base_pin_num = devm_kmalloc_array(eint->dev, eint->nbase, sizeof(u16),
+						GFP_KERNEL | __GFP_ZERO);
 	if (!eint->base_pin_num)
 		return -ENOMEM;
 
@@ -567,18 +567,18 @@ int mtk_eint_do_init(struct mtk_eint *eint, struct mtk_eint_pin *eint_pin)
 		}
 	}
 
-	eint->pin_list = devm_kzalloc_objs(eint->dev, *eint->pin_list,
-					   eint->nbase);
+	eint->pin_list = devm_kcalloc(eint->dev, eint->nbase,
+				      sizeof(*eint->pin_list), GFP_KERNEL);
 	if (!eint->pin_list)
 		goto err_pin_list;
 
-	eint->wake_mask = devm_kzalloc_objs(eint->dev, *eint->wake_mask,
-					    eint->nbase);
+	eint->wake_mask = devm_kcalloc(eint->dev, eint->nbase,
+				       sizeof(*eint->wake_mask), GFP_KERNEL);
 	if (!eint->wake_mask)
 		goto err_wake_mask;
 
-	eint->cur_mask = devm_kzalloc_objs(eint->dev, *eint->cur_mask,
-					   eint->nbase);
+	eint->cur_mask = devm_kcalloc(eint->dev, eint->nbase,
+				      sizeof(*eint->cur_mask), GFP_KERNEL);
 	if (!eint->cur_mask)
 		goto err_cur_mask;
 

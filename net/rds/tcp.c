@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2020 Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -31,9 +31,7 @@
  *
  */
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/in.h>
-#include <linux/module.h>
 #include <net/tcp.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
@@ -42,24 +40,21 @@
 #include "rds.h"
 #include "tcp.h"
 
-/* only for info exporting */
-static DEFINE_SPINLOCK(rds_tcp_tc_list_lock);
-static LIST_HEAD(rds_tcp_tc_list);
-
-/* Track rds_tcp_connection structs so they can be cleaned up */
-static DEFINE_SPINLOCK(rds_tcp_conn_lock);
-static LIST_HEAD(rds_tcp_conn_list);
-static atomic_t rds_tcp_unloading = ATOMIC_INIT(0);
+#include "trace.h"
 
 static struct kmem_cache *rds_tcp_conn_slab;
 
-static int rds_tcp_sndbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos);
-static int rds_tcp_rcvbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos);
+static int rds_tcp_skbuf_handler(const struct ctl_table *ctl, int write,
+				 void __user *buffer, size_t *lenp,
+				 loff_t *fpos);
+
+static bool list_has_conn(struct list_head *list,
+			  struct rds_connection *conn);
 
 static int rds_tcp_min_sndbuf = SOCK_MIN_SNDBUF;
 static int rds_tcp_min_rcvbuf = SOCK_MIN_RCVBUF;
+
+int rds_tcp_netid;
 
 static struct ctl_table rds_tcp_sysctl_table[] = {
 #define	RDS_TCP_SNDBUF	0
@@ -68,7 +63,7 @@ static struct ctl_table rds_tcp_sysctl_table[] = {
 		/* data is per-net pointer */
 		.maxlen         = sizeof(int),
 		.mode           = 0644,
-		.proc_handler   = rds_tcp_sndbuf_handler,
+		.proc_handler   = rds_tcp_skbuf_handler,
 		.extra1		= &rds_tcp_min_sndbuf,
 	},
 #define	RDS_TCP_RCVBUF	1
@@ -77,7 +72,7 @@ static struct ctl_table rds_tcp_sysctl_table[] = {
 		/* data is per-net pointer */
 		.maxlen         = sizeof(int),
 		.mode           = 0644,
-		.proc_handler   = rds_tcp_rcvbuf_handler,
+		.proc_handler   = rds_tcp_skbuf_handler,
 		.extra1		= &rds_tcp_min_rcvbuf,
 	},
 };
@@ -94,15 +89,21 @@ u32 rds_tcp_snd_una(struct rds_tcp_connection *tc)
 }
 
 void rds_tcp_restore_callbacks(struct socket *sock,
-			       struct rds_tcp_connection *tc)
+			       struct rds_tcp_connection *tc,
+			       struct rds_tcp_net *rtn)
 {
 	rdsdebug("restoring sock %p callbacks from tc %p\n", sock, tc);
 	write_lock_bh(&sock->sk->sk_callback_lock);
 
 	/* done under the callback_lock to serialize with write_space */
-	spin_lock(&rds_tcp_tc_list_lock);
+	spin_lock(&rtn->rds_tcp_tc_list_lock);
 	list_del_init(&tc->t_list_item);
-	spin_unlock(&rds_tcp_tc_list_lock);
+#if IS_ENABLED(CONFIG_IPV6)
+	rtn->rds6_tcp_tc_count--;
+#endif
+	if (!tc->t_cpath->cp_conn->c_isv6)
+		rtn->rds_tcp_tc_count--;
+	spin_unlock(&rtn->rds_tcp_tc_list_lock);
 
 	tc->t_sock = NULL;
 
@@ -115,139 +116,119 @@ void rds_tcp_restore_callbacks(struct socket *sock,
 }
 
 /*
- * rds_tcp_reset_callbacks() switches a path to a new socket and
- * releases the old one it finds in tc->t_sock, resolving a duelling
- * SYN.
+ * rds_tcp_reset_callbacks() switches the to the new sock and
+ * returns the existing tc->t_sock.
  *
- * tc->t_sock is set by rds_tcp_set_callbacks() and cleared by
- * rds_tcp_restore_callbacks().  Four paths write it: the active
- * connect in rds_tcp_conn_path_connect(), which sets it and clears it
- * again on failure; the accept path in rds_tcp_accept_one(), which
- * sets it for a path with no socket yet; the teardown in
- * rds_tcp_conn_path_shutdown(), which clears it; and the swap done
- * here, which does both.  The connect and accept paths are serialized
- * against each other by t_conn_path_lock.  Send and receive trust
- * that it is set: the absence of RDS_CONN_UP protects those paths
- * from being called while it isn't, and the swap done here runs under
- * RDS_IN_XMIT so that it cannot interleave with a sender already
- * inside rds_send_xmit().
+ * The only functions that set tc->t_sock are rds_tcp_set_callbacks
+ * and rds_tcp_reset_callbacks.  Send and receive trust that
+ * it is set.  The absence of RDS_CONN_UP bit protects those paths
+ * from being called while it isn't set.
  */
 void rds_tcp_reset_callbacks(struct socket *sock,
-			     struct rds_conn_path *cp)
+			     struct rds_conn_path *cp, struct rds_tcp_net *rtn)
 {
 	struct rds_tcp_connection *tc = cp->cp_transport_data;
-	struct socket *osock;
+	struct socket *osock = tc->t_sock;
+
+	if (!osock)
+		goto newsock;
 
 	/* Need to resolve a duelling SYN between peers.
 	 * We have an outstanding SYN to this peer, which may
 	 * potentially have transitioned to the RDS_CONN_UP state,
 	 * so we must quiesce any send threads before resetting
-	 * cp_transport_data.  Setting cp_state to something other
-	 * than RDS_CONN_UP stops new senders, and owning RDS_IN_XMIT
-	 * excludes any thread already inside rds_send_xmit() - or a
-	 * teardown in rds_conn_shutdown(), which holds the same lock
-	 * for the duration of the transport shutdown - for the whole
-	 * socket swap and the rds_send_path_reset() below.
+	 * cp_transport_data. We quiesce these threads by setting
+	 * cp_state to something other than RDS_CONN_UP, and then
+	 * waiting for any existing threads in rds_send_xmit to
+	 * complete release_in_xmit(). (Subsequent threads entering
+	 * rds_send_xmit() will bail on !rds_conn_up().
 	 *
-	 * An incoming syn-ack at this point would end up marking the
-	 * conn as RDS_CONN_UP, and would again permit rds_send_xmit()
-	 * threads through, so ideally we would synchronize on
-	 * RDS_CONN_UP after lock_sock(), but cannot do that: acquiring
-	 * RDS_IN_XMIT after lock_sock() may end up deadlocking with
-	 * tcp_sendmsg(), which takes the socket lock while holding
-	 * RDS_IN_XMIT.  As a result, we set c_state to
-	 * RDS_CONN_RESETTING, to ensure that rds_tcp_state_change
-	 * cannot mark rds_conn_path_up() in the window before
-	 * lock_sock().
+	 * However an incoming syn-ack at this point would end up
+	 * marking the conn as RDS_CONN_UP, and would again permit
+	 * rds_send_xmi() threads through, so ideally we would
+	 * synchronize on RDS_CONN_UP after lock_sock(), but cannot
+	 * do that: waiting on !RDS_IN_XMIT after lock_sock() may
+	 * end up deadlocking with tcp_sendmsg(), and the RDS_IN_XMIT
+	 * would not get set. As a result, we set c_state to
+	 * RDS_CONN_RESETTTING, to ensure that rds_tcp_state_change
+	 * cannot mark rds_conn_path_up() in the window before lock_sock().
 	 *
-	 * Only make that transition if the path is still connecting
-	 * (or already resetting from an earlier duel).  A path in any
-	 * other state - typically RDS_CONN_DISCONNECTING or
-	 * RDS_CONN_ERROR with a shutdown in flight - is dropped
-	 * instead.  That still replaces its state, with RDS_CONN_ERROR,
-	 * and, unless a pending destroy is about to reap the whole
-	 * connection anyway, queues one more shutdown pass.  A shutdown
-	 * already in flight leaves that RDS_CONN_ERROR alone when it
-	 * finishes; the queued pass then completes the transition to
-	 * RDS_CONN_DOWN and tears down anything that attached to the
-	 * path in the meantime.
+	 * But do this transition only if the connection is still
+	 * in state RDS_CONN_CONNECTING, in order to not trigger
+	 * race conditions with a concurrent connection shutdown.
 	 */
-	if (!rds_conn_path_transition(cp, RDS_CONN_CONNECTING,
-				      RDS_CONN_RESETTING) &&
-	    !rds_conn_path_transition(cp, RDS_CONN_RESETTING,
-				      RDS_CONN_RESETTING))
-		rds_conn_path_drop(cp, 0);
-	wait_event(cp->cp_waitq,
-		   !test_and_set_bit_lock(RDS_IN_XMIT, &cp->cp_flags));
+	if (!rds_conn_path_transition(cp,
+				      RDS_CONN_CONNECTING, RDS_CONN_RESETTING,
+				      DR_DEFAULT) &&
+	    !rds_conn_path_transition(cp,
+				      RDS_CONN_RESETTING, RDS_CONN_RESETTING,
+				      DR_DEFAULT))
+		rds_conn_path_drop(cp, DR_INV_CONN_STATE, 0);
 
-	/* Read t_sock only while owning RDS_IN_XMIT, never before the
-	 * wait: the teardown in rds_conn_shutdown() releases the old
-	 * socket and clears t_sock, so a pointer sampled earlier can
-	 * be stale by the time we wake up.  The teardown holds the
-	 * same lock while it does so, so what we read here cannot
-	 * change under us until we release it.
-	 */
-	osock = tc->t_sock;
-	if (!osock)
-		goto newsock;
-
-	/* reset receive side state for rds_tcp_data_recv() for osock.
-	 *
-	 * The sync cancels while owning RDS_IN_XMIT rely on cp_wq
-	 * being ordered: a teardown blocked on the bit occupies
-	 * cp_wq's only execution slot, so cp_send_w and cp_recv_w are
-	 * pending at most and the cancels never flush.  Nothing here
-	 * may flush or wait on cp_wq itself.
-	 */
-	cancel_delayed_work_sync(&cp->cp_send_w);
-	cancel_delayed_work_sync(&cp->cp_recv_w);
+	wait_event(cp->cp_waitq, !test_bit(RDS_IN_XMIT, &cp->cp_flags));
 	lock_sock(osock->sk);
+	/* reset receive side state for rds_tcp_data_recv() for osock  */
+
+	/* make sure lingering queued work won't try to ref the
+	 * conn. If there is work queued, we cancel it (and set the bit
+	 * to avoid any re-queueing)
+	 */
+
+	if (test_and_set_bit(RDS_SEND_WORK_QUEUED, &cp->cp_flags) &&
+	    rds_queue_cancel_work(cp, &cp->cp_send_w,
+				  "tcp reset, cancel send work"))
+		rds_conn_put(cp->cp_conn);
+
+	if (test_and_set_bit(RDS_RECV_WORK_QUEUED, &cp->cp_flags) &&
+	    rds_queue_cancel_work(cp, &cp->cp_recv_w,
+				  "tcp reset, cancel recv work"))
+		rds_conn_put(cp->cp_conn);
+
 	if (tc->t_tinc) {
 		rds_inc_put(&tc->t_tinc->ti_inc);
 		tc->t_tinc = NULL;
 	}
 	tc->t_tinc_hdr_rem = sizeof(struct rds_header);
 	tc->t_tinc_data_rem = 0;
-	rds_tcp_restore_callbacks(osock, tc);
+	rds_tcp_restore_callbacks(osock, tc, rtn);
 	release_sock(osock->sk);
 	sock_release(osock);
 newsock:
 	rds_send_path_reset(cp);
 	lock_sock(sock->sk);
-	rds_tcp_set_callbacks(sock, cp);
+	rds_tcp_set_callbacks(sock, cp, rtn);
 	release_sock(sock->sk);
-
-	clear_bit_unlock(RDS_IN_XMIT, &cp->cp_flags);
-	wake_up_all(&cp->cp_waitq);
 }
 
 /* Add tc to rds_tcp_tc_list and set tc->t_sock. See comments
  * above rds_tcp_reset_callbacks for notes about synchronization
  * with data path
  */
-void rds_tcp_set_callbacks(struct socket *sock, struct rds_conn_path *cp)
+void rds_tcp_set_callbacks(struct socket *sock, struct rds_conn_path *cp,
+			   struct rds_tcp_net *rtn)
 {
 	struct rds_tcp_connection *tc = cp->cp_transport_data;
 
 	rdsdebug("setting sock %p callbacks to tc %p\n", sock, tc);
 	write_lock_bh(&sock->sk->sk_callback_lock);
 
-	/* done under the callback_lock to serialize with write_space.
-	 * Set t_sock inside rds_tcp_tc_list_lock so readers walking
-	 * rds_tcp_tc_list under the same lock cannot observe an
-	 * entry whose t_sock is NULL.
-	 */
-	spin_lock(&rds_tcp_tc_list_lock);
-	tc->t_sock = sock;
-	list_add_tail(&tc->t_list_item, &rds_tcp_tc_list);
-	spin_unlock(&rds_tcp_tc_list_lock);
+	/* done under the callback_lock to serialize with write_space */
+	spin_lock(&rtn->rds_tcp_tc_list_lock);
+	list_add_tail(&tc->t_list_item, &rtn->rds_tcp_tc_list);
+	if (!tc->t_cpath->cp_conn->c_isv6)
+		rtn->rds_tcp_tc_count++;
+#if IS_ENABLED(CONFIG_IPV6)
+	rtn->rds6_tcp_tc_count++;
+#endif
+	spin_unlock(&rtn->rds_tcp_tc_list_lock);
 
 	/* accepted sockets need our listen data ready undone */
 	if (sock->sk->sk_data_ready == rds_tcp_listen_data_ready)
 		sock->sk->sk_data_ready = sock->sk->sk_user_data;
+
+	tc->t_sock = sock;
 	if (!tc->t_rtn)
 		tc->t_rtn = net_generic(sock_net(sock->sk), rds_tcp_netid);
-	tc->t_cpath = cp;
 	tc->t_orig_data_ready = sock->sk->sk_data_ready;
 	tc->t_orig_write_space = sock->sk->sk_write_space;
 	tc->t_orig_state_change = sock->sk->sk_state_change;
@@ -263,40 +244,26 @@ void rds_tcp_set_callbacks(struct socket *sock, struct rds_conn_path *cp)
 /* Handle RDS_INFO_TCP_SOCKETS socket option.  It only returns IPv4
  * connections for backward compatibility.
  */
-static void rds_tcp_tc_info(struct socket *rds_sock, unsigned int len,
+static void rds_tcp_tc_info(struct socket *sock, unsigned int len,
 			    struct rds_info_iterator *iter,
 			    struct rds_info_lengths *lens)
 {
-	struct net *net = sock_net(rds_sock->sk);
 	struct rds_info_tcp_socket tsinfo;
 	struct rds_tcp_connection *tc;
-	unsigned int copied = 0;
-	unsigned int cnt = 0;
+	struct rds_tcp_net *rtn;
 	unsigned long flags;
 
-	spin_lock_irqsave(&rds_tcp_tc_list_lock, flags);
+	rtn = net_generic(sock_net(sock->sk), rds_tcp_netid);
 
-	/* First pass: count entries visible in the caller's netns. */
-	list_for_each_entry(tc, &rds_tcp_tc_list, t_list_item) {
-		if (tc->t_cpath->cp_conn->c_isv6)
-			continue;
-		if (!net_eq(rds_conn_net(tc->t_cpath->cp_conn), net))
-			continue;
-		cnt++;
-	}
+	spin_lock_irqsave(&rtn->rds_tcp_tc_list_lock, flags);
 
-	if (len / sizeof(tsinfo) < cnt)
+	if (len / sizeof(tsinfo) < rtn->rds_tcp_tc_count)
 		goto out;
 
-	list_for_each_entry(tc, &rds_tcp_tc_list, t_list_item) {
+	list_for_each_entry(tc, &rtn->rds_tcp_tc_list, t_list_item) {
 		struct inet_sock *inet = inet_sk(tc->t_sock->sk);
 
-		if (copied >= cnt)
-			break;
 		if (tc->t_cpath->cp_conn->c_isv6)
-			continue;
-		/* Only show connections in the caller's netns. */
-		if (!net_eq(rds_conn_net(tc->t_cpath->cp_conn), net))
 			continue;
 
 		tsinfo.local_addr = inet->inet_saddr;
@@ -309,18 +276,15 @@ static void rds_tcp_tc_info(struct socket *rds_sock, unsigned int len,
 		tsinfo.last_sent_nxt = tc->t_last_sent_nxt;
 		tsinfo.last_expected_una = tc->t_last_expected_una;
 		tsinfo.last_seen_una = tc->t_last_seen_una;
-		tsinfo.tos = tc->t_cpath->cp_conn->c_tos;
 
 		rds_info_copy(iter, &tsinfo, sizeof(tsinfo));
-		copied++;
 	}
-	cnt = copied;
 
 out:
-	lens->nr = cnt;
+	lens->nr = rtn->rds_tcp_tc_count;
 	lens->each = sizeof(tsinfo);
 
-	spin_unlock_irqrestore(&rds_tcp_tc_list_lock, flags);
+	spin_unlock_irqrestore(&rtn->rds_tcp_tc_list_lock, flags);
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
@@ -332,34 +296,21 @@ static void rds6_tcp_tc_info(struct socket *sock, unsigned int len,
 			     struct rds_info_iterator *iter,
 			     struct rds_info_lengths *lens)
 {
-	struct net *net = sock_net(sock->sk);
 	struct rds6_info_tcp_socket tsinfo6;
 	struct rds_tcp_connection *tc;
-	unsigned int copied = 0;
-	unsigned int cnt = 0;
+	struct rds_tcp_net *rtn;
 	unsigned long flags;
 
-	spin_lock_irqsave(&rds_tcp_tc_list_lock, flags);
+	rtn = net_generic(sock_net(sock->sk), rds_tcp_netid);
 
-	/* First pass: count entries visible in the caller's netns. */
-	list_for_each_entry(tc, &rds_tcp_tc_list, t_list_item) {
-		if (!net_eq(rds_conn_net(tc->t_cpath->cp_conn), net))
-			continue;
-		cnt++;
-	}
+	spin_lock_irqsave(&rtn->rds_tcp_tc_list_lock, flags);
 
-	if (len / sizeof(tsinfo6) < cnt)
+	if (len / sizeof(tsinfo6) < rtn->rds6_tcp_tc_count)
 		goto out;
 
-	list_for_each_entry(tc, &rds_tcp_tc_list, t_list_item) {
+	list_for_each_entry(tc, &rtn->rds_tcp_tc_list, t_list_item) {
 		struct sock *sk = tc->t_sock->sk;
 		struct inet_sock *inet = inet_sk(sk);
-
-		if (copied >= cnt)
-			break;
-		/* Only show connections in the caller's netns. */
-		if (!net_eq(rds_conn_net(tc->t_cpath->cp_conn), net))
-			continue;
 
 		tsinfo6.local_addr = sk->sk_v6_rcv_saddr;
 		tsinfo6.local_port = inet->inet_sport;
@@ -373,15 +324,13 @@ static void rds6_tcp_tc_info(struct socket *sock, unsigned int len,
 		tsinfo6.last_seen_una = tc->t_last_seen_una;
 
 		rds_info_copy(iter, &tsinfo6, sizeof(tsinfo6));
-		copied++;
 	}
-	cnt = copied;
 
 out:
-	lens->nr = cnt;
+	lens->nr = rtn->rds6_tcp_tc_count;
 	lens->each = sizeof(tsinfo6);
 
-	spin_unlock_irqrestore(&rds_tcp_tc_list_lock, flags);
+	spin_unlock_irqrestore(&rtn->rds_tcp_tc_list_lock, flags);
 }
 #endif
 
@@ -402,25 +351,21 @@ int rds_tcp_laddr_check(struct net *net, const struct in6_addr *addr,
 	/* If the scope_id is specified, check only those addresses
 	 * hosted on the specified interface.
 	 */
-	rcu_read_lock();
 	if (scope_id != 0) {
+		rcu_read_lock();
 		dev = dev_get_by_index_rcu(net, scope_id);
 		/* scope_id is not valid... */
 		if (!dev) {
 			rcu_read_unlock();
 			return -EADDRNOTAVAIL;
 		}
+		rcu_read_unlock();
 	}
 #if IS_ENABLED(CONFIG_IPV6)
-	if (ipv6_mod_enabled()) {
-		ret = ipv6_chk_addr(net, addr, dev, 0);
-		if (ret) {
-			rcu_read_unlock();
-			return 0;
-		}
-	}
+	ret = ipv6_chk_addr(net, addr, dev, 0);
+	if (ret)
+		return 0;
 #endif
-	rcu_read_unlock();
 	return -EADDRNOTAVAIL;
 }
 
@@ -431,49 +376,61 @@ static void rds_tcp_conn_free(void *arg)
 
 	rdsdebug("freeing tc %p\n", tc);
 
-	spin_lock_irqsave(&rds_tcp_conn_lock, flags);
-	if (!tc->t_tcp_node_detached)
-		list_del(&tc->t_tcp_node);
-	spin_unlock_irqrestore(&rds_tcp_conn_lock, flags);
+	cancel_work_sync(&tc->t_fan_out_w);
 
+	spin_lock_irqsave(&tc->t_rtn->rds_tcp_conn_lock, flags);
+	list_del(&tc->t_tcp_node);
+	spin_unlock_irqrestore(&tc->t_rtn->rds_tcp_conn_lock, flags);
+
+	tc->t_rtn = NULL;
+	tc->t_stats = NULL;
 	kmem_cache_free(rds_tcp_conn_slab, tc);
 }
 
 static int rds_tcp_conn_alloc(struct rds_connection *conn, gfp_t gfp)
 {
 	struct rds_tcp_connection *tc;
+	struct rds_tcp_net *rtn;
 	int i, j;
 	int ret = 0;
+
+	rtn = net_generic(rds_conn_net(conn), rds_tcp_netid);
 
 	for (i = 0; i < RDS_MPATH_WORKERS; i++) {
 		tc = kmem_cache_zalloc(rds_tcp_conn_slab, gfp);
 		if (!tc) {
 			ret = -ENOMEM;
-			goto fail;
+			break;
 		}
 		mutex_init(&tc->t_conn_path_lock);
-		tc->t_sock = NULL;
-		tc->t_rtn = NULL;
-		tc->t_tinc = NULL;
 		tc->t_tinc_hdr_rem = sizeof(struct rds_header);
-		tc->t_tinc_data_rem = 0;
+		INIT_WORK(&tc->t_fan_out_w, rds_tcp_fan_out_w);
 		init_waitqueue_head(&tc->t_recv_done_waitq);
+		tc->t_stats = __rds_get_mod_stats(conn->c_rns, RDS_MOD_TCP);
 
+		/* Once set, they will never change until the conn is dead. */
 		conn->c_path[i].cp_transport_data = tc;
 		tc->t_cpath = &conn->c_path[i];
-		tc->t_tcp_node_detached = true;
 
+		/* Once assigned, will never change until TCP conn destroyed. */
+		tc->t_rtn = rtn;
+
+		/* Ideally we would rds_conn_get() here for adding
+		 * conn to the rds_tcp_conn_list and a put() in
+		 * rds_tcp_conn_free(), but that would mean the refcount
+		 * would never drop to 0 as c_trans->conn_free() is called
+		 * in the kref callback rds_conn_(path_)destroy_fini() and
+		 * we'll be off-by-one rds_conn_put(). So, we choose to
+		 * ignore this "conn" copy and not bring it under the kref
+		 * umbrella. This is safe as c_trans->conn_free() is called
+		 * before freeing its container conn.
+		 */
+		spin_lock_irq(&rtn->rds_tcp_conn_lock);
+		list_add_tail(&tc->t_tcp_node, &rtn->rds_tcp_conn_list);
+		spin_unlock_irq(&rtn->rds_tcp_conn_lock);
 		rdsdebug("rds_conn_path [%d] tc %p\n", i,
 			 conn->c_path[i].cp_transport_data);
 	}
-	spin_lock_irq(&rds_tcp_conn_lock);
-	for (i = 0; i < RDS_MPATH_WORKERS; i++) {
-		tc = conn->c_path[i].cp_transport_data;
-		tc->t_tcp_node_detached = false;
-		list_add_tail(&tc->t_tcp_node, &rds_tcp_conn_list);
-	}
-	spin_unlock_irq(&rds_tcp_conn_lock);
-fail:
 	if (ret) {
 		for (j = 0; j < i; j++)
 			rds_tcp_conn_free(conn->c_path[j].cp_transport_data);
@@ -492,39 +449,21 @@ static bool list_has_conn(struct list_head *list, struct rds_connection *conn)
 	return false;
 }
 
-static void rds_tcp_set_unloading(void)
-{
-	atomic_set(&rds_tcp_unloading, 1);
-}
-
-static bool rds_tcp_is_unloading(struct rds_connection *conn)
-{
-	return atomic_read(&rds_tcp_unloading) != 0;
-}
-
-static void rds_tcp_destroy_conns(void)
+static void rds_tcp_destroy_conns(struct rds_tcp_net *rtn)
 {
 	struct rds_tcp_connection *tc, *_tc;
 	LIST_HEAD(tmp_list);
 
 	/* avoid calling conn_destroy with irqs off */
-	spin_lock_irq(&rds_tcp_conn_lock);
-	list_for_each_entry_safe(tc, _tc, &rds_tcp_conn_list, t_tcp_node) {
+	spin_lock_irq(&rtn->rds_tcp_conn_lock);
+	list_for_each_entry_safe(tc, _tc, &rtn->rds_tcp_conn_list, t_tcp_node) {
 		if (!list_has_conn(&tmp_list, tc->t_cpath->cp_conn))
 			list_move_tail(&tc->t_tcp_node, &tmp_list);
 	}
-	spin_unlock_irq(&rds_tcp_conn_lock);
+	spin_unlock_irq(&rtn->rds_tcp_conn_lock);
 
 	list_for_each_entry_safe(tc, _tc, &tmp_list, t_tcp_node)
-		rds_conn_destroy(tc->t_cpath->cp_conn);
-}
-
-static void rds_tcp_exit(void);
-
-static u8 rds_tcp_get_tos_map(u8 tos)
-{
-	/* all user tos mapped to default 0 for TCP transport */
-	return 0;
+		rds_conn_destroy_init(tc->t_cpath->cp_conn, 1);
 }
 
 struct rds_transport rds_tcp_transport = {
@@ -532,7 +471,7 @@ struct rds_transport rds_tcp_transport = {
 	.xmit_path_prepare	= rds_tcp_xmit_path_prepare,
 	.xmit_path_complete	= rds_tcp_xmit_path_complete,
 	.xmit			= rds_tcp_xmit,
-	.recv_path		= rds_tcp_recv_path,
+	.recv_path		= rds_tcp_recv_path_lock,
 	.conn_alloc		= rds_tcp_conn_alloc,
 	.conn_free		= rds_tcp_conn_free,
 	.conn_slots_available	= rds_tcp_conn_slots_available,
@@ -541,17 +480,13 @@ struct rds_transport rds_tcp_transport = {
 	.inc_copy_to_user	= rds_tcp_inc_copy_to_user,
 	.inc_free		= rds_tcp_inc_free,
 	.stats_info_copy	= rds_tcp_stats_info_copy,
-	.exit			= rds_tcp_exit,
-	.get_tos_map		= rds_tcp_get_tos_map,
 	.t_owner		= THIS_MODULE,
 	.t_name			= "tcp",
 	.t_type			= RDS_TRANS_TCP,
 	.t_prefer_loopback	= 1,
 	.t_mp_capable		= 1,
-	.t_unloading		= rds_tcp_is_unloading,
+	.t_conn_count		= ATOMIC_INIT(0),
 };
-
-int rds_tcp_netid;
 
 /* All module specific customizations to the RDS-TCP socket should be done in
  * rds_tcp_tune() and applied after socket creation.
@@ -563,24 +498,19 @@ bool rds_tcp_tune(struct socket *sock)
 	struct rds_tcp_net *rtn;
 
 	tcp_sock_set_nodelay(sock->sk);
+	lock_sock(sk);
 	/* TCP timer functions might access net namespace even after
 	 * a process which created this net namespace terminated.
 	 */
 	if (!sk->sk_net_refcnt) {
-		if (!maybe_get_net(net))
+		if (!maybe_get_net(net)) {
+			release_sock(sk);
 			return false;
-		/*
-		 * sk_net_refcnt_upgrade() must be called before lock_sock()
-		 * because it does a GFP_KERNEL allocation, which can trigger
-		 * fs_reclaim and create a circular lock dependency with the
-		 * socket lock.  The fields it modifies (sk_net_refcnt,
-		 * ns_tracker) are not accessed by any concurrent code path
-		 * at this point.
-		 */
-		sk_net_refcnt_upgrade(sk);
-		put_net(net);
+		}
+		sk->sk_net_refcnt = 1;
+		netns_tracker_alloc(net, &sk->ns_tracker, GFP_KERNEL);
+		sock_inuse_add(net, 1);
 	}
-	lock_sock(sk);
 	rtn = net_generic(net, rds_tcp_netid);
 	if (rtn->sndbuf_size > 0) {
 		sk->sk_sndbuf = rtn->sndbuf_size;
@@ -600,24 +530,40 @@ static void rds_tcp_accept_worker(struct work_struct *work)
 					       struct rds_tcp_net,
 					       rds_tcp_accept_w);
 
+	trace_rds_queue_worker(NULL, NULL, rtn->rds_tcp_accept_wq, work, 0,
+			       "tcp accept worker");
+
 	while (rds_tcp_accept_one(rtn) == 0)
 		cond_resched();
 }
 
 void rds_tcp_accept_work(struct rds_tcp_net *rtn)
 {
-	queue_work(rds_wq, &rtn->rds_tcp_accept_w);
+	rds_queue_work(NULL, rtn->rds_tcp_accept_wq,
+		       &rtn->rds_tcp_accept_w, "tcp accept");
 }
 
 static __net_init int rds_tcp_init_net(struct net *net)
 {
 	struct rds_tcp_net *rtn = net_generic(net, rds_tcp_netid);
-	struct ctl_table *tbl;
+	struct ctl_table *tbl = NULL;
 	int err = 0;
 
 	memset(rtn, 0, sizeof(*rtn));
 
 	mutex_init(&rtn->rds_tcp_accept_lock);
+
+	err = rds_tcp_stats_net_init(net);
+	if (err)
+		return err;
+
+	rtn->rds_tcp_accept_wq =
+		create_singlethread_workqueue("rds_tcp_accept");
+	if (!rtn->rds_tcp_accept_wq) {
+		pr_warn("could not create TCP accept workqueue\n");
+		err = -ENOMEM;
+		goto fail;
+	}
 
 	/* {snd, rcv}buf_size default to 0, which implies we let the
 	 * stack pick the value, and permit auto-tuning of buffer size.
@@ -628,8 +574,9 @@ static __net_init int rds_tcp_init_net(struct net *net)
 		tbl = kmemdup(rds_tcp_sysctl_table,
 			      sizeof(rds_tcp_sysctl_table), GFP_KERNEL);
 		if (!tbl) {
-			pr_warn("could not set allocate sysctl table\n");
-			return -ENOMEM;
+			pr_warn("could not set allocate syctl table\n");
+			err = -ENOMEM;
+			goto fail;
 		}
 		rtn->ctl_table = tbl;
 	}
@@ -637,20 +584,18 @@ static __net_init int rds_tcp_init_net(struct net *net)
 	tbl[RDS_TCP_RCVBUF].data = &rtn->rcvbuf_size;
 	rtn->rds_tcp_sysctl = register_net_sysctl_sz(net, "net/rds/tcp", tbl,
 						     ARRAY_SIZE(rds_tcp_sysctl_table));
-	if (!rtn->rds_tcp_sysctl && IS_ENABLED(CONFIG_SYSCTL)) {
+	if (!rtn->rds_tcp_sysctl) {
 		pr_warn("could not register sysctl\n");
 		err = -ENOMEM;
 		goto fail;
 	}
-
 #if IS_ENABLED(CONFIG_IPV6)
 	rtn->rds_tcp_listen_sock = rds_tcp_listen_init(net, true);
 #else
 	rtn->rds_tcp_listen_sock = rds_tcp_listen_init(net, false);
 #endif
 	if (!rtn->rds_tcp_listen_sock) {
-		pr_warn("could not set up IPv6 listen sock\n");
-
+		pr_warn("could not set up TCP listen sock\n");
 #if IS_ENABLED(CONFIG_IPV6)
 		/* Try IPv4 as some systems disable IPv6 */
 		rtn->rds_tcp_listen_sock = rds_tcp_listen_init(net, false);
@@ -665,54 +610,59 @@ static __net_init int rds_tcp_init_net(struct net *net)
 #endif
 	}
 	INIT_WORK(&rtn->rds_tcp_accept_w, rds_tcp_accept_worker);
+
+	spin_lock_init(&rtn->rds_tcp_tc_list_lock);
+	INIT_LIST_HEAD(&rtn->rds_tcp_tc_list);
+
+	spin_lock_init(&rtn->rds_tcp_conn_lock);
+	INIT_LIST_HEAD(&rtn->rds_tcp_conn_list);
+
 	return 0;
 
 fail:
+	rds_tcp_stats_net_exit(net);
 	if (net != &init_net)
 		kfree(tbl);
 	return err;
 }
 
-static void rds_tcp_kill_sock(struct net *net)
+static void rds_tcp_kill_sock(struct net *net, struct rds_tcp_net *rtn)
 {
 	struct rds_tcp_connection *tc, *_tc;
 	LIST_HEAD(tmp_list);
-	struct rds_tcp_net *rtn = net_generic(net, rds_tcp_netid);
 	struct socket *lsock = rtn->rds_tcp_listen_sock;
 
 	rtn->rds_tcp_listen_sock = NULL;
 	rds_tcp_listen_stop(lsock, &rtn->rds_tcp_accept_w);
 	if (rtn->rds_tcp_accepted_sock)
 		sock_release(rtn->rds_tcp_accepted_sock);
-	spin_lock_irq(&rds_tcp_conn_lock);
-	list_for_each_entry_safe(tc, _tc, &rds_tcp_conn_list, t_tcp_node) {
-		struct net *c_net = read_pnet(&tc->t_cpath->cp_conn->c_net);
+	spin_lock_irq(&rtn->rds_tcp_conn_lock);
+	list_for_each_entry_safe(tc, _tc, &rtn->rds_tcp_conn_list, t_tcp_node) {
+		WARN_ON(!net_eq(net, rds_conn_net(tc->t_cpath->cp_conn)));
 
-		if (net != c_net)
-			continue;
-		if (!list_has_conn(&tmp_list, tc->t_cpath->cp_conn)) {
+		if (!list_has_conn(&tmp_list, tc->t_cpath->cp_conn))
 			list_move_tail(&tc->t_tcp_node, &tmp_list);
-		} else {
-			list_del(&tc->t_tcp_node);
-			tc->t_tcp_node_detached = true;
-		}
 	}
-	spin_unlock_irq(&rds_tcp_conn_lock);
+	spin_unlock_irq(&rtn->rds_tcp_conn_lock);
 	list_for_each_entry_safe(tc, _tc, &tmp_list, t_tcp_node)
-		rds_conn_destroy(tc->t_cpath->cp_conn);
+		rds_conn_destroy_init(tc->t_cpath->cp_conn, 1);
 }
 
 static void __net_exit rds_tcp_exit_net(struct net *net)
 {
 	struct rds_tcp_net *rtn = net_generic(net, rds_tcp_netid);
 
+	rds_tcp_kill_sock(net, rtn);
+	rds_tcp_stats_net_exit(net);
+
+	rds_tcp_destroy_conns(rtn);
+
 	if (rtn->rds_tcp_sysctl)
 		unregister_net_sysctl_table(rtn->rds_tcp_sysctl);
 
-	if (net != &init_net)
+	if (net != &init_net && rtn->ctl_table)
 		kfree(rtn->ctl_table);
-
-	rds_tcp_kill_sock(net);
+	destroy_workqueue(rtn->rds_tcp_accept_wq);
 }
 
 static struct pernet_operations rds_tcp_net_ops = {
@@ -741,24 +691,27 @@ void *rds_tcp_listen_sock_def_readable(struct net *net)
 static void rds_tcp_sysctl_reset(struct net *net)
 {
 	struct rds_tcp_connection *tc, *_tc;
+	struct rds_tcp_net *rtn;
 
-	spin_lock_irq(&rds_tcp_conn_lock);
-	list_for_each_entry_safe(tc, _tc, &rds_tcp_conn_list, t_tcp_node) {
-		struct net *c_net = read_pnet(&tc->t_cpath->cp_conn->c_net);
+	rtn = net_generic(net, rds_tcp_netid);
 
-		if (net != c_net || !tc->t_sock)
+	spin_lock_irq(&rtn->rds_tcp_conn_lock);
+	list_for_each_entry_safe(tc, _tc, &rtn->rds_tcp_conn_list, t_tcp_node) {
+		if (!tc->t_sock)
 			continue;
+		WARN_ON(!net_eq(net, rds_conn_net(tc->t_cpath->cp_conn)));
 
 		/* reconnect with new parameters */
-		rds_conn_path_drop(tc->t_cpath, false);
+		rds_conn_path_drop(tc->t_cpath, DR_USER_RESET, 0);
 	}
-	spin_unlock_irq(&rds_tcp_conn_lock);
+	spin_unlock_irq(&rtn->rds_tcp_conn_lock);
 }
 
-static int rds_tcp_skbuf_handler(struct rds_tcp_net *rtn,
-				 const struct ctl_table *ctl, int write,
-				 void *buffer, size_t *lenp, loff_t *fpos)
+static int rds_tcp_skbuf_handler(const struct ctl_table *ctl, int write,
+				 void __user *buffer, size_t *lenp,
+				 loff_t *fpos)
 {
+	struct net *net = current->nsproxy->net_ns;
 	int err;
 
 	err = proc_dointvec_minmax(ctl, write, buffer, lenp, fpos);
@@ -767,44 +720,30 @@ static int rds_tcp_skbuf_handler(struct rds_tcp_net *rtn,
 			*(int *)(ctl->extra1));
 		return err;
 	}
-
-	if (write && rtn->rds_tcp_listen_sock && rtn->rds_tcp_listen_sock->sk) {
-		struct net *net = sock_net(rtn->rds_tcp_listen_sock->sk);
-
+	if (write)
 		rds_tcp_sysctl_reset(net);
-	}
-
 	return 0;
 }
 
-static int rds_tcp_sndbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos)
+static void __exit rds_tcp_exit(void)
 {
-	struct rds_tcp_net *rtn = container_of(ctl->data, struct rds_tcp_net,
-					       sndbuf_size);
+	/* After unregistering the module, no new connection will be made
+	 * using this transport.
+	 */
+	rds_trans_unregister(&rds_tcp_transport);
 
-	return rds_tcp_skbuf_handler(rtn, ctl, write, buffer, lenp, fpos);
-}
-
-static int rds_tcp_rcvbuf_handler(const struct ctl_table *ctl, int write,
-				  void *buffer, size_t *lenp, loff_t *fpos)
-{
-	struct rds_tcp_net *rtn = container_of(ctl->data, struct rds_tcp_net,
-					       rcvbuf_size);
-
-	return rds_tcp_skbuf_handler(rtn, ctl, write, buffer, lenp, fpos);
-}
-
-static void rds_tcp_exit(void)
-{
-	rds_tcp_set_unloading();
-	synchronize_rcu();
 	rds_info_deregister_func(RDS_INFO_TCP_SOCKETS, rds_tcp_tc_info);
 #if IS_ENABLED(CONFIG_IPV6)
 	rds_info_deregister_func(RDS6_INFO_TCP_SOCKETS, rds6_tcp_tc_info);
 #endif
 	unregister_pernet_device(&rds_tcp_net_ops);
-	rds_tcp_destroy_conns();
+
+	/* Wait for all RDS/TCP connections to be destroyed */
+	if (!wait_event_timeout(rds_tcp_transport.t_conn_count_zero_waitq,
+				!atomic_read(&rds_tcp_transport.t_conn_count),
+				msecs_to_jiffies(RDS_CONN_COUNT_ZERO_TIMEOUT)))
+		WARN_ON(atomic_read(&rds_tcp_transport.t_conn_count));
+
 	rds_trans_unregister(&rds_tcp_transport);
 	rds_tcp_recv_exit();
 	kmem_cache_destroy(rds_tcp_conn_slab);
@@ -815,10 +754,11 @@ static int __init rds_tcp_init(void)
 {
 	int ret;
 
-	if (!rds_is_initialized())
-		return -ENODEV;
+	rds_rt_debug_tp_enable();
 
-	rds_tcp_conn_slab = KMEM_CACHE(rds_tcp_connection, 0);
+	rds_tcp_conn_slab = kmem_cache_create("rds_tcp_connection",
+					      sizeof(struct rds_tcp_connection),
+					      0, 0, NULL);
 	if (!rds_tcp_conn_slab) {
 		ret = -ENOMEM;
 		goto out;
@@ -832,7 +772,8 @@ static int __init rds_tcp_init(void)
 	if (ret)
 		goto out_recv;
 
-	rds_trans_register(&rds_tcp_transport);
+	init_waitqueue_head(&rds_tcp_transport.t_conn_count_zero_waitq);
+	ret = rds_trans_register(&rds_tcp_transport);
 
 	rds_info_register_func(RDS_INFO_TCP_SOCKETS, rds_tcp_tc_info);
 #if IS_ENABLED(CONFIG_IPV6)
@@ -840,6 +781,7 @@ static int __init rds_tcp_init(void)
 #endif
 
 	goto out;
+
 out_recv:
 	rds_tcp_recv_exit();
 out_slab:

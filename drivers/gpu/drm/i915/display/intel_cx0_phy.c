@@ -5,12 +5,10 @@
 
 #include <linux/log2.h>
 #include <linux/math64.h>
-#include <linux/string_choices.h>
 
 #include <drm/drm_print.h>
 
 #include "intel_alpm.h"
-#include "intel_cmtg.h"
 #include "intel_cx0_phy.h"
 #include "intel_cx0_phy_regs.h"
 #include "intel_display_regs.h"
@@ -190,7 +188,7 @@ int intel_cx0_wait_for_ack(struct intel_encoder *encoder,
 		drm_dbg_kms(display->drm,
 			    "PHY %c Error occurred during %s command. Status: 0x%x\n",
 			    phy_name(phy),
-			    str_read_write(command == XELPDP_PORT_P2M_COMMAND_READ_ACK), *val);
+			    command == XELPDP_PORT_P2M_COMMAND_READ_ACK ? "read" : "write", *val);
 		intel_cx0_bus_reset(encoder, lane);
 		return -EINVAL;
 	}
@@ -199,7 +197,7 @@ int intel_cx0_wait_for_ack(struct intel_encoder *encoder,
 		drm_dbg_kms(display->drm,
 			    "PHY %c Not a %s response. MSGBUS Status: 0x%x.\n",
 			    phy_name(phy),
-			    str_read_write(command == XELPDP_PORT_P2M_COMMAND_READ_ACK), *val);
+			    command == XELPDP_PORT_P2M_COMMAND_READ_ACK ? "read" : "write", *val);
 		intel_cx0_bus_reset(encoder, lane);
 		return -EINVAL;
 	}
@@ -3236,8 +3234,7 @@ static void intel_cx0pll_enable(struct intel_encoder *encoder,
 	 * 8. Program DDI_CLK_VALFREQ to match intended DDI
 	 * clock frequency.
 	 */
-	intel_de_write(display, DDI_CLK_VALFREQ(encoder->port),
-		       intel_ddi_link_symbol_clock(encoder, port_clock));
+	intel_de_write(display, DDI_CLK_VALFREQ(encoder->port), port_clock);
 
 	/*
 	 * 9. Set PORT_CLOCK_CTL register PCLK PLL Request
@@ -3410,7 +3407,7 @@ void intel_mtl_tbt_pll_enable_clock(struct intel_encoder *encoder, int port_cloc
 	 * clock frequency.
 	 */
 	intel_de_write(display, DDI_CLK_VALFREQ(encoder->port),
-		       intel_ddi_link_symbol_clock(encoder, port_clock));
+		       port_clock);
 }
 
 void intel_mtl_pll_enable(struct intel_encoder *encoder,
@@ -3423,20 +3420,10 @@ void intel_mtl_pll_enable(struct intel_encoder *encoder,
 void intel_mtl_pll_enable_clock(struct intel_encoder *encoder,
 				const struct intel_crtc_state *crtc_state)
 {
-	struct intel_display *display = to_intel_display(encoder);
 	struct intel_digital_port *dig_port = enc_to_dig_port(encoder);
 
 	if (intel_tc_port_in_tbt_alt_mode(dig_port))
 		intel_mtl_tbt_pll_enable_clock(encoder, crtc_state->port_clock);
-
-	/*
-	 * CMTG can be enabled only when the transcoder and port are compatible
-	 * (transcoder A with port A, transcoder B with port B).
-	 */
-	if (HAS_LT_PHY(display) &&
-	    ((crtc_state->cpu_transcoder == TRANSCODER_A && encoder->port == PORT_A) ||
-	     (crtc_state->cpu_transcoder == TRANSCODER_B && encoder->port == PORT_B)))
-		intel_cmtg_set_clk_select(crtc_state);
 }
 
 /*

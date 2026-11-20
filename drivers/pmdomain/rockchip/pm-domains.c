@@ -204,20 +204,6 @@ struct rockchip_pmu {
 	.active_wakeup = wakeup,			\
 }
 
-#define DOMAIN_M_R(_name, pwr, status, req, idle, ack, wakeup, regulator)	\
-{							\
-	.name = _name,				\
-	.pwr_w_mask = (pwr) << 16,			\
-	.pwr_mask = (pwr),				\
-	.status_mask = (status),			\
-	.req_w_mask = (req) << 16,			\
-	.req_mask = (req),				\
-	.idle_mask = (idle),				\
-	.ack_mask = (ack),				\
-	.active_wakeup = wakeup,			\
-	.need_regulator = regulator,			\
-}
-
 #define DOMAIN_RK3036(_name, req, ack, idle, wakeup)		\
 {							\
 	.name = _name,				\
@@ -255,8 +241,8 @@ struct rockchip_pmu {
 #define DOMAIN_RK3562(name, pwr, req, g_mask, mem, wakeup)		\
 	DOMAIN_M_G_SD(name, pwr, pwr, req, req, req, g_mask, mem, wakeup, false)
 
-#define DOMAIN_RK3568(name, pwr, req, wakeup, regulator)		\
-	DOMAIN_M_R(name, pwr, pwr, req, req, req, wakeup, regulator)
+#define DOMAIN_RK3568(name, pwr, req, wakeup)		\
+	DOMAIN_M(name, pwr, pwr, req, req, req, wakeup)
 
 #define DOMAIN_RK3576(name, p_offset, pwr, status, r_status, r_offset, req, idle, g_mask, wakeup)	\
 	DOMAIN_M_O_R_G(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, wakeup)
@@ -721,7 +707,7 @@ static int rockchip_pd_power_on(struct generic_pm_domain *domain)
 	ret = rockchip_pd_regulator_enable(pd);
 	if (ret)
 		return dev_err_probe(pd->pmu->dev, ret,
-				     "Failed to enable supply\n");
+				     "Failed to enable supply: %d\n", ret);
 
 	ret = rockchip_pd_power(pd, true);
 	if (ret)
@@ -821,13 +807,13 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 		return 0;
 
 	pd_info = &pmu->info->domain_info[id];
-	if (!pd_info->pwr_mask && !pd_info->req_mask) {
+	if (!pd_info) {
 		dev_err(pmu->dev, "%pOFn: undefined domain id %d\n",
 			node, id);
 		return -EINVAL;
 	}
 
-	pd = devm_kzalloc_obj(pmu->dev, *pd);
+	pd = devm_kzalloc(pmu->dev, sizeof(*pd), GFP_KERNEL);
 	if (!pd)
 		return -ENOMEM;
 
@@ -837,7 +823,8 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 
 	pd->num_clks = of_clk_get_parent_count(node);
 	if (pd->num_clks > 0) {
-		pd->clks = devm_kzalloc_objs(pmu->dev, *pd->clks, pd->num_clks);
+		pd->clks = devm_kcalloc(pmu->dev, pd->num_clks,
+					sizeof(*pd->clks), GFP_KERNEL);
 		if (!pd->clks)
 			return -ENOMEM;
 	} else {
@@ -865,16 +852,19 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 						 NULL);
 
 	if (pd->num_qos > 0) {
-		pd->qos_regmap = devm_kzalloc_objs(pmu->dev, *pd->qos_regmap,
-						   pd->num_qos);
+		pd->qos_regmap = devm_kcalloc(pmu->dev, pd->num_qos,
+					      sizeof(*pd->qos_regmap),
+					      GFP_KERNEL);
 		if (!pd->qos_regmap) {
 			error = -ENOMEM;
 			goto err_unprepare_clocks;
 		}
 
 		for (j = 0; j < MAX_QOS_REGS_NUM; j++) {
-			pd->qos_save_regs[j] = devm_kzalloc_objs(pmu->dev, u32,
-								 pd->num_qos);
+			pd->qos_save_regs[j] = devm_kcalloc(pmu->dev,
+							    pd->num_qos,
+							    sizeof(u32),
+							    GFP_KERNEL);
 			if (!pd->qos_save_regs[j]) {
 				error = -ENOMEM;
 				goto err_unprepare_clocks;
@@ -1050,7 +1040,9 @@ static int rockchip_pm_domain_probe(struct platform_device *pdev)
 
 	pmu_info = device_get_match_data(dev);
 
-	pmu = devm_kzalloc_flex(dev, *pmu, domains, pmu_info->num_domains);
+	pmu = devm_kzalloc(dev,
+			   struct_size(pmu, domains, pmu_info->num_domains),
+			   GFP_KERNEL);
 	if (!pmu)
 		return -ENOMEM;
 
@@ -1296,15 +1288,15 @@ static const struct rockchip_domain_info rk3562_pm_domains[] = {
 };
 
 static const struct rockchip_domain_info rk3568_pm_domains[] = {
-	[RK3568_PD_NPU]		= DOMAIN_RK3568("npu",  BIT(1), BIT(2),  false, true),
-	[RK3568_PD_GPU]		= DOMAIN_RK3568("gpu",  BIT(0), BIT(1),  false, false),
-	[RK3568_PD_VI]		= DOMAIN_RK3568("vi",   BIT(6), BIT(3),  false, false),
-	[RK3568_PD_VO]		= DOMAIN_RK3568("vo",   BIT(7), BIT(4),  false, false),
-	[RK3568_PD_RGA]		= DOMAIN_RK3568("rga",  BIT(5), BIT(5),  false, false),
-	[RK3568_PD_VPU]		= DOMAIN_RK3568("vpu",  BIT(2), BIT(6),  false, false),
-	[RK3568_PD_RKVDEC]	= DOMAIN_RK3568("vdec", BIT(4), BIT(8),  false, false),
-	[RK3568_PD_RKVENC]	= DOMAIN_RK3568("venc", BIT(3), BIT(7),  false, false),
-	[RK3568_PD_PIPE]	= DOMAIN_RK3568("pipe", BIT(8), BIT(11), false, false),
+	[RK3568_PD_NPU]		= DOMAIN_RK3568("npu",  BIT(1), BIT(2),  false),
+	[RK3568_PD_GPU]		= DOMAIN_RK3568("gpu",  BIT(0), BIT(1),  false),
+	[RK3568_PD_VI]		= DOMAIN_RK3568("vi",   BIT(6), BIT(3),  false),
+	[RK3568_PD_VO]		= DOMAIN_RK3568("vo",   BIT(7), BIT(4),  false),
+	[RK3568_PD_RGA]		= DOMAIN_RK3568("rga",  BIT(5), BIT(5),  false),
+	[RK3568_PD_VPU]		= DOMAIN_RK3568("vpu",  BIT(2), BIT(6),  false),
+	[RK3568_PD_RKVDEC]	= DOMAIN_RK3568("vdec", BIT(4), BIT(8),  false),
+	[RK3568_PD_RKVENC]	= DOMAIN_RK3568("venc", BIT(3), BIT(7),  false),
+	[RK3568_PD_PIPE]	= DOMAIN_RK3568("pipe", BIT(8), BIT(11), false),
 };
 
 static const struct rockchip_domain_info rk3576_pm_domains[] = {

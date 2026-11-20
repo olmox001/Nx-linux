@@ -15,6 +15,8 @@
  * the dcache entry is deleted or garbage collected.
  */
 
+#define pr_fmt(fmt)    KBUILD_MODNAME ": " fmt
+
 #include <linux/ratelimit.h>
 #include <linux/string.h>
 #include <linux/mm.h>
@@ -32,12 +34,11 @@
 #include <linux/bit_spinlock.h>
 #include <linux/rculist_bl.h>
 #include <linux/list_lru.h>
-#include <linux/namei.h>
-#include <linux/quotaops.h>
 #include "internal.h"
 #include "mount.h"
 
 #include <asm/runtime-const.h>
+
 
 /*
  * Usage:
@@ -46,8 +47,7 @@
  * dcache_hash_bucket lock protects:
  *   - the dcache hash table
  * s_roots_lock protects:
- *   - the s_roots list (see __d_move()/dentry_unlist()/d_obtain_root()/
- *     dput_to_list())
+ *   - the s_roots list (see __d_move()/dentry_unlist()/d_obtain_root())
  * dentry->d_sb->s_dentry_lru_lock protects:
  *   - the dcache lru lists and counters
  * d_lock protects:
@@ -142,12 +142,89 @@ struct dentry_stat_t {
 	long dummy;		/* Reserved for future use */
 };
 
+#ifndef __GENKSYMS__
+#define CREATE_TRACE_POINTS
+#include <trace/events/dcache_neg_dentry_trace.h>
+#endif // __GENKSYMS__
+/*
+ * Negative dentry related declarations.
+ *
+ * The maximum length of this string is defined by 'NEG_DENTRY_LIMIT_STRLEN',
+ * it set to 5, which means valid user input can either be 0 (indicating
+ * that there is no limitation on number of negative dentries) or a
+ * value between 0.001 and 100, which limits negative dentry memory usage
+ * from 1/million to 10% of total memory. The maximum value of 'neg_dentry_pc'
+ * would be 9999 with a user input of 9.999 or 99.99, which is slightly less
+ * than pow(2, 14). The expression `totalram_pages * neg_dentry_pc` from
+ * proc_neg_dentry_pc() can overflow if totalram_pages reaches pow(2, 50)
+ * or higher, equivalent to 4 EB of memory, which is highly unlikely in
+ * real-world scenarios.
+ */
+#define NEG_DENTRY_LIMIT_STRLEN        5
+
+/*
+ * The NEG_DENTRY_LIMIT_BUFLEN should be (NEG_DENTRY_LIMIT_STRLEN + 2).
+ * One for '\0' and one for detecting over range truncate.
+ */
+#define NEG_DENTRY_LIMIT_BUFLEN        (NEG_DENTRY_LIMIT_STRLEN + 2)
+
+/*
+ * The sysctl parameter "negative-dentry-limit" specifies the limit for the number
+ * of negative dentries allowable in a system as a percentage of the total
+ * system memory. The default is 0 which means there is no limit and the
+ * valid range is 0.001 to 100. This range is calibrated to 0-10% of the total
+ * system memory.
+ *
+ * With a limit of 2% on a 64-bit system with 1G memory, that translated
+ * to about 100k dentries which is quite a lot.
+ *
+ * To avoid performance problem with a global counter on an SMP system,
+ * the tracking is done mostly on a per-cpu basis. The total limit is
+ * distributed in a 80/20 ratio to per-cpu counters and a global free pool.
+ *
+ * If a per-cpu counter runs out of negative dentries, it can borrow extra
+ * ones from the global free pool. If it has more than its percpu limit,
+ * the extra ones will be returned back to the global pool.
+ */
+#define NEG_DENTRY_BATCH	(1 << 12)
+#define NEG_PRUNING_SIZE	(1 << 6)
+#define NEG_PRUNING_SLOW_RATE	(HZ/10)
+#define NEG_PRUNING_FAST_RATE	(HZ/50)
+#define NEG_DENTRY_PC_MAX	100
+#define NEG_IS_SB_UMOUNTING(sb)	\
+	unlikely(!(sb)->s_root || !((sb)->s_flags & SB_ACTIVE))
+
+DEFINE_STATIC_KEY_FALSE(limit_neg_key);
+
+static char neg_dentry_limit_old[NEG_DENTRY_LIMIT_BUFLEN] = {'0', '\0'};
+char neg_dentry_limit[NEG_DENTRY_LIMIT_BUFLEN] = {'0', '\0'};
+EXPORT_SYMBOL_GPL(neg_dentry_limit);
+
+static int neg_dentry_pc_old;
+static int neg_dentry_pc;
+
+/*
+ * There will be a periodic check to see if the negative dentry limit
+ * is exceeded. If so, the excess negative dentries will be removed.
+ */
+#define NEGATIVE_DENTRY_CHECK_PERIOD	(5 * HZ)	/* Check every 5s */
+#define NEG_WALKING_CAP			(1 << 17)
+
+static unsigned long neg_dentry_global_limit __read_mostly;
+static struct {
+	long n_neg;			/* # of negative dentries pruned */
+	int nprune_on;			/* Flag to continue pruning */
+} ndblk ____cacheline_aligned_in_smp;
+
+static void prune_negative_dentry(struct work_struct *work);
+static DECLARE_DELAYED_WORK(prune_neg_dentry_work, prune_negative_dentry);
+
 static DEFINE_PER_CPU(long, nr_dentry);
 static DEFINE_PER_CPU(long, nr_dentry_unused);
 static DEFINE_PER_CPU(long, nr_dentry_negative);
 static int dentry_negative_policy;
 
-#ifdef CONFIG_SYSCTL
+#if defined(CONFIG_SYSCTL) && defined(CONFIG_PROC_FS)
 /* Statistics gathering. */
 static struct dentry_stat_t dentry_stat = {
 	.age_limit = 45,
@@ -302,6 +379,175 @@ static inline int dentry_string_cmp(const unsigned char *cs, const unsigned char
 
 #endif
 
+/*
+ * Decrement negative dentry count.
+ */
+static inline void __neg_dentry_dec(struct dentry *dentry)
+{
+	this_cpu_dec_return(nr_dentry_negative);
+}
+
+static inline void neg_dentry_dec(struct dentry *dentry)
+{
+	if (unlikely(d_is_negative(dentry)))
+		__neg_dentry_dec(dentry);
+}
+
+/*
+ * Increment the negative dentry count.
+ */
+static inline void __neg_dentry_inc(struct dentry *dentry)
+{
+	this_cpu_inc_return(nr_dentry_negative);
+}
+
+static inline void neg_dentry_inc(struct dentry *dentry)
+{
+	if (unlikely(d_is_negative(dentry)))
+		__neg_dentry_inc(dentry);
+}
+
+#ifdef CONFIG_SYSCTL
+/*
+ * proc_neg_dentry_pc - Sysctl proc handler for neg_dentry_pc.
+ */
+static int proc_neg_dentry_pc(const struct ctl_table *table, int write,
+			void *buffer, size_t *lenp, loff_t *ppos)
+{
+	/* Rough estimate of # of dentries allocated per page */
+	const unsigned int nr_dentry_page = PAGE_SIZE/sizeof(struct dentry) - 1;
+	unsigned long new_init, total_ram_pages, pc;
+	int ret, frac_len, frac_scale;
+	char *dotptr;
+	char dec_str[NEG_DENTRY_LIMIT_BUFLEN];
+
+	ret = proc_dostring(table, write, buffer, lenp, ppos);
+
+	if (!write || ret)
+		return ret;
+
+	if (strlen(neg_dentry_limit) > NEG_DENTRY_LIMIT_STRLEN) {
+		ret = -EINVAL;
+		goto err_out;
+	}
+
+	strcpy(dec_str, neg_dentry_limit);
+	dotptr = strchr(dec_str, '.');
+
+	if (dotptr) {
+		frac_len = dec_str + strlen(dec_str) - dotptr - 1;
+		memmove(dotptr, dotptr + 1, frac_len + 1);
+	} else
+		frac_len = 0;
+
+	frac_scale = int_pow(10, frac_len);
+	ret = kstrtoul(dec_str, 10, &pc);
+
+	/*
+	 * pc would be at most a 4 digit number
+	 * 9999 if the user inputs 99.99, hence
+	 * it will not overflow.
+	 */
+	neg_dentry_pc = (int)pc;
+
+	if ((ret || neg_dentry_pc > NEG_DENTRY_PC_MAX * frac_scale)) {
+		ret = -EINVAL;
+		goto err_out;
+	}
+
+	/*
+	 * Disable limit_neg_key first when transitioning from neg_dentry_pc
+	 * to !neg_dentry_pc.
+	 */
+	if (!neg_dentry_pc && neg_dentry_pc_old) {
+		static_key_slow_dec(&limit_neg_key.key);
+		cancel_delayed_work_sync(&prune_neg_dentry_work);
+		goto out;
+	}
+
+	/*
+	 * Do nothing during 0 -> 0.0 or 0.0 -> 0
+	 * Just store the new string in to old
+	 */
+	if (!neg_dentry_pc && !neg_dentry_pc_old)
+		goto out;
+
+
+	/*
+	 * Each unit of neg_dentry_pc is 0.1% of memory
+	 * for negative dentries.
+	 */
+	total_ram_pages = totalram_pages();
+	new_init = (total_ram_pages * neg_dentry_pc / (1000 * frac_scale)) * nr_dentry_page;
+	if (unlikely((new_init < 2 * NEG_DENTRY_BATCH) && neg_dentry_pc))
+		new_init = 2 * NEG_DENTRY_BATCH;
+	neg_dentry_global_limit = new_init;
+
+	pr_info("Negative dentry limit = %s is set. Max negative dentries = %lu\n",
+		neg_dentry_limit, neg_dentry_global_limit);
+
+	/*
+	 * The periodic dentry pruner only runs when the limit is non-zero.
+	 * The sysctl handler is the only trigger mechanism that can be
+	 * used to start the prune work reliably, so we do that here
+	 * after calculating the new limit.
+	 */
+	if (!neg_dentry_pc_old) {
+		static_key_slow_inc(&limit_neg_key.key);
+		schedule_delayed_work(&prune_neg_dentry_work, 0);
+	}
+out:
+	strcpy(neg_dentry_limit_old, neg_dentry_limit);
+	neg_dentry_pc_old = neg_dentry_pc;
+	return 0;
+err_out:
+	pr_info("Negative dentry limit: %s is invalid. Valid range is  %s %d\n",
+		neg_dentry_limit, "0 or 0.001 - 100, and max length of input is",
+		NEG_DENTRY_LIMIT_STRLEN);
+	strcpy(neg_dentry_limit, neg_dentry_limit_old);
+	neg_dentry_pc = neg_dentry_pc_old;
+	return ret;
+}
+
+static struct ctl_table fs_dcache_neg_dentry_sysctls[] = {
+	{
+		.procname	= "negative-dentry-limit",
+		.data		= &neg_dentry_limit,
+		.maxlen		= NEG_DENTRY_LIMIT_BUFLEN,
+		.mode		= 0644,
+		.proc_handler	= proc_neg_dentry_pc,
+	},
+};
+
+static int __init init_fs_dcache_neg_dentry_sysctls(void)
+{
+	register_sysctl_init("fs", fs_dcache_neg_dentry_sysctls);
+	return 0;
+}
+fs_initcall(init_fs_dcache_neg_dentry_sysctls);
+#endif /* CONFIG_SYSCTL */
+
+static int negative_dentry_limit_overshot(void)
+{
+	int limit_pc = 0;
+	long count = 0;
+
+	limit_pc = READ_ONCE(neg_dentry_pc);
+	if (!limit_pc || !neg_dentry_global_limit)
+		return 0;
+
+	count = get_nr_dentry_negative();
+
+	if (count < neg_dentry_global_limit)
+		return 0;
+
+	/*
+	 * Negative dentry count in the
+	 * system has crossed the limit.
+	 */
+	return 1;
+}
+
 static inline int dentry_cmp(const struct dentry *dentry, const unsigned char *ct, unsigned tcount)
 {
 	/*
@@ -361,48 +607,32 @@ static inline int dname_external(const struct dentry *dentry)
 	return dentry->d_name.name != dentry->d_shortname.string;
 }
 
-static bool try_name_snapshot(struct name_snapshot *name, struct dentry *dentry)
+void take_dentry_name_snapshot(struct name_snapshot *name, struct dentry *dentry)
 {
-	const unsigned char *s = READ_ONCE(dentry->d_name.name);
-	struct external_name *p;
+	unsigned seq;
+	const unsigned char *s;
 
+	rcu_read_lock();
+retry:
+	seq = read_seqcount_begin(&dentry->d_seq);
+	s = READ_ONCE(dentry->d_name.name);
 	name->name.hash_len = dentry->d_name.hash_len;
 	name->name.name = name->inline_name.string;
 	if (likely(s == dentry->d_shortname.string)) {
 		name->inline_name = dentry->d_shortname;
-		return true;
+	} else {
+		struct external_name *p;
+		p = container_of(s, struct external_name, name[0]);
+		// get a valid reference
+		if (unlikely(!atomic_inc_not_zero(&p->count)))
+			goto retry;
+		name->name.name = s;
 	}
-
-	// Try to get a valid external reference
-	//
-	// In case we fail to get a ref, 'name.name' will
-	// point to the inline_name, which we leave as an
-	// empty name. release_dentry_name_snapshot() can
-	// be called regardless.
-	p = container_of(s, struct external_name, name[0]);
-	if (unlikely(!atomic_inc_not_zero(&p->count))) {
-		name->name.len = 0;
-		name->inline_name.string[0] = 0;
-		return false;
-	}
-
-	// We got a ref and the name is now needs to be
-	// free'd regardless of whether the sequence count
-	// matches or not
-	name->name.name = s;
-	return true;
-}
-
-bool take_dentry_name_snapshot(struct name_snapshot *name, struct dentry *dentry)
-{
-	guard(rcu)();
-	for (;;) {
-		unsigned seq = read_seqcount_begin(&dentry->d_seq);
-		bool retval = try_name_snapshot(name, dentry);
-		if (!read_seqcount_retry(&dentry->d_seq, seq))
-			return retval;
+	if (read_seqcount_retry(&dentry->d_seq, seq)) {
 		release_dentry_name_snapshot(name);
+		goto retry;
 	}
+	rcu_read_unlock();
 }
 EXPORT_SYMBOL(take_dentry_name_snapshot);
 
@@ -442,7 +672,7 @@ static inline void __d_clear_type_and_inode(struct dentry *dentry)
 	 * d_lru is on another list.
 	 */
 	if ((flags & (DCACHE_LRU_LIST|DCACHE_SHRINK_LIST)) == DCACHE_LRU_LIST)
-		this_cpu_inc(nr_dentry_negative);
+		neg_dentry_inc(dentry);
 }
 
 #define DENTRY_WARN_ONCE(condition, dentry) \
@@ -453,7 +683,7 @@ static inline void __d_clear_type_and_inode(struct dentry *dentry)
 static void dentry_free(struct dentry *dentry)
 {
 	DENTRY_WARN_ONCE(d_really_is_positive(dentry), dentry);
-	DENTRY_WARN_ONCE(!lockref_is_dead(&dentry->d_lockref), dentry);
+	DENTRY_WARN_ONCE(dentry->d_lockref.count >= 0, dentry);
 	D_FLAG_VERIFY(dentry, 0);
 	if (unlikely(dname_external(dentry))) {
 		struct external_name *p = external_name(dentry);
@@ -470,16 +700,6 @@ static void dentry_free(struct dentry *dentry)
 }
 
 /*
- * When inode is unlinked and doesn't have any aliases (i.e., all fds pointing
- * to it are closed) we report FS_DELETE_SELF to fsnotify and cleanup all inode
- * marks.
- */
-static bool inode_notify_dead(struct inode *inode)
-{
-	return !inode->i_nlink && hlist_empty(&inode->i_dentry);
-}
-
-/*
  * Release the dentry's inode, using the filesystem
  * d_iput() operation if defined.
  */
@@ -488,7 +708,6 @@ static void dentry_unlink_inode(struct dentry * dentry)
 	__releases(dentry->d_inode->i_lock)
 {
 	struct inode *inode = dentry->d_inode;
-	bool notify_dead;
 
 	raw_write_seqcount_begin(&dentry->d_seq);
 	__d_clear_type_and_inode(dentry);
@@ -499,10 +718,9 @@ static void dentry_unlink_inode(struct dentry * dentry)
 	 */
 	dentry->waiters = NULL;
 	raw_write_seqcount_end(&dentry->d_seq);
-	notify_dead = inode_notify_dead(inode);
 	spin_unlock(&dentry->d_lock);
 	spin_unlock(&inode->i_lock);
-	if (notify_dead)
+	if (!inode->i_nlink)
 		fsnotify_inoderemove(inode);
 	if (dentry->d_op && dentry->d_op->d_iput)
 		dentry->d_op->d_iput(dentry, inode);
@@ -535,7 +753,7 @@ static void d_lru_add(struct dentry *dentry)
 	dentry->d_flags |= DCACHE_LRU_LIST;
 	this_cpu_inc(nr_dentry_unused);
 	if (d_is_negative(dentry))
-		this_cpu_inc(nr_dentry_negative);
+		neg_dentry_inc(dentry);
 	WARN_ON_ONCE(!list_lru_add_obj(
 			&dentry->d_sb->s_dentry_lru, &dentry->d_lru));
 }
@@ -546,7 +764,7 @@ static void d_lru_del(struct dentry *dentry)
 	dentry->d_flags &= ~DCACHE_LRU_LIST;
 	this_cpu_dec(nr_dentry_unused);
 	if (d_is_negative(dentry))
-		this_cpu_dec(nr_dentry_negative);
+		neg_dentry_dec(dentry);
 	WARN_ON_ONCE(!list_lru_del_obj(
 			&dentry->d_sb->s_dentry_lru, &dentry->d_lru));
 }
@@ -579,7 +797,7 @@ static void d_lru_isolate(struct list_lru_one *lru, struct dentry *dentry)
 	dentry->d_flags &= ~DCACHE_LRU_LIST;
 	this_cpu_dec(nr_dentry_unused);
 	if (d_is_negative(dentry))
-		this_cpu_dec(nr_dentry_negative);
+		neg_dentry_dec(dentry);
 	list_lru_isolate(lru, &dentry->d_lru);
 }
 
@@ -589,7 +807,7 @@ static void d_lru_shrink_move(struct list_lru_one *lru, struct dentry *dentry,
 	D_FLAG_VERIFY(dentry, DCACHE_LRU_LIST);
 	dentry->d_flags |= DCACHE_SHRINK_LIST;
 	if (d_is_negative(dentry))
-		this_cpu_dec(nr_dentry_negative);
+		neg_dentry_dec(dentry);
 	list_lru_isolate_move(lru, &dentry->d_lru, list);
 }
 
@@ -813,7 +1031,7 @@ static bool lock_for_kill(struct dentry *dentry)
  *
  * If @dentry is idle and remains such after we assemble the full
  * locking environment for eviction (see lock_for_kill() for details)
- * we mark it doomed (see lockref_mark_dead()) and proceed to detaching
+ * we mark it doomed (->d_lockref.count < 0) and proceed to detaching
  * it from any filesystem objects.  Otherwise we drop ->d_lock and
  * return %NULL.
  *
@@ -861,7 +1079,7 @@ static struct dentry *dentry_kill(struct dentry *dentry)
 	if (dentry->d_op && dentry->d_op->d_release)
 		dentry->d_op->d_release(dentry);
 
-	cond_resched_tasks_rcu_qs();
+	cond_resched();
 	/* now that it's negative, ->d_parent is stable */
 	if (!IS_ROOT(dentry)) {
 		parent = dentry->d_parent;
@@ -917,6 +1135,16 @@ static inline bool retain_dentry(struct dentry *dentry, bool locked)
 	// Explicitly told not to bother
 	if (unlikely(d_flags & DCACHE_DONTCACHE))
 		return false;
+
+	if (d_is_negative(dentry) &&
+		static_branch_unlikely(&limit_neg_key) &&
+			negative_dentry_limit_overshot()) {
+		/*
+		 * Enforce a hard limit on the negative dentry count.
+		 * Dont retain if the count is above the limit.
+		 */
+		return false;
+	}
 
 	// At this point it looks like we ought to keep it.  We also might
 	// need to do something - put it on LRU if it wasn't there already
@@ -977,7 +1205,7 @@ static inline bool fast_dput(struct dentry *dentry)
 	if (unlikely(ret < 0)) {
 		spin_lock(&dentry->d_lock);
 		rcu_read_unlock();
-		if (WARN_ON_ONCE(lockref_is_dead_or_zero(&dentry->d_lockref))) {
+		if (WARN_ON_ONCE(dentry->d_lockref.count <= 0)) {
 			spin_unlock(&dentry->d_lock);
 			return true;
 		}
@@ -1119,18 +1347,7 @@ void dput_to_list(struct dentry *dentry, struct list_head *list)
 {
 	if (likely(fast_dput(dentry)))
 		return;
-	/*
-	 * The list owner need not pin the superblock, so make a disconnected
-	 * root a secondary one for shrink_dcache_for_umount() to find.
-	 */
-	if (__move_to_shrink_list(dentry, list) &&
-	    unlikely(IS_ROOT(dentry) && hlist_unhashed(&dentry->d_sib))) {
-		struct super_block *sb = dentry->d_sb;
-
-		spin_lock(&sb->s_roots_lock);
-		hlist_add_head(&dentry->d_sib, &sb->s_roots);
-		spin_unlock(&sb->s_roots_lock);
-	}
+	__move_to_shrink_list(dentry, list);
 	spin_unlock(&dentry->d_lock);
 }
 
@@ -1457,6 +1674,198 @@ void shrink_dcache_sb(struct super_block *sb)
 }
 EXPORT_SYMBOL(shrink_dcache_sb);
 
+/*
+ * A modified version that attempts to remove a limited number of negative
+ * dentries as well as some other non-negative dentries at the front whose
+ * refcount is zero.
+ */
+static enum lru_status dentry_negative_lru_isolate(struct list_head *item,
+						   struct list_lru_one *lru, void *arg)
+{
+	struct list_head *freeable = arg;
+	struct dentry	*dentry = container_of(item, struct dentry, d_lru);
+	enum lru_status	status = LRU_SKIP;
+
+	/*
+	 * we are inverting the lru lock/dentry->d_lock here,
+	 * so use a trylock. If we fail to get the lock, just skip
+	 * it
+	 */
+	if (!spin_trylock(&dentry->d_lock))
+		return LRU_SKIP;
+
+	/*
+	 * Referenced dentries are still in use. If they have active
+	 * counts, just remove them from the LRU. Otherwise give them
+	 * another pass through the LRU.
+	 */
+	if (dentry->d_lockref.count) {
+		d_lru_isolate(lru, dentry);
+		status = LRU_REMOVED;
+		goto out;
+	}
+
+	/*
+	 * Dentries with reference bit on are moved back to the tail.
+	 */
+	if (dentry->d_flags & DCACHE_REFERENCED) {
+		dentry->d_flags &= ~DCACHE_REFERENCED;
+		status = LRU_ROTATE;
+		goto out;
+	}
+
+	status = LRU_REMOVED;
+	d_lru_shrink_move(lru, dentry, freeable);
+	if (d_is_negative(dentry))
+		ndblk.n_neg++;
+out:
+	spin_unlock(&dentry->d_lock);
+	return status;
+}
+
+struct prune_negative_ctrl
+{
+	unsigned long   prune_count;	/* # of dentries pruned */
+	int             prune_percent;
+};
+
+/*
+ * Prune dentries from a super block.
+ */
+static void prune_negative_one_sb(struct super_block *sb, void *arg)
+{
+	unsigned long freed = 0, scan_once = 0;
+	long limit, lower_limit, this_sb_dentries, excess, prune_this_sb = 0;
+	int this_sb_pc = 0;
+	long count_neg = get_nr_dentry_negative();
+	long count = get_nr_dentry();
+	struct prune_negative_ctrl *ctrl = arg;
+	LIST_HEAD(dispose);
+
+	trace_prune_negative_one_sb_begin(sb, sb->s_id);
+
+	/*
+	 * Start pruning when we hit 70% of the limit
+	 */
+	limit = (neg_dentry_global_limit * 30) / 100;
+
+	/*
+	 * If the -ve dentry count is within the limit
+	 * and a prune is not on then do nothing.
+	 */
+	if (limit >= count_neg && !(ndblk.nprune_on))
+		return;
+
+	/*
+	 * Set the prune on when the -ve
+	 * dentry count crosses the limit.
+	 */
+	if (!(ndblk.nprune_on) && (count_neg > limit))
+		ndblk.nprune_on = 1;
+
+	/*
+	 * Add extra 50% so that once pruning starts,
+	 * it continues until we reach 50% of the limit.
+	 */
+	lower_limit = neg_dentry_global_limit / 2;
+
+	/*
+	 * Set the prune off when the -ve dentry
+	 * count reaches the lower limit.
+	 */
+	if (count_neg <= lower_limit) {
+		ndblk.nprune_on = 0;
+		return;
+	}
+
+	/*
+	 * Dentry to prune from this super block's LRU should be
+	 * proportional to the ratio of dentries present in this
+	 * SB's LRU to the total dentries present in the system.
+	 * Also, try to skip inmemory filesystems.
+	 */
+	this_sb_dentries = list_lru_elems(&sb->s_dentry_lru);
+	if (!this_sb_dentries)
+		return;
+	this_sb_pc = (this_sb_dentries * 100) / count;
+	if (!this_sb_pc)
+		this_sb_pc = 1;
+
+	excess = count_neg - lower_limit;
+	prune_this_sb = (excess * this_sb_pc) / 100;
+	if (!prune_this_sb)
+		return; /* Negligible, skip this sb */
+
+	if (ctrl->prune_percent) {
+		if (prune_this_sb > NEG_WALKING_CAP)
+			scan_once = NEG_WALKING_CAP;
+		else
+			scan_once = prune_this_sb;
+
+		freed = list_lru_walk_all_nodes(&sb->s_dentry_lru,
+					dentry_negative_lru_isolate,
+					&dispose, this_sb_dentries, scan_once);
+		if (freed) {
+			shrink_dentry_list(&dispose);
+		}
+		ctrl->prune_count += freed;
+	}
+	trace_prune_negative_one_sb_end(sb, scan_once, freed);
+}
+
+/*
+ * A workqueue function to prune negative dentry.
+ *
+ * The pruning is done gradually over time so as to have as little
+ * performance impact as possible.
+ */
+static void prune_negative_dentry(struct work_struct *work)
+{
+	int cpu, limit_pc;
+	long last_n_neg, count;
+	struct prune_negative_ctrl ctrl;
+
+	cpu = smp_processor_id();
+	limit_pc = READ_ONCE(neg_dentry_pc);
+	count = get_nr_dentry_negative();
+
+	if (!limit_pc)
+		goto stop_pruning;
+
+	/* Check if negative dentry number is within the limit */
+	if ((count <= neg_dentry_global_limit) && !(ndblk.nprune_on))
+		goto requeue_work;
+
+	last_n_neg = ndblk.n_neg;
+	ctrl.prune_count = 0;
+	ctrl.prune_percent = limit_pc;
+
+	/*
+	 * iterate_supers() will take a read lock on the supers blocking
+	 * concurrent umount.
+	 */
+	iterate_supers(prune_negative_one_sb, &ctrl);
+
+	trace_prune_negative_dentry(ctrl.prune_count);
+
+requeue_work:
+	/*
+	 * Schedule the pruning in round robin fashion on cpus.
+	 */
+	cpu = cpumask_next(cpu, cpu_online_mask);
+	if (cpu >= nr_cpu_ids)
+		cpu = cpumask_first(cpu_online_mask);
+
+	schedule_delayed_work_on(cpu, &prune_neg_dentry_work,
+					NEGATIVE_DENTRY_CHECK_PERIOD);
+	return;
+stop_pruning:
+	ndblk.n_neg = 0;
+	ndblk.nprune_on = 0;
+	return;
+
+}
+
 /**
  * enum d_walk_ret - action to take during tree walk
  * @D_WALK_CONTINUE:	continue walk
@@ -1618,25 +2027,21 @@ int path_has_submounts(const struct path *parent)
 }
 EXPORT_SYMBOL(path_has_submounts);
 
-/* odd while d_set_mounted() runs, d_invalidate() waits on it */
-static __cacheline_aligned_in_smp DEFINE_SEQLOCK(d_set_mounted_lock);
-
 /*
  * Called by mount code to set a mountpoint and check if the mountpoint is
  * reachable (e.g. NFS can unhash a directory dentry and then the complete
  * subtree can become unreachable).
  *
  * Only one of d_invalidate() and d_set_mounted() must succeed.  For
- * this reason take rename_lock, d_set_mounted_lock and d_lock on dentry
- * and ancestors.  Likewise for dont_mount() which marks a dentry that
- * is being removed under d_lock.
+ * this reason take rename_lock and d_lock on dentry and ancestors.
+ * Likewise for dont_mount() which marks a dentry that is being removed
+ * under d_lock.
  */
 int d_set_mounted(struct dentry *dentry)
 {
 	struct dentry *p;
 	int ret = -ENOENT;
 	read_seqlock_excl(&rename_lock);
-	write_seqlock(&d_set_mounted_lock);
 	for (p = dentry->d_parent; !IS_ROOT(p); p = p->d_parent) {
 		/* Need exclusion wrt. d_invalidate() */
 		spin_lock(&p->d_lock);
@@ -1654,9 +2059,8 @@ int d_set_mounted(struct dentry *dentry)
 			ret = 0;
 		}
 	}
-	spin_unlock(&dentry->d_lock);
+ 	spin_unlock(&dentry->d_lock);
 out:
-	write_sequnlock(&d_set_mounted_lock);
 	read_sequnlock_excl(&rename_lock);
 	return ret;
 }
@@ -1693,7 +2097,7 @@ static enum d_walk_ret select_collect(void *_data, struct dentry *dentry)
 	if (data->start == dentry)
 		goto out;
 
-	if (lockref_is_dead_or_zero(&dentry->d_lockref)) {
+	if (dentry->d_lockref.count <= 0) {
 		__move_to_shrink_list(dentry, &data->dispose);
 		data->found++;
 	}
@@ -1725,7 +2129,7 @@ static enum d_walk_ret select_collect2(void *_data, struct dentry *dentry)
 	if (data->start == dentry)
 		goto out;
 
-	if (lockref_is_dead_or_zero(&dentry->d_lockref)) {
+	if (dentry->d_lockref.count <= 0) {
 		if (!__move_to_shrink_list(dentry, &data->dispose)) {
 			/*
 			 * We need an enter RCU read-side critical area that
@@ -1796,7 +2200,7 @@ static void shrink_dcache_tree(struct dentry *parent, bool for_umount)
 			spin_lock(&v->d_lock);
 			rcu_read_unlock();
 
-			if (unlikely(lockref_is_dead(&v->d_lockref))) {
+			if (unlikely(v->d_lockref.count < 0)) {
 				// It's doomed; if it isn't dead yet, notify us
 				// once it becomes invisible to d_walk().
 				need_wait = d_add_waiter(v, &wait);
@@ -1845,13 +2249,8 @@ static void do_one_tree(struct dentry *dentry)
 	d_walk(dentry, dentry, umount_check);
 	spin_lock(&dentry->d_lock);
 	__d_drop(dentry);
-	/*
-	 * A busy root survives the dput() below so don't leave it on ->s_roots.
-	 * An idle one stays until dentry_unlist() so that umount can wait for
-	 * a racing eviction, see lock_for_kill().
-	 */
-	if (unlikely(dentry->d_lockref.count > 1 &&
-		     !hlist_unhashed(&dentry->d_sib)))
+	/* A busy root survives the dput() below so don't leave it on ->s_roots. */
+	if (unlikely(!hlist_unhashed(&dentry->d_sib)))
 		unlink_secondary_root(dentry);
 	spin_unlock(&dentry->d_lock);
 	dput(dentry);
@@ -1882,7 +2281,7 @@ void shrink_dcache_for_umount(struct super_block *sb)
 		spin_unlock(&sb->s_roots_lock);
 		spin_lock(&dentry->d_lock);
 		rcu_read_unlock();
-		if (unlikely(lockref_is_dead(&dentry->d_lockref))) {
+		if (unlikely(dentry->d_lockref.count < 0)) {
 			struct completion_list wait;
 			bool need_wait = d_add_waiter(dentry, &wait);
 
@@ -1914,7 +2313,6 @@ static enum d_walk_ret find_submount(void *_data, struct dentry *dentry)
 void d_invalidate(struct dentry *dentry)
 {
 	bool had_submounts = false;
-	unsigned seq;
 	spin_lock(&dentry->d_lock);
 	if (d_unhashed(dentry)) {
 		spin_unlock(&dentry->d_lock);
@@ -1926,11 +2324,6 @@ void d_invalidate(struct dentry *dentry)
 	/* Negative dentries can be dropped without further checks */
 	if (!dentry->d_inode)
 		return;
-
-	/* wait for a d_set_mounted() that saw us hashed to set its flag */
-	do {
-		seq = read_seqbegin(&d_set_mounted_lock);
-	} while (read_seqretry(&d_set_mounted_lock, seq));
 
 	shrink_dcache_parent(dentry);
 	for (;;) {
@@ -1976,10 +2369,6 @@ static struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 	 * be overwriting an internal NUL character
 	 */
 	dentry->d_shortname.string[DNAME_INLINE_LEN-1] = 0;
-
-	/* Racy __d_lookup_rcu() walk may read past the NUL; harmless */
-	kmsan_unpoison_memory(dentry->d_shortname.string, DNAME_INLINE_LEN);
-
 	if (unlikely(!name)) {
 		name = &slash_name;
 		dname = dentry->d_shortname.string;
@@ -2020,9 +2409,6 @@ static struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 	INIT_HLIST_HEAD(&dentry->d_children);
 	dentry->waiters = NULL;
 	INIT_HLIST_NODE(&dentry->d_sib);
-
-	lockdep_init_map(&dentry->dep_map, "DCACHE_PAR_LOOKUP",
-			 &sb->s_type->d_lookup_key, 0);
 
 	if (dentry->d_op && dentry->d_op->d_init) {
 		err = dentry->d_op->d_init(dentry);
@@ -2065,59 +2451,6 @@ struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)
 	return dentry;
 }
 EXPORT_SYMBOL(d_alloc);
-
-/**
- * d_duplicate - duplicate a dentry for combined atomic operation
- * @dentry: the dentry to duplicate
- *
- * Some rename operations need to be combined with another operation
- * inside the filesystem:
- *
- * 1. A cluster filesystem when renaming to an in-use file might need to
- *    first "silly-rename" that target out of the way before the main rename
- * 2. A filesystem that supports whiteout might want to create a whiteout
- *    in place of the file being moved.
- *
- * For this they need two dentries which temporarily have the same name,
- * before one is renamed.  d_duplicate() provides for this.  Given a
- * positive hashed dentry, it creates a second in-lookup dentry.
- * Because the original dentry exists, no other thread will try to
- * create an in-lookup dentry, so there can be no race in this create.
- *
- * The caller should d_move() the original to a new name, often via a
- * rename request, and should call d_lookup_done() on the newly created
- * dentry.  If the new is instantiated then the old MUST either be moved
- * or dropped.
- *
- * Parent must be locked.
- *
- * Returns: an in-lookup dentry, or -ENOMEM.
- */
-struct dentry *d_duplicate(struct dentry *dentry)
-{
-	unsigned int hash = dentry->d_name.hash;
-	struct dentry *parent = dentry->d_parent;
-	struct hlist_bl_head *b = in_lookup_hash(parent, hash);
-	struct dentry *new = __d_alloc(parent->d_sb, &dentry->d_name);
-
-	if (unlikely(!new))
-		return ERR_PTR(-ENOMEM);
-
-	new->d_flags |= DCACHE_PAR_LOOKUP;
-	lock_map_acquire_try(&new->dep_map);
-	spin_lock(&parent->d_lock);
-	new->d_parent = dget_dlock(parent);
-	hlist_add_head(&new->d_sib, &parent->d_children);
-	if (parent->d_flags & DCACHE_DISCONNECTED)
-		new->d_flags |= DCACHE_DISCONNECTED;
-	spin_unlock(&parent->d_lock);
-
-	hlist_bl_lock(b);
-	hlist_bl_add_head(&new->d_in_lookup_hash, b);
-	hlist_bl_unlock(b);
-	return new;
-}
-EXPORT_SYMBOL(d_duplicate);
 
 struct dentry *d_alloc_anon(struct super_block *sb)
 {
@@ -2266,7 +2599,7 @@ static void __d_instantiate(struct dentry *dentry, struct inode *inode)
 	 */
 	if ((dentry->d_flags &
 	     (DCACHE_LRU_LIST|DCACHE_SHRINK_LIST)) == DCACHE_LRU_LIST)
-		this_cpu_dec(nr_dentry_negative);
+		neg_dentry_dec(dentry);
 	hlist_add_head(&dentry->d_alias, &inode->i_dentry);
 	raw_write_seqcount_begin(&dentry->d_seq);
 	__d_set_inode_and_type(dentry, inode, add_flags);
@@ -2288,6 +2621,7 @@ static void __d_instantiate(struct dentry *dentry, struct inode *inode)
  * (or otherwise set) by the caller to indicate that it is now
  * in use by the dcache.
  */
+ 
 void d_instantiate(struct dentry *entry, struct inode * inode)
 {
 	BUG_ON(d_really_is_positive(entry));
@@ -2869,14 +3203,6 @@ static inline void end_dir_add(struct inode *dir, unsigned int n)
 static void d_wait_lookup(struct dentry *dentry)
 {
 	if (likely(d_in_lookup(dentry))) {
-		/*
-		 * Tell lockdep we may wait for the lookup lock, after
-		 * dropping ->d_lock.
-		 */
-		spin_release(&dentry->d_lock.dep_map, _THIS_IP_);
-		might_lock(dentry);
-		spin_acquire(&dentry->d_lock.dep_map, 0, 1, _THIS_IP_);
-
 		dentry->d_flags |= DCACHE_LOOKUP_WAITERS;
 		wait_var_event_spinlock(&dentry->d_flags,
 					!d_in_lookup(dentry),
@@ -2884,16 +3210,8 @@ static void d_wait_lookup(struct dentry *dentry)
 	}
 }
 
-/* What to do when __d_alloc_parallel finds a d_in_lookup dentry */
-enum alloc_para {
-	ALLOC_PARA_WAIT,
-	ALLOC_PARA_FAIL,
-};
-
-static inline
-struct dentry *__d_alloc_parallel(struct dentry *parent,
-				  const struct qstr *name,
-				  enum alloc_para how)
+struct dentry *d_alloc_parallel(struct dentry *parent,
+				const struct qstr *name)
 {
 	unsigned int hash = name->hash;
 	struct hlist_bl_head *b = in_lookup_hash(parent, hash);
@@ -2962,15 +3280,9 @@ retry:
 		spin_lock(&dentry->d_lock);
 		rcu_read_unlock();
 		/* now we can try to grab a reference */
-		if (unlikely(lockref_is_dead(&dentry->d_lockref))) {
+		if (unlikely(dentry->d_lockref.count < 0)) {
 			spin_unlock(&dentry->d_lock);
 			goto retry;
-		}
-		if (unlikely(how == ALLOC_PARA_FAIL)) {
-			/* mustn't wait for concurrent lookup to complete */
-			spin_unlock(&dentry->d_lock);
-			dput(new);
-			return ERR_PTR(-EWOULDBLOCK);
 		}
 		/*
 		 * somebody is likely to be still doing lookup for it;
@@ -2999,76 +3311,13 @@ retry:
 	}
 	hlist_bl_add_head(&new->d_in_lookup_hash, b);
 	hlist_bl_unlock(b);
-	lock_map_acquire_try(&new->dep_map);
 	return new;
 mismatch:
 	spin_unlock(&dentry->d_lock);
 	dput(dentry);
 	goto retry;
 }
-
-/**
- * d_alloc_parallel() - allocate a new dentry and ensure uniqueness
- * @parent: dentry of the parent
- * @name:   name of the dentry within that parent.
- *
- * A new dentry is allocated and, providing it is unique, added to the
- * relevant index.
- * If an existing dentry is found with the same parent/name that is
- * not d_in_lookup(), then that is returned instead.
- * If the existing dentry is d_in_lookup(), d_alloc_parallel() waits for
- * that lookup to complete before returning the dentry and then ensures the
- * match is still valid.
- * Thus if the returned dentry is d_in_lookup() then the caller has
- * exclusive access until it completes the lookup.
- * If the returned dentry is not d_in_lookup() then a lookup has
- * already completed.
- *
- * The @name must already have ->hash set, as can be achieved
- * by e.g. try_lookup_noperm().
- *
- * Returns: the dentry, whether found or allocated, or an error %-ENOMEM.
- */
-struct dentry *d_alloc_parallel(struct dentry *parent,
-				const struct qstr *name)
-{
-	return __d_alloc_parallel(parent, name, ALLOC_PARA_WAIT);
-}
 EXPORT_SYMBOL(d_alloc_parallel);
-
-/**
- * d_alloc_trylock() - find or allocate a new dentry
- * @parent: dentry of the parent
- * @name:   name of the dentry within that parent.
- *
- * A new dentry is allocated and, providing it is unique, added to the
- * relevant index.
- * If an existing dentry is found with the same parent/name that is
- * not d_in_lookup() then that is returned instead.
- * If the existing dentry is d_in_lookup(), d_alloc_trylock()
- * returns with error %-EWOULDBLOCK.
- * Thus if the returned dentry is d_in_lookup() then the caller has
- * exclusive access until it completes the lookup.
- * If the returned dentry is not d_in_lookup() then a lookup has
- * already completed.
- *
- * The @name need not already have ->hash set.
- *
- * Returns: the dentry, whether found or allocated, or an error
- *    %-ENOMEM, %-EWOULDBLOCK, %-EACCES (for a bad name) or
- *    anything returned by ->d_hash().
- */
-struct dentry *d_alloc_trylock(struct dentry *parent,
-			       struct qstr *name)
-{
-	struct dentry *de;
-
-	de = try_lookup_noperm(name, parent);
-	if (!de)
-		de = __d_alloc_parallel(parent, name, ALLOC_PARA_FAIL);
-	return de;
-}
-EXPORT_SYMBOL(d_alloc_trylock);
 
 /*
  * Move dentry from in-lookup state to busy-negative one.
@@ -3098,7 +3347,6 @@ static void __d_lookup_unhash(struct dentry *dentry)
 	b = in_lookup_hash(dentry->d_parent, dentry->d_name.hash);
 	hlist_bl_lock(b);
 	dentry->d_flags &= ~DCACHE_PAR_LOOKUP;
-	lock_map_release(&dentry->dep_map);
 	__hlist_bl_del(&dentry->d_in_lookup_hash);
 	hlist_bl_unlock(b);
 	dentry->waiters = NULL;
@@ -3136,10 +3384,15 @@ static inline void __d_add(struct dentry *dentry, struct inode *inode,
 	}
 	if (unlikely(ops))
 		d_set_d_op(dentry, ops);
-	if (inode)
-		__d_instantiate(dentry, inode);
-	if (d_unhashed(dentry))
-		__d_rehash(dentry);
+	if (inode) {
+		unsigned add_flags = d_flags_for_inode(inode);
+		hlist_add_head(&dentry->d_alias, &inode->i_dentry);
+		raw_write_seqcount_begin(&dentry->d_seq);
+		__d_set_inode_and_type(dentry, inode, add_flags);
+		raw_write_seqcount_end(&dentry->d_seq);
+		fsnotify_update_flags(dentry);
+	}
+	__d_rehash(dentry);
 	if (dir) {
 		end_dir_add(dir, n);
 		__d_wake_in_lookup_waiters(dentry);
@@ -3441,7 +3694,7 @@ struct dentry *d_splice_alias_ops(struct inode *inode, struct dentry *dentry,
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
-	BUG_ON(d_really_is_positive(dentry));
+	BUG_ON(!d_unhashed(dentry));
 
 	if (!inode)
 		goto out;
@@ -3497,8 +3750,6 @@ out:
  * @inode:  the inode which may have a disconnected dentry
  * @dentry: a negative dentry which we want to point to the inode.
  *
- * @dentry must be negative and may be in-lookup or unhashed or hashed.
- *
  * If inode is a directory and has an IS_ROOT alias, then d_move that in
  * place of the given dentry and return it, else simply d_add the inode
  * to the dentry and return NULL.
@@ -3506,14 +3757,16 @@ out:
  * If a non-IS_ROOT directory is found, the filesystem is corrupt, and
  * we should error out: directories can't have multiple aliases.
  *
- * This should be used to return the result of ->lookup() and to
- * instantiate the result of ->mkdir(), is often useful for
- * ->atomic_open, and may be used to instantiate other objects.
+ * This is needed in the lookup routine of any filesystem that is exportable
+ * (via knfsd) so that we can build dcache paths to directories effectively.
  *
  * If a dentry was found and moved, then it is returned.  Otherwise NULL
- * is returned.  This matches the expected return value of ->lookup and
- * ->mkdir.
+ * is returned.  This matches the expected return value of ->lookup.
  *
+ * Cluster filesystems may call this function with a negative, hashed dentry.
+ * In that case, we know that the inode will be a regular file, and also this
+ * will only occur during atomic_open. So we need to check for the dentry
+ * being already hashed only in the final case.
  */
 struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 {
@@ -3719,7 +3972,6 @@ void __init vfs_caches_init(void)
 	inode_init();
 	files_init();
 	files_maxfiles_init();
-	dquot_cache_init();
 	mnt_init();
 	bdev_cache_init();
 	chrdev_init();

@@ -461,8 +461,6 @@ static int avs_dai_hda_be_prepare(struct snd_pcm_substream *substream, struct sn
 	link_stream = data->link_stream;
 	p = &be->dpcm[substream->stream].hw_params;
 
-	if (substream->runtime->state != SNDRV_PCM_STATE_PREPARED)
-		link_stream->link_prepared = false;
 	if (link_stream->link_prepared)
 		return 0;
 
@@ -961,7 +959,7 @@ static const struct file_operations topology_name_fops = {
 static int avs_component_load_libraries(struct avs_soc_component *acomp)
 {
 	struct avs_tplg *tplg = acomp->tplg;
-	struct avs_dev *adev = to_avs_dev(acomp->base->dev);
+	struct avs_dev *adev = to_avs_dev(acomp->base.dev);
 	int ret;
 
 	if (!tplg->num_libs)
@@ -1067,7 +1065,7 @@ finalize:
 	return 0;
 
 err_load_libs:
-	snd_soc_tplg_component_remove(component);
+	avs_remove_topology(component);
 	return ret;
 }
 
@@ -1085,7 +1083,7 @@ static void avs_component_remove(struct snd_soc_component *component)
 	mutex_unlock(&adev->comp_list_mutex);
 
 	if (mach->tplg_filename) {
-		ret = snd_soc_tplg_component_remove(component);
+		ret = avs_remove_topology(component);
 		if (ret < 0)
 			dev_err(component->dev, "unload topology failed: %d\n", ret);
 	}
@@ -1395,27 +1393,25 @@ int avs_register_component(struct device *dev, const char *name,
 			   struct snd_soc_dai_driver *cpu_dais, int num_cpu_dais)
 {
 	struct avs_soc_component *acomp;
-	const char *comp_name;
+	int ret;
 
-	acomp = devm_kzalloc_obj(dev, *acomp);
+	acomp = devm_kzalloc(dev, sizeof(*acomp), GFP_KERNEL);
 	if (!acomp)
 		return -ENOMEM;
 
-	comp_name = devm_kstrdup(dev, name, GFP_KERNEL);
-	if (!comp_name)
+	acomp->base.name = devm_kstrdup(dev, name, GFP_KERNEL);
+	if (!acomp->base.name)
 		return -ENOMEM;
 
 	INIT_LIST_HEAD(&acomp->node);
 
 	drv->use_dai_pcm_id = !obsolete_card_names;
 
-	acomp->base = snd_soc_component_new(dev, comp_name, drv);
-	if (IS_ERR(acomp->base))
-		return PTR_ERR(acomp->base);
+	ret = snd_soc_component_initialize(&acomp->base, drv, dev);
+	if (ret < 0)
+		return ret;
 
-	snd_soc_component_set_priv(acomp->base, acomp);
-
-	return snd_soc_component_register(acomp->base, cpu_dais, num_cpu_dais);
+	return snd_soc_add_component(&acomp->base, cpu_dais, num_cpu_dais);
 }
 
 static struct snd_soc_dai_driver dmic_cpu_dais[] = {
@@ -1507,7 +1503,7 @@ int avs_register_i2s_component(struct avs_dev *adev, const char *name, unsigned 
 		for_each_set_bit(i, &port_mask, ssp_count)
 			cpu_count += hweight_long(tdms[i]);
 
-	cpus = devm_kzalloc_objs(adev->dev, *cpus, cpu_count);
+	cpus = devm_kcalloc(adev->dev, cpu_count, sizeof(*cpus), GFP_KERNEL);
 	if (!cpus)
 		return -ENOMEM;
 
@@ -1615,7 +1611,7 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 	struct hda_codec *codec;
 	struct hda_pcm *pcm;
 	const char *cname;
-	int pcm_count, ret, i;
+	int pcm_count = 0, ret, i;
 
 	mach = dev_get_platdata(component->card->dev);
 	if (!mach)
@@ -1623,11 +1619,13 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 
 	pdata = mach->pdata;
 	codec = pdata->codec;
-	pcm_count = list_count_nodes(&codec->pcm_list_head);
-	if (!pcm_count)
+	if (list_empty(&codec->pcm_list_head))
 		return -EINVAL;
+	list_for_each_entry(pcm, &codec->pcm_list_head, list)
+		pcm_count++;
 
-	dais = devm_kzalloc_objs(component->dev, *dais, pcm_count);
+	dais = devm_kcalloc(component->dev, pcm_count, sizeof(*dais),
+			    GFP_KERNEL);
 	if (!dais)
 		return -ENOMEM;
 

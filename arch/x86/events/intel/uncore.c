@@ -861,7 +861,7 @@ static ssize_t uncore_get_attr_cpumask(struct device *dev,
 {
 	struct intel_uncore_pmu *pmu = container_of(dev_get_drvdata(dev), struct intel_uncore_pmu, pmu);
 
-	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(&pmu->cpu_mask));
+	return cpumap_print_to_pagebuf(true, buf, &pmu->cpu_mask);
 }
 
 static DEVICE_ATTR(cpumask, S_IRUGO, uncore_get_attr_cpumask, NULL);
@@ -1570,13 +1570,8 @@ static void uncore_box_unref(struct intel_uncore_type **types, int die)
 		pmu = type->pmus;
 		for (i = 0; i < type->num_boxes; i++, pmu++) {
 			box = pmu->boxes[die];
-			if (box && box->cpu >= 0 &&
-			    atomic_dec_return(&box->refcnt) == 0) {
-				if (uncore_box_active(box) &&
-				    atomic_dec_return(&pmu->activeboxes) == 0)
-					uncore_pmu_unregister(pmu);
+			if (box && box->cpu >= 0 && atomic_dec_return(&box->refcnt) == 0)
 				uncore_box_exit(box);
-			}
 		}
 	}
 }
@@ -1663,7 +1658,7 @@ static int uncore_box_ref(struct intel_uncore_type **types,
 		for (i = 0; i < type->num_boxes; i++, pmu++) {
 			box = pmu->boxes[die];
 			if (box && box->cpu >= 0 && atomic_inc_return(&box->refcnt) == 1)
-				uncore_box_setup(pmu, box);
+				uncore_box_init(box);
 		}
 	}
 	return 0;
@@ -1694,12 +1689,67 @@ static int uncore_event_cpu_online(unsigned int cpu)
 	return 0;
 }
 
-static int __init uncore_pmu_types_init(struct intel_uncore_type **types)
+static int __init type_pmu_register(struct intel_uncore_type *type)
 {
-	int ret = uncore_types_init(types);
-	if (ret)
-		uncore_types_exit(types);
+	int i, ret;
 
+	for (i = 0; i < type->num_boxes; i++) {
+		ret = uncore_pmu_register(&type->pmus[i]);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int __init uncore_msr_pmus_register(void)
+{
+	struct intel_uncore_type **types = uncore_msr_uncores;
+	int ret;
+
+	for (; *types; types++) {
+		ret = type_pmu_register(*types);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int __init uncore_cpu_init(void)
+{
+	int ret;
+
+	ret = uncore_types_init(uncore_msr_uncores);
+	if (ret)
+		goto err;
+
+	ret = uncore_msr_pmus_register();
+	if (ret)
+		goto err;
+	return 0;
+err:
+	uncore_types_exit(uncore_msr_uncores);
+	uncore_msr_uncores = empty_uncore;
+	return ret;
+}
+
+static int __init uncore_mmio_init(void)
+{
+	struct intel_uncore_type **types = uncore_mmio_uncores;
+	int ret;
+
+	ret = uncore_types_init(types);
+	if (ret)
+		goto err;
+
+	for (; *types; types++) {
+		ret = type_pmu_register(*types);
+		if (ret)
+			goto err;
+	}
+	return 0;
+err:
+	uncore_types_exit(uncore_mmio_uncores);
+	uncore_mmio_uncores = empty_uncore;
 	return ret;
 }
 
@@ -2000,16 +2050,12 @@ static int __init intel_uncore_init(void)
 
 	if (uncore_init->cpu_init) {
 		uncore_init->cpu_init();
-		cret = uncore_pmu_types_init(uncore_msr_uncores);
-		if (cret)
-			uncore_msr_uncores = empty_uncore;
+		cret = uncore_cpu_init();
 	}
 
 	if (uncore_init->mmio_init) {
 		uncore_init->mmio_init();
-		mret = uncore_pmu_types_init(uncore_mmio_uncores);
-		if (mret)
-			uncore_mmio_uncores = empty_uncore;
+		mret = uncore_mmio_init();
 	}
 
 	if (cret && pret && mret) {

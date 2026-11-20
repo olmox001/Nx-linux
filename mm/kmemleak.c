@@ -151,8 +151,6 @@ struct kmemleak_object {
 	int min_count;
 	/* the total number of pointers found pointing to this object */
 	int count;
-	/* consecutive scans the object has been seen unreferenced */
-	unsigned int unref_scans;
 	/* checksum for detecting modified objects */
 	u32 checksum;
 	depot_stack_handle_t trace_handle;
@@ -177,8 +175,6 @@ struct kmemleak_object {
 #define OBJECT_PHYS		(1 << 4)
 /* flag set for per-CPU pointers */
 #define OBJECT_PERCPU		(1 << 5)
-/* flag set on an object left unreferenced by the full scan, pending confirmation */
-#define OBJECT_SUSPECT		(1 << 6)
 
 /* set when __remove_object() called */
 #define DELSTATE_REMOVED	(1 << 0)
@@ -236,15 +232,9 @@ static unsigned long max_percpu_addr;
 static struct task_struct *scan_thread;
 /* used to avoid reporting of recently allocated objects */
 static unsigned long jiffies_min_age;
-/* consecutive scans an object must stay unreferenced before reporting */
-static unsigned int min_unref_scans =
-	IS_ENABLED(CONFIG_DEBUG_KMEMLEAK_VERBOSE) ? 3 : 1;
-module_param(min_unref_scans, uint, 0644);
 static unsigned long jiffies_last_scan;
 /* delay between automatic memory scannings */
 static unsigned long jiffies_scan_wait;
-/* number of objects flagged OBJECT_SUSPECT during the current scan */
-static int nr_suspects;
 /* enables or disables the task stacks scanning */
 static int kmemleak_stack_scan = 1;
 /* protects the memory scanning, parameters and debug/kmemleak file access */
@@ -698,7 +688,6 @@ static struct kmemleak_object *__alloc_object(gfp_t gfp)
 	object->excess_ref = 0;
 	object->count = 0;			/* white color initially */
 	object->checksum = ~0;
-	object->unref_scans = 0;
 	object->del_state = 0;
 
 	/* task information */
@@ -1451,11 +1440,6 @@ static void update_refs(struct kmemleak_object *object)
 	 */
 	object->count++;
 	if (color_gray(object)) {
-		/* referenced after all, no longer a suspect */
-		if (object->flags & OBJECT_SUSPECT) {
-			object->flags &= ~OBJECT_SUSPECT;
-			nr_suspects--;
-		}
 		/* put_object() called when removing from gray_list */
 		WARN_ON(!get_object(object));
 		list_add_tail(&object->gray_list, &gray_list);
@@ -1575,22 +1559,18 @@ static int scan_block(void *_start, void *_end,
 
 /*
  * Scan a large memory block in MAX_SCAN_SIZE chunks to reduce the latency.
- * Return non-zero if the scan was interrupted.
  */
 #ifdef CONFIG_SMP
-static int scan_large_block(void *start, void *end)
+static void scan_large_block(void *start, void *end)
 {
 	void *next;
 
 	while (start < end) {
 		next = min(start + MAX_SCAN_SIZE, end);
-		if (scan_block(start, next, NULL))
-			return 1;
+		scan_block(start, next, NULL);
 		start = next;
 		cond_resched_tasks_rcu_qs();
 	}
-
-	return 0;
 }
 #endif
 
@@ -1856,66 +1836,19 @@ static void dedup_flush(struct xarray *dedup)
 }
 
 /*
- * Scan the struct pages of a zone, skipping memory holes, pages that belong to
- * another zone and pages that are not in use. Returns 1 if the scan should be
- * stopped.
- */
-static int scan_zone_pages(struct zone *zone)
-{
-	const unsigned int max_batch = MAX_SCAN_SIZE / sizeof(struct page);
-	unsigned long start_pfn = zone->zone_start_pfn;
-	unsigned long end_pfn = zone_end_pfn(zone);
-	struct page *first = NULL, *last = NULL;
-	unsigned int batch = 0;
-	unsigned long pfn;
-
-	for (pfn = start_pfn; pfn < end_pfn; pfn++) {
-		struct page *page = pfn_to_online_page(pfn);
-
-		if (!(pfn & 63))
-			cond_resched_tasks_rcu_qs();
-
-		/* only scan in-use pages belonging to this zone */
-		if (page && (page_zone(page) != zone ||
-			     page_count(page) == 0))
-			page = NULL;
-
-		if (page && first && page == last + 1 &&
-		    batch < max_batch) {
-			last = page;
-			batch++;
-			continue;
-		}
-
-		if (first && scan_block(first, last + 1, NULL))
-			return 1;
-
-		first = page;
-		last = page;
-		batch = page ? 1 : 0;
-	}
-
-	if (first && scan_block(first, last + 1, NULL))
-		return 1;
-
-	return 0;
-}
-
-/*
  * Scan data sections and all the referenced memory blocks allocated via the
  * kernel's standard allocators. This function must be called with the
  * scan_mutex held.
  */
-static int __kmemleak_scan(bool full)
+static void kmemleak_scan(void)
 {
 	struct kmemleak_object *object;
 	struct zone *zone;
 	int __maybe_unused i;
-	int stop = 0;
+	struct xarray dedup;
+	int new_leaks = 0;
 
 	jiffies_last_scan = jiffies;
-	if (full)
-		nr_suspects = 0;
 
 	/* prepare the kmemleak_object's */
 	rcu_read_lock();
@@ -1943,13 +1876,8 @@ static int __kmemleak_scan(bool full)
 				__paint_it(object, KMEMLEAK_BLACK);
 		}
 
-		/* referenced last scan: restart the unreferenced run */
-		if (!color_white(object))
-			object->unref_scans = 0;
 		/* reset the reference count (whiten the object) */
 		object->count = 0;
-		if (full)
-			object->flags &= ~OBJECT_SUSPECT;
 		if (color_gray(object) && get_object(object))
 			list_add_tail(&object->gray_list, &gray_list);
 
@@ -1962,11 +1890,9 @@ static int __kmemleak_scan(bool full)
 
 #ifdef CONFIG_SMP
 	/* per-cpu sections scanning */
-	for_each_possible_cpu(i) {
-		if (scan_large_block(__per_cpu_start + per_cpu_offset(i),
-				     __per_cpu_end + per_cpu_offset(i)))
-			goto scan_gray;
-	}
+	for_each_possible_cpu(i)
+		scan_large_block(__per_cpu_start + per_cpu_offset(i),
+				 __per_cpu_end + per_cpu_offset(i));
 #endif
 
 	/*
@@ -1974,13 +1900,29 @@ static int __kmemleak_scan(bool full)
 	 */
 	get_online_mems();
 	for_each_populated_zone(zone) {
-		stop = scan_zone_pages(zone);
-		if (stop)
-			break;
+		unsigned long start_pfn = zone->zone_start_pfn;
+		unsigned long end_pfn = zone_end_pfn(zone);
+		unsigned long pfn;
+
+		for (pfn = start_pfn; pfn < end_pfn; pfn++) {
+			struct page *page = pfn_to_online_page(pfn);
+
+			if (!(pfn & 63))
+				cond_resched_tasks_rcu_qs();
+
+			if (!page)
+				continue;
+
+			/* only scan pages belonging to this zone */
+			if (page_zone(page) != zone)
+				continue;
+			/* only scan if page is in use */
+			if (page_count(page) == 0)
+				continue;
+			scan_block(page, page + 1, NULL);
+		}
 	}
 	put_online_mems();
-	if (stop)
-		goto scan_gray;
 
 	/*
 	 * Scanning the task stacks (may introduce false negatives).
@@ -1992,12 +1934,7 @@ static int __kmemleak_scan(bool full)
 	 * Scan the objects already referenced from the sections scanned
 	 * above.
 	 */
-scan_gray:
 	scan_gray_list();
-
-	/* a confirmation scan does not look for modified objects */
-	if (!full)
-		return nr_suspects;
 
 	/*
 	 * Check for new or unreferenced objects modified since the previous
@@ -2021,11 +1958,6 @@ scan_gray:
 			/* color it gray temporarily */
 			object->count = object->min_count;
 			list_add_tail(&object->gray_list, &gray_list);
-		} else if (unreferenced_object(object) &&
-			   !(object->flags & OBJECT_REPORTED)) {
-			/* flag the objects left unreferenced by this scan */
-			object->flags |= OBJECT_SUSPECT;
-			nr_suspects++;
 		}
 		raw_spin_unlock_irq(&object->lock);
 	}
@@ -2036,59 +1968,9 @@ scan_gray:
 	 */
 	scan_gray_list();
 
-	return nr_suspects;
-}
-
-/*
- * Promote a suspected object to a reported leak once it has stayed
- * unreferenced for min_unref_scans consecutive scans. Called with
- * object->lock held; returns true when the object is newly reported.
- */
-static bool confirm_leak(struct kmemleak_object *object)
-{
-	if (!unreferenced_object(object) ||
-	    !(object->flags & OBJECT_SUSPECT) ||
-	    (object->flags & OBJECT_REPORTED))
-		return false;
-
-	object->unref_scans += 1;
-	if (object->unref_scans < min_unref_scans)
-		return false;
-
-	object->flags |= OBJECT_REPORTED;
-	return true;
-}
-
-/*
- * Scan the memory and report the unreferenced objects as leaks. Must be
- * called with the scan_mutex held.
- */
-static void kmemleak_scan(void)
-{
-	struct kmemleak_object *object;
-	struct xarray dedup;
-	int new_leaks = 0;
-
-	/*
-	 * Full scan. Objects left unreferenced are flagged OBJECT_SUSPECT and
-	 * counted in the return value; nothing to confirm or report otherwise.
-	 */
-	if (!__kmemleak_scan(true))
-		return;
-
 	/*
 	 * If scanning was stopped do not report any new unreferenced objects.
 	 */
-	if (scan_should_stop())
-		return;
-
-	/*
-	 * A live object whose only reference is moved by, for example, a
-	 * concurrent RCU update can be missed for one scan and reported as a
-	 * transient false positive. Scan again and only report the objects
-	 * left unreferenced (still flagged OBJECT_SUSPECT) by both scans.
-	 */
-	__kmemleak_scan(false);
 	if (scan_should_stop())
 		return;
 
@@ -2118,8 +2000,9 @@ static void kmemleak_scan(void)
 		raw_spin_lock_irq(&object->lock);
 		trace_handle = 0;
 		dedup_print = false;
-
-		if (confirm_leak(object)) {
+		if (unreferenced_object(object) &&
+		    !(object->flags & OBJECT_REPORTED)) {
+			object->flags |= OBJECT_REPORTED;
 			if (kmemleak_verbose) {
 				trace_handle = object->trace_handle;
 				dedup_print = true;

@@ -5,36 +5,23 @@
 //! To make this driver probe, QEMU must be run with `-device pci-testdev`.
 
 use kernel::{
-    device::{
-        Bound,
-        Core, //
-    },
+    device::Core,
     dma::{
         Coherent,
         DataDirection,
         Device,
         DmaMask, //
     },
-    io::{
-        io_project,
-        io_read,
-        Io, //
-    },
-    page,
-    pci,
+    page, pci,
     prelude::*,
-    scatterlist::{
-        Owned,
-        SGTable, //
-    }, //
+    scatterlist::{Owned, SGTable},
+    sync::aref::ARef,
 };
 
-struct DmaSampleDriver;
-
 #[pin_data(PinnedDrop)]
-struct DmaSampleData<'bound> {
-    pdev: &'bound pci::Device<Bound>,
-    ca: Coherent<'bound, [MyStruct]>,
+struct DmaSampleDriver {
+    pdev: ARef<pci::Device>,
+    ca: Coherent<[MyStruct]>,
     #[pin]
     sgt: SGTable<Owned<VVec<u8>>>,
 }
@@ -47,7 +34,6 @@ const TEST_VALUES: [(u32, u32); 5] = [
     (0xcd, 0xef),
 ];
 
-#[derive(FromBytes, IntoBytes)]
 struct MyStruct {
     h: u32,
     b: u32,
@@ -65,19 +51,20 @@ unsafe impl kernel::transmute::FromBytes for MyStruct {}
 
 kernel::pci_device_table!(
     PCI_TABLE,
+    MODULE_PCI_TABLE,
     <DmaSampleDriver as pci::Driver>::IdInfo,
     [(pci::DeviceId::from_id(pci::Vendor::REDHAT, 0x5), ())]
 );
 
 impl pci::Driver for DmaSampleDriver {
     type IdInfo = ();
-    type Data<'bound> = DmaSampleData<'bound>;
+    type Data<'bound> = Self;
     const ID_TABLE: pci::IdTable<Self::IdInfo> = &PCI_TABLE;
 
     fn probe<'bound>(
         pdev: &'bound pci::Device<Core<'_>>,
-        _info: Option<&'bound Self::IdInfo>,
-    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
+        _info: &'bound Self::IdInfo,
+    ) -> impl PinInit<Self, Error> + 'bound {
         pin_init::pin_init_scope(move || {
             dev_info!(pdev, "Probe DMA test driver.\n");
 
@@ -86,11 +73,11 @@ impl pci::Driver for DmaSampleDriver {
             // SAFETY: There are no concurrent calls to DMA allocation and mapping primitives.
             unsafe { pdev.dma_set_mask_and_coherent(mask)? };
 
-            let ca: Coherent<'_, [MyStruct]> =
+            let ca: Coherent<[MyStruct]> =
                 Coherent::zeroed_slice(pdev.as_ref(), TEST_VALUES.len(), GFP_KERNEL)?;
 
             for (i, value) in TEST_VALUES.into_iter().enumerate() {
-                io_project!(ca, [panic: i]).copy_write(MyStruct::new(value.0, value.1));
+                kernel::dma_write!(ca, [try: i], MyStruct::new(value.0, value.1));
             }
 
             let size = 4 * page::PAGE_SIZE;
@@ -98,8 +85,8 @@ impl pci::Driver for DmaSampleDriver {
 
             let sgt = SGTable::new(pdev.as_ref(), pages, DataDirection::ToDevice, GFP_KERNEL);
 
-            Ok(try_pin_init!(Self::Data {
-                pdev,
+            Ok(try_pin_init!(Self {
+                pdev: pdev.into(),
                 ca,
                 sgt <- sgt,
             }))
@@ -107,11 +94,11 @@ impl pci::Driver for DmaSampleDriver {
     }
 }
 
-impl DmaSampleData<'_> {
+impl DmaSampleDriver {
     fn check_dma(&self) {
         for (i, value) in TEST_VALUES.into_iter().enumerate() {
-            let val0 = io_read!(self.ca, [panic: i].h);
-            let val1 = io_read!(self.ca, [panic: i].b);
+            let val0 = kernel::dma_read!(self.ca, [panic: i].h);
+            let val1 = kernel::dma_read!(self.ca, [panic: i].b);
 
             assert_eq!(val0, value.0);
             assert_eq!(val1, value.1);
@@ -120,7 +107,7 @@ impl DmaSampleData<'_> {
 }
 
 #[pinned_drop]
-impl PinnedDrop for DmaSampleData<'_> {
+impl PinnedDrop for DmaSampleDriver {
     fn drop(self: Pin<&mut Self>) {
         dev_info!(self.pdev, "Unload DMA test driver.\n");
 

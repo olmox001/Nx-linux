@@ -607,8 +607,7 @@ tcf_mirred_get_dev(const struct tc_action *a,
 
 static size_t tcf_mirred_get_fill_size(const struct tc_action *act)
 {
-	return nla_total_size(sizeof(struct tc_mirred)) /* TCA_MIRRED_PARMS */
-		+ nla_total_size(sizeof(u32)); /* TCA_MIRRED_BLOCKID */
+	return nla_total_size(sizeof(struct tc_mirred));
 }
 
 static void tcf_offload_mirred_get_dev(struct flow_action_entry *entry,

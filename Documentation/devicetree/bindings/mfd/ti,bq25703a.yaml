@@ -11,14 +11,9 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - enum:
-          - ti,bq25703a
-          - ti,bq25792
-      - items:
-          - enum:
-              - ti,bq25798
-          - const: ti,bq25792
+    enum:
+      - ti,bq25703a
+      - ti,bq25792
 
   reg:
     const: 0x6b
@@ -108,8 +103,7 @@ allOf:
   - if:
       properties:
         compatible:
-          contains:
-            const: ti,bq25792
+          const: ti,bq25792
     then:
       properties:
         input-current-limit-microamp:

@@ -570,15 +570,19 @@ mcp251xfd_regmap_init_nocrc(struct mcp251xfd_priv *priv)
 	}
 
 	if (!priv->map_buf_nocrc_rx) {
-		priv->map_buf_nocrc_rx = devm_kzalloc_obj(&priv->spi->dev,
-							  *priv->map_buf_nocrc_rx);
+		priv->map_buf_nocrc_rx =
+			devm_kzalloc(&priv->spi->dev,
+				     sizeof(*priv->map_buf_nocrc_rx),
+				     GFP_KERNEL);
 		if (!priv->map_buf_nocrc_rx)
 			return -ENOMEM;
 	}
 
 	if (!priv->map_buf_nocrc_tx) {
-		priv->map_buf_nocrc_tx = devm_kzalloc_obj(&priv->spi->dev,
-							  *priv->map_buf_nocrc_tx);
+		priv->map_buf_nocrc_tx =
+			devm_kzalloc(&priv->spi->dev,
+				     sizeof(*priv->map_buf_nocrc_tx),
+				     GFP_KERNEL);
 		if (!priv->map_buf_nocrc_tx)
 			return -ENOMEM;
 	}
@@ -619,15 +623,19 @@ mcp251xfd_regmap_init_crc(struct mcp251xfd_priv *priv)
 	}
 
 	if (!priv->map_buf_crc_rx) {
-		priv->map_buf_crc_rx = devm_kzalloc_obj(&priv->spi->dev,
-							*priv->map_buf_crc_rx);
+		priv->map_buf_crc_rx =
+			devm_kzalloc(&priv->spi->dev,
+				     sizeof(*priv->map_buf_crc_rx),
+				     GFP_KERNEL);
 		if (!priv->map_buf_crc_rx)
 			return -ENOMEM;
 	}
 
 	if (!priv->map_buf_crc_tx) {
-		priv->map_buf_crc_tx = devm_kzalloc_obj(&priv->spi->dev,
-							*priv->map_buf_crc_tx);
+		priv->map_buf_crc_tx =
+			devm_kzalloc(&priv->spi->dev,
+				     sizeof(*priv->map_buf_crc_tx),
+				     GFP_KERNEL);
 		if (!priv->map_buf_crc_tx)
 			return -ENOMEM;
 	}

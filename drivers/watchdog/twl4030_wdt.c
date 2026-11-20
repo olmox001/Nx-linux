@@ -12,14 +12,13 @@
 #include <linux/watchdog.h>
 #include <linux/platform_device.h>
 #include <linux/mfd/twl.h>
-#include <linux/stringify.h>
 
 #define TWL4030_WATCHDOG_CFG_REG_OFFS	0x3
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started "
-	"(default=" __stringify(WATCHDOG_NOWAYOUT) ")");
+	"(default=" __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 static int twl4030_wdt_write(unsigned char val)
 {
@@ -61,7 +60,7 @@ static int twl4030_wdt_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct watchdog_device *wdt;
 
-	wdt = devm_kzalloc_obj(dev, *wdt);
+	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
 		return -ENOMEM;
 

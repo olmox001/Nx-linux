@@ -1389,12 +1389,13 @@ static struct perf_ctx *perf_create_data(struct ntb_dev *ntb)
 {
 	struct perf_ctx *perf;
 
-	perf = devm_kzalloc_obj(&ntb->dev, *perf);
+	perf = devm_kzalloc(&ntb->dev, sizeof(*perf), GFP_KERNEL);
 	if (!perf)
 		return ERR_PTR(-ENOMEM);
 
 	perf->pcnt = ntb_peer_port_count(ntb);
-	perf->peers = devm_kzalloc_objs(&ntb->dev, *perf->peers, perf->pcnt);
+	perf->peers = devm_kcalloc(&ntb->dev, perf->pcnt, sizeof(*perf->peers),
+				  GFP_KERNEL);
 	if (!perf->peers)
 		return ERR_PTR(-ENOMEM);
 

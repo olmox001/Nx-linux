@@ -651,12 +651,11 @@ static struct sock *__udp6_lib_err_encap(struct net *net,
 	network_offset = skb_network_offset(skb);
 	transport_offset = skb_transport_offset(skb);
 
-	/* Transport header needs to point to the UDP header */
-	if (unlikely(!skb_set_transport_header_careful(skb, offset)))
-		return ERR_PTR(-EINVAL);
-
 	/* Network header needs to point to the outer IPv6 header inside ICMP */
 	skb_reset_network_header(skb);
+
+	/* Transport header needs to point to the UDP header */
+	skb_set_transport_header(skb, offset);
 
 	if (sk) {
 		up = udp_sk(sk);
@@ -752,7 +751,13 @@ static int udpv6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			harderr = 1;
 	}
 	if (type == NDISC_REDIRECT) {
-		ip6_sk_redirect(skb, sk);
+		if (tunnel) {
+			ip6_redirect(skb, sock_net(sk), inet6_iif(skb),
+				     READ_ONCE(sk->sk_mark),
+				     sk_uid(sk));
+		} else {
+			ip6_sk_redirect(skb, sk);
+		}
 		goto out;
 	}
 
@@ -957,7 +962,6 @@ static int __udp6_lib_mcast_deliver(struct net *net, struct sk_buff *skb,
 	struct udp_hslot *hslot;
 	struct sk_buff *nskb;
 	bool use_hash2;
-	int ret;
 
 	hash2_any = 0;
 	hash2 = 0;
@@ -1007,9 +1011,8 @@ start_lookup:
 	}
 
 	if (first) {
-		ret = udpv6_queue_rcv_skb(first, skb);
-		if (ret > 0)
-			return ret;
+		if (udpv6_queue_rcv_skb(first, skb) > 0)
+			consume_skb(skb);
 	} else {
 		kfree_skb(skb);
 		__UDP6_INC_STATS(net, UDP_MIB_IGNOREDMULTI);
@@ -1091,12 +1094,12 @@ INDIRECT_CALLABLE_SCOPE int udpv6_rcv(struct sk_buff *skb)
 	daddr = &ipv6_hdr(skb)->daddr;
 	uh = udp_hdr(skb);
 
-	ulen = udp_get_len(skb, uh, 0);
+	ulen = ntohs(uh->len);
 	if (ulen > skb->len)
 		goto short_packet;
 
 	/* Check for jumbo payload */
-	if (ulen == 0 && inet6_is_jumbogram(skb))
+	if (ulen == 0)
 		ulen = skb->len;
 
 	if (ulen < sizeof(*uh))
@@ -1250,11 +1253,8 @@ void udp_v6_early_demux(struct sk_buff *skb)
 	skb->destructor = sock_pfree;
 	dst = rcu_dereference(sk->sk_rx_dst);
 
-	/* A dual-stack socket can cache an IPv4 dst. */
-	if (dst && dst->ops->family == AF_INET6)
+	if (dst)
 		dst = dst_check(dst, sk->sk_rx_dst_cookie);
-	else
-		dst = NULL;
 	if (dst) {
 		/* set noref for now.
 		 * any place which wants to hold dst has to call
@@ -1382,8 +1382,7 @@ static int udp_v6_send_skb(struct sk_buff *skb, struct flowi6 *fl6,
 	uh = udp_hdr(skb);
 	uh->source = fl6->fl6_sport;
 	uh->dest = fl6->fl6_dport;
-	/* Datagram length checked in udpv6_sendmsg. */
-	udp_set_len_short(uh, len);
+	uh->len = htons(len);
 	uh->check = 0;
 
 	if (cork->gso_size) {
@@ -1840,22 +1839,9 @@ static int udpv6_setsockopt(struct sock *sk, int level, int optname,
 static int udpv6_getsockopt(struct sock *sk, int level, int optname,
 			    char __user *optval, int __user *optlen)
 {
-	sockopt_t opt;
-	int err;
-
-	if (level != SOL_UDP)
-		return ipv6_getsockopt(sk, level, optname, optval, optlen);
-
-	err = sockopt_init_user(&opt, optval, optlen);
-	if (err)
-		return err;
-
-	err = udp_lib_getsockopt(sk, level, optname, &opt);
-	if (err)
-		return err;
-	if (put_user(opt.optlen, optlen))
-		return -EFAULT;
-	return 0;
+	if (level == SOL_UDP)
+		return udp_lib_getsockopt(sk, level, optname, optval, optlen);
+	return ipv6_getsockopt(sk, level, optname, optval, optlen);
 }
 
 

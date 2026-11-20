@@ -461,7 +461,7 @@ static int qs_port_start(struct ata_port *ap)
 	void __iomem *chan = mmio_base + (ap->port_no * 0x4000);
 	u64 addr;
 
-	pp = devm_kzalloc_obj(dev, *pp);
+	pp = devm_kzalloc(dev, sizeof(*pp), GFP_KERNEL);
 	if (!pp)
 		return -ENOMEM;
 	pp->pkt = dmam_alloc_coherent(dev, QS_PKT_BYTES, &pp->pkt_dma,
@@ -584,12 +584,8 @@ static int qs_ata_init_one(struct pci_dev *pdev,
 	qs_host_init(host, board_idx);
 
 	pci_set_master(pdev);
-	rc = ata_host_activate(host, pdev->irq, qs_intr, IRQF_SHARED,
-			       &qs_ata_sht);
-	if (rc)
-		qs_host_stop(host);
-
-	return rc;
+	return ata_host_activate(host, pdev->irq, qs_intr, IRQF_SHARED,
+				 &qs_ata_sht);
 }
 
 module_pci_driver(qs_ata_pci_driver);

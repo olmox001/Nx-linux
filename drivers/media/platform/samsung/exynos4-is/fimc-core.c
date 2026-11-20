@@ -927,7 +927,7 @@ static int fimc_probe(struct platform_device *pdev)
 	int ret = 0;
 	int irq;
 
-	fimc = devm_kzalloc_obj(dev, *fimc);
+	fimc = devm_kzalloc(dev, sizeof(*fimc), GFP_KERNEL);
 	if (!fimc)
 		return -ENOMEM;
 

@@ -353,13 +353,14 @@ static inline bool hpsa_is_cmd_idle(struct CommandList *c)
 
 /* extract sense key, asc, and ascq from sense data.  -1 means invalid. */
 static void decode_sense_data(const u8 *sense_data, int sense_data_len,
-			      u8 *sense_key, u16 *sense_code)
+			u8 *sense_key, u8 *asc, u8 *ascq)
 {
 	struct scsi_sense_hdr sshdr;
 	bool rc;
 
 	*sense_key = -1;
-	*sense_code = -1;
+	*asc = -1;
+	*ascq = -1;
 
 	if (sense_data_len < 1)
 		return;
@@ -367,15 +368,15 @@ static void decode_sense_data(const u8 *sense_data, int sense_data_len,
 	rc = scsi_normalize_sense(sense_data, sense_data_len, &sshdr);
 	if (rc) {
 		*sense_key = sshdr.sense_key;
-		*sense_code = sshdr.sense_code;
+		*asc = sshdr.asc;
+		*ascq = sshdr.ascq;
 	}
 }
 
 static int check_for_unit_attention(struct ctlr_info *h,
 	struct CommandList *c)
 {
-	u8 sense_key;
-	u16 sense_code;
+	u8 sense_key, asc, ascq;
 	int sense_len;
 
 	if (c->err_info->SenseLen > sizeof(c->err_info->SenseInfo))
@@ -384,35 +385,34 @@ static int check_for_unit_attention(struct ctlr_info *h,
 		sense_len = c->err_info->SenseLen;
 
 	decode_sense_data(c->err_info->SenseInfo, sense_len,
-			  &sense_key, &sense_code);
-	if (sense_key != UNIT_ATTENTION ||
-	    scsi_sense_code_asc(sense_code) == 0xff)
+				&sense_key, &asc, &ascq);
+	if (sense_key != UNIT_ATTENTION || asc == 0xff)
 		return 0;
 
-	switch (scsi_sense_code_asc(sense_code)) {
-	case ASC_PARAMETERS_CHANGED:
+	switch (asc) {
+	case STATE_CHANGED:
 		dev_warn(&h->pdev->dev,
 			"%s: a state change detected, command retried\n",
 			h->devname);
 		break;
-	case ASC_LU_HAS_NOT_SELF_CONFIGURED_YET:
+	case LUN_FAILED:
 		dev_warn(&h->pdev->dev,
 			"%s: LUN failure detected\n", h->devname);
 		break;
-	case ASC_TARGET_OPERATING_CONDITIONS_HAVE_CHANGED:
+	case REPORT_LUNS_CHANGED:
 		dev_warn(&h->pdev->dev,
 			"%s: report LUN data changed\n", h->devname);
 	/*
-	 * Note: this ASC_TARGET_OPERATING_CONDITIONS_HAVE_CHANGED condition
-	 * only occurs on the external target (array) devices.
+	 * Note: this REPORT_LUNS_CHANGED condition only occurs on the external
+	 * target (array) devices.
 	 */
 		break;
-	case ASC_POWER_ON_RESET_OR_BUS_DEVICE_RESET_OCCURRED:
+	case POWER_OR_RESET:
 		dev_warn(&h->pdev->dev,
 			"%s: a power on or device reset detected\n",
 			h->devname);
 		break;
-	case ASC_COMMANDS_CLEARED_BY_ANOTHER_INITIATOR:
+	case UNIT_ATTENTION_CLEARED:
 		dev_warn(&h->pdev->dev,
 			"%s: unit attention cleared by another initiator\n",
 			h->devname);
@@ -2562,8 +2562,10 @@ static void complete_scsi_command(struct CommandList *cp)
 	struct ErrorInfo *ei;
 	struct hpsa_scsi_dev_t *dev;
 	struct io_accel2_cmd *c2;
+
 	u8 sense_key;
-	u16 sense_code;
+	u8 asc;      /* additional sense code */
+	u8 ascq;     /* additional sense code qualifier */
 	unsigned long sense_data_size;
 
 	ei = cp->err_info;
@@ -2664,19 +2666,18 @@ static void complete_scsi_command(struct CommandList *cp)
 		memcpy(cmd->sense_buffer, ei->SenseInfo, sense_data_size);
 		if (ei->ScsiStatus)
 			decode_sense_data(ei->SenseInfo, sense_data_size,
-				&sense_key, &sense_code);
+				&sense_key, &asc, &ascq);
 		if (ei->ScsiStatus == SAM_STAT_CHECK_CONDITION) {
 			switch (sense_key) {
 			case ABORTED_COMMAND:
 				cmd->result |= DID_SOFT_ERROR << 16;
 				break;
 			case UNIT_ATTENTION:
-				if (sense_code ==
-				    REPORTED_LUNS_DATA_HAS_CHANGED)
+				if (asc == 0x3F && ascq == 0x0E)
 					h->drv_req_rescan = 1;
 				break;
 			case ILLEGAL_REQUEST:
-				if (sense_code == LU_NOT_SUPPORTED) {
+				if (asc == 0x25 && ascq == 0x00) {
 					dev->removed = 1;
 					cmd->result = DID_NO_CONNECT << 16;
 				}
@@ -2692,9 +2693,7 @@ static void complete_scsi_command(struct CommandList *cp)
 				"Sense: 0x%x, ASC: 0x%x, ASCQ: 0x%x, "
 				"Returning result: 0x%x\n",
 				cp, ei->ScsiStatus,
-				sense_key,
-				scsi_sense_code_asc(sense_code),
-				scsi_sense_code_ascq(sense_code),
+				sense_key, asc, ascq,
 				cmd->result);
 		} else {  /* scsi status is zero??? How??? */
 			dev_warn(&h->pdev->dev, "cp %p SCSI status was 0. "
@@ -2920,8 +2919,7 @@ static void hpsa_scsi_interpret_error(struct ctlr_info *h,
 {
 	const struct ErrorInfo *ei = cp->err_info;
 	struct device *d = &cp->h->pdev->dev;
-	u8 sense_key;
-	u16 sense_code;
+	u8 sense_key, asc, ascq;
 	int sense_len;
 
 	switch (ei->CommandStatus) {
@@ -2930,13 +2928,12 @@ static void hpsa_scsi_interpret_error(struct ctlr_info *h,
 			sense_len = sizeof(ei->SenseInfo);
 		else
 			sense_len = ei->SenseLen;
-		decode_sense_data(ei->SenseInfo, sense_len, &sense_key,
-				  &sense_code);
+		decode_sense_data(ei->SenseInfo, sense_len,
+					&sense_key, &asc, &ascq);
 		hpsa_print_cmd(h, "SCSI status", cp);
 		if (ei->ScsiStatus == SAM_STAT_CHECK_CONDITION)
 			dev_warn(d, "SCSI Status = 02, Sense key = 0x%02x, ASC = 0x%02x, ASCQ = 0x%02x\n",
-				sense_key, scsi_sense_code_asc(sense_code),
-				 scsi_sense_code_ascq(sense_code));
+				sense_key, asc, ascq);
 		else
 			dev_warn(d, "SCSI Status = 0x%02x\n", ei->ScsiStatus);
 		if (ei->ScsiStatus == 0)
@@ -3166,7 +3163,7 @@ static int hpsa_do_reset(struct ctlr_info *h, struct hpsa_scsi_dev_t *dev,
 	int rc = 0;
 
 	/* We can really only handle one reset at a time */
-	if (mutex_lock_interruptible(&h->reset_mutex)) {
+	if (mutex_lock_interruptible(&h->reset_mutex) == -EINTR) {
 		dev_warn(&h->pdev->dev, "concurrent reset wait interrupted.\n");
 		return -EINTR;
 	}
@@ -3871,10 +3868,12 @@ static unsigned char hpsa_volume_offline(struct ctlr_info *h,
 {
 	struct CommandList *c;
 	unsigned char *sense;
-	u8 sense_key;
-	u16 sense_code;
+	u8 sense_key, asc, ascq;
 	int sense_len;
 	int rc, ldstat = 0;
+#define ASC_LUN_NOT_READY 0x04
+#define ASCQ_LUN_NOT_READY_FORMAT_IN_PROGRESS 0x04
+#define ASCQ_LUN_NOT_READY_INITIALIZING_CMD_REQ 0x02
 
 	c = cmd_alloc(h);
 
@@ -3890,7 +3889,7 @@ static unsigned char hpsa_volume_offline(struct ctlr_info *h,
 		sense_len = sizeof(c->err_info->SenseInfo);
 	else
 		sense_len = c->err_info->SenseLen;
-	decode_sense_data(sense, sense_len, &sense_key, &sense_code);
+	decode_sense_data(sense, sense_len, &sense_key, &asc, &ascq);
 	cmd_free(h, c);
 
 	/* Determine the reason for not ready state */
@@ -3913,8 +3912,8 @@ static unsigned char hpsa_volume_offline(struct ctlr_info *h,
 		/* If VPD status page isn't available,
 		 * use ASC/ASCQ to determine state
 		 */
-		if (sense_code == LU_NOT_READY_FORMAT_IN_PROGRESS ||
-		    sense_code == LU_NOT_READY_INITIALIZING_COMMAND_REQUIRED)
+		if ((ascq == ASCQ_LUN_NOT_READY_FORMAT_IN_PROGRESS) ||
+			(ascq == ASCQ_LUN_NOT_READY_INITIALIZING_CMD_REQ))
 			return ldstat;
 		break;
 	default:
@@ -6500,7 +6499,7 @@ static int hpsa_big_passthru_ioctl(struct ctlr_info *h,
 		return -EINVAL;
 	if (ioc->buf_size > ioc->malloc_size * SG_ENTRIES_IN_CMD)
 		return -EINVAL;
-	buff = kzalloc_objs(*buff, SG_ENTRIES_IN_CMD);
+	buff = kcalloc(SG_ENTRIES_IN_CMD, sizeof(char *), GFP_KERNEL);
 	if (!buff) {
 		status = -ENOMEM;
 		goto cleanup1;
@@ -8640,7 +8639,7 @@ static struct ctlr_info *hpda_alloc_ctlr_info(void)
 	if (!h)
 		return NULL;
 
-	h->reply_map = kzalloc_objs(*h->reply_map, nr_cpu_ids);
+	h->reply_map = kcalloc(nr_cpu_ids, sizeof(*h->reply_map), GFP_KERNEL);
 	if (!h->reply_map) {
 		kfree(h);
 		return NULL;

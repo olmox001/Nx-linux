@@ -310,8 +310,7 @@ static irqreturn_t pcf2123_rtc_irq(int irq, void *dev)
 	unsigned int val = 0;
 	int ret = IRQ_NONE;
 
-	guard(rtc_ops)(pcf2123->rtc);
-
+	rtc_lock(pcf2123->rtc);
 	regmap_read(pcf2123->map, PCF2123_REG_CTRL2, &val);
 
 	/* Alarm? */
@@ -323,6 +322,8 @@ static irqreturn_t pcf2123_rtc_irq(int irq, void *dev)
 
 		rtc_update_irq(pcf2123->rtc, 1, RTC_IRQF | RTC_AF);
 	}
+
+	rtc_unlock(pcf2123->rtc);
 
 	return ret;
 }
@@ -378,7 +379,8 @@ static int pcf2123_probe(struct spi_device *spi)
 	struct pcf2123_data *pcf2123;
 	int ret = 0;
 
-	pcf2123 = devm_kzalloc_obj(&spi->dev, struct pcf2123_data);
+	pcf2123 = devm_kzalloc(&spi->dev, sizeof(struct pcf2123_data),
+				GFP_KERNEL);
 	if (!pcf2123)
 		return -ENOMEM;
 

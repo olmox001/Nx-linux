@@ -1615,7 +1615,7 @@ static int rt9455_probe(struct i2c_client *client)
 		dev_err(dev, "No support for SMBUS_BYTE_DATA\n");
 		return -ENODEV;
 	}
-	info = devm_kzalloc_obj(dev, *info);
+	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
@@ -1693,8 +1693,10 @@ static int rt9455_probe(struct i2c_client *client)
 					rt9455_irq_handler_thread,
 					IRQF_TRIGGER_LOW | IRQF_ONESHOT,
 					RT9455_DRIVER_NAME, info);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "Failed to register IRQ handler\n");
 		goto put_usb_notifier;
+	}
 
 	ret = rt9455_hw_init(info, ichrg, ieoc_percentage, mivr, iaicr);
 	if (ret) {

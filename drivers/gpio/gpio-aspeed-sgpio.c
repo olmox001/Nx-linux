@@ -610,7 +610,7 @@ static int aspeed_sgpio_probe(struct platform_device *pdev)
 	unsigned long apb_freq;
 	int rc;
 
-	gpio = devm_kzalloc_obj(&pdev->dev, *gpio);
+	gpio = devm_kzalloc(&pdev->dev, sizeof(*gpio), GFP_KERNEL);
 	if (!gpio)
 		return -ENOMEM;
 

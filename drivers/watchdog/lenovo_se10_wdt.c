@@ -10,7 +10,6 @@
 #include <linux/moduleparam.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
-#include <linux/stringify.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 
@@ -49,13 +48,13 @@ static int timeout; /* in seconds */
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout,
 		 "Watchdog timeout in seconds. 1 <= timeout <= 255, default="
-		 __stringify(WATCHDOG_TIMEOUT) ".");
+		 __MODULE_STRING(WATCHDOG_TIMEOUT) ".");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		 "Watchdog cannot be stopped once started (default="
-		 __stringify(WATCHDOG_NOWAYOUT) ")");
+		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 struct se10_wdt {
 	struct watchdog_device wdd;
@@ -190,7 +189,7 @@ static int se10_wdt_probe(struct platform_device *pdev)
 
 	dev_info(dev, "Found Lenovo SE10 0x%x\n", chip_id);
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

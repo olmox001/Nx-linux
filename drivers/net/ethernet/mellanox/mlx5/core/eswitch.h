@@ -235,10 +235,8 @@ struct mlx5_vport {
 
 	struct mlx5_vport_info  info;
 
-	/* Protected by either the shared devlink (dev->shd) lock or by
-	 * esw->state_lock. See esw_assert_qos_lock_held() for more details.
-	 * The Vport QoS can either be disabled (sched_node is NULL) or in one
-	 * of three states:
+	/* Protected with the E-Switch qos domain lock. The Vport QoS can
+	 * either be disabled (sched_node is NULL) or in one of three states:
 	 * 1. Regular QoS (sched_node is a vport node).
 	 * 2. TC QoS enabled on the vport (sched_node is a TC arbiter).
 	 * 3. TC QoS enabled on the vport's parent node
@@ -319,7 +317,7 @@ struct mlx5_esw_offload {
 	struct mlx5_flow_handle *vport_rx_drop_rule;
 	struct mlx5_flow_table *ft_ipsec_tx_pol;
 	struct xarray vport_reps;
-	struct xarray peer_flows;
+	struct list_head peer_flows[MLX5_MAX_PORTS];
 	struct mutex peer_mutex;
 	struct mutex encap_tbl_lock; /* protects encap_tbl */
 	DECLARE_HASHTABLE(encap_tbl, 8);
@@ -385,6 +383,7 @@ enum {
 };
 
 struct dentry;
+struct mlx5_qos_domain;
 
 struct mlx5_eswitch {
 	struct mlx5_core_dev    *dev;
@@ -413,15 +412,12 @@ struct mlx5_eswitch {
 	atomic64_t user_count;
 	wait_queue_head_t work_queue_wait;
 
-	/* QoS changes are serialized by either the shared devlink (dev->shd)
-	 * lock or by esw->state_lock. See esw_assert_qos_lock_held() for more
-	 * details.
-	 */
+	/* Protected with the E-Switch qos domain lock. */
 	struct {
 		/* Initially 0, meaning no QoS users and QoS is disabled. */
 		refcount_t refcnt;
-		/* The root node of the hierarchy. */
-		struct mlx5_esw_sched_node *root;
+		u32 root_tsar_ix;
+		struct mlx5_qos_domain *domain;
 	} qos;
 
 	struct mlx5_esw_bridge_offloads *br_offloads;
@@ -487,6 +483,8 @@ int mlx5_eswitch_set_vport_trust(struct mlx5_eswitch *esw,
 				 u16 vport_num, bool setting);
 int mlx5_eswitch_set_vport_rate(struct mlx5_eswitch *esw, u16 vport,
 				u32 max_rate, u32 min_rate);
+int mlx5_esw_qos_vport_update_parent(struct mlx5_vport *vport, struct mlx5_esw_sched_node *node,
+				     struct netlink_ext_ack *extack);
 int mlx5_eswitch_set_vepa(struct mlx5_eswitch *esw, u8 setting);
 int mlx5_eswitch_get_vepa(struct mlx5_eswitch *esw, u8 *setting);
 int mlx5_eswitch_get_vport_config(struct mlx5_eswitch *esw,
@@ -948,7 +946,6 @@ void mlx5_esw_get(struct mlx5_core_dev *dev);
 void mlx5_esw_put(struct mlx5_core_dev *dev);
 int mlx5_esw_try_lock(struct mlx5_eswitch *esw);
 int mlx5_esw_lock(struct mlx5_eswitch *esw);
-void mlx5_esw_lock_wait(struct mlx5_eswitch *esw);
 void mlx5_esw_unlock(struct mlx5_eswitch *esw);
 
 void esw_vport_change_handle_locked(struct mlx5_vport *vport);
@@ -968,10 +965,10 @@ void mlx5_eswitch_unload_reps(struct mlx5_eswitch *esw);
 bool mlx5_eswitch_is_peer(struct mlx5_eswitch *esw,
 			  struct mlx5_eswitch *peer_esw);
 
-int mlx5_eswitch_block_encap(struct mlx5_core_dev *dev, bool from_fdb);
+bool mlx5_eswitch_block_encap(struct mlx5_core_dev *dev, bool from_fdb);
 void mlx5_eswitch_unblock_encap(struct mlx5_core_dev *dev);
 
-int mlx5_eswitch_block_mode(struct mlx5_core_dev *dev, bool check_users);
+int mlx5_eswitch_block_mode(struct mlx5_core_dev *dev);
 void mlx5_eswitch_unblock_mode(struct mlx5_core_dev *dev);
 
 static inline int mlx5_eswitch_num_vfs(struct mlx5_eswitch *esw)
@@ -1072,21 +1069,17 @@ mlx5_eswitch_reload_ib_reps(struct mlx5_eswitch *esw)
 static inline void
 mlx5_eswitch_unload_reps(struct mlx5_eswitch *esw) {}
 
-static inline int
+static inline bool
 mlx5_eswitch_block_encap(struct mlx5_core_dev *dev, bool from_fdb)
 {
-	return 1;
+	return true;
 }
 
 static inline void mlx5_eswitch_unblock_encap(struct mlx5_core_dev *dev)
 {
 }
 
-static inline int mlx5_eswitch_block_mode(struct mlx5_core_dev *dev,
-					  bool check_users)
-{
-	return 0;
-}
+static inline int mlx5_eswitch_block_mode(struct mlx5_core_dev *dev) { return 0; }
 static inline void mlx5_eswitch_unblock_mode(struct mlx5_core_dev *dev) {}
 static inline bool mlx5_eswitch_block_ipsec(struct mlx5_core_dev *dev)
 {

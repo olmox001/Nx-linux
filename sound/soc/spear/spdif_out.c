@@ -249,7 +249,6 @@ static int spdif_soc_dai_probe(struct snd_soc_dai *dai)
 }
 
 static const struct snd_soc_dai_ops spdif_out_dai_ops = {
-	.probe = spdif_soc_dai_probe,
 	.mute_stream	= spdif_mute,
 	.startup	= spdif_out_startup,
 	.shutdown	= spdif_out_shutdown,
@@ -267,6 +266,7 @@ static struct snd_soc_dai_driver spdif_out_dai = {
 				 SNDRV_PCM_RATE_192000),
 		.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	},
+	.probe = spdif_soc_dai_probe,
 	.ops = &spdif_out_dai_ops,
 };
 
@@ -282,7 +282,7 @@ static int spdif_out_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	host = devm_kzalloc_obj(&pdev->dev, *host);
+	host = devm_kzalloc(&pdev->dev, sizeof(*host), GFP_KERNEL);
 	if (!host)
 		return -ENOMEM;
 

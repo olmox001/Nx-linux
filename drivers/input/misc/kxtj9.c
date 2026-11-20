@@ -411,7 +411,7 @@ static int kxtj9_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	tj9 = devm_kzalloc_obj(&client->dev, *tj9);
+	tj9 = devm_kzalloc(&client->dev, sizeof(*tj9), GFP_KERNEL);
 	if (!tj9) {
 		dev_err(&client->dev,
 			"failed to allocate memory for module data\n");

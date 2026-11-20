@@ -163,7 +163,7 @@ int s3fwrn5_probe(struct nci_dev **ndev, void *phy_id, struct device *pdev,
 	struct s3fwrn5_info *info;
 	int ret;
 
-	info = devm_kzalloc_obj(pdev, *info);
+	info = devm_kzalloc(pdev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 

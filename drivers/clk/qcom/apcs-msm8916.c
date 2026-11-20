@@ -58,7 +58,7 @@ static int qcom_apcs_msm8916_clk_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	a53cc = devm_kzalloc_obj(dev, *a53cc);
+	a53cc = devm_kzalloc(dev, sizeof(*a53cc), GFP_KERNEL);
 	if (!a53cc)
 		return -ENOMEM;
 

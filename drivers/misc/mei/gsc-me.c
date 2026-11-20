@@ -101,8 +101,10 @@ static int mei_gsc_probe(struct auxiliary_device *aux_dev,
 						mei_me_irq_quick_handler,
 						mei_me_irq_thread_handler,
 						IRQF_ONESHOT, KBUILD_MODNAME, dev);
-		if (ret)
+		if (ret) {
+			dev_err(device, "irq register failed %d\n", ret);
 			goto err;
+		}
 	}
 
 	ret = mei_register(dev, device);
@@ -242,7 +244,7 @@ static int __maybe_unused mei_gsc_pm_runtime_resume(struct device *device)
 
 	if (mei_me_hw_use_polling(hw)) {
 		hw->is_active = true;
-		wake_up_interruptible(&hw->wait_active);
+		wake_up(&hw->wait_active);
 	}
 
 	mutex_unlock(&dev->device_lock);

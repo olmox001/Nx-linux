@@ -137,7 +137,7 @@ static int keystone_irq_probe(struct platform_device *pdev)
 	if (np == NULL)
 		return -EINVAL;
 
-	kirq = devm_kzalloc_obj(dev, *kirq);
+	kirq = devm_kzalloc(dev, sizeof(*kirq), GFP_KERNEL);
 	if (!kirq)
 		return -ENOMEM;
 

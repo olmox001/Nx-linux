@@ -290,86 +290,147 @@ struct vmx_msr_entry {
 	u64 value;
 } __attribute__ ((aligned(16)));
 
-#define VMX_SWITCH_GPRS_ASM \
-	GUEST_SWITCH_GPR_ASM(rax) \
-	GUEST_SWITCH_GPR_ASM(rbx) \
-	GUEST_SWITCH_GPR_ASM(rcx) \
-	GUEST_SWITCH_GPR_ASM(rdx) \
-	GUEST_SWITCH_GPR_ASM(rbp) \
-	GUEST_SWITCH_GPR_ASM(rsi) \
-	GUEST_SWITCH_GPR_ASM(rdi) \
-	GUEST_SWITCH_GPR_ASM(r8)  \
-	GUEST_SWITCH_GPR_ASM(r9)  \
-	GUEST_SWITCH_GPR_ASM(r10) \
-	GUEST_SWITCH_GPR_ASM(r11) \
-	GUEST_SWITCH_GPR_ASM(r12) \
-	GUEST_SWITCH_GPR_ASM(r13) \
-	GUEST_SWITCH_GPR_ASM(r14) \
-	GUEST_SWITCH_GPR_ASM(r15)
-
 #include "evmcs.h"
 
-#define GUEST_ASSERT_VMX_INSN_SUCCEEDED(insn, __r, __pa)		\
-	__GUEST_ASSERT(!__r, __stringify(insn) "[0x%lx] hit %s",	\
-		       __pa, __r < 0 ? "VM-Fail" : ex_str(__r))
+static inline int vmxon(u64 phys)
+{
+	u8 ret;
 
-#define BUILD_VMCS_ASM_HELPERS(insn)					\
-static inline int __##insn(u64 vmcs_pa)					\
-{									\
-	u64 error_code;							\
-	u8 vector;							\
-	u8 failed;							\
-									\
-	asm volatile(KVM_ASM_SAFE(__stringify(insn) " %[pa]")		\
-		     "\n\tsetna %[failed]"				\
-		     : KVM_ASM_SAFE_OUTPUTS(vector, error_code),	\
-		       [failed]"=qm"(failed)				\
-		     : [pa]"m"(vmcs_pa)					\
-		     : "cc", "memory", KVM_ASM_SAFE_CLOBBERS);		\
-									\
-	return vector ? vector : failed ? -EINVAL : 0;			\
-}									\
-									\
-static inline void insn(u64 vmcs_pa)					\
-{									\
-	int ret = __##insn(vmcs_pa);					\
-									\
-	GUEST_ASSERT_VMX_INSN_SUCCEEDED(insn, ret, vmcs_pa);		\
+	__asm__ __volatile__ ("vmxon %[pa]; setna %[ret]"
+		: [ret]"=rm"(ret)
+		: [pa]"m"(phys)
+		: "cc", "memory");
+
+	return ret;
 }
-
-BUILD_VMCS_ASM_HELPERS(vmxon)
-BUILD_VMCS_ASM_HELPERS(vmptrld)
-BUILD_VMCS_ASM_HELPERS(vmclear)
 
 static inline void vmxoff(void)
 {
 	__asm__ __volatile__("vmxoff");
 }
 
-static inline u64 vmptrst(void)
+static inline int vmclear(u64 vmcs_pa)
 {
-	u64 value = 0;
 	u8 ret;
 
+	__asm__ __volatile__ ("vmclear %[pa]; setna %[ret]"
+		: [ret]"=rm"(ret)
+		: [pa]"m"(vmcs_pa)
+		: "cc", "memory");
+
+	return ret;
+}
+
+static inline int vmptrld(u64 vmcs_pa)
+{
+	u8 ret;
+
+	if (enable_evmcs)
+		return -1;
+
+	__asm__ __volatile__ ("vmptrld %[pa]; setna %[ret]"
+		: [ret]"=rm"(ret)
+		: [pa]"m"(vmcs_pa)
+		: "cc", "memory");
+
+	return ret;
+}
+
+static inline int vmptrst(u64 *value)
+{
+	u64 tmp;
+	u8 ret;
+
+	if (enable_evmcs)
+		return evmcs_vmptrst(value);
+
 	__asm__ __volatile__("vmptrst %[value]; setna %[ret]"
-		: [value]"=m"(value), [ret]"=rm"(ret)
+		: [value]"=m"(tmp), [ret]"=rm"(ret)
 		: : "cc", "memory");
 
-	__GUEST_ASSERT(!ret, "vmptrst failed");
+	*value = tmp;
+	return ret;
+}
+
+/*
+ * A wrapper around vmptrst that ignores errors and returns zero if the
+ * vmptrst instruction fails.
+ */
+static inline u64 vmptrstz(void)
+{
+	u64 value = 0;
+	vmptrst(&value);
 	return value;
 }
 
-int __vmlaunch(void);
-int __vmresume(void);
-
-static inline void vmlaunch(void)
+/*
+ * No guest state (e.g. GPRs) is established by this vmlaunch.
+ */
+static inline int vmlaunch(void)
 {
-	__GUEST_ASSERT(!__vmlaunch(), "vmlaunch hit VM-Fail");
+	int ret;
+
+	if (enable_evmcs)
+		return evmcs_vmlaunch();
+
+	__asm__ __volatile__("push %%rbp;"
+			     "push %%rcx;"
+			     "push %%rdx;"
+			     "push %%rsi;"
+			     "push %%rdi;"
+			     "push $0;"
+			     "vmwrite %%rsp, %[host_rsp];"
+			     "lea 1f(%%rip), %%rax;"
+			     "vmwrite %%rax, %[host_rip];"
+			     "vmlaunch;"
+			     "incq (%%rsp);"
+			     "1: pop %%rax;"
+			     "pop %%rdi;"
+			     "pop %%rsi;"
+			     "pop %%rdx;"
+			     "pop %%rcx;"
+			     "pop %%rbp;"
+			     : [ret]"=&a"(ret)
+			     : [host_rsp]"r"((u64)HOST_RSP),
+			       [host_rip]"r"((u64)HOST_RIP)
+			     : "memory", "cc", "rbx", "r8", "r9", "r10",
+			       "r11", "r12", "r13", "r14", "r15");
+	return ret;
 }
 
-static inline void vmresume(void)
+/*
+ * No guest state (e.g. GPRs) is established by this vmresume.
+ */
+static inline int vmresume(void)
 {
-	__GUEST_ASSERT(!__vmresume(), "vmresume hit VM-Fail");
+	int ret;
+
+	if (enable_evmcs)
+		return evmcs_vmresume();
+
+	__asm__ __volatile__("push %%rbp;"
+			     "push %%rcx;"
+			     "push %%rdx;"
+			     "push %%rsi;"
+			     "push %%rdi;"
+			     "push $0;"
+			     "vmwrite %%rsp, %[host_rsp];"
+			     "lea 1f(%%rip), %%rax;"
+			     "vmwrite %%rax, %[host_rip];"
+			     "vmresume;"
+			     "incq (%%rsp);"
+			     "1: pop %%rax;"
+			     "pop %%rdi;"
+			     "pop %%rsi;"
+			     "pop %%rdx;"
+			     "pop %%rcx;"
+			     "pop %%rbp;"
+			     : [ret]"=&a"(ret)
+			     : [host_rsp]"r"((u64)HOST_RSP),
+			       [host_rip]"r"((u64)HOST_RIP)
+			     : "memory", "cc", "rbx", "r8", "r9", "r10",
+			       "r11", "r12", "r13", "r14", "r15");
+	return ret;
 }
 
 static inline void vmcall(void)
@@ -386,7 +447,7 @@ static inline void vmcall(void)
 			       "r10", "r11", "r12", "r13", "r14", "r15");
 }
 
-static inline int __vmread(u64 encoding, u64 *value)
+static inline int vmread(u64 encoding, u64 *value)
 {
 	u64 tmp;
 	u8 ret;
@@ -399,21 +460,22 @@ static inline int __vmread(u64 encoding, u64 *value)
 		: [encoding]"r"(encoding)
 		: "cc", "memory");
 
-	if (!ret)
-		*value = tmp;
+	*value = tmp;
 	return ret;
 }
 
-static inline u64 vmread(u64 encoding)
+/*
+ * A wrapper around vmread that ignores errors and returns zero if the
+ * vmread instruction fails.
+ */
+static inline u64 vmreadz(u64 encoding)
 {
 	u64 value = 0;
-
-	__GUEST_ASSERT(!__vmread(encoding, &value),
-		       "vmread[0x%lx] hit VM-Fail", encoding);
+	vmread(encoding, &value);
 	return value;
 }
 
-static __always_inline int __vmwrite(u64 encoding, u64 value)
+static inline int vmwrite(u64 encoding, u64 value)
 {
 	u8 ret;
 
@@ -426,12 +488,6 @@ static __always_inline int __vmwrite(u64 encoding, u64 value)
 		: "cc", "memory");
 
 	return ret;
-}
-
-static inline void vmwrite(u64 encoding, u64 value)
-{
-	__GUEST_ASSERT(!__vmwrite(encoding, value),
-		       "vmwrite[0x%lx] = 0x%lx hit VM-Fail", encoding, value);
 }
 
 static inline u32 vmcs_revision(void)
@@ -468,8 +524,6 @@ struct vmx_pages {
 	u64 apic_access_gpa;
 	void *apic_access;
 
-	void *stack;
-
 	u64 eptp_gpa;
 };
 
@@ -497,24 +551,13 @@ union vmx_ctrl_msr {
 };
 
 struct vmx_pages *vcpu_alloc_vmx(struct kvm_vm *vm, gva_t *p_vmx_gva);
-void prepare_for_vmx_operation(struct vmx_pages *vmx);
-void prepare_vmcs(struct vmx_pages *vmx, void *guest_rip);
-void load_vmcs(struct vmx_pages *vmx);
+bool prepare_for_vmx_operation(struct vmx_pages *vmx);
+void prepare_vmcs(struct vmx_pages *vmx, void *guest_rip, void *guest_rsp);
+bool load_vmcs(struct vmx_pages *vmx);
 
 bool ept_1g_pages_supported(void);
 
-bool kvm_cpu_has_secondary_exec_control(u32 ctrl);
-
-static inline bool kvm_cpu_has_ept(void)
-{
-	return kvm_cpu_has_secondary_exec_control(SECONDARY_EXEC_ENABLE_EPT);
-}
-
-static inline bool kvm_cpu_has_vmx_virtualize_apic_accesses(void)
-{
-	return kvm_cpu_has_secondary_exec_control(SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES);
-}
-
+bool kvm_cpu_has_ept(void);
 void vm_enable_ept(struct kvm_vm *vm);
 void prepare_virtualize_apic_accesses(struct vmx_pages *vmx, struct kvm_vm *vm);
 

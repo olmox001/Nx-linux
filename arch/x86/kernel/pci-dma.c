@@ -59,8 +59,10 @@ static void __init pci_swiotlb_detect(void)
 	 * bounce buffers as the hypervisor can't access arbitrary VM memory
 	 * that is not explicitly shared with it.
 	 */
-	if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
+	if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT)) {
 		x86_swiotlb_enable = true;
+		x86_swiotlb_flags |= SWIOTLB_FORCE;
+	}
 }
 #else
 static inline void __init pci_swiotlb_detect(void)
@@ -114,7 +116,13 @@ static __init int iommu_setup(char *p)
 		return -EINVAL;
 
 	while (*p) {
-		if (!strncmp(p, "off", 3))
+		if (!strncmp(p, "off", 3)) {
+			if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
+				pr_warn("iommu=off ignored on AMD. Use iommu=forceoff if you really mean it\n");
+			else
+				no_iommu = 1;
+		}
+		if (!strncmp(p, "forceoff", 8))
 			no_iommu = 1;
 		/* gart_parse_options has more force support */
 		if (!strncmp(p, "force", 5))

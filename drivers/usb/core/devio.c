@@ -2329,13 +2329,6 @@ static int proc_ioctl(struct usb_dev_state *ps, struct usbdevfs_ioctl *ctl)
 	if (!connected(ps))
 		return -ENODEV;
 
-	if (ps->dev->state != USB_STATE_CONFIGURED)
-		return -EHOSTUNREACH;
-
-	intf = usb_ifnum_to_if(ps->dev, ctl->ifno);
-	if (!intf)
-		return -EINVAL;
-
 	/* alloc buffer */
 	size = _IOC_SIZE(ctl->ioctl_code);
 	if (size > 0) {
@@ -2352,7 +2345,11 @@ static int proc_ioctl(struct usb_dev_state *ps, struct usbdevfs_ioctl *ctl)
 		}
 	}
 
-	switch (ctl->ioctl_code) {
+	if (ps->dev->state != USB_STATE_CONFIGURED)
+		retval = -EHOSTUNREACH;
+	else if (!(intf = usb_ifnum_to_if(ps->dev, ctl->ifno)))
+		retval = -EINVAL;
+	else switch (ctl->ioctl_code) {
 
 	/* disconnect kernel driver from interface */
 	case USBDEVFS_DISCONNECT:

@@ -25,7 +25,6 @@ see the :doc:`admin guide <../admin-guide/mm/index>`.
 
    physical_memory
    page_tables
-   kernel-page-tables
    process_addrs
    bootmem
    page_allocation

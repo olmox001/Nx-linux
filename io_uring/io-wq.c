@@ -19,7 +19,6 @@
 #include <linux/mmu_context.h>
 #include <linux/sched/sysctl.h>
 #include <uapi/linux/io_uring.h>
-#include <linux/kcov.h>
 
 #include "io-wq.h"
 #include "slist.h"
@@ -526,8 +525,7 @@ static bool io_wait_on_hash(struct io_wq *wq, unsigned int hash)
 }
 
 static struct io_wq_work *io_get_next_work(struct io_wq_acct *acct,
-					   struct io_wq *wq,
-					   bool *need_wake)
+					   struct io_wq *wq)
 	__must_hold(acct->lock)
 {
 	struct io_wq_work_node *node, *prev;
@@ -576,7 +574,8 @@ static struct io_wq_work *io_get_next_work(struct io_wq_acct *acct,
 		raw_spin_lock(&acct->lock);
 		if (unstalled) {
 			clear_bit(IO_ACCT_STALLED_BIT, &acct->flags);
-			*need_wake = wq_has_sleeper(&wq->hash->wait);
+			if (wq_has_sleeper(&wq->hash->wait))
+				wake_up(&wq->hash->wait);
 		}
 	}
 
@@ -616,7 +615,6 @@ static void io_worker_handle_work(struct io_wq_acct *acct,
 
 	do {
 		struct io_wq_work *work;
-		bool need_wake = false;
 
 		/*
 		 * If we got some work, mark us as busy. If we didn't, but
@@ -625,7 +623,7 @@ static void io_worker_handle_work(struct io_wq_acct *acct,
 		 * can't make progress, any work completion or insertion will
 		 * clear the stalled flag.
 		 */
-		work = io_get_next_work(acct, wq, &need_wake);
+		work = io_get_next_work(acct, wq);
 		if (work) {
 			/*
 			 * Make sure cancelation can find this, even before
@@ -638,9 +636,6 @@ static void io_worker_handle_work(struct io_wq_acct *acct,
 		}
 
 		raw_spin_unlock(&acct->lock);
-
-		if (need_wake)
-			wake_up(&wq->hash->wait);
 
 		if (!work)
 			break;
@@ -658,7 +653,6 @@ static void io_worker_handle_work(struct io_wq_acct *acct,
 			unsigned int hash = __io_wq_is_hashed(work_flags)
 				? __io_get_work_hash(work_flags)
 				: -1U;
-			struct io_kiocb *req;
 			bool last;
 
 			next_hashed = wq_next_work(work);
@@ -672,10 +666,7 @@ static void io_worker_handle_work(struct io_wq_acct *acct,
 				atomic_or(IO_WQ_WORK_CANCEL, &work->flags);
 			else if (do_kill)
 				set_notify_signal(current);
-			req = container_of(work, struct io_kiocb, work);
-			kcov_remote_start_common(req->ctx->kcov_handle);
 			io_wq_submit_work(work);
-			kcov_remote_stop();
 			io_assign_current_work(worker, NULL);
 
 			last = io_wq_put_work(work, &linked);
@@ -1048,7 +1039,7 @@ static void io_wq_for_each_worker(struct io_wq *wq,
 
 static bool io_wq_worker_wake(struct io_worker *worker, void *data)
 {
-	set_tsk_thread_flag(worker->task, TIF_NOTIFY_SIGNAL);
+	__set_notify_signal(worker->task);
 	wake_up_process(worker->task);
 	return false;
 }
@@ -1420,12 +1411,6 @@ void io_wq_exit_start(struct io_wq *wq)
 	set_bit(IO_WQ_BIT_EXIT, &wq->state);
 	/* Pairs with task_work_add() in io_queue_worker_create(). */
 	smp_mb__after_atomic();
-	/*
-	 * No more workers from here on. The caller is going to run its task
-	 * work, and on exec a thread that is created now would still be
-	 * around, exiting, by the time that the caller must be on its own.
-	 */
-	io_wq_cancel_tw_create(wq);
 }
 
 static void io_wq_cancel_tw_create(struct io_wq *wq)
@@ -1434,16 +1419,14 @@ static void io_wq_cancel_tw_create(struct io_wq *wq)
 
 	while ((cb = task_work_cancel_match(wq->task, io_task_work_match, wq)) != NULL) {
 		struct io_worker *worker;
-		bool free_worker;
 
 		worker = container_of(cb, struct io_worker, create_work);
+		io_worker_cancel_cb(worker);
 		/*
 		 * Only the worker continuation helper has worker allocated and
-		 * hence needs freeing. Save this before dropping its reference.
+		 * hence needs freeing.
 		 */
-		free_worker = cb->func == create_worker_cont;
-		io_worker_cancel_cb(worker);
-		if (free_worker)
+		if (cb->func == create_worker_cont)
 			kfree(worker);
 	}
 }

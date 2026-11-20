@@ -335,7 +335,7 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 	int i, irq;
 	int ret;
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -359,7 +359,8 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 	}
 
 	priv->map_cnt = ret / 2;
-	priv->maps = devm_kzalloc_objs(dev, *priv->maps, priv->map_cnt);
+	priv->maps = devm_kcalloc(dev, priv->map_cnt, sizeof(*priv->maps),
+				  GFP_KERNEL);
 	if (!priv->maps)
 		return -ENOMEM;
 
@@ -463,8 +464,10 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 
 	ret = devm_request_irq(dev, irq, qcom_mpm_handler, IRQF_NO_SUSPEND,
 			       "qcom_mpm", priv);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "failed to request irq: %d\n", ret);
 		goto remove_domain;
+	}
 
 	return 0;
 

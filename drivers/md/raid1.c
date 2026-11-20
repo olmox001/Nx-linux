@@ -483,7 +483,10 @@ static void raid1_end_write_request(struct bio *bio)
 	 * 'one mirror IO has finished' event handler:
 	 */
 	if (bio->bi_status && !ignore_error) {
-		rdev_record_write_error(rdev);
+		set_bit(WriteErrorSeen,	&rdev->flags);
+		if (!test_and_set_bit(WantReplacement, &rdev->flags))
+			set_bit(MD_RECOVERY_NEEDED, &
+				conf->mddev->recovery);
 
 		if (test_bit(FailFast, &rdev->flags) &&
 		    (bio->bi_opf & MD_FAILFAST) &&
@@ -601,9 +604,9 @@ static void update_read_sectors(struct r1conf *conf, int disk,
 	struct raid1_info *info = &conf->mirrors[disk];
 
 	atomic_inc(&info->rdev->nr_pending);
-	if (READ_ONCE(info->next_seq_sect) != this_sector)
-		WRITE_ONCE(info->seq_start, this_sector);
-	WRITE_ONCE(info->next_seq_sect, this_sector + len);
+	if (info->next_seq_sect != this_sector)
+		info->seq_start = this_sector;
+	info->next_seq_sect = this_sector + len;
 }
 
 static int choose_first_rdev(struct r1conf *conf, struct r1bio *r1_bio,
@@ -732,7 +735,8 @@ static int choose_slow_rdev(struct r1conf *conf, struct r1bio *r1_bio,
 
 static bool is_sequential(struct r1conf *conf, int disk, struct r1bio *r1_bio)
 {
-	return READ_ONCE(conf->mirrors[disk].next_seq_sect) == r1_bio->sector ||
+	/* TODO: address issues with this check and concurrency. */
+	return conf->mirrors[disk].next_seq_sect == r1_bio->sector ||
 	       READ_ONCE(conf->mirrors[disk].head_position) == r1_bio->sector;
 }
 
@@ -743,18 +747,15 @@ static bool is_sequential(struct r1conf *conf, int disk, struct r1bio *r1_bio)
 static bool should_choose_next(struct r1conf *conf, int disk)
 {
 	struct raid1_info *mirror = &conf->mirrors[disk];
-	sector_t seq_start, next_seq_sect;
 	int opt_iosize;
 
 	if (!test_bit(Nonrot, &mirror->rdev->flags))
 		return false;
 
 	opt_iosize = bdev_io_opt(mirror->rdev->bdev) >> 9;
-	seq_start = READ_ONCE(mirror->seq_start);
-	next_seq_sect = READ_ONCE(mirror->next_seq_sect);
-	return opt_iosize > 0 && seq_start != MaxSector &&
-	       next_seq_sect > opt_iosize &&
-	       next_seq_sect - opt_iosize >= seq_start;
+	return opt_iosize > 0 && mirror->seq_start != MaxSector &&
+	       mirror->next_seq_sect > opt_iosize &&
+	       mirror->next_seq_sect - opt_iosize >= mirror->seq_start;
 }
 
 static bool rdev_readable(struct md_rdev *rdev, struct r1bio *r1_bio)
@@ -919,6 +920,21 @@ static void wake_up_barrier(struct r1conf *conf)
 		wake_up(&conf->wait_barrier);
 }
 
+static void flush_bio_list(struct r1conf *conf, struct bio *bio)
+{
+	/* flush any pending bitmap writes to disk before proceeding w/ I/O */
+	raid1_prepare_flush_writes(conf->mddev);
+	wake_up_barrier(conf);
+
+	while (bio) { /* submit pending writes */
+		struct bio *next = bio->bi_next;
+
+		raid1_submit_write(bio);
+		bio = next;
+		cond_resched();
+	}
+}
+
 static void flush_pending_writes(struct r1conf *conf)
 {
 	/* Any writes that have been queued but are awaiting
@@ -944,7 +960,7 @@ static void flush_pending_writes(struct r1conf *conf)
 		 */
 		__set_current_state(TASK_RUNNING);
 		blk_start_plug(&plug);
-		flush_bio_list(conf->mddev, bio, &conf->wait_barrier);
+		flush_bio_list(conf, bio);
 		blk_finish_plug(&plug);
 	} else
 		spin_unlock_irq(&conf->device_lock);
@@ -1274,7 +1290,7 @@ static void raid1_unplug(struct blk_plug_cb *cb, bool from_schedule)
 
 	/* we aren't scheduling, so we can do the write-out directly. */
 	bio = bio_list_get(&plug->pending);
-	flush_bio_list(conf->mddev, bio, &conf->wait_barrier);
+	flush_bio_list(conf, bio);
 	kfree(plug);
 }
 
@@ -2049,7 +2065,10 @@ static void end_sync_write(struct bio *bio)
 
 	if (bio->bi_status) {
 		abort_sync_write(mddev, r1_bio);
-		rdev_record_write_error(rdev);
+		set_bit(WriteErrorSeen, &rdev->flags);
+		if (!test_and_set_bit(WantReplacement, &rdev->flags))
+			set_bit(MD_RECOVERY_NEEDED, &
+				mddev->recovery);
 		set_bit(R1BIO_WriteError, &r1_bio->state);
 	} else if (rdev_has_badblock(rdev, r1_bio->sector, r1_bio->sectors) &&
 		   !rdev_has_badblock(conf->mirrors[r1_bio->read_disk].rdev,
@@ -2067,7 +2086,11 @@ static int r1_sync_page_io(struct md_rdev *rdev, sector_t sector,
 		/* success */
 		return 1;
 	if (rw == REQ_OP_WRITE) {
-		rdev_record_write_error(rdev);
+		set_bit(WriteErrorSeen, &rdev->flags);
+		if (!test_and_set_bit(WantReplacement,
+				      &rdev->flags))
+			set_bit(MD_RECOVERY_NEEDED, &
+				rdev->mddev->recovery);
 	}
 	/* need to record an error - either for the block or the device */
 	rdev_set_badblocks(rdev, sector, sectors, 0);
@@ -2450,10 +2473,15 @@ static void narrow_write_error(struct r1bio *r1_bio, int i)
 	 * We currently own a reference on the rdev.
 	 */
 
-	int block_sectors = rdev_bb_block_sectors(rdev);
+	int block_sectors, lbs = bdev_logical_block_size(rdev->bdev) >> 9;
 	sector_t sector;
 	int sectors;
 	int sect_to_write = r1_bio->sectors;
+
+	if (rdev->badblocks.shift < 0)
+		block_sectors = lbs;
+	else
+		block_sectors = roundup(1 << rdev->badblocks.shift, lbs);
 
 	sector = r1_bio->sector;
 	sectors = ((sector + block_sectors)

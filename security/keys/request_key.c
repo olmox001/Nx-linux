@@ -9,7 +9,7 @@
 
 #include <linux/export.h>
 #include <linux/sched.h>
-#include <linux/umh.h>
+#include <linux/kmod.h>
 #include <linux/err.h>
 #include <linux/keyctl.h>
 #include <linux/slab.h>
@@ -584,6 +584,7 @@ struct key *request_key_and_link(struct key_type *type,
 		.index_key.type		= type,
 		.index_key.domain_tag	= domain_tag,
 		.index_key.description	= description,
+		.index_key.desc_len	= strlen(description),
 		.cred			= current_cred(),
 		.match_data.cmp		= key_default_cmp,
 		.match_data.raw_data	= description,
@@ -594,13 +595,7 @@ struct key *request_key_and_link(struct key_type *type,
 	};
 	struct key *key;
 	key_ref_t key_ref;
-	size_t desclen;
 	int ret;
-
-	desclen = strlen(description);
-	if (desclen >= KEY_MAX_DESC_SIZE)
-		return ERR_PTR(-EINVAL);
-	ctx.index_key.desc_len = desclen;
 
 	kenter("%s,%s,%p,%zu,%p,%p,%lx",
 	       ctx.index_key.type->name, ctx.index_key.description,
@@ -792,6 +787,7 @@ struct key *request_key_rcu(struct key_type *type,
 		.index_key.type		= type,
 		.index_key.domain_tag	= domain_tag,
 		.index_key.description	= description,
+		.index_key.desc_len	= strlen(description),
 		.cred			= current_cred(),
 		.match_data.cmp		= key_default_cmp,
 		.match_data.raw_data	= description,
@@ -801,12 +797,6 @@ struct key *request_key_rcu(struct key_type *type,
 	};
 	struct key *key;
 	key_ref_t key_ref;
-	size_t desclen;
-
-	desclen = strlen(description);
-	if (desclen >= KEY_MAX_DESC_SIZE)
-		return ERR_PTR(-EINVAL);
-	ctx.index_key.desc_len = desclen;
 
 	kenter("%s,%s", type->name, description);
 

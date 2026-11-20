@@ -123,7 +123,7 @@ static int cygnus_pcie_phy_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	core = devm_kzalloc_obj(dev, *core);
+	core = devm_kzalloc(dev, sizeof(*core), GFP_KERNEL);
 	if (!core)
 		return -ENOMEM;
 

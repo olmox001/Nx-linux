@@ -1108,7 +1108,7 @@ static int vc7_probe(struct i2c_client *client)
 	unsigned long apll_rate;
 	int ret;
 
-	vc7 = devm_kzalloc_obj(&client->dev, *vc7);
+	vc7 = devm_kzalloc(&client->dev, sizeof(*vc7), GFP_KERNEL);
 	if (!vc7)
 		return -ENOMEM;
 
@@ -1288,8 +1288,8 @@ static const struct regmap_config vc7_regmap_config = {
 };
 
 static const struct i2c_device_id vc7_i2c_id[] = {
-	{ .name = "rc21008a", .driver_data = (kernel_ulong_t)&vc7_rc21008a_info },
-	{ }
+	{ "rc21008a", .driver_data = (kernel_ulong_t)&vc7_rc21008a_info },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, vc7_i2c_id);
 

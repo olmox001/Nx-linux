@@ -711,8 +711,9 @@
 };
 
 &ipa {
+	qcom,gsi-loader = "self";
+	memory-region = <&pil_ipa_fw_mem>;
 	firmware-name = "qcom/sm7225/fairphone4/ipa_fws.mbn";
-
 	status = "okay";
 };
 
@@ -990,10 +991,6 @@
 		qcom,hw-settle-time-us = <200>;
 		qcom,ratiometric;
 	};
-};
-
-&pmk8350_pon {
-	status = "disabled";
 };
 
 &pmk8350_rtc {

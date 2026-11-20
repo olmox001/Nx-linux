@@ -529,6 +529,7 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 	const char *platform_name;
 	struct cht_mc_private *drv;
 	struct acpi_device *adev;
+	struct device *codec_dev;
 	bool sof_parent;
 	bool found = false;
 	bool is_bytcr = false;
@@ -537,7 +538,7 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 	int i;
 	const char *mclk_name;
 
-	drv = devm_kzalloc_obj(&pdev->dev, *drv);
+	drv = devm_kzalloc(&pdev->dev, sizeof(*drv), GFP_KERNEL);
 	if (!drv)
 		return -ENOMEM;
 
@@ -582,8 +583,8 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	struct device *codec_dev __free(put_device) = acpi_bus_get_primary_device(adev);
-
+	/* acpi_get_first_physical_node() returns a borrowed ref, no need to deref */
+	codec_dev = acpi_get_first_physical_node(adev);
 	acpi_dev_put(adev);
 	if (!codec_dev)
 		return -EPROBE_DEFER;

@@ -221,7 +221,7 @@ static void ipaq_micro_eeprom_read(struct ipaq_micro *micro,
 
 static char *ipaq_micro_str(u8 *wchar, u8 len)
 {
-	char retstr[256] = { 0 };
+	char retstr[256];
 	u8 i;
 
 	for (i = 0; i < len / 2; i++)
@@ -381,7 +381,7 @@ static int __init micro_probe(struct platform_device *pdev)
 	int ret;
 	int irq;
 
-	micro = devm_kzalloc_obj(&pdev->dev, *micro);
+	micro = devm_kzalloc(&pdev->dev, sizeof(*micro), GFP_KERNEL);
 	if (!micro)
 		return -ENOMEM;
 

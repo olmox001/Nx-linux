@@ -189,7 +189,7 @@ static int spacemit_usb2phy_probe(struct platform_device *pdev)
 	const struct phy_ops *ops;
 	void __iomem *base;
 
-	sphy = devm_kzalloc_obj(dev, *sphy);
+	sphy = devm_kzalloc(dev, sizeof(*sphy), GFP_KERNEL);
 	if (!sphy)
 		return -ENOMEM;
 

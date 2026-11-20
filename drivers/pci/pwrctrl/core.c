@@ -252,16 +252,14 @@ static int __pci_pwrctrl_power_on_device(struct device *dev)
 static int pci_pwrctrl_power_on_device(struct device_node *np)
 {
 	struct platform_device *pdev;
-	struct device_node *child;
 	int ret = 0;
 
-	for_each_available_child_of_node(np, child) {
+	for_each_available_child_of_node_scoped(np, child) {
 		ret = pci_pwrctrl_power_on_device(child);
 		if (ret)
-			goto err_power_off;
+			return ret;
 	}
 
-	child = NULL;
 	if (!pci_pwrctrl_is_required(np))
 		return 0;
 
@@ -280,19 +278,6 @@ static int pci_pwrctrl_power_on_device(struct device_node *np)
 	}
 
 	platform_device_put(pdev);
-
-	if (ret)
-		goto err_power_off;
-
-	return 0;
-
-err_power_off:
-	for_each_available_child_of_node_scoped(np, tmp) {
-		if (tmp == child)
-			break;
-		pci_pwrctrl_power_off_device(tmp);
-	}
-	of_node_put(child);
 
 	return ret;
 }
@@ -402,9 +387,6 @@ static void pci_pwrctrl_destroy_device(struct device_node *np)
 
 	for_each_available_child_of_node_scoped(np, child)
 		pci_pwrctrl_destroy_device(child);
-
-	if (!pci_pwrctrl_is_required(np))
-		return;
 
 	pdev = of_find_device_by_node(np);
 	if (!pdev)

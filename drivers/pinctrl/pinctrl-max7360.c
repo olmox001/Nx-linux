@@ -173,7 +173,7 @@ static int max7360_pinctrl_probe(struct platform_device *pdev)
 	if (!regmap)
 		return dev_err_probe(dev, -ENODEV, "Could not get parent regmap\n");
 
-	chip = devm_kzalloc_obj(dev, *chip);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 

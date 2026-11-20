@@ -149,6 +149,7 @@ static const struct regmap_config config = {
 	.reg_bits = 32,
 	.val_bits = 32,
 	.reg_stride = 4,
+	.fast_io = true,
 	.max_register = 0xfc,
 };
 
@@ -556,7 +557,7 @@ static int sun8i_ths_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret, irq;
 
-	tmdev = devm_kzalloc_obj(dev, *tmdev);
+	tmdev = devm_kzalloc(dev, sizeof(*tmdev), GFP_KERNEL);
 	if (!tmdev)
 		return -ENOMEM;
 

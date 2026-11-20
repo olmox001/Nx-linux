@@ -6,7 +6,6 @@
 
 #include <linux/types.h>
 #include <linux/mutex.h>
-#include <linux/srcu.h>
 #include <linux/spinlock_types.h>
 #include <linux/refcount_types.h>
 
@@ -18,19 +17,15 @@ struct ice_pf;
 /**
  * struct ice_port_list - data used to store the list of adapter ports
  *
- * This structure contains data used to maintain a list of adapter ports.
- * Writers modifying the list *must* acquire the lock, and use SRCU safe list
- * operations. Readers should use srcu_read_lock() on the provided domain.
+ * This structure contains data used to maintain a list of adapter ports
  *
- * @list: list of ports
- * @lock: protect write access to the list
- * @srcu: Sleepable RCU domain for this adapter
+ * @ports: list of ports
+ * @lock: protect access to the ports list
  */
 struct ice_port_list {
-	struct list_head list;
-	/* To synchronize write operations on the port list */
-	spinlock_t lock;
-	struct srcu_struct srcu;
+	struct list_head ports;
+	/* To synchronize the ports list operations */
+	struct mutex lock;
 };
 
 /**
@@ -41,8 +36,6 @@ struct ice_port_list {
  * @txq_ctx_lock: Spinlock protecting access to the GLCOMM_QTX_CNTX_CTL register
  * @cpi_phy_lock: Per-PHY mutex serializing CPI REQ/ACK transactions.
  *               Index 0 = PHY0, index 1 = PHY1. Used on E825C devices.
- * @cgu_synce_lock: Mutex serializing changes of the CGU registers R10 and R11,
- *                  which all PFs reach. Used on E825C devices.
  * @ctrl_pf: Control PF of the adapter
  * @ports: Ports list
  * @index: 64-bit index cached for collision detection on 32bit systems
@@ -55,8 +48,6 @@ struct ice_adapter {
 	spinlock_t txq_ctx_lock;
 	/* Serialize CPI REQ/ACK transactions per PHY (E825C only) */
 	struct mutex cpi_phy_lock[ICE_E825_MAX_PHYS];
-	/* Serialize changes of the SyncE CGU registers (E825C only) */
-	struct mutex cgu_synce_lock;
 
 	struct ice_pf *ctrl_pf;
 	struct ice_port_list ports;

@@ -17,8 +17,6 @@
 static int interleave_arithmetic;
 static bool extended_linear_cache;
 static bool fail_autoassemble;
-static bool type2_test;
-static bool mock_zero_size_decoders;
 
 #define FAKE_QTG_ID	42
 
@@ -387,19 +385,6 @@ static struct {
 	},
 };
 
-static struct acpi_cedt_cfmws type2_cfmws0 = {
-	.header = {
-		.type = ACPI_CEDT_TYPE_CFMWS,
-		.length = sizeof(mock_cedt.cfmws0),
-	},
-	.interleave_ways = 0,
-	.granularity = 4,
-	.restrictions = ACPI_CEDT_CFMWS_RESTRICT_DEVMEM |
-			ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
-	.qtg_id = FAKE_QTG_ID,
-	.window_size = SZ_256M * 4,
-};
-
 struct acpi_cedt_cfmws *mock_cfmws[] = {
 	[0] = &mock_cedt.cfmws0.cfmws,
 	[1] = &mock_cedt.cfmws1.cfmws,
@@ -492,11 +477,6 @@ static void cfmws_elc_update(struct acpi_cedt_cfmws *window, int index)
 	window->window_size = mock_auto_region_size * 2;
 }
 
-static void update_type2_cfmws(void)
-{
-	memcpy(&mock_cedt.cfmws0.cfmws, &type2_cfmws0, sizeof(type2_cfmws0));
-}
-
 static int populate_cedt(void)
 {
 	struct cxl_mock_res *res;
@@ -518,15 +498,11 @@ static int populate_cedt(void)
 		chbs->length = size;
 	}
 
-	if (type2_test)
-		update_type2_cfmws();
-
 	for (i = cfmws_start; i <= cfmws_end; i++) {
 		struct acpi_cedt_cfmws *window = mock_cfmws[i];
 		int align = SZ_256M;
 
-		if (i == 0 && !type2_test)
-			cfmws_elc_update(window, i);
+		cfmws_elc_update(window, i);
 		if (window->restrictions & ACPI_CEDT_CFMWS_RESTRICT_VOLATILE)
 			align = max_t(int, SZ_256M, PMD_SIZE);
 		res = alloc_mock_res(window->window_size, align);
@@ -873,13 +849,14 @@ static int cxld_registry_restore(struct cxl_decoder *cxld,
 		cxld_copy(cxld, &td->cxled.cxld);
 		cxled->state = td->cxled.state;
 		cxled->skip = td->cxled.skip;
-		/* enabled endpoint decoders hold a reservation, sized or not */
-		rc = devm_cxl_dpa_reserve(cxled, td->dpa_range.start,
-					  range_len(&td->dpa_range),
-					  td->cxled.skip);
-		if (rc) {
-			init_disabled_mock_decoder(cxld);
-			return rc;
+		if (range_len(&td->dpa_range)) {
+			rc = devm_cxl_dpa_reserve(cxled, td->dpa_range.start,
+						  range_len(&td->dpa_range),
+						  td->cxled.skip);
+			if (rc) {
+				init_disabled_mock_decoder(cxld);
+				return rc;
+			}
 		}
 		port->commit_end = cxld->id;
 	}
@@ -1072,71 +1049,86 @@ static void default_mock_decoder(struct cxl_decoder *cxld)
 	WARN_ON_ONCE(!cxld_registry_new(cxld));
 }
 
-static int match_decoder_by_index(struct device *dev, const void *data)
+static int first_decoder(struct device *dev, const void *data)
 {
-	int target_id = *(const int *)data;
 	struct cxl_decoder *cxld;
 
 	if (!is_switch_decoder(dev))
 		return 0;
 	cxld = to_cxl_decoder(dev);
-	return cxld->id == target_id;
+	if (cxld->id == 0)
+		return 1;
+	return 0;
 }
 
 /*
- * Mock a committed, locked, empty decoder
- * (CXL r4.0 8.2.4.20.12). Gated by the mock_zero_size_decoders module
- * param so the default cxl_test topology, shared by the region test
- * suite, is left undisturbed.
+ * Initialize a decoder during HDM enumeration.
+ *
+ * If a saved registry entry exists:
+ *   - enabled decoders are restored from the saved programming
+ *   - disabled decoders are initialized in a clean disabled state
+ *
+ * If no registry entry exists the decoder follows the normal mock
+ * initialization path, including the special auto-region setup for
+ * the first endpoints under host-bridge0.
+ *
+ * Returns true if decoder state was restored from the registry. In
+ * that case the saved decode configuration (including target mapping)
+ * has already been applied and the map_targets() is skipped.
  */
-static void size_zero_mock_decoder_ep(struct cxl_decoder *cxld, u64 base)
+static bool mock_init_hdm_decoder(struct cxl_decoder *cxld)
 {
-	struct cxl_endpoint_decoder *cxled = to_cxl_endpoint_decoder(&cxld->dev);
+	struct acpi_cedt_cfmws *window = mock_cfmws[0];
+	struct platform_device *pdev = NULL;
+	struct cxl_endpoint_decoder *cxled;
+	struct cxl_switch_decoder *cxlsd;
+	struct cxl_port *port, *iter;
+	struct cxl_test_decoder *td;
+	struct cxl_memdev *cxlmd;
+	struct cxl_dport *dport;
+	struct device *dev;
+	bool hb0 = false;
+	u64 base;
+	int i;
 
-	cxld->hpa_range = DEFINE_RANGE(base, base - 1);
-	cxld->interleave_ways = 2;
-	cxld->interleave_granularity = 4096;
-	cxld->target_type = CXL_DECODER_HOSTONLYMEM;
-	cxld->flags = CXL_DECODER_F_ENABLE | CXL_DECODER_F_LOCK;
-	cxled->state = CXL_DECODER_STATE_AUTO;
-	/* decoder[0] reserved [0, size/2), empty decoders sit at that watermark */
-	devm_cxl_dpa_reserve(cxled, mock_auto_region_size / 2, 0, 0);
-	cxld->commit = mock_decoder_commit;
-	cxld->reset = mock_decoder_reset;
-}
+	if (is_endpoint_decoder(&cxld->dev)) {
+		cxled = to_cxl_endpoint_decoder(&cxld->dev);
+		cxlmd = cxled_to_memdev(cxled);
+		WARN_ON(!dev_is_platform(cxlmd->dev.parent));
+		pdev = to_platform_device(cxlmd->dev.parent);
 
-static void size_zero_mock_decoder_sw(struct cxl_decoder *cxld, u64 base,
-				      int level)
-{
-	cxld->flags = CXL_DECODER_F_ENABLE | CXL_DECODER_F_LOCK;
-	cxld->target_type = CXL_DECODER_HOSTONLYMEM;
-	cxld->interleave_ways = level == 0 ? 2 : 1;
-	cxld->interleave_granularity = 4096;
-	cxld->hpa_range = DEFINE_RANGE(base, base - 1);
-	cxld->commit = mock_decoder_commit;
-	cxld->reset = mock_decoder_reset;
-}
-
-enum cxld_init_type {
-	MOCK_DECODER_INIT_DEFAULT,
-	MOCK_DECODER_INIT_SAVED,
-	MOCK_DECODER_INIT_TYPE3_AUTO,
-	MOCK_DECODER_INIT_TYPE2_AUTO,
-};
-
-static enum cxld_init_type get_decoder_init_type(struct cxl_decoder *cxld,
-						 struct platform_device *pdev,
-						 bool hb0,
-						 struct cxl_test_decoder **td)
-{
-	struct cxl_test_decoder *found_td = cxld_registry_find(cxld);
-
-	if (found_td) {
-		*td = found_td;
-		return MOCK_DECODER_INIT_SAVED;
+		/* check is endpoint is attach to host-bridge0 */
+		port = cxled_to_port(cxled);
+		do {
+			if (port->uport_dev == &cxl_host_bridge[0]->dev) {
+				hb0 = true;
+				break;
+			}
+			if (is_cxl_port(port->dev.parent))
+				port = to_cxl_port(port->dev.parent);
+			else
+				port = NULL;
+		} while (port);
+		port = cxled_to_port(cxled);
+	} else {
+		port = to_cxl_port(cxld->dev.parent);
 	}
 
-	*td = NULL;
+	td = cxld_registry_find(cxld);
+	if (td) {
+		bool enabled;
+
+		if (is_switch_decoder(&cxld->dev))
+			enabled = td->cxlsd.cxld.flags & CXL_DECODER_F_ENABLE;
+		else
+			enabled = td->cxled.cxld.flags & CXL_DECODER_F_ENABLE;
+
+		if (enabled)
+			return !cxld_registry_restore(cxld, td);
+
+		init_disabled_mock_decoder(cxld);
+		return false;
+	}
 
 	/*
 	 * The first decoder on the first 2 devices on the first switch
@@ -1147,139 +1139,20 @@ static enum cxld_init_type get_decoder_init_type(struct cxl_decoder *cxld,
 	 * See 'cxl list -BMPu -m cxl_mem.0,cxl_mem.4'
 	 */
 	if (!is_endpoint_decoder(&cxld->dev) || !hb0 || pdev->id % 4 ||
-	    pdev->id > 4 || cxld->id > (mock_zero_size_decoders ? 2 : 0))
-		return MOCK_DECODER_INIT_DEFAULT;
-
-	return type2_test ? MOCK_DECODER_INIT_TYPE2_AUTO :
-			    MOCK_DECODER_INIT_TYPE3_AUTO;
-}
-
-static bool mock_decoder_handle_saved(struct cxl_decoder *cxld, struct cxl_test_decoder *td)
-{
-	bool enabled;
-
-	if (is_switch_decoder(&cxld->dev))
-		enabled = td->cxlsd.cxld.flags & CXL_DECODER_F_ENABLE;
-	else
-		enabled = td->cxled.cxld.flags & CXL_DECODER_F_ENABLE;
-
-	if (enabled)
-		return !cxld_registry_restore(cxld, td);
-
-	init_disabled_mock_decoder(cxld);
-	return false;
-}
-
-static void mock_init_hdm_type2_cxled(struct cxl_endpoint_decoder *cxled,
-				      struct cxl_port *port)
-{
-	struct acpi_cedt_cfmws *window = mock_cfmws[0];
-	struct cxl_decoder *cxld = &cxled->cxld;
-	struct cxl_switch_decoder *cxlsd;
-	struct cxl_dport *dport;
-	struct cxl_port *root_port;
-	struct device *dev;
-	u64 base;
-	int id = 0;
-
-	base = window->base_hpa;
-	cxld->hpa_range = (struct range) {
-		.start = base,
-		.end = base + mock_auto_region_size - 1,
-	};
-
-	cxld->interleave_ways = 1;
-	eig_to_granularity(window->granularity, &cxld->interleave_granularity);
-	cxld->target_type = CXL_DECODER_DEVMEM;
-	cxld->flags = CXL_DECODER_F_ENABLE;
-	cxled->state = CXL_DECODER_STATE_AUTO;
-	port->commit_end = cxld->id;
-	devm_cxl_dpa_reserve(cxled, 0,
-			     mock_auto_region_size / cxld->interleave_ways, 0);
-	cxld->commit = mock_decoder_commit;
-	cxld->reset = mock_decoder_reset;
-
-	WARN_ON_ONCE(!cxld_registry_new(cxld));
-	/*
-	 * Now that endpoint decoder is set up, walk up the hierarchy
-	 * and setup the root port decoder targeting @cxlmd.
-	 */
-	dport = port->parent_dport;
-	root_port = dport->port;
-	dev = device_find_child(&root_port->dev, &id, match_decoder_by_index);
-	/*
-	 * Ancestor ports are guaranteed to be enumerated before
-	 * @port, and all ports have at least one decoder.
-	 */
-	if (WARN_ON(!dev))
-		return;
-
-	cxlsd = to_cxl_switch_decoder(dev);
-	cxld = &cxlsd->cxld;
-	cxld->target_type = CXL_DECODER_DEVMEM;
-	cxld->flags = CXL_DECODER_F_ENABLE;
-	root_port->commit_end = 0;
-	cxld->interleave_ways = 1;
-	cxld->interleave_granularity = 4096;
-	cxld->target_map[0] = dport->port_id;
-	cxld->hpa_range = (struct range) {
-		.start = base,
-		.end = base + mock_auto_region_size - 1,
-	};
-	cxld->commit = mock_decoder_commit;
-	cxld->reset = mock_decoder_reset;
-
-	/*
-	 * Only target_map[] is programmed above, mimicking
-	 * firmware. On real hardware target[] is populated as
-	 * dports enumerate, via update_decoder_targets(). The
-	 * mock's dports are already bound by now, so fire that
-	 * resolution explicitly here rather than stamping
-	 * target[] directly.
-	 */
-	cxl_port_update_decoder_targets(root_port, dport);
-
-	cxld_registry_update(cxld);
-	put_device(dev);
-}
-
-static void mock_init_hdm_type3_cxled(struct cxl_endpoint_decoder *cxled,
-				      struct cxl_port *port,
-				      struct platform_device *pdev,
-				      bool hb0)
-{
-	struct acpi_cedt_cfmws *window = mock_cfmws[0];
-	struct cxl_decoder *cxld = &cxled->cxld;
-	struct cxl_switch_decoder *cxlsd;
-	struct cxl_dport *dport;
-	struct cxl_port *iter;
-	struct device *dev;
-	u64 base;
-	int i;
+	    pdev->id > 4 || cxld->id > 0) {
+		default_mock_decoder(cxld);
+		return false;
+	}
 
 	/* Simulate missing cxl_mem.4 configuration */
 	if (hb0 && pdev->id == 4 && cxld->id == 0 && fail_autoassemble) {
 		default_mock_decoder(cxld);
-		return;
+		return false;
 	}
 
 	base = window->base_hpa;
 	if (extended_linear_cache)
 		base += mock_auto_region_size;
-
-	/*
-	 * With mock_zero_size_decoders, decoders 1 and 2 of the special
-	 * endpoints mock committed, locked, empty decoders above the
-	 * decoder[0] auto-region (CXL r4.0 8.2.4.20.12). commit_end then
-	 * points at a zero-size decoder, exercising the zero-size
-	 * reservation and poison-by-endpoint code paths.
-	 */
-	if (cxld->id == 1 || cxld->id == 2) {
-		size_zero_mock_decoder_ep(cxld, base);
-		port->commit_end = cxld->id;
-		WARN_ON_ONCE(!cxld_registry_new(cxld));
-		return;
-	}
 	cxld->hpa_range = (struct range) {
 		.start = base,
 		.end = base + mock_auto_region_size - 1,
@@ -1303,11 +1176,9 @@ static void mock_init_hdm_type3_cxled(struct cxl_endpoint_decoder *cxled,
 	 */
 	iter = port;
 	for (i = 0; i < 2; i++) {
-		int id = 0;
-
 		dport = iter->parent_dport;
 		iter = dport->port;
-		dev = device_find_child(&iter->dev, &id, match_decoder_by_index);
+		dev = device_find_child(&iter->dev, NULL, first_decoder);
 		/*
 		 * Ancestor ports are guaranteed to be enumerated before
 		 * @port, and all ports have at least one decoder.
@@ -1357,97 +1228,8 @@ static void mock_init_hdm_type3_cxled(struct cxl_endpoint_decoder *cxled,
 
 		cxld_registry_update(cxld);
 		put_device(dev);
-
-		if (!mock_zero_size_decoders)
-			continue;
-
-		/*
-		 * Mirror the endpoint: commit the next two switch decoders
-		 * as zero-size + locked so the empty-decoder layout extends
-		 * end-to-end through the switch and host bridge.
-		 */
-		for (id = 1; id <= 2; id++) {
-			dev = device_find_child(&iter->dev, &id,
-						match_decoder_by_index);
-			if (WARN_ON(!dev))
-				continue;
-			cxld = to_cxl_decoder(dev);
-			size_zero_mock_decoder_sw(cxld, base, i);
-			iter->commit_end = id;
-			cxld_registry_update(cxld);
-			put_device(dev);
-		}
-	}
-}
-
-/*
- * Initialize a decoder during HDM enumeration.
- *
- * If a saved registry entry exists:
- *   - enabled decoders are restored from the saved programming
- *   - disabled decoders are initialized in a clean disabled state
- *
- * If no registry entry exists the decoder follows the normal mock
- * initialization path, including the special auto-region setup for
- * the first endpoints under host-bridge0.
- *
- * Returns true if decoder state was restored from the registry. In
- * that case the saved decode configuration (including target mapping)
- * has already been applied and the map_targets() is skipped.
- */
-static bool mock_init_hdm_decoder(struct cxl_decoder *cxld)
-{
-	struct cxl_endpoint_decoder *cxled = NULL;
-	struct platform_device *pdev = NULL;
-	struct cxl_test_decoder *td;
-	struct cxl_memdev *cxlmd;
-	struct cxl_port *port;
-	bool hb0 = false;
-
-	if (is_endpoint_decoder(&cxld->dev)) {
-		cxled = to_cxl_endpoint_decoder(&cxld->dev);
-		cxlmd = cxled_to_memdev(cxled);
-		WARN_ON(!dev_is_platform(cxlmd->dev.parent));
-		pdev = to_platform_device(cxlmd->dev.parent);
-
-		/* check is endpoint is attach to host-bridge0 */
-		port = cxled_to_port(cxled);
-		do {
-			if (port->uport_dev == &cxl_host_bridge[0]->dev) {
-				hb0 = true;
-				break;
-			}
-			if (is_cxl_port(port->dev.parent))
-				port = to_cxl_port(port->dev.parent);
-			else
-				port = NULL;
-		} while (port);
-		port = cxled_to_port(cxled);
-	} else {
-		port = to_cxl_port(cxld->dev.parent);
 	}
 
-	switch (get_decoder_init_type(cxld, pdev, hb0, &td)) {
-	case MOCK_DECODER_INIT_SAVED:
-		if (WARN_ON(!td))
-			return false;
-		return mock_decoder_handle_saved(cxld, td);
-	case MOCK_DECODER_INIT_DEFAULT:
-		/*
-		 * The default path picks up all the decoders that are not
-		 * endpoint.
-		 */
-		default_mock_decoder(cxld);
-		return false;
-	case MOCK_DECODER_INIT_TYPE3_AUTO:
-		mock_init_hdm_type3_cxled(cxled, port, pdev, hb0);
-		return false;
-	case MOCK_DECODER_INIT_TYPE2_AUTO:
-		mock_init_hdm_type2_cxled(cxled, port);
-		return false;
-	default:
-		return false;
-	}
 	return false;
 }
 
@@ -2015,7 +1797,7 @@ static int cxl_type2_mem_init(void)
 			goto err_mem;
 		}
 		pdev->dev.parent = &dport->dev;
-		set_dev_node(&pdev->dev, numa_map_to_online_node(i % 2));
+		set_dev_node(&pdev->dev, i % 2);
 
 		rc = cxl_mock_platform_device_add(pdev, &cxl_mem[i]);
 		if (rc)
@@ -2044,7 +1826,7 @@ static int cxl_type3_mem_init(void)
 			goto err_mem;
 		}
 		pdev->dev.parent = &dport->dev;
-		set_dev_node(&pdev->dev, numa_map_to_online_node(i % 2));
+		set_dev_node(&pdev->dev, i % 2);
 
 		rc = cxl_mock_platform_device_add(pdev, &cxl_mem[i]);
 		if (rc)
@@ -2061,7 +1843,7 @@ static int cxl_type3_mem_init(void)
 			goto err_single;
 		}
 		pdev->dev.parent = &dport->dev;
-		set_dev_node(&pdev->dev, numa_map_to_online_node(i % 2));
+		set_dev_node(&pdev->dev, i % 2);
 
 		rc = cxl_mock_platform_device_add(pdev, &cxl_mem_single[i]);
 		if (rc)
@@ -2079,7 +1861,7 @@ static int cxl_type3_mem_init(void)
 			goto err_rcd;
 		}
 		pdev->dev.parent = &rch->dev;
-		set_dev_node(&pdev->dev, numa_map_to_online_node(i % 2));
+		set_dev_node(&pdev->dev, i % 2);
 
 		rc = cxl_mock_platform_device_add(pdev, &cxl_rcd[i]);
 		if (rc)
@@ -2144,14 +1926,6 @@ static bool __init have_multiple_modparms(void)
 		count++;
 	if (hmem_test)
 		count++;
-	if (type2_test)
-		count++;
-	if (mock_zero_size_decoders)
-		count++;
-
-	/* Zero-size decoders require decoder[0] to preserve commit order. */
-	if (fail_autoassemble && mock_zero_size_decoders)
-		return true;
 
 	return count > 1;
 }
@@ -2558,11 +2332,6 @@ module_param(extended_linear_cache, bool, 0444);
 MODULE_PARM_DESC(extended_linear_cache, "Enable extended linear cache support");
 module_param(fail_autoassemble, bool, 0444);
 MODULE_PARM_DESC(fail_autoassemble, "Simulate missing member of an auto-region");
-module_param(type2_test, bool, 0444);
-MODULE_PARM_DESC(type2_test, "Enable type 2 support testing");
-module_param(mock_zero_size_decoders, bool, 0444);
-MODULE_PARM_DESC(mock_zero_size_decoders,
-		 "Mock committed, locked, empty decoders under host-bridge0");
 module_init(cxl_test_init);
 module_exit(cxl_test_exit);
 MODULE_LICENSE("GPL v2");

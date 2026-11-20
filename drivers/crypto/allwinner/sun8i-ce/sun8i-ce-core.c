@@ -696,7 +696,8 @@ static int sun8i_ce_allocate_chanlist(struct sun8i_ce_dev *ce)
 {
 	int i, err;
 
-	ce->chanlist = devm_kzalloc_objs(ce->dev, struct sun8i_ce_flow, MAXFLOW);
+	ce->chanlist = devm_kcalloc(ce->dev, MAXFLOW,
+				    sizeof(struct sun8i_ce_flow), GFP_KERNEL);
 	if (!ce->chanlist)
 		return -ENOMEM;
 
@@ -931,7 +932,7 @@ static int sun8i_ce_probe(struct platform_device *pdev)
 	int err, irq;
 	u32 v;
 
-	ce = devm_kzalloc_obj(&pdev->dev, *ce);
+	ce = devm_kzalloc(&pdev->dev, sizeof(*ce), GFP_KERNEL);
 	if (!ce)
 		return -ENOMEM;
 
@@ -975,8 +976,10 @@ static int sun8i_ce_probe(struct platform_device *pdev)
 
 	err = devm_request_irq(&pdev->dev, irq, ce_irq_handler, 0,
 			       "sun8i-ce-ns", ce);
-	if (err)
+	if (err) {
+		dev_err(ce->dev, "Cannot request CryptoEngine Non-secure IRQ (err=%d)\n", err);
 		goto error_pm;
+	}
 
 	err = sun8i_ce_register_algs(ce);
 	if (err)

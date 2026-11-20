@@ -539,32 +539,21 @@ set:
 static void ip_vs_sync_conn_v0(struct netns_ipvs *ipvs, struct ip_vs_conn *cp,
 			       int pkts)
 {
-	struct ip_vs_sync_conn_options opts;
 	struct ip_vs_sync_mesg_v0 *m;
 	struct ip_vs_sync_conn_v0 *s;
 	struct ip_vs_sync_buff *buff;
 	struct ipvs_master_sync_state *ms;
-	u32 flags, seq_mask;
-	unsigned int len;
 	int id;
+	unsigned int len;
 
 	if (unlikely(cp->af != AF_INET))
 		return;
-	flags = READ_ONCE(cp->flags);
 	/* Do not sync ONE PACKET */
-	if (flags & IP_VS_CONN_F_ONE_PACKET)
+	if (cp->flags & IP_VS_CONN_F_ONE_PACKET)
 		return;
 
 	if (!ip_vs_sync_conn_needed(ipvs, cp, pkts))
 		return;
-
-	if (flags & IP_VS_CONN_F_SEQ_MASK) {
-		/* Take atomic snapshot of flags and seqs */
-		spin_lock_bh(&cp->lock);
-		flags = cp->flags;
-		memcpy(&opts, &cp->sync_conn_opt, sizeof(opts));
-		spin_unlock_bh(&cp->lock);
-	}
 
 	spin_lock_bh(&ipvs->sync_buff_lock);
 	if (!(ipvs->sync_state & IP_VS_STATE_MASTER)) {
@@ -575,8 +564,8 @@ static void ip_vs_sync_conn_v0(struct netns_ipvs *ipvs, struct ip_vs_conn *cp,
 	id = select_master_thread_id(ipvs, cp);
 	ms = &ipvs->ms[id];
 	buff = ms->sync_buff;
-	seq_mask = flags & IP_VS_CONN_F_SEQ_MASK;
-	len = seq_mask ? FULL_CONN_SIZE : SIMPLE_CONN_SIZE;
+	len = (cp->flags & IP_VS_CONN_F_SEQ_MASK) ? FULL_CONN_SIZE :
+		SIMPLE_CONN_SIZE;
 	if (buff) {
 		m = (struct ip_vs_sync_mesg_v0 *) buff->mesg;
 		/* Send buffer if it is for v1 */
@@ -608,12 +597,12 @@ static void ip_vs_sync_conn_v0(struct netns_ipvs *ipvs, struct ip_vs_conn *cp,
 	s->caddr = cp->caddr.ip;
 	s->vaddr = cp->vaddr.ip;
 	s->daddr = cp->daddr.ip;
-	s->flags = htons(flags & ~IP_VS_CONN_F_HASHED);
+	s->flags = htons(cp->flags & ~IP_VS_CONN_F_HASHED);
 	s->state = htons(cp->state);
-	if (seq_mask) {
+	if (cp->flags & IP_VS_CONN_F_SEQ_MASK) {
 		struct ip_vs_sync_conn_options *opt =
 			(struct ip_vs_sync_conn_options *)&s[1];
-		memcpy(opt, &opts, sizeof(*opt));
+		memcpy(opt, &cp->sync_conn_opt, sizeof(*opt));
 	}
 
 	m->nr_conns++;
@@ -639,7 +628,6 @@ static void ip_vs_sync_conn_v0(struct netns_ipvs *ipvs, struct ip_vs_conn *cp,
  */
 void ip_vs_sync_conn(struct netns_ipvs *ipvs, struct ip_vs_conn *cp, int pkts)
 {
-	struct ip_vs_sync_conn_options opts;
 	struct ip_vs_sync_mesg *m;
 	union ip_vs_sync_conn *s;
 	struct ip_vs_sync_buff *buff;
@@ -647,7 +635,6 @@ void ip_vs_sync_conn(struct netns_ipvs *ipvs, struct ip_vs_conn *cp, int pkts)
 	int id;
 	__u8 *p;
 	unsigned int len, pe_name_len, pad;
-	u32 flags, seq_mask;
 
 	/* Handle old version of the protocol */
 	if (sysctl_sync_ver(ipvs) == 0) {
@@ -660,14 +647,6 @@ void ip_vs_sync_conn(struct netns_ipvs *ipvs, struct ip_vs_conn *cp, int pkts)
 sloop:
 	if (!ip_vs_sync_conn_needed(ipvs, cp, pkts))
 		goto control;
-	flags = READ_ONCE(cp->flags);
-	if (flags & IP_VS_CONN_F_SEQ_MASK) {
-		/* Take atomic snapshot of flags and seqs */
-		spin_lock_bh(&cp->lock);
-		flags = cp->flags;
-		memcpy(&opts, &cp->sync_conn_opt, sizeof(opts));
-		spin_unlock_bh(&cp->lock);
-	}
 
 	/* Sanity checks */
 	pe_name_len = 0;
@@ -695,8 +674,7 @@ sloop:
 #endif
 		len = sizeof(struct ip_vs_sync_v4);
 
-	seq_mask = flags & IP_VS_CONN_F_SEQ_MASK;
-	if (seq_mask)
+	if (cp->flags & IP_VS_CONN_F_SEQ_MASK)
 		len += sizeof(struct ip_vs_sync_conn_options) + 2;
 
 	if (cp->pe_data_len)
@@ -742,14 +720,14 @@ sloop:
 	/* Set message type  & copy members */
 	s->v4.type = (cp->af == AF_INET6 ? STYPE_F_INET6 : 0);
 	s->v4.ver_size = htons(len & SVER_MASK);	/* Version 0 */
-	s->v4.flags = htonl(flags & ~IP_VS_CONN_F_HASHED);
+	s->v4.flags = htonl(cp->flags & ~IP_VS_CONN_F_HASHED);
 	s->v4.state = htons(cp->state);
 	s->v4.protocol = cp->protocol;
 	s->v4.cport = cp->cport;
 	s->v4.vport = cp->vport;
 	s->v4.dport = cp->dport;
 	s->v4.fwmark = htonl(cp->fwmark);
-	s->v4.timeout = htonl(max(1UL, cp->timeout / HZ));
+	s->v4.timeout = htonl(cp->timeout / HZ);
 	m->nr_conns++;
 
 #ifdef CONFIG_IP_VS_IPV6
@@ -766,12 +744,12 @@ sloop:
 		s->v4.vaddr = cp->vaddr.ip;
 		s->v4.daddr = cp->daddr.ip;
 	}
-	if (seq_mask) {
+	if (cp->flags & IP_VS_CONN_F_SEQ_MASK) {
 		*(p++) = IPVS_OPT_SEQ_DATA;
 		*(p++) = sizeof(struct ip_vs_sync_conn_options);
-		hton_seq(&opts.in_seq, (struct ip_vs_seq *)p);
+		hton_seq(&cp->in_seq, (struct ip_vs_seq *)p);
 		p += sizeof(struct ip_vs_seq);
-		hton_seq(&opts.out_seq, (struct ip_vs_seq *)p);
+		hton_seq(&cp->out_seq, (struct ip_vs_seq *)p);
 		p += sizeof(struct ip_vs_seq);
 	}
 	/* Handle pe data */
@@ -867,28 +845,8 @@ static void ip_vs_proc_conn(struct netns_ipvs *ipvs, struct ip_vs_conn_param *pa
 			    unsigned long timeout, __u32 fwmark,
 			    struct ip_vs_sync_conn_options *opt)
 {
-	struct ip_vs_conn *cp_new = NULL;
 	struct ip_vs_dest *dest;
 	struct ip_vs_conn *cp;
-
-	/* Templates require cport 0. Ordinary connections require
-	 * NO_CPORT exactly when cport is 0.
-	 */
-	if (flags & IP_VS_CONN_F_TEMPLATE) {
-		if (param->cport) {
-			IP_VS_DBG(2, "BACKUP, template with cport dropped\n");
-			kfree(param->pe_data);
-			return;
-		}
-	} else if (!param->cport && !(flags & IP_VS_CONN_F_NO_CPORT)) {
-		IP_VS_DBG(2, "BACKUP, conn without cport dropped\n");
-		kfree(param->pe_data);
-		return;
-	} else if (param->cport && (flags & IP_VS_CONN_F_NO_CPORT)) {
-		IP_VS_DBG(2, "BACKUP, conn with cport and NO_CPORT dropped\n");
-		kfree(param->pe_data);
-		return;
-	}
 
 	if (!(flags & IP_VS_CONN_F_TEMPLATE)) {
 		cp = ip_vs_conn_in_get(param);
@@ -928,6 +886,9 @@ static void ip_vs_proc_conn(struct netns_ipvs *ipvs, struct ip_vs_conn_param *pa
 		flags &= IP_VS_CONN_F_BACKUP_UPD_MASK;
 		flags |= cp->flags & ~IP_VS_CONN_F_BACKUP_UPD_MASK;
 		cp->flags = flags;
+		spin_unlock_bh(&cp->lock);
+		if (!dest)
+			ip_vs_try_bind_dest(cp);
 	} else {
 		/*
 		 * Find the appropriate destination for the connection.
@@ -954,8 +915,6 @@ static void ip_vs_proc_conn(struct netns_ipvs *ipvs, struct ip_vs_conn_param *pa
 		}
 		if (!(flags & IP_VS_CONN_F_TEMPLATE))
 			kfree(param->pe_data);
-		cp_new = cp;
-		spin_lock_bh(&cp->lock);
 	}
 
 	if (opt) {
@@ -987,9 +946,6 @@ static void ip_vs_proc_conn(struct netns_ipvs *ipvs, struct ip_vs_conn_param *pa
 		else
 			cp->timeout = (3*60*HZ);
 	}
-	spin_unlock_bh(&cp->lock);
-	if (!dest && !cp_new)
-		ip_vs_try_bind_dest(cp);
 	ip_vs_conn_put(cp);
 }
 
@@ -1415,7 +1371,7 @@ static void set_mcast_pmtudisc(struct sock *sk, int val)
 }
 
 /*
- *      Specify default interface for outgoing multicasts
+ *      Specifiy default interface for outgoing multicasts
  */
 static int set_mcast_if(struct sock *sk, struct net_device *dev)
 {

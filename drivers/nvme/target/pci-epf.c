@@ -210,7 +210,9 @@ struct nvmet_pci_epf {
 
 	bool				dma_enabled;
 	struct dma_chan			*dma_tx_chan;
+	struct mutex			dma_tx_lock;
 	struct dma_chan			*dma_rx_chan;
+	struct mutex			dma_rx_lock;
 
 	struct mutex			mmio_lock;
 
@@ -293,6 +295,9 @@ static void nvmet_pci_epf_init_dma(struct nvmet_pci_epf *nvme_epf)
 	struct dma_chan *chan;
 	dma_cap_mask_t mask;
 
+	mutex_init(&nvme_epf->dma_rx_lock);
+	mutex_init(&nvme_epf->dma_tx_lock);
+
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
 
@@ -331,6 +336,8 @@ out_dma_no_tx:
 	nvme_epf->dma_rx_chan = NULL;
 
 out_dma_no_rx:
+	mutex_destroy(&nvme_epf->dma_rx_lock);
+	mutex_destroy(&nvme_epf->dma_tx_lock);
 	nvme_epf->dma_enabled = false;
 
 	dev_info(&epf->dev, "DMA not supported, falling back to MMIO\n");
@@ -345,6 +352,8 @@ static void nvmet_pci_epf_deinit_dma(struct nvmet_pci_epf *nvme_epf)
 	nvme_epf->dma_tx_chan = NULL;
 	dma_release_channel(nvme_epf->dma_rx_chan);
 	nvme_epf->dma_rx_chan = NULL;
+	mutex_destroy(&nvme_epf->dma_rx_lock);
+	mutex_destroy(&nvme_epf->dma_tx_lock);
 	nvme_epf->dma_enabled = false;
 }
 
@@ -359,15 +368,18 @@ static int nvmet_pci_epf_dma_transfer(struct nvmet_pci_epf *nvme_epf,
 	struct dma_chan *chan;
 	dma_cookie_t cookie;
 	dma_addr_t dma_addr;
+	struct mutex *lock;
 	int ret;
 
 	switch (dir) {
 	case DMA_FROM_DEVICE:
+		lock = &nvme_epf->dma_rx_lock;
 		chan = nvme_epf->dma_rx_chan;
 		sconf.direction = DMA_DEV_TO_MEM;
 		sconf.src_addr = seg->pci_addr;
 		break;
 	case DMA_TO_DEVICE:
+		lock = &nvme_epf->dma_tx_lock;
 		chan = nvme_epf->dma_tx_chan;
 		sconf.direction = DMA_MEM_TO_DEV;
 		sconf.dst_addr = seg->pci_addr;
@@ -376,15 +388,22 @@ static int nvmet_pci_epf_dma_transfer(struct nvmet_pci_epf *nvme_epf,
 		return -EINVAL;
 	}
 
+	mutex_lock(lock);
+
 	dma_dev = dmaengine_get_dma_device(chan);
 	dma_addr = dma_map_single(dma_dev, seg->buf, seg->length, dir);
 	ret = dma_mapping_error(dma_dev, dma_addr);
 	if (ret)
-		return ret;
+		goto unlock;
 
-	desc = dmaengine_prep_config_single_safe(chan, dma_addr, seg->length,
-						 sconf.direction,
-						 DMA_CTRL_ACK, &sconf);
+	ret = dmaengine_slave_config(chan, &sconf);
+	if (ret) {
+		dev_err(dev, "Failed to configure DMA channel\n");
+		goto unmap;
+	}
+
+	desc = dmaengine_prep_slave_single(chan, dma_addr, seg->length,
+					   sconf.direction, DMA_CTRL_ACK);
 	if (!desc) {
 		dev_err(dev, "Failed to prepare DMA\n");
 		ret = -EIO;
@@ -401,11 +420,15 @@ static int nvmet_pci_epf_dma_transfer(struct nvmet_pci_epf *nvme_epf,
 	if (dma_sync_wait(chan, cookie) != DMA_COMPLETE) {
 		dev_err(dev, "DMA transfer failed\n");
 		ret = -EIO;
-		dmaengine_terminate_sync(chan);
 	}
+
+	dmaengine_terminate_sync(chan);
 
 unmap:
 	dma_unmap_single(dma_dev, dma_addr, seg->length, dir);
+
+unlock:
+	mutex_unlock(lock);
 
 	return ret;
 }
@@ -1073,22 +1096,10 @@ static int nvmet_pci_epf_iod_parse_sgl_segments(struct nvmet_pci_epf_ctrl *ctrl,
 	return 0;
 }
 
-static u64 nvmet_pci_epf_iod_data_segs_len(struct nvmet_pci_epf_iod *iod)
-{
-	u64 len = 0;
-	int i;
-
-	for (i = 0; i < iod->nr_data_segs; i++)
-		len += iod->data_segs[i].length;
-
-	return len;
-}
-
 static int nvmet_pci_epf_iod_parse_sgls(struct nvmet_pci_epf_iod *iod)
 {
 	struct nvmet_pci_epf_ctrl *ctrl = iod->ctrl;
 	struct nvme_sgl_desc *sgl = &iod->cmd.common.dptr.sgl;
-	int ret;
 
 	if (sgl->type == (NVME_SGL_FMT_DATA_DESC << 4)) {
 		/* Single data descriptor case. */
@@ -1096,23 +1107,10 @@ static int nvmet_pci_epf_iod_parse_sgls(struct nvmet_pci_epf_iod *iod)
 		iod->data_segs = &iod->data_seg;
 		iod->data_seg.pci_addr = le64_to_cpu(sgl->addr);
 		iod->data_seg.length = le32_to_cpu(sgl->length);
-	} else {
-		ret = nvmet_pci_epf_iod_parse_sgl_segments(ctrl, iod);
-		if (ret)
-			return ret;
+		return 0;
 	}
 
-	/*
-	 * The command executes on data_len bytes, but each segment is
-	 * allocated and transferred in full, so they must describe exactly
-	 * data_len bytes.
-	 */
-	if (nvmet_pci_epf_iod_data_segs_len(iod) != iod->data_len) {
-		iod->status = NVME_SC_SGL_INVALID_DATA | NVME_STATUS_DNR;
-		return -EINVAL;
-	}
-
-	return 0;
+	return nvmet_pci_epf_iod_parse_sgl_segments(ctrl, iod);
 }
 
 static int nvmet_pci_epf_alloc_iod_data_buf(struct nvmet_pci_epf_iod *iod)
@@ -1177,6 +1175,7 @@ static void nvmet_pci_epf_complete_iod(struct nvmet_pci_epf_iod *iod)
 	unsigned long flags;
 
 	/* Print an error message for failed commands, except AENs. */
+	iod->status = le16_to_cpu(iod->cqe.status) >> 1;
 	if (iod->status && iod->cmd.common.opcode != nvme_admin_async_event)
 		dev_err(iod->ctrl->dev,
 			"CQ[%d]: Command %s (0x%x) status 0x%0x\n",
@@ -2464,7 +2463,7 @@ static int nvmet_pci_epf_probe(struct pci_epf *epf,
 	struct nvmet_pci_epf *nvme_epf;
 	int ret;
 
-	nvme_epf = devm_kzalloc_obj(&epf->dev, *nvme_epf);
+	nvme_epf = devm_kzalloc(&epf->dev, sizeof(*nvme_epf), GFP_KERNEL);
 	if (!nvme_epf)
 		return -ENOMEM;
 
@@ -2611,7 +2610,7 @@ static const struct pci_epf_device_id nvmet_pci_epf_ids[] = {
 	{},
 };
 
-static const struct pci_epf_ops nvmet_pci_epf_ops = {
+static struct pci_epf_ops nvmet_pci_epf_ops = {
 	.bind	= nvmet_pci_epf_bind,
 	.unbind	= nvmet_pci_epf_unbind,
 	.add_cfs = nvmet_pci_epf_add_cfs,

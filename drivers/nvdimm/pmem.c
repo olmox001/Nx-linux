@@ -80,7 +80,7 @@ static void pmem_mkpage_present(struct pmem_device *pmem, phys_addr_t offset,
 		 * here since we're in the driver I/O path and
 		 * outstanding I/O requests pin the dev_pagemap.
 		 */
-		if (TestClearPageHWPoison(page))
+		if (test_and_clear_pmem_poison(page))
 			clear_mce_nospec(pfn);
 	}
 }
@@ -217,29 +217,23 @@ static void pmem_submit_bio(struct bio *bio)
 		}
 	}
 
-	if (bio_has_data(bio)) {
-		do_acct = blk_queue_io_stat(bio->bi_bdev->bd_disk->queue);
-		if (do_acct)
-			start = bio_start_io_acct(bio);
-		bio_for_each_segment(bvec, bio, iter) {
-			if (op_is_write(bio_op(bio)))
-				rc = pmem_do_write(pmem, bvec.bv_page,
-						   bvec.bv_offset,
-						   iter.bi_sector,
-						   bvec.bv_len);
-			else
-				rc = pmem_do_read(pmem, bvec.bv_page,
-						  bvec.bv_offset,
-						  iter.bi_sector,
-						  bvec.bv_len);
-			if (rc) {
-				bio->bi_status = rc;
-				break;
-			}
+	do_acct = blk_queue_io_stat(bio->bi_bdev->bd_disk->queue);
+	if (do_acct)
+		start = bio_start_io_acct(bio);
+	bio_for_each_segment(bvec, bio, iter) {
+		if (op_is_write(bio_op(bio)))
+			rc = pmem_do_write(pmem, bvec.bv_page, bvec.bv_offset,
+				iter.bi_sector, bvec.bv_len);
+		else
+			rc = pmem_do_read(pmem, bvec.bv_page, bvec.bv_offset,
+				iter.bi_sector, bvec.bv_len);
+		if (rc) {
+			bio->bi_status = rc;
+			break;
 		}
-		if (do_acct)
-			bio_end_io_acct(bio, start);
 	}
+	if (do_acct)
+		bio_end_io_acct(bio, start);
 
 	if ((bio->bi_opf & REQ_FUA) && !bio->bi_status) {
 		ret = nvdimm_flush(nd_region, bio);
@@ -483,7 +477,7 @@ static int pmem_attach_disk(struct device *dev,
 	void *addr;
 	int rc;
 
-	pmem = devm_kzalloc_obj(dev, *pmem);
+	pmem = devm_kzalloc(dev, sizeof(*pmem), GFP_KERNEL);
 	if (!pmem)
 		return -ENOMEM;
 
@@ -563,10 +557,8 @@ static int pmem_attach_disk(struct device *dev,
 	nvdimm_namespace_disk_name(ndns, disk->disk_name);
 	set_capacity(disk, (pmem->size - pmem->pfn_pad - pmem->data_offset)
 			/ 512);
-	if (devm_init_badblocks(dev, &pmem->bb)) {
-		rc = -ENOMEM;
-		goto out;
-	}
+	if (devm_init_badblocks(dev, &pmem->bb))
+		return -ENOMEM;
 	nvdimm_badblocks_populate(nd_region, &pmem->bb, &bb_range);
 	disk->bb = &pmem->bb;
 

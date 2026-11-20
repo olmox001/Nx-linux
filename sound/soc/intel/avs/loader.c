@@ -6,7 +6,6 @@
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
 //
 
-#include <linux/cleanup.h>
 #include <linux/firmware.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -269,7 +268,7 @@ int avs_cldma_transfer_modules(struct avs_dev *adev, bool load,
 		return 0;
 	}
 
-	mod_ids = kzalloc_objs(u16, num_mods);
+	mod_ids = kcalloc(num_mods, sizeof(u16), GFP_KERNEL);
 	if (!mod_ids)
 		return -ENOMEM;
 
@@ -631,15 +630,15 @@ static int avs_load_firmware(struct avs_dev *adev, bool purge)
 	if (ret)
 		goto reenable_gating;
 
-	scoped_guard(mutex, &adev->comp_list_mutex) {
-		list_for_each_entry(acomp, &adev->comp_list, node) {
-			struct avs_tplg *tplg = acomp->tplg;
+	mutex_lock(&adev->comp_list_mutex);
+	list_for_each_entry(acomp, &adev->comp_list, node) {
+		struct avs_tplg *tplg = acomp->tplg;
 
-			ret = avs_dsp_load_libraries(adev, tplg->libs, tplg->num_libs);
-			if (ret < 0)
-				break;
-		}
+		ret = avs_dsp_load_libraries(adev, tplg->libs, tplg->num_libs);
+		if (ret < 0)
+			break;
 	}
+	mutex_unlock(&adev->comp_list_mutex);
 
 reenable_gating:
 	avs_hda_l1sen_enable(adev, true);
@@ -704,10 +703,10 @@ static int avs_dsp_alloc_resources(struct avs_dev *adev)
 			adev->hw_cfg.i2s_caps.ctrl_count = link->slcount;
 	}
 
-	adev->core_refs = devm_kzalloc_objs(adev->dev, *adev->core_refs,
-					    adev->hw_cfg.dsp_cores);
-	adev->lib_names = devm_kzalloc_objs(adev->dev, *adev->lib_names,
-					    adev->fw_cfg.max_libs_count);
+	adev->core_refs = devm_kcalloc(adev->dev, adev->hw_cfg.dsp_cores,
+				       sizeof(*adev->core_refs), GFP_KERNEL);
+	adev->lib_names = devm_kcalloc(adev->dev, adev->fw_cfg.max_libs_count,
+				       sizeof(*adev->lib_names), GFP_KERNEL);
 	if (!adev->core_refs || !adev->lib_names)
 		return -ENOMEM;
 

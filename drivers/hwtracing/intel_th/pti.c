@@ -213,7 +213,7 @@ static int intel_th_pti_probe(struct intel_th_device *thdev)
 	if (!base)
 		return -ENOMEM;
 
-	pti = devm_kzalloc_obj(dev, *pti);
+	pti = devm_kzalloc(dev, sizeof(*pti), GFP_KERNEL);
 	if (!pti)
 		return -ENOMEM;
 

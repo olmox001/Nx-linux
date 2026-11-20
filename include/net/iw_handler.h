@@ -201,8 +201,6 @@
 #include <linux/wireless.h>		/* IOCTL user space API */
 #include <linux/if_ether.h>
 
-struct net;
-
 /***************************** VERSION *****************************/
 /*
  * This constant is used to know which version of the driver API is
@@ -413,10 +411,10 @@ struct iw_spy_data {
 void wireless_send_event(struct net_device *dev, unsigned int cmd,
 			 union iwreq_data *wrqu, const char *extra);
 #ifdef CONFIG_WEXT_CORE
-/* Flush previous wext events in this netns from netdev notifiers. */
-void wireless_nlevent_flush(struct net *net);
+/* flush all previous wext events - if work is done from netdev notifiers */
+void wireless_nlevent_flush(void);
 #else
-static inline void wireless_nlevent_flush(struct net *net) {}
+static inline void wireless_nlevent_flush(void) {}
 #endif
 
 /* We may need a function to send a stream of events to user space.

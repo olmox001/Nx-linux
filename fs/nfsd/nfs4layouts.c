@@ -3,13 +3,12 @@
  * Copyright (c) 2014 Christoph Hellwig.
  */
 #include <linux/exportfs_block.h>
-#include <linux/umh.h>
+#include <linux/kmod.h>
 #include <linux/file.h>
 #include <linux/jhash.h>
 #include <linux/sched.h>
 #include <linux/sunrpc/addr.h>
 
-#include "nfserr.h"
 #include "pnfs.h"
 #include "netns.h"
 #include "trace.h"
@@ -128,12 +127,10 @@ nfsd4_set_deviceid(struct nfsd4_deviceid *id, const struct svc_fh *fhp,
 
 void nfsd4_setup_layout_type(struct svc_export *exp)
 {
-	struct nfsd_net *nn = net_generic(exp->cd->net, nfsd_net_id);
 	struct super_block *sb = exp->ex_path.mnt->mnt_sb;
 	expfs_block_layouts_t block_supported = exportfs_layouts_supported(sb);
 
-	if (IS_ENABLED(CONFIG_NFSD_FLEXFILELAYOUT) &&
-	    nfsd_vers(nn, 3, NFSD_TEST))
+	if (IS_ENABLED(CONFIG_NFSD_FLEXFILELAYOUT))
 		exp->ex_layout_types |= 1 << LAYOUT_FLEX_FILES;
 	if (IS_ENABLED(CONFIG_NFSD_BLOCKLAYOUT) &&
 	    (block_supported & EXPFS_BLOCK_IN_BAND_ID))
@@ -251,13 +248,12 @@ nfsd4_alloc_layout_stateid(struct nfsd4_compound_state *cstate,
 			NFSPROC4_CLNT_CB_LAYOUT);
 
 	if (parent->sc_type == SC_TYPE_DELEG) {
-		rcu_read_lock();
-		ls->ls_file = nfsd_file_get(rcu_dereference(fp->fi_deleg_file));
-		rcu_read_unlock();
+		spin_lock(&fp->fi_lock);
+		ls->ls_file = nfsd_file_get(fp->fi_deleg_file);
+		spin_unlock(&fp->fi_lock);
 	} else {
 		ls->ls_file = find_any_file(fp);
 	}
-
 	if (!ls->ls_file) {
 		nfs4_put_stid(stp);
 		return NULL;
@@ -663,7 +659,7 @@ nfsd4_cb_layout_fail(struct nfs4_layout_stateid *ls, struct nfsd_file *file)
 	}
 }
 
-static bool
+static void
 nfsd4_cb_layout_prepare(struct nfsd4_callback *cb)
 {
 	struct nfs4_layout_stateid *ls =
@@ -672,7 +668,6 @@ nfsd4_cb_layout_prepare(struct nfsd4_callback *cb)
 	mutex_lock(&ls->ls_mutex);
 	nfs4_inc_and_copy_stateid(&ls->ls_recall_sid, &ls->ls_stid);
 	mutex_unlock(&ls->ls_mutex);
-	return true;
 }
 
 static int

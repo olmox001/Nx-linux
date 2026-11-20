@@ -89,7 +89,7 @@ static int adp5520_keys_probe(struct platform_device *pdev)
 	if (!(pdata->rows_en_mask && pdata->cols_en_mask))
 		return -EINVAL;
 
-	dev = devm_kzalloc_obj(&pdev->dev, *dev);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
 		dev_err(&pdev->dev, "failed to alloc memory\n");
 		return -ENOMEM;
@@ -104,6 +104,7 @@ static int adp5520_keys_probe(struct platform_device *pdev)
 
 	input->name = pdev->name;
 	input->phys = "adp5520-keys/input0";
+	input->dev.parent = &pdev->dev;
 
 	input->id.bustype = BUS_I2C;
 	input->id.vendor = 0x0001;

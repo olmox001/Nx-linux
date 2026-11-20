@@ -178,7 +178,7 @@ struct sp_device *sp_alloc_struct(struct device *dev)
 {
 	struct sp_device *sp;
 
-	sp = devm_kzalloc_obj(dev, *sp);
+	sp = devm_kzalloc(dev, sizeof(*sp), GFP_KERNEL);
 	if (!sp)
 		return NULL;
 

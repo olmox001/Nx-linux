@@ -1213,7 +1213,7 @@ static int bq25980_probe(struct i2c_client *client)
 	struct bq25980_device *bq;
 	int ret;
 
-	bq = devm_kzalloc_obj(dev, *bq);
+	bq = devm_kzalloc(dev, sizeof(*bq), GFP_KERNEL);
 	if (!bq)
 		return -ENOMEM;
 

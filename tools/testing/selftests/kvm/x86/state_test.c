@@ -19,6 +19,8 @@
 #include "vmx.h"
 #include "svm_util.h"
 
+#define L2_GUEST_STACK_SIZE 256
+
 void svm_l2_guest_code(void)
 {
 	GUEST_SYNC(4);
@@ -33,11 +35,13 @@ void svm_l2_guest_code(void)
 
 static void svm_l1_guest_code(struct svm_test_data *svm)
 {
+	unsigned long l2_guest_stack[L2_GUEST_STACK_SIZE];
 	struct vmcb *vmcb = svm->vmcb;
 
 	GUEST_ASSERT(svm->vmcb_gpa);
 	/* Prepare for L2 execution. */
-	generic_svm_setup(svm, svm_l2_guest_code);
+	generic_svm_setup(svm, svm_l2_guest_code,
+			  &l2_guest_stack[L2_GUEST_STACK_SIZE]);
 
 	vmcb->control.int_ctl |= (V_GIF_ENABLE_MASK | V_GIF_MASK);
 
@@ -59,13 +63,13 @@ void vmx_l2_guest_code(void)
 	vmcall();
 
 	/* L1 has now set up a shadow VMCS for us.  */
-	GUEST_ASSERT(vmread(GUEST_RIP) == 0xc0ffee);
+	GUEST_ASSERT(vmreadz(GUEST_RIP) == 0xc0ffee);
 	GUEST_SYNC(10);
-	GUEST_ASSERT(vmread(GUEST_RIP) == 0xc0ffee);
-	vmwrite(GUEST_RIP, 0xc0fffee);
+	GUEST_ASSERT(vmreadz(GUEST_RIP) == 0xc0ffee);
+	GUEST_ASSERT(!vmwrite(GUEST_RIP, 0xc0fffee));
 	GUEST_SYNC(11);
-	GUEST_ASSERT(vmread(GUEST_RIP) == 0xc0fffee);
-	vmwrite(GUEST_RIP, 0xc0ffffee);
+	GUEST_ASSERT(vmreadz(GUEST_RIP) == 0xc0fffee);
+	GUEST_ASSERT(!vmwrite(GUEST_RIP, 0xc0ffffee));
 	GUEST_SYNC(12);
 
 	/* Done, exit to L1 and never come back.  */
@@ -74,62 +78,65 @@ void vmx_l2_guest_code(void)
 
 static void vmx_l1_guest_code(struct vmx_pages *vmx_pages)
 {
+	unsigned long l2_guest_stack[L2_GUEST_STACK_SIZE];
+
 	GUEST_ASSERT(vmx_pages->vmcs_gpa);
-	prepare_for_vmx_operation(vmx_pages);
+	GUEST_ASSERT(prepare_for_vmx_operation(vmx_pages));
 	GUEST_SYNC(3);
-	load_vmcs(vmx_pages);
-	GUEST_ASSERT(vmptrst() == vmx_pages->vmcs_gpa);
+	GUEST_ASSERT(load_vmcs(vmx_pages));
+	GUEST_ASSERT(vmptrstz() == vmx_pages->vmcs_gpa);
 
 	GUEST_SYNC(4);
-	GUEST_ASSERT(vmptrst() == vmx_pages->vmcs_gpa);
+	GUEST_ASSERT(vmptrstz() == vmx_pages->vmcs_gpa);
 
-	prepare_vmcs(vmx_pages, vmx_l2_guest_code);
+	prepare_vmcs(vmx_pages, vmx_l2_guest_code,
+		     &l2_guest_stack[L2_GUEST_STACK_SIZE]);
 
 	GUEST_SYNC(5);
-	GUEST_ASSERT(vmptrst() == vmx_pages->vmcs_gpa);
-	vmlaunch();
-	GUEST_ASSERT(vmptrst() == vmx_pages->vmcs_gpa);
-	GUEST_ASSERT(vmread(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
+	GUEST_ASSERT(vmptrstz() == vmx_pages->vmcs_gpa);
+	GUEST_ASSERT(!vmlaunch());
+	GUEST_ASSERT(vmptrstz() == vmx_pages->vmcs_gpa);
+	GUEST_ASSERT(vmreadz(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
 
 	/* Check that the launched state is preserved.  */
-	GUEST_ASSERT(__vmlaunch());
+	GUEST_ASSERT(vmlaunch());
 
-	vmresume();
-	GUEST_ASSERT(vmread(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
+	GUEST_ASSERT(!vmresume());
+	GUEST_ASSERT(vmreadz(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
 
 	GUEST_SYNC(7);
-	GUEST_ASSERT(vmread(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
+	GUEST_ASSERT(vmreadz(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
 
-	vmresume();
-	GUEST_ASSERT(vmread(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
+	GUEST_ASSERT(!vmresume());
+	GUEST_ASSERT(vmreadz(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
 
-	vmwrite(GUEST_RIP, vmread(GUEST_RIP) + 3);
+	vmwrite(GUEST_RIP, vmreadz(GUEST_RIP) + 3);
 
 	vmwrite(SECONDARY_VM_EXEC_CONTROL, SECONDARY_EXEC_SHADOW_VMCS);
 	vmwrite(VMCS_LINK_POINTER, vmx_pages->shadow_vmcs_gpa);
 
-	vmptrld(vmx_pages->shadow_vmcs_gpa);
-	GUEST_ASSERT(__vmlaunch());
+	GUEST_ASSERT(!vmptrld(vmx_pages->shadow_vmcs_gpa));
+	GUEST_ASSERT(vmlaunch());
 	GUEST_SYNC(8);
-	GUEST_ASSERT(__vmlaunch());
-	GUEST_ASSERT(__vmresume());
+	GUEST_ASSERT(vmlaunch());
+	GUEST_ASSERT(vmresume());
 
 	vmwrite(GUEST_RIP, 0xc0ffee);
 	GUEST_SYNC(9);
-	GUEST_ASSERT(vmread(GUEST_RIP) == 0xc0ffee);
+	GUEST_ASSERT(vmreadz(GUEST_RIP) == 0xc0ffee);
 
-	vmptrld(vmx_pages->vmcs_gpa);
-	vmresume();
-	GUEST_ASSERT(vmread(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
+	GUEST_ASSERT(!vmptrld(vmx_pages->vmcs_gpa));
+	GUEST_ASSERT(!vmresume());
+	GUEST_ASSERT(vmreadz(VM_EXIT_REASON) == EXIT_REASON_VMCALL);
 
-	vmptrld(vmx_pages->shadow_vmcs_gpa);
-	GUEST_ASSERT(vmread(GUEST_RIP) == 0xc0ffffee);
-	GUEST_ASSERT(__vmlaunch());
-	GUEST_ASSERT(__vmresume());
+	GUEST_ASSERT(!vmptrld(vmx_pages->shadow_vmcs_gpa));
+	GUEST_ASSERT(vmreadz(GUEST_RIP) == 0xc0ffffee);
+	GUEST_ASSERT(vmlaunch());
+	GUEST_ASSERT(vmresume());
 	GUEST_SYNC(13);
-	GUEST_ASSERT(vmread(GUEST_RIP) == 0xc0ffffee);
-	GUEST_ASSERT(__vmlaunch());
-	GUEST_ASSERT(__vmresume());
+	GUEST_ASSERT(vmreadz(GUEST_RIP) == 0xc0ffffee);
+	GUEST_ASSERT(vmlaunch());
+	GUEST_ASSERT(vmresume());
 }
 
 static void __attribute__((__flatten__)) guest_code(void *arg)
@@ -296,7 +303,7 @@ int main(int argc, char *argv[])
 		/* UCALL_SYNC is handled here.  */
 		TEST_ASSERT(!strcmp((const char *)uc.args[0], "hello") &&
 			    uc.args[1] == stage, "Stage %d: Unexpected register values vmexit, got %lx",
-			    stage, (unsigned long)uc.args[1]);
+			    stage, (ulong)uc.args[1]);
 
 		state = vcpu_save_state(vcpu);
 		memset(&regs1, 0, sizeof(regs1));
@@ -343,7 +350,7 @@ int main(int argc, char *argv[])
 		vcpu_regs_get(vcpu, &regs2);
 		TEST_ASSERT(!memcmp(&regs1, &regs2, sizeof(regs2)),
 			    "Unexpected register values after vcpu_load_state; rdi: %lx rsi: %lx",
-			    (unsigned long)regs2.rdi, (unsigned long)regs2.rsi);
+			    (ulong) regs2.rdi, (ulong) regs2.rsi);
 	}
 
 done:

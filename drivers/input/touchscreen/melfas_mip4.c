@@ -1403,7 +1403,7 @@ static int mip4_probe(struct i2c_client *client)
 		return -ENXIO;
 	}
 
-	ts = devm_kzalloc_obj(&client->dev, *ts);
+	ts = devm_kzalloc(&client->dev, sizeof(*ts), GFP_KERNEL);
 	if (!ts)
 		return -ENOMEM;
 
@@ -1529,8 +1529,8 @@ MODULE_DEVICE_TABLE(of, mip4_of_match);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id mip4_acpi_match[] = {
-	{ .id = "MLFS0000" },
-	{ }
+	{ "MLFS0000", 0},
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, mip4_acpi_match);
 #endif

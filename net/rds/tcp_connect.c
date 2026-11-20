@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2017 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2025 Oracle and/or its affiliates.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -34,6 +34,8 @@
 #include <linux/in.h>
 #include <net/tcp.h>
 
+#include "trace.h"
+
 #include "rds.h"
 #include "tcp.h"
 
@@ -42,6 +44,8 @@ void rds_tcp_state_change(struct sock *sk)
 	void (*state_change)(struct sock *sk);
 	struct rds_conn_path *cp;
 	struct rds_tcp_connection *tc;
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct tcp_sock *tsock = tcp_sk(sk);
 
 	read_lock_bh(&sk->sk_callback_lock);
 	cp = sk->sk_user_data;
@@ -52,7 +56,8 @@ void rds_tcp_state_change(struct sock *sk)
 	tc = cp->cp_transport_data;
 	state_change = tc->t_orig_state_change;
 
-	rdsdebug("sock %p state_change to %d\n", tc->t_sock, sk->sk_state);
+	trace_rds_tcp_state_change(cp->cp_conn, cp, tc, sk, "state change",
+				   sk->sk_err);
 
 	switch (sk->sk_state) {
 	/* ignore connecting sockets as they make progress */
@@ -60,19 +65,15 @@ void rds_tcp_state_change(struct sock *sk)
 	case TCP_SYN_RECV:
 		break;
 	case TCP_ESTABLISHED:
-		/* Force the peer to reconnect so that we have the
-		 * TCP ports going from <smaller-ip>.<transient> to
-		 * <larger-ip>.<RDS_TCP_PORT>. We avoid marking the
-		 * RDS connection as RDS_CONN_UP until the reconnect,
-		 * to avoid RDS datagram loss.
-		 */
 		if (rds_addr_cmp(&cp->cp_conn->c_laddr,
 				 &cp->cp_conn->c_faddr) >= 0 &&
 		    rds_conn_path_transition(cp, RDS_CONN_CONNECTING,
-					     RDS_CONN_ERROR)) {
-			rds_conn_path_drop(cp, false);
+					     RDS_CONN_ERROR,
+					     DR_TCP_STATE_DISCONNECT_ADDR_CMP)) {
+			rds_conn_path_drop(cp, DR_TCP_STATE_DISCONNECT_ADDR_CMP, 0);
 		} else {
 			rds_connect_path_complete(cp, RDS_CONN_CONNECTING);
+			wake_up(&cp->cp_up_waitq);
 		}
 		break;
 	case TCP_CLOSING:
@@ -85,8 +86,15 @@ void rds_tcp_state_change(struct sock *sk)
 	case TCP_CLOSE:
 		if (wq_has_sleeper(&tc->t_recv_done_waitq))
 			wake_up(&tc->t_recv_done_waitq);
-		rds_conn_path_drop(cp, false);
-		break;
+		if (sk->sk_err == ETIMEDOUT &&
+		    icsk->icsk_probes_out >= keepalive_probes(tsock)) {
+			rds_tcp_stats_inc(tc->t_stats, s_tcp_ka_timeout);
+			rds_conn_path_drop(cp,
+					   DR_TCP_STATE_CLOSE_KA_TIMEOUT, 0);
+		} else {
+			rds_conn_path_drop(cp, DR_TCP_STATE_CLOSE, 0);
+		}
+
 	default:
 		break;
 	}
@@ -101,6 +109,7 @@ int rds_tcp_conn_path_connect(struct rds_conn_path *cp)
 	struct sockaddr_in6 sin6;
 	struct sockaddr_in sin;
 	struct sockaddr *addr;
+	char *reason = NULL;
 	int port_low, port_high, port;
 	int port_groups, groups_left;
 	int addrlen;
@@ -112,15 +121,21 @@ int rds_tcp_conn_path_connect(struct rds_conn_path *cp)
 	/* for multipath rds,we only trigger the connection after
 	 * the handshake probe has determined the number of paths.
 	 */
-	if (cp->cp_index > 0 && cp->cp_conn->c_npaths < 2)
-		return -EAGAIN;
+	if (cp->cp_index > 0 && cp->cp_conn->c_npaths < 2) {
+		reason = "cp index > 0 but npaths < 2";
+		ret = -EAGAIN;
+		goto out_nolock;
+	}
 
 	mutex_lock(&tc->t_conn_path_lock);
 
 	if (rds_conn_path_up(cp)) {
 		mutex_unlock(&tc->t_conn_path_lock);
-		return 0;
+		reason = "conn path already up";
+		ret = 0;
+		goto out_nolock;
 	}
+
 	if (ipv6_addr_v4mapped(&conn->c_laddr)) {
 		ret = sock_create_kern(rds_conn_net(conn), PF_INET,
 				       SOCK_STREAM, IPPROTO_TCP, &sock);
@@ -130,9 +145,10 @@ int rds_tcp_conn_path_connect(struct rds_conn_path *cp)
 				       SOCK_STREAM, IPPROTO_TCP, &sock);
 		isv6 = true;
 	}
-
-	if (ret < 0)
+	if (ret < 0) {
+		reason = "sock_create_kern failed";
 		goto out;
+	}
 
 	if (!rds_tcp_tune(sock)) {
 		ret = -EINVAL;
@@ -172,12 +188,10 @@ int rds_tcp_conn_path_connect(struct rds_conn_path *cp)
 			sin6.sin6_port = htons(port);
 		else
 			sin.sin_port = htons(port);
-		ret = kernel_bind(sock, (struct sockaddr_unsized *)addr,
-				  addrlen);
+		ret = sock->ops->bind(sock, (struct sockaddr_unsized *)addr, addrlen);
 	}
 	if (ret) {
-		rdsdebug("bind failed with %d at address %pI6c\n",
-			 ret, &conn->c_laddr);
+		reason = "bind failed";
 		goto out;
 	}
 
@@ -201,21 +215,31 @@ int rds_tcp_conn_path_connect(struct rds_conn_path *cp)
 	 * once we call connect() we can start getting callbacks and they
 	 * own the socket
 	 */
-	rds_tcp_set_callbacks(sock, cp);
-	ret = kernel_connect(sock, (struct sockaddr_unsized *)addr, addrlen, O_NONBLOCK);
-
-	rdsdebug("connect to address %pI6c returned %d\n", &conn->c_faddr, ret);
-	if (ret == -EINPROGRESS)
+	rds_tcp_set_callbacks(sock, cp, tc->t_rtn);
+	ret = sock->ops->connect(sock, (struct sockaddr_unsized *)addr, addrlen, O_NONBLOCK);
+	if (ret == -EINPROGRESS) {
+		reason = "connect already in progress";
 		ret = 0;
+	}
+
 	if (ret == 0) {
 		rds_tcp_keepalive(sock);
 		sock = NULL;
 	} else {
-		rds_tcp_restore_callbacks(sock, cp->cp_transport_data);
+		reason = "connect returned nonzero value";
+		rds_tcp_restore_callbacks(sock, cp->cp_transport_data,
+					  tc->t_rtn);
 	}
-
 out:
 	mutex_unlock(&tc->t_conn_path_lock);
+out_nolock:
+	if (reason)
+		trace_rds_tcp_connect_err(conn, cp, tc, sock ? sock->sk : NULL,
+					  reason, ret);
+	else
+		trace_rds_tcp_connect(conn, cp, tc, sock ? sock->sk : NULL,
+				      "connect", ret);
+
 	if (sock)
 		sock_release(sock);
 	return ret;
@@ -233,17 +257,21 @@ out:
 void rds_tcp_conn_path_shutdown(struct rds_conn_path *cp)
 {
 	struct rds_tcp_connection *tc = cp->cp_transport_data;
-	struct socket *sock = tc->t_sock;
-	struct sock *sk;
+	struct socket *sock;
 	unsigned int rounds;
 
-	rdsdebug("shutting down conn %p tc %p sock %p\n",
-		 cp->cp_conn, tc, sock);
+	cancel_work_sync(&tc->t_fan_out_w);
+
+	mutex_lock(&tc->t_conn_path_lock);
+	sock = tc->t_sock;
+
+	trace_rds_tcp_shutdown(cp->cp_conn, cp, tc, sock ? sock->sk : NULL,
+			       "shutting down", 0);
 
 	if (sock) {
-		sk = sock->sk;
-		if (rds_destroy_pending(cp->cp_conn))
-			sock_no_linger(sk);
+		smp_rmb(); /* Pairs with smp_mb() in rds_conn_destroy() */
+		if (cp->cp_conn->c_destroy_in_prog)
+			rds_tcp_set_linger(sock);
 
 		sock->ops->shutdown(sock, SHUT_WR);
 
@@ -263,31 +291,32 @@ void rds_tcp_conn_path_shutdown(struct rds_conn_path *cp)
 			 * since "rds_recv_worker" only dispatches messages
 			 * while the connection is still in RDS_CONN_UP
 			 * and there is no guarantee that "rds_tcp_data_ready"
-			 * was called nor that "sk_data_ready" still points to
-			 * it.
+			 * was called nor that "sk_data_ready" still points to it.
 			 */
 			rds_tcp_recv_path(cp);
 		} while (!wait_event_timeout(tc->t_recv_done_waitq,
-				(sk->sk_state == TCP_CLOSING ||
-				 sk->sk_state == TCP_TIME_WAIT ||
-				 sk->sk_state == TCP_CLOSE_WAIT ||
-				 sk->sk_state == TCP_LAST_ACK ||
-				 sk->sk_state == TCP_CLOSE) &&
-				skb_queue_empty_lockless(&sk->sk_receive_queue),
-				msecs_to_jiffies(100)) &&
+					     (sock->sk->sk_state == TCP_CLOSING ||
+					      sock->sk->sk_state == TCP_TIME_WAIT ||
+					      sock->sk->sk_state == TCP_CLOSE_WAIT ||
+					      sock->sk->sk_state == TCP_LAST_ACK ||
+					      sock->sk->sk_state == TCP_CLOSE) &&
+					     skb_queue_empty_lockless(&sock->sk->sk_receive_queue),
+					     msecs_to_jiffies(100)) &&
 			 ++rounds < 50);
-		lock_sock(sk);
+
+		lock_sock(sock->sk);
 
 		/* discard messages that the peer received already */
 		tc->t_last_seen_una = rds_tcp_snd_una(tc);
-		rds_send_path_drop_acked(cp, rds_tcp_snd_una(tc),
-					 rds_tcp_is_acked);
+		rds_send_path_drop_acked(cp, rds_tcp_snd_una(tc), rds_tcp_is_acked);
 
-		rds_tcp_restore_callbacks(sock, tc); /* tc->tc_sock = NULL */
+		/* tc->tc_sock = NULL */
+		rds_tcp_restore_callbacks(sock, tc, tc->t_rtn);
 
-		release_sock(sk);
+		release_sock(sock->sk);
 		sock_release(sock);
 	}
+	mutex_unlock(&tc->t_conn_path_lock);
 
 	if (tc->t_tinc) {
 		rds_inc_put(&tc->t_tinc->ti_inc);

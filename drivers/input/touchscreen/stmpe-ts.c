@@ -296,7 +296,7 @@ static int stmpe_input_probe(struct platform_device *pdev)
 	if (ts_irq < 0)
 		return ts_irq;
 
-	ts = devm_kzalloc_obj(&pdev->dev, *ts);
+	ts = devm_kzalloc(&pdev->dev, sizeof(*ts), GFP_KERNEL);
 	if (!ts)
 		return -ENOMEM;
 

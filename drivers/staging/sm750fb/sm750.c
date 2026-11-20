@@ -8,12 +8,21 @@
 #include "sm750_accel.h"
 #include "sm750_cursor.h"
 
+/*
+ * #ifdef __BIG_ENDIAN
+ * ssize_t lynxfb_ops_write(struct fb_info *info, const char __user *buf,
+ * size_t count, loff_t *ppos);
+ * ssize_t lynxfb_ops_read(struct fb_info *info, char __user *buf,
+ * size_t count, loff_t *ppos);
+ * #endif
+ */
+
 /* common var for all device */
 static int g_hwcursor = 1;
 static int g_noaccel __ro_after_init;
 static int g_nomtrr __ro_after_init;
 static const char *g_fbmode[] = {NULL, NULL};
-static const char * const g_def_fbmode = "1024x768-32@60";
+static const char *g_def_fbmode = "1024x768-32@60";
 static char *g_settings;
 static int g_dualview __ro_after_init;
 static char *g_option;
@@ -343,6 +352,7 @@ static int lynxfb_ops_set_par(struct fb_info *info)
 	if (!info)
 		return -EINVAL;
 
+	ret = 0;
 	par = info->par;
 	crtc = &par->crtc;
 	output = &par->output;
@@ -384,7 +394,7 @@ static inline unsigned int chan_to_field(unsigned int chan,
 	return chan << bf->offset;
 }
 
-static int lynxfb_suspend(struct device *dev)
+static int __maybe_unused lynxfb_suspend(struct device *dev)
 {
 	struct fb_info *info;
 	struct sm750_dev *sm750_dev;
@@ -405,7 +415,7 @@ static int lynxfb_suspend(struct device *dev)
 	return 0;
 }
 
-static int lynxfb_resume(struct device *dev)
+static int __maybe_unused lynxfb_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct fb_info *info;
@@ -462,6 +472,7 @@ static int lynxfb_ops_check_var(struct fb_var_screeninfo *var,
 	if (!var->pixclock)
 		return -EINVAL;
 
+	ret = 0;
 	par = info->par;
 	crtc = &par->crtc;
 
@@ -479,7 +490,7 @@ static int lynxfb_ops_check_var(struct fb_var_screeninfo *var,
 
 	/* check if current fb's video memory big enough to hold the onscreen*/
 	request = var->xres_virtual * (var->bits_per_pixel >> 3);
-	/* default crtc->channel go with par->index */
+	/* defaulty crtc->channel go with par->index */
 
 	request = ALIGN(request, crtc->line_pad);
 	request = request * var->yres_virtual;
@@ -732,7 +743,7 @@ static int lynxfb_set_fbinfo(struct fb_info *info, int index)
 	 * must be set after crtc member initialized
 	 */
 	crtc->cursor.offset = crtc->o_screen + crtc->vidmem_size - 1024;
-	crtc->cursor.mmio = sm750_dev->mmio +
+	crtc->cursor.mmio = sm750_dev->pvReg +
 		0x800f0 + (int)crtc->channel * 0x140;
 
 	crtc->cursor.max_h = 64;
@@ -825,11 +836,6 @@ exit:
 	return ret;
 }
 
-static void lynxfb_unset_fbinfo(struct fb_info *info)
-{
-	fb_dealloc_cmap(&info->cmap);
-}
-
 /*	chip specific g_option configuration routine */
 static void sm750fb_setup(struct sm750_dev *sm750_dev, char *src)
 {
@@ -838,10 +844,11 @@ static void sm750fb_setup(struct sm750_dev *sm750_dev, char *src)
 
 	swap = 0;
 
-	sm750_dev->init_parm.chip_clock = 0;
-	sm750_dev->init_parm.mem_clock = 0;
-	sm750_dev->init_parm.master_clock = 0;
+	sm750_dev->init_parm.chip_clk = 0;
+	sm750_dev->init_parm.mem_clk = 0;
+	sm750_dev->init_parm.master_clk = 0;
 	sm750_dev->init_parm.power_mode = 0;
+	sm750_dev->init_parm.setAllEngOff = 0;
 	sm750_dev->init_parm.reset_memory = 1;
 
 	/* defaultly turn g_hwcursor on for both view */
@@ -915,7 +922,6 @@ static void sm750fb_framebuffer_release(struct sm750_dev *sm750_dev)
 	while (sm750_dev->fb_count) {
 		fb_info = sm750_dev->fbinfo[sm750_dev->fb_count - 1];
 		unregister_framebuffer(fb_info);
-		lynxfb_unset_fbinfo(fb_info);
 		framebuffer_release(fb_info);
 		sm750_dev->fb_count--;
 	}
@@ -942,14 +948,12 @@ static int sm750fb_framebuffer_alloc(struct sm750_dev *sm750_dev, int fbidx)
 
 	err = register_framebuffer(fb_info);
 	if (err < 0)
-		goto unset_fb;
+		goto release_fb;
 
 	sm750_dev->fb_count++;
 
 	return 0;
 
-unset_fb:
-	lynxfb_unset_fbinfo(fb_info);
 release_fb:
 	framebuffer_release(fb_info);
 	return err;
@@ -973,7 +977,7 @@ static int lynxfb_pci_probe(struct pci_dev *pdev,
 		return err;
 
 	err = -ENOMEM;
-	sm750_dev = devm_kzalloc_obj(&pdev->dev, *sm750_dev);
+	sm750_dev = devm_kzalloc(&pdev->dev, sizeof(*sm750_dev), GFP_KERNEL);
 	if (!sm750_dev)
 		return err;
 
@@ -1043,7 +1047,7 @@ static void lynxfb_pci_remove(struct pci_dev *pdev)
 	sm750fb_framebuffer_release(sm750_dev);
 	arch_phys_wc_del(sm750_dev->mtrr.vram);
 
-	iounmap(sm750_dev->mmio);
+	iounmap(sm750_dev->pvReg);
 	iounmap(sm750_dev->vmem);
 	pci_release_region(pdev, 1);
 	kfree(g_settings);
@@ -1102,14 +1106,14 @@ static const struct pci_device_id smi_pci_table[] = {
 
 MODULE_DEVICE_TABLE(pci, smi_pci_table);
 
-static DEFINE_SIMPLE_DEV_PM_OPS(lynxfb_pm_ops, lynxfb_suspend, lynxfb_resume);
+static SIMPLE_DEV_PM_OPS(lynxfb_pm_ops, lynxfb_suspend, lynxfb_resume);
 
 static struct pci_driver lynxfb_driver = {
 	.name =		"sm750fb",
 	.id_table =	smi_pci_table,
 	.probe =	lynxfb_pci_probe,
 	.remove =	lynxfb_pci_remove,
-	.driver.pm =	pm_sleep_ptr(&lynxfb_pm_ops),
+	.driver.pm =	&lynxfb_pm_ops,
 };
 
 static int __init lynxfb_init(void)

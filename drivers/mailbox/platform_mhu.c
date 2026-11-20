@@ -122,7 +122,7 @@ static int platform_mhu_probe(struct platform_device *pdev)
 	};
 
 	/* Allocate memory for device */
-	mhu = devm_kzalloc_obj(dev, *mhu);
+	mhu = devm_kzalloc(dev, sizeof(*mhu), GFP_KERNEL);
 	if (!mhu)
 		return -ENOMEM;
 

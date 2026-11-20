@@ -184,7 +184,7 @@ static int axi_spdif_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	spdif = devm_kzalloc_obj(&pdev->dev, *spdif);
+	spdif = devm_kzalloc(&pdev->dev, sizeof(*spdif), GFP_KERNEL);
 	if (!spdif)
 		return -ENOMEM;
 

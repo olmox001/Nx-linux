@@ -339,14 +339,14 @@ static int hisi_spi_nor_register(struct device_node *np,
 	struct mtd_info *mtd;
 	int ret;
 
-	nor = devm_kzalloc_obj(dev, *nor);
+	nor = devm_kzalloc(dev, sizeof(*nor), GFP_KERNEL);
 	if (!nor)
 		return -ENOMEM;
 
 	nor->dev = dev;
 	spi_nor_set_flash_node(nor, np);
 
-	priv = devm_kzalloc_obj(dev, *priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -420,7 +420,7 @@ static int hisi_spi_nor_probe(struct platform_device *pdev)
 	struct hifmc_host *host;
 	int ret;
 
-	host = devm_kzalloc_obj(dev, *host);
+	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
 	if (!host)
 		return -ENOMEM;
 

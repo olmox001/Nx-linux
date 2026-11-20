@@ -43,7 +43,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 /* registers */
@@ -72,12 +71,12 @@
 static int heartbeat;
 module_param(heartbeat, int, 0);
 MODULE_PARM_DESC(heartbeat, "Watchdog heartbeats in seconds "
-	"(default=" __stringify(PDC_WDT_DEF_TIMEOUT) ")");
+	"(default=" __MODULE_STRING(PDC_WDT_DEF_TIMEOUT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started "
-	"(default=" __stringify(WATCHDOG_NOWAYOUT) ")");
+	"(default=" __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 struct pdc_wdt_dev {
 	struct watchdog_device wdt_dev;
@@ -183,7 +182,7 @@ static int pdc_wdt_probe(struct platform_device *pdev)
 	unsigned long clk_rate;
 	struct pdc_wdt_dev *pdc_wdt;
 
-	pdc_wdt = devm_kzalloc_obj(dev, *pdc_wdt);
+	pdc_wdt = devm_kzalloc(dev, sizeof(*pdc_wdt), GFP_KERNEL);
 	if (!pdc_wdt)
 		return -ENOMEM;
 

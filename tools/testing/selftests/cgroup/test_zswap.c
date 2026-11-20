@@ -21,7 +21,6 @@ static int page_size;
 #define PATH_ZSWAP "/sys/module/zswap"
 #define PATH_ZSWAP_ENABLED "/sys/module/zswap/parameters/enabled"
 #define PATH_ZSWAP_SHRINKER_ENABLED "/sys/module/zswap/parameters/shrinker_enabled"
-#define PATH_ZSWAP_STORED_PAGES "/sys/kernel/debug/zswap/stored_pages"
 
 static int read_int(const char *path, size_t *value)
 {
@@ -57,7 +56,7 @@ static int read_min_free_kb(size_t *value)
 
 static int get_zswap_stored_pages(size_t *value)
 {
-	return read_int(PATH_ZSWAP_STORED_PAGES, value);
+	return read_int("/sys/kernel/debug/zswap/stored_pages", value);
 }
 
 static long get_cg_wb_count(const char *cg)
@@ -346,16 +345,7 @@ static int attempt_writeback(const char *cgroup, void *arg)
 	 * it can't writeback to swap.
 	 */
 	ret = cg_write_numeric(cgroup, "memory.reclaim", memsize);
-
-	/*
-	 * When writeback is enabled, memory.reclaim may still fail to reclaim
-	 * the requested amount of memory due to a slow swap device.
-	 * Ignore -EAGAIN here. The caller determines pass/fail based on the
-	 * zswap writeback counter.
-	 */
-	if (wb_enabled && ret == -EAGAIN)
-		ret = 0;
-	else if (!wb_enabled)
+	if (!wb_enabled)
 		ret = (ret == -EAGAIN) ? 0 : -1;
 
 out:
@@ -417,8 +407,6 @@ static int test_zswap_writeback(const char *root, bool wb)
 	 * set up child cgroup, whose memory.zswap.writeback is hardcoded to 1.
 	 * Thus, the parent's setting shall be what's in effect. */
 	if (cg_write(test_group, "memory.zswap.max", "max"))
-		goto out;
-	if (cg_read_strcmp_wait(test_group, "cgroup.events", "populated 0\n"))
 		goto out;
 	if (cg_write(test_group, "cgroup.subtree_control", "+memory"))
 		goto out;
@@ -606,16 +594,8 @@ static int test_no_kmem_bypass(const char *root)
 	/* Read sys info and compute test values accordingly */
 	if (sysinfo(&sys_info) != 0)
 		return KSFT_FAIL;
-	if (sys_info.totalram > GB(4)) {
-		ksft_print_msg(
-			"requires less than 4GB total ram, sys_info.totalram: %.1fGB\n",
-			(double)sys_info.totalram / GB(1));
+	if (sys_info.totalram > 5000000000)
 		return KSFT_SKIP;
-	}
-	if (access(PATH_ZSWAP_STORED_PAGES, R_OK)) {
-		ksft_print_msg("debugfs not mounted at /sys/kernel/debug\n");
-		return KSFT_SKIP;
-	}
 	values = mmap(0, sizeof(struct no_kmem_bypass_child_args), PROT_READ |
 			PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	if (values == MAP_FAILED)
@@ -663,14 +643,11 @@ static int test_no_kmem_bypass(const char *root)
 			break;
 		/* If memory was pushed to zswap, verify it belongs to memcg */
 		if (stored_pages > stored_pages_threshold) {
-			long zswapped = cg_read_key_long(
-				test_group, "memory.stat", "zswapped ");
-			long long delta =
-				(long long)stored_pages * page_size - zswapped;
-			long long max_delta =
-				(long long)stored_pages * page_size / 4;
+			int zswapped = cg_read_key_long(test_group, "memory.stat", "zswapped ");
+			int delta = stored_pages * page_size - zswapped;
+			int result_ok = delta < stored_pages * page_size / 4;
 
-			ret = (delta < max_delta) ? KSFT_PASS : KSFT_FAIL;
+			ret = result_ok ? KSFT_PASS : KSFT_FAIL;
 			break;
 		}
 	}

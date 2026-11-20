@@ -19,7 +19,6 @@
 #include <linux/memfd.h>
 #include <linux/pid_namespace.h>
 #include <uapi/linux/memfd.h>
-#include "internal.h"
 #include "swap.h"
 
 /*
@@ -32,13 +31,6 @@
 
 static bool memfd_folio_has_extra_refs(struct folio *folio)
 {
-	/*
-	 * Use the precise pincount where available to avoid racy refcount
-	 * comparisons.
-	 */
-	if (folio_has_pincount(folio) && folio_maybe_dma_pinned(folio))
-		return true;
-
 	return folio_ref_count(folio) != folio_expected_ref_count(folio);
 }
 
@@ -89,31 +81,22 @@ struct folio *memfd_alloc_folio(struct file *memfd, pgoff_t idx)
 		struct hstate *h = hstate_file(memfd);
 		int err = -ENOMEM;
 		long nr_resv;
-		u32 hash;
 
 		gfp_mask = htlb_alloc_mask(h);
 		gfp_mask &= ~(__GFP_HIGHMEM | __GFP_MOVABLE);
 		idx >>= huge_page_order(h);
 
-		/*
-		 * Serialize hugepage allocation and instantiation to prevent
-		 * races with concurrent allocations, as required by all other
-		 * callers of hugetlb_add_to_page_cache().
-		 */
-		hash = hugetlb_fault_mutex_hash(memfd->f_mapping, idx);
-		mutex_lock(&hugetlb_fault_mutex_table[hash]);
-
 		nr_resv = hugetlb_reserve_pages(inode, idx, idx + 1, NULL, EMPTY_VMA_FLAGS);
-		if (nr_resv < 0) {
-			err = nr_resv;
-			goto out_unlock;
-		}
+		if (nr_resv < 0)
+			return ERR_PTR(nr_resv);
 
 		folio = alloc_hugetlb_folio_reserve(h,
 						    numa_node_id(),
 						    NULL,
 						    gfp_mask);
 		if (folio) {
+			u32 hash;
+
 			/*
 			 * Zero the folio to prevent information leaks to userspace.
 			 * Use folio_zero_user() which is optimized for huge/gigantic
@@ -128,9 +111,20 @@ struct folio *memfd_alloc_folio(struct file *memfd, pgoff_t idx)
 			 */
 			__folio_mark_uptodate(folio);
 
+			/*
+			 * Serialize hugepage allocation and instantiation to prevent
+			 * races with concurrent allocations, as required by all other
+			 * callers of hugetlb_add_to_page_cache().
+			 */
+			hash = hugetlb_fault_mutex_hash(memfd->f_mapping, idx);
+			mutex_lock(&hugetlb_fault_mutex_table[hash]);
+
 			err = hugetlb_add_to_page_cache(folio,
 							memfd->f_mapping,
 							idx);
+
+			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
+
 			if (err) {
 				folio_put(folio);
 				goto err_unresv;
@@ -138,14 +132,11 @@ struct folio *memfd_alloc_folio(struct file *memfd, pgoff_t idx)
 
 			hugetlb_set_folio_subpool(folio, subpool_inode(inode));
 			folio_unlock(folio);
-			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
 			return folio;
 		}
 err_unresv:
 		if (nr_resv > 0)
 			hugetlb_unreserve_pages(inode, idx, idx + 1, 0);
-out_unlock:
-		mutex_unlock(&hugetlb_fault_mutex_table[hash]);
 		return ERR_PTR(err);
 	}
 #endif
@@ -348,7 +339,8 @@ long memfd_fcntl(struct file *file, unsigned int cmd, unsigned int arg)
 #define MFD_NAME_PREFIX_LEN (sizeof(MFD_NAME_PREFIX) - 1)
 #define MFD_NAME_MAX_LEN (NAME_MAX - MFD_NAME_PREFIX_LEN)
 
-#define MFD_ALL_FLAGS (MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXEC_SEAL | MFD_EXEC)
+#define MFD_ALL_FLAGS (MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | \
+		       MFD_NOEXEC_SEAL | MFD_EXEC | MFD_MF_KEEP_UE_MAPPED)
 
 static int check_sysctl_memfd_noexec(unsigned int *flags)
 {
@@ -378,36 +370,39 @@ static inline bool is_write_sealed(unsigned int seals)
 	return seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE);
 }
 
-static int check_write_seal(vma_flags_t *vma_flags_ptr)
+static int check_write_seal(vm_flags_t *vm_flags_ptr)
 {
+	vm_flags_t vm_flags = *vm_flags_ptr;
+	vm_flags_t mask = vm_flags & (VM_SHARED | VM_WRITE);
+
 	/* If a private mapping then writability is irrelevant. */
-	if (!vma_flags_test(vma_flags_ptr, VMA_SHARED_BIT))
+	if (!(mask & VM_SHARED))
 		return 0;
 
 	/*
 	 * New PROT_WRITE and MAP_SHARED mmaps are not allowed when
 	 * write seals are active.
 	 */
-	if (vma_flags_test(vma_flags_ptr, VMA_WRITE_BIT))
+	if (mask & VM_WRITE)
 		return -EPERM;
 
 	/*
 	 * This is a read-only mapping, disallow mprotect() from making a
 	 * write-sealed mapping writable in future.
 	 */
-	vma_flags_clear(vma_flags_ptr, VMA_MAYWRITE_BIT);
+	*vm_flags_ptr &= ~VM_MAYWRITE;
 
 	return 0;
 }
 
-int memfd_check_seals_mmap(struct file *file, vma_flags_t *vma_flags_ptr)
+int memfd_check_seals_mmap(struct file *file, vm_flags_t *vm_flags_ptr)
 {
 	int err = 0;
 	unsigned int *seals_ptr = memfd_file_seals_ptr(file);
 	unsigned int seals = seals_ptr ? *seals_ptr : 0;
 
 	if (is_write_sealed(seals))
-		err = check_write_seal(vma_flags_ptr);
+		err = check_write_seal(vm_flags_ptr);
 
 	return err;
 }
@@ -418,6 +413,8 @@ static int sanitize_flags(unsigned int *flags_ptr)
 
 	if (!(flags & MFD_HUGETLB)) {
 		if (flags & ~MFD_ALL_FLAGS)
+			return -EINVAL;
+		if (flags & MFD_MF_KEEP_UE_MAPPED)
 			return -EINVAL;
 	} else {
 		/* Allow huge page size encoding in flags. */
@@ -489,9 +486,17 @@ struct file *memfd_alloc_file(const char *name, unsigned int flags)
 	}
 
 	file->f_mode |= FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
-	/* a regular file like any other: POSIX.1-2008/SUSv4 Section XSI 2.9.7 */
-	file->f_mode |= FMODE_ATOMIC_POS;
 	file->f_flags |= O_LARGEFILE;
+
+	/*
+	 * MFD_MF_KEEP_UE_MAPPED can only be specified in memfd_create; no API
+	 * to update it once memfd is created. MFD_MF_KEEP_UE_MAPPED is not
+	 * seal-able.
+	 *
+	 * For now MFD_MF_KEEP_UE_MAPPED is only supported by HugeTLBFS.
+	 */
+	if (flags & MFD_MF_KEEP_UE_MAPPED)
+		mapping_set_mf_keep_ue_mapped(file->f_mapping);
 
 	if (flags & MFD_NOEXEC_SEAL) {
 		inode->i_mode &= ~0111;

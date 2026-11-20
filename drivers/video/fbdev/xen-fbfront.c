@@ -443,11 +443,7 @@ static int xenfb_probe(struct xenbus_device *dev,
 	}
 
 	fb_info->fbdefio = &xenfb_defio;
-	ret = fb_deferred_io_init(fb_info);
-	if (ret < 0) {
-		xenbus_dev_fatal(dev, ret, "fb_deferred_io_init");
-		goto error_cmap;
-	}
+	fb_deferred_io_init(fb_info);
 
 	xenfb_init_shared_page(info, fb_info);
 
@@ -469,7 +465,6 @@ static int xenfb_probe(struct xenbus_device *dev,
 
 error_fb:
 	fb_deferred_io_cleanup(fb_info);
-error_cmap:
 	fb_dealloc_cmap(&fb_info->cmap);
 	framebuffer_release(fb_info);
 error_nomem:

@@ -18,6 +18,7 @@
 #include <linux/spinlock.h>
 #include <linux/list.h>
 #include <linux/kobject.h>
+#include <linux/lockdep.h>
 
 #define PADATA_CPU_SERIAL   0x01
 #define PADATA_CPU_PARALLEL 0x02
@@ -131,17 +132,24 @@ struct padata_shell {
  * @min_chunk: The minimum chunk size in job-specific units.  This allows
  *             the client to communicate the minimum amount of work that's
  *             appropriate for one worker thread to do at once.
+ * @undo_fn: A function that undoes one chunk of the task per call.  If
+ *           error(s) occur during the job, this is called on all successfully
+ *           completed chunks.  The chunk(s) in which failure occurs should be
+ *           handled in the thread function.
  * @max_threads: Max threads to use for the job, actual number may be less
  *               depending on task size and minimum chunk size.
  * @numa_aware: Distribute jobs to different nodes with CPU in a round robin fashion.
  */
 struct padata_mt_job {
-	void (*thread_fn)(unsigned long start, unsigned long end, void *arg);
+	int (*thread_fn)(unsigned long start, unsigned long end, void *arg);
 	void			*fn_arg;
 	unsigned long		start;
 	unsigned long		size;
 	unsigned long		align;
 	unsigned long		min_chunk;
+
+	/* Have default values. */
+	void (*undo_fn)(unsigned long start, unsigned long end, void *arg);
 	int			max_threads;
 	bool			numa_aware;
 };
@@ -176,6 +184,24 @@ struct padata_instance {
 
 #ifdef CONFIG_PADATA
 extern void __init padata_init(void);
+
+#ifdef CONFIG_LOCKDEP
+
+#define padata_do_multithreaded(job)					      \
+({									      \
+	static struct lock_class_key __key;				      \
+	const char *__map_name = "padata master waiting";		      \
+									      \
+	__padata_do_multithreaded((job), &__key, __map_name);		      \
+})
+
+#else
+
+#define padata_do_multithreaded(job)					      \
+	__padata_do_multithreaded((job), NULL, NULL)
+
+#endif
+
 extern struct padata_instance *padata_alloc(const char *name);
 extern void padata_free(struct padata_instance *pinst);
 extern struct padata_shell *padata_alloc_shell(struct padata_instance *pinst);
@@ -183,12 +209,14 @@ extern void padata_free_shell(struct padata_shell *ps);
 extern int padata_do_parallel(struct padata_shell *ps,
 			      struct padata_priv *padata, int *cb_cpu);
 extern void padata_do_serial(struct padata_priv *padata);
-extern void __init padata_do_multithreaded(struct padata_mt_job *job);
+extern int __padata_do_multithreaded(struct padata_mt_job *job,
+				     struct lock_class_key *key,
+				     const char *map_name);
 extern int padata_set_cpumask(struct padata_instance *pinst, int cpumask_type,
 			      cpumask_var_t cpumask);
 #else
 static inline void __init padata_init(void) {}
-static inline void __init padata_do_multithreaded(struct padata_mt_job *job)
+static inline void padata_do_multithreaded(struct padata_mt_job *job)
 {
 	job->thread_fn(job->start, job->start + job->size, job->fn_arg);
 }

@@ -238,7 +238,6 @@ static MLX5E_DECLARE_STATS_GRP_OP_UPDATE_STATS(vport_rep)
 		MLX5_GET_CTR(out, transmitted_ib_unicast.octets) +
 		MLX5_GET_CTR(out, transmitted_eth_unicast.octets) +
 		MLX5_GET_CTR(out, transmitted_ib_multicast.octets) +
-		MLX5_GET_CTR(out, transmitted_eth_multicast.octets) +
 		MLX5_GET_CTR(out, transmitted_eth_broadcast.octets);
 
 	rep_stats->vport_tx_bytes =
@@ -506,11 +505,10 @@ static int mlx5e_sqs2vport_start(struct mlx5_eswitch *esw,
 				 struct mlx5_eswitch_rep *rep,
 				 u32 *sqns_array, int sqns_num)
 {
-	struct mlx5_devcom_comp_dev *devcom = esw->devcom;
 	struct mlx5_flow_handle *flow_rule;
 	struct mlx5e_rep_priv *rpriv;
 	struct mlx5e_rep_sq *rep_sq;
-	bool peers_ready;
+	bool devcom_locked = false;
 	int err;
 	int i;
 
@@ -519,8 +517,9 @@ static int mlx5e_sqs2vport_start(struct mlx5_eswitch *esw,
 
 	rpriv = mlx5e_rep_to_rep_priv(rep);
 
-	mlx5_devcom_comp_read_lock(devcom);
-	peers_ready = mlx5_devcom_comp_is_ready(devcom);
+	if (mlx5_devcom_comp_is_ready(esw->devcom) &&
+	    mlx5_devcom_for_each_peer_begin(esw->devcom))
+		devcom_locked = true;
 
 	for (i = 0; i < sqns_num; i++) {
 		rep_sq = kzalloc_obj(*rep_sq);
@@ -541,7 +540,7 @@ static int mlx5e_sqs2vport_start(struct mlx5_eswitch *esw,
 		rep_sq->sqn = sqns_array[i];
 
 		xa_init(&rep_sq->sq_peer);
-		if (peers_ready) {
+		if (devcom_locked) {
 			err = mlx5e_sqs2vport_add_peers_rules(esw, rep, rep_sq, i);
 			if (err) {
 				mlx5_eswitch_del_send_to_vport_rule(rep_sq->send_to_vport_rule);
@@ -554,13 +553,16 @@ static int mlx5e_sqs2vport_start(struct mlx5_eswitch *esw,
 		list_add(&rep_sq->list, &rpriv->vport_sqs_list);
 	}
 
-	mlx5_devcom_comp_read_unlock(devcom);
+	if (devcom_locked)
+		mlx5_devcom_for_each_peer_end(esw->devcom);
 
 	return 0;
 
 out_err:
 	mlx5e_sqs2vport_stop(esw, rep);
-	mlx5_devcom_comp_read_unlock(devcom);
+
+	if (devcom_locked)
+		mlx5_devcom_for_each_peer_end(esw->devcom);
 
 	return err;
 }
@@ -588,7 +590,7 @@ mlx5e_add_sqs_fwd_rules(struct mlx5e_priv *priv)
 	if (is_uplink_rep)
 		sqs_per_channel += 2;
 
-	sqs = kvzalloc_objs(*sqs, nch * sqs_per_channel);
+	sqs = kvcalloc(nch * sqs_per_channel, sizeof(*sqs), GFP_KERNEL);
 	if (!sqs)
 		goto out;
 
@@ -627,12 +629,8 @@ mlx5e_remove_sqs_fwd_rules(struct mlx5e_priv *priv)
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep = rpriv->rep;
-	struct mlx5_devcom_comp_dev *devcom;
 
-	devcom = esw->devcom;
-	mlx5_devcom_comp_read_lock(devcom);
 	mlx5e_sqs2vport_stop(esw, rep);
-	mlx5_devcom_comp_read_unlock(devcom);
 }
 
 static int
@@ -681,8 +679,10 @@ void mlx5e_rep_deactivate_channels(struct mlx5e_priv *priv)
 static int mlx5e_rep_open(struct net_device *dev)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep = rpriv->rep;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	int err;
 
 	mutex_lock(&priv->state_lock);
@@ -690,13 +690,15 @@ static int mlx5e_rep_open(struct net_device *dev)
 	if (err)
 		goto unlock;
 
-	mutex_lock(&rep->esw->state_lock);
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	if (!mlx5_modify_vport_admin_state(priv->mdev,
 					   MLX5_VPORT_STATE_OP_MOD_ESW_VPORT,
 					   rep->vport, 1,
 					   MLX5_VPORT_ADMIN_STATE_UP))
 		netif_carrier_on(dev);
-	mutex_unlock(&rep->esw->state_lock);
+#else
+	netif_carrier_on(dev);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
 unlock:
 	mutex_unlock(&priv->state_lock);
@@ -706,17 +708,19 @@ unlock:
 static int mlx5e_rep_close(struct net_device *dev)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep = rpriv->rep;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	int ret;
 
 	mutex_lock(&priv->state_lock);
-	mutex_lock(&rep->esw->state_lock);
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	mlx5_modify_vport_admin_state(priv->mdev,
 				      MLX5_VPORT_STATE_OP_MOD_ESW_VPORT,
 				      rep->vport, 1,
 				      MLX5_VPORT_ADMIN_STATE_DOWN);
-	mutex_unlock(&rep->esw->state_lock);
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 	ret = mlx5e_close_locked(dev);
 	mutex_unlock(&priv->state_lock);
 	return ret;
@@ -785,28 +789,31 @@ static int mlx5e_rep_change_mtu(struct net_device *netdev, int new_mtu)
 
 static int mlx5e_rep_change_carrier(struct net_device *dev, bool new_carrier)
 {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep = rpriv->rep;
-	int err = 0;
+	int err;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 
-	mutex_lock(&rep->esw->state_lock);
 	if (new_carrier) {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		err = mlx5_modify_vport_admin_state(priv->mdev, MLX5_VPORT_STATE_OP_MOD_ESW_VPORT,
 						    rep->vport, 1, MLX5_VPORT_ADMIN_STATE_UP);
 		if (err)
-			goto unlock;
+			return err;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 		netif_carrier_on(dev);
 	} else {
+#ifdef WITHOUT_ORACLE_EXTENSIONS
 		err = mlx5_modify_vport_admin_state(priv->mdev, MLX5_VPORT_STATE_OP_MOD_ESW_VPORT,
 						    rep->vport, 1, MLX5_VPORT_ADMIN_STATE_DOWN);
 		if (err)
-			goto unlock;
+			return err;
+#endif /* WITHOUT_ORACLE_EXTENSIONS */
 		netif_carrier_off(dev);
 	}
-unlock:
-	mutex_unlock(&rep->esw->state_lock);
-	return err;
+	return 0;
 }
 
 static const struct net_device_ops mlx5e_netdev_ops_rep = {
@@ -1270,11 +1277,9 @@ static void mlx5e_cleanup_rep_tx(struct mlx5e_priv *priv)
 	mlx5e_rep_neigh_cleanup(rpriv);
 }
 
-static int mlx5e_rep_enable(struct mlx5e_priv *priv)
+static void mlx5e_rep_enable(struct mlx5e_priv *priv)
 {
 	mlx5e_set_netdev_mtu_boundaries(priv);
-
-	return 0;
 }
 
 static void mlx5e_rep_disable(struct mlx5e_priv *priv)
@@ -1332,7 +1337,7 @@ static int uplink_rep_async_event(struct notifier_block *nb, unsigned long event
 	return NOTIFY_DONE;
 }
 
-static int mlx5e_uplink_rep_enable(struct mlx5e_priv *priv)
+static void mlx5e_uplink_rep_enable(struct mlx5e_priv *priv)
 {
 	struct net_device *netdev = priv->netdev;
 	struct mlx5_core_dev *mdev = priv->mdev;
@@ -1347,12 +1352,9 @@ static int mlx5e_uplink_rep_enable(struct mlx5e_priv *priv)
 
 	mlx5e_rep_tc_enable(priv);
 
-	if (MLX5_CAP_GEN(mdev, uplink_follow)) {
-		mutex_lock(&mdev->priv.eswitch->state_lock);
+	if (MLX5_CAP_GEN(mdev, uplink_follow))
 		mlx5_modify_vport_admin_state(mdev, MLX5_VPORT_STATE_OP_MOD_UPLINK,
 					      0, 0, MLX5_VPORT_ADMIN_STATE_AUTO);
-		mutex_unlock(&mdev->priv.eswitch->state_lock);
-	}
 	mlx5_lag_add_netdev(mdev, netdev);
 	priv->events_nb.notifier_call = uplink_rep_async_event;
 	mlx5_notifier_register(mdev, &priv->events_nb);
@@ -1370,8 +1372,6 @@ static int mlx5e_uplink_rep_enable(struct mlx5e_priv *priv)
 	netdev_unlock(netdev);
 	netif_device_attach(netdev);
 	rtnl_unlock();
-
-	return 0;
 }
 
 static void mlx5e_uplink_rep_disable(struct mlx5e_priv *priv)

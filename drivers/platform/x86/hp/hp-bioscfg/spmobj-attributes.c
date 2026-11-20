@@ -6,7 +6,6 @@
  * Copyright (c) 2022 HP Development Company, L.P.
  */
 
-#include <linux/array_size.h>
 #include "bioscfg.h"
 
 static const char * const spm_state_types[] = {
@@ -48,6 +47,9 @@ size_t hp_calculate_security_buffer(const char *authentication)
 		return sizeof(u16) * 2;
 
 	authlen = strlen(authentication);
+	if (!authlen)
+		return sizeof(u16) * 2;
+
 	size = sizeof(u16) + authlen * sizeof(u16);
 	if (!strstarts(authentication, BEAM_PREFIX))
 		size += strlen(UTF_PREFIX) * sizeof(u16);
@@ -116,9 +118,6 @@ static ssize_t update_spm_state(void)
 	if (ret < 0)
 		return ret;
 
-	if (data.state >= ARRAY_SIZE(spm_mechanism_types))
-		return -EIO;
-
 	bioscfg_drv.spm_data.mechanism = data.state;
 	if (bioscfg_drv.spm_data.mechanism)
 		bioscfg_drv.spm_data.is_enabled = 1;
@@ -153,9 +152,6 @@ static ssize_t status_show(struct kobject *kobj, struct kobj_attribute
 	ret = statusbin(kobj, attr, &data);
 	if (ret < 0)
 		return ret;
-
-	if (data.state >= ARRAY_SIZE(spm_state_types))
-		return -EIO;
 
 	/*
 	 * 'status' is a read-only file that returns ASCII text in
@@ -314,7 +310,7 @@ static ssize_t auth_token_store(struct kobject *kobj,
 		length--;
 
 	/* allocate space and copy current auth token */
-	bioscfg_drv.spm_data.auth_token = kstrndup(buf, length, GFP_KERNEL);
+	bioscfg_drv.spm_data.auth_token = kmemdup(buf, length, GFP_KERNEL);
 	if (!bioscfg_drv.spm_data.auth_token) {
 		ret = -ENOMEM;
 		goto exit_token;

@@ -857,7 +857,10 @@ npc_cn20k_enable_mcam_entry(struct rvu *rvu, int blkaddr,
 	}
 
 update_en_map:
-	assign_bit(index, npc_priv->en_map, enable);
+	if (enable)
+		set_bit(index, npc_priv->en_map);
+	else
+		clear_bit(index, npc_priv->en_map);
 
 	return 0;
 }
@@ -2295,7 +2298,7 @@ process:
 	/* 'save' array stores available indexes temporarily before
 	 * marking it as allocated
 	 */
-	save = kzalloc_objs(u16, count);
+	save = kcalloc(count, sizeof(u16), GFP_KERNEL);
 	if (!save) {
 		rc = -ENOMEM;
 		goto err1;
@@ -3402,7 +3405,8 @@ static int npc_create_srch_order(int cnt)
 {
 	int val = 0;
 
-	subbank_srch_order = kzalloc_objs(u32, cnt);
+	subbank_srch_order = kcalloc(cnt, sizeof(u32),
+				     GFP_KERNEL);
 	if (!subbank_srch_order)
 		return -ENOMEM;
 
@@ -3643,7 +3647,7 @@ static int npc_defrag_add_2_show_list(struct rvu *rvu, u16 old_midx,
 {
 	struct npc_defrag_show_node *node;
 
-	node = kzalloc_objs(*node, 1);
+	node = kcalloc(1, sizeof(*node), GFP_KERNEL);
 	if (!node)
 		return -ENOMEM;
 
@@ -3868,7 +3872,7 @@ static int npc_defrag_process(struct rvu *rvu, struct list_head *lh)
 		/* Allocate an array to store newly allocated
 		 * free slots (mcam indexes)
 		 */
-		save = kzalloc_objs(*save, cnt);
+		save = kcalloc(cnt, sizeof(*save), GFP_KERNEL);
 		if (!save) {
 			rc = -ENOMEM;
 			goto err;
@@ -4078,7 +4082,7 @@ int npc_cn20k_defrag(struct rvu *rvu)
 	INIT_LIST_HEAD(&x4lh);
 	INIT_LIST_HEAD(&x2lh);
 
-	node = kzalloc_objs(*node, npc_priv->num_subbanks);
+	node = kcalloc(npc_priv->num_subbanks, sizeof(*node), GFP_KERNEL);
 	if (!node)
 		return -ENOMEM;
 
@@ -4093,8 +4097,9 @@ int npc_cn20k_defrag(struct rvu *rvu)
 		node[i].idx = i;
 		node[i].key_type = sb->key_type;
 		node[i].free_cnt = sb->free_cnt;
-		node[i].vidx = kzalloc_objs(*node[i].vidx,
-					    npc_priv->subbank_depth * 2);
+		node[i].vidx = kcalloc(npc_priv->subbank_depth * 2,
+				       sizeof(*node[i].vidx),
+				       GFP_KERNEL);
 		if (!node[i].vidx) {
 			rc = -ENOMEM;
 			goto free_vidx;
@@ -4706,7 +4711,7 @@ static int npc_priv_init(struct rvu *rvu)
 		return -EINVAL;
 	}
 
-	npc_priv = kzalloc_objs(*npc_priv, 1);
+	npc_priv = kcalloc(1, sizeof(*npc_priv), GFP_KERNEL);
 	if (!npc_priv)
 		return -ENOMEM;
 
@@ -4724,7 +4729,8 @@ static int npc_priv_init(struct rvu *rvu)
 		 num_banks, bank_depth, num_subbanks, subbank_depth,
 		 npc_kw_name[npc_priv->kw]);
 
-	npc_priv->sb = kzalloc_objs(struct npc_subbank, num_subbanks);
+	npc_priv->sb = kcalloc(num_subbanks, sizeof(struct npc_subbank),
+			       GFP_KERNEL);
 	if (!npc_priv->sb)
 		goto fail1;
 
@@ -4751,7 +4757,9 @@ static int npc_priv_init(struct rvu *rvu)
 
 	/* Get number of pcifuncs in the system */
 	npc_priv->pf_cnt = npc_pcifunc_map_create(rvu);
-	npc_priv->xa_pf2idx_map = kzalloc_objs(struct xarray, npc_priv->pf_cnt);
+	npc_priv->xa_pf2idx_map = kcalloc(npc_priv->pf_cnt,
+					  sizeof(struct xarray),
+					  GFP_KERNEL);
 	if (!npc_priv->xa_pf2idx_map) {
 		ret = -ENOMEM;
 		goto fail3;

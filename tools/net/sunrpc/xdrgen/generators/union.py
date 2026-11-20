@@ -9,8 +9,7 @@ from generators import SourceGenerator
 from generators import create_jinja2_environment, get_jinja2_template
 
 from xdr_ast import _XdrBasic, _XdrUnion, _XdrVoid, _XdrString, get_header_name
-from xdr_ast import _XdrDeclaration, _XdrCaseSpec
-from xdr_ast import public_apis, big_endian, pages_members, pages_member_maxsize
+from xdr_ast import _XdrDeclaration, _XdrCaseSpec, public_apis, big_endian
 
 
 def emit_union_declaration(environment: Environment, node: _XdrUnion) -> None:
@@ -215,40 +214,12 @@ def emit_union_switch_spec_encoder(
     print(template.render(name=node.name, type=node.spec.type_name))
 
 
-def emit_union_pages_arm_encoder(
-    environment: Environment, union_name: str, arm: _XdrDeclaration, peer: str
-) -> bool:
-    """Emit a page-resident encoder for a "pragma pages" union arm
-
-    Return True when the arm is pages-marked and was emitted here, so
-    the caller skips the ordinary arm encoder.
-    """
-    if (union_name, arm.name) not in pages_members:
-        return False
-    if peer != "server":
-        raise NotImplementedError(
-            "pragma pages is server-side only; "
-            + peer
-            + " generation is not yet supported"
-        )
-    template = get_jinja2_template(environment, "encoder", "pages_opaque")
-    print(
-        template.render(
-            name=arm.name,
-            maxsize=pages_member_maxsize(arm),
-        )
-    )
-    return True
-
-
 def emit_union_arm_encoder(
-    environment: Environment, node: _XdrCaseSpec, union_name: str, peer: str
+    environment: Environment, node: _XdrCaseSpec
 ) -> None:
     """Emit encoder for an XDR union's arm (data only, no case/break)"""
 
     if isinstance(node.arm, _XdrVoid):
-        return
-    if emit_union_pages_arm_encoder(environment, union_name, node.arm, peer):
         return
     if isinstance(node.arm, _XdrString):
         type_name = "char *"
@@ -266,11 +237,7 @@ def emit_union_arm_encoder(
 
 
 def emit_union_case_spec_encoder(
-    environment: Environment,
-    node: _XdrCaseSpec,
-    big_endian_discriminant: bool,
-    union_name: str,
-    peer: str,
+    environment: Environment, node: _XdrCaseSpec, big_endian_discriminant: bool
 ) -> None:
     """Emit encoder functions for an XDR union's case arm"""
 
@@ -287,22 +254,19 @@ def emit_union_case_spec_encoder(
     for case in node.values:
         print(template.render(case=case))
 
-    if not emit_union_pages_arm_encoder(environment, union_name, node.arm, peer):
-        template = get_jinja2_template(environment, "encoder", node.arm.template)
-        print(
-            template.render(
-                name=node.arm.name,
-                type=type_name,
-            )
+    template = get_jinja2_template(environment, "encoder", node.arm.template)
+    print(
+        template.render(
+            name=node.arm.name,
+            type=type_name,
         )
+    )
 
     template = get_jinja2_template(environment, "encoder", "break")
     print(template.render())
 
 
-def emit_union_default_spec_encoder(
-    environment: Environment, node: _XdrUnion, peer: str
-) -> None:
+def emit_union_default_spec_encoder(environment: Environment, node: _XdrUnion) -> None:
     """Emit an encoder function for an XDR union's default arm"""
     default_case = node.default
 
@@ -318,9 +282,6 @@ def emit_union_default_spec_encoder(
         print(template.render())
         return
 
-    if emit_union_pages_arm_encoder(environment, node.name, default_case.arm, peer):
-        return
-
     template = get_jinja2_template(environment, "encoder", default_case.arm.template)
     print(
         template.render(
@@ -330,7 +291,7 @@ def emit_union_default_spec_encoder(
     )
 
 
-def emit_union_encoder(environment, node: _XdrUnion, peer: str) -> None:
+def emit_union_encoder(environment, node: _XdrUnion) -> None:
     """Emit one XDR union encoder"""
     template = get_jinja2_template(environment, "encoder", "open")
     print(template.render(name=node.name))
@@ -343,7 +304,7 @@ def emit_union_encoder(environment, node: _XdrUnion, peer: str) -> None:
         # Find and emit the TRUE case
         for case in node.cases:
             if case.values and case.values[0] == "TRUE":
-                emit_union_arm_encoder(environment, case, node.name, peer)
+                emit_union_arm_encoder(environment, case)
                 break
 
         template = get_jinja2_template(environment, "encoder", "close")
@@ -356,11 +317,9 @@ def emit_union_encoder(environment, node: _XdrUnion, peer: str) -> None:
                 environment,
                 case,
                 node.discriminant.spec.type_name in big_endian,
-                node.name,
-                peer,
             )
 
-        emit_union_default_spec_encoder(environment, node, peer)
+        emit_union_default_spec_encoder(environment, node)
 
         template = get_jinja2_template(environment, "encoder", "close")
         print(template.render())
@@ -400,7 +359,7 @@ class XdrUnionGenerator(SourceGenerator):
 
     def emit_encoder(self, node: _XdrUnion) -> None:
         """Emit one encoder function for an XDR union"""
-        emit_union_encoder(self.environment, node, self.peer)
+        emit_union_encoder(self.environment, node)
 
     def emit_maxsize(self, node: _XdrUnion) -> None:
         """Emit one maxsize macro for an XDR union"""

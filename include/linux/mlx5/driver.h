@@ -548,7 +548,6 @@ struct mlx5_debugfs_entries {
 	struct dentry *cq_debugfs;
 	struct dentry *cmdif_debugfs;
 	struct dentry *frag_buf_dma_pools_debugfs;
-	struct dentry *db_dma_pools_debugfs;
 	struct dentry *pages_debugfs;
 	struct dentry *lag_debugfs;
 };
@@ -570,7 +569,6 @@ enum mlx5_page_mgt_mode {
 };
 
 struct mlx5_frag_buf_node_pools;
-struct mlx5_dma_pool;
 struct mlx5_ft_pool;
 struct mlx5_priv {
 	/* IRQ table valid only for real pci devices PF or VF */
@@ -600,8 +598,10 @@ struct mlx5_priv {
 	struct mutex            alloc_mutex;
 	int                     numa_node;
 
+	struct mutex            pgdir_mutex;
+	struct list_head        pgdir_list;
+
 	struct mlx5_frag_buf_node_pools **frag_buf_node_pools;
-	struct mlx5_dma_pool **db_node_pools;
 	/* end: alloc stuff */
 
 	struct mlx5_adev       **adev;
@@ -707,7 +707,6 @@ struct mlx5_rsvd_gids {
 
 struct mlx5_clock;
 struct mlx5_clock_dev_state;
-struct mlx5_data_direct;
 struct mlx5_dm;
 struct mlx5_fw_tracer;
 struct mlx5_vxlan;
@@ -789,12 +788,8 @@ struct mlx5_core_dev {
 	u32                      vsc_addr;
 	struct mlx5_hv_vhca	*hv_vhca;
 	struct mlx5_hwmon	*hwmon;
-	struct {
-		/* Protects the fields below. */
-		spinlock_t lock;
-		u64 num_block_tc;
-		u64 num_block_ipsec;
-	} offload_block;
+	u64			num_block_tc;
+	u64			num_block_ipsec;
 #ifdef CONFIG_MLX5_MACSEC
 	struct mlx5_macsec_fs *macsec_fs;
 	/* MACsec notifier chain to sync MACsec core and IB database */
@@ -806,13 +801,12 @@ struct mlx5_core_dev {
 	/* sync write combining state */
 	struct mutex wc_state_lock;
 	struct devlink *shd;
-	struct mlx5_data_direct *data_direct;
 };
 
 struct mlx5_db {
 	__be32			*db;
 	union {
-		struct mlx5_dma_pool_page	*pool_page;
+		struct mlx5_db_pgdir		*pgdir;
 		struct mlx5_ib_user_db_page	*user_page;
 	}			u;
 	dma_addr_t		dma;
@@ -1064,6 +1058,11 @@ void mlx5_unregister_debugfs(void);
 void mlx5_fill_page_frag_array_perm(struct mlx5_frag_buf *buf, __be64 *pas, u8 perm);
 void mlx5_fill_page_frag_array(struct mlx5_frag_buf *frag_buf, __be64 *pas);
 int mlx5_comp_eqn_get(struct mlx5_core_dev *dev, u16 vecidx, int *eqn);
+#ifndef WITHOUT_ORACLE_EXTENSIONS
+struct mlx5_eq_comp *mlx5_comp_eqn_get_low(struct mlx5_core_dev *dev, int vecidx, int *eqn);
+void mlx5_comp_eqn_put_low(struct mlx5_core_dev *dev, struct mlx5_eq_comp *eq);
+int mlx5_comp_irqn_get(struct mlx5_core_dev *dev, int vector, unsigned int *irqn);
+#endif
 int mlx5_core_attach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
 int mlx5_core_detach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
 
@@ -1400,11 +1399,5 @@ static inline struct net *mlx5_core_net(struct mlx5_core_dev *dev)
 }
 
 #define MLX5_SW_IMAGE_GUID_MAX_BYTES 9
-
-static inline bool mlx5_data_direct_supported(struct mlx5_core_dev *mdev)
-{
-	return MLX5_CAP_GEN(mdev, data_direct) &&
-	       MLX5_CAP_GEN_2(mdev, query_vuid);
-}
 
 #endif /* MLX5_DRIVER_H */

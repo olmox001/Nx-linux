@@ -42,11 +42,13 @@ static int sxgbe_probe_config_dt(struct platform_device *pdev,
 	if (plat->bus_id < 0)
 		plat->bus_id = 0;
 
-	plat->mdio_bus_data = devm_kzalloc_obj(&pdev->dev, *plat->mdio_bus_data);
+	plat->mdio_bus_data = devm_kzalloc(&pdev->dev,
+					   sizeof(*plat->mdio_bus_data),
+					   GFP_KERNEL);
 	if (!plat->mdio_bus_data)
 		return -ENOMEM;
 
-	dma_cfg = devm_kzalloc_obj(&pdev->dev, *dma_cfg);
+	dma_cfg = devm_kzalloc(&pdev->dev, sizeof(*dma_cfg), GFP_KERNEL);
 	if (!dma_cfg)
 		return -ENOMEM;
 
@@ -80,6 +82,7 @@ static int sxgbe_platform_probe(struct platform_device *pdev)
 	void __iomem *addr;
 	struct sxgbe_priv_data *priv = NULL;
 	struct sxgbe_plat_data *plat_dat = NULL;
+	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct device_node *node = dev->of_node;
 
 	/* Get memory resource */
@@ -88,7 +91,9 @@ static int sxgbe_platform_probe(struct platform_device *pdev)
 		return PTR_ERR(addr);
 
 	if (pdev->dev.of_node) {
-		plat_dat = devm_kzalloc_obj(&pdev->dev, struct sxgbe_plat_data);
+		plat_dat = devm_kzalloc(&pdev->dev,
+					sizeof(struct sxgbe_plat_data),
+					GFP_KERNEL);
 		if (!plat_dat)
 			return  -ENOMEM;
 
@@ -153,7 +158,7 @@ err_tx_irq_unmap:
 		irq_dispose_mapping(priv->txq[i]->irq_no);
 	irq_dispose_mapping(priv->irq);
 err_drv_remove:
-	sxgbe_drv_remove(priv->dev);
+	sxgbe_drv_remove(ndev);
 err_out:
 	return -ENODEV;
 }

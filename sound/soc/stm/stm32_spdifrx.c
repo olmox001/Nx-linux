@@ -400,9 +400,10 @@ static int stm32_spdifrx_dma_ctrl_register(struct device *dev,
 	spdifrx->ctrl_chan = dma_request_chan(dev, "rx-ctrl");
 	if (IS_ERR(spdifrx->ctrl_chan))
 		return dev_err_probe(dev, PTR_ERR(spdifrx->ctrl_chan),
-				     "dma_request_chan error\n");
+				     "dma_request_slave_channel error\n");
 
-	spdifrx->dmab = devm_kzalloc_obj(dev, struct snd_dma_buffer);
+	spdifrx->dmab = devm_kzalloc(dev, sizeof(struct snd_dma_buffer),
+				     GFP_KERNEL);
 	if (!spdifrx->dmab)
 		return -ENOMEM;
 
@@ -945,7 +946,7 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
 	u32 ver, idr;
 	int ret;
 
-	spdifrx = devm_kzalloc_obj(&pdev->dev, *spdifrx);
+	spdifrx = devm_kzalloc(&pdev->dev, sizeof(*spdifrx), GFP_KERNEL);
 	if (!spdifrx)
 		return -ENOMEM;
 
@@ -969,8 +970,10 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(&pdev->dev, spdifrx->irq, stm32_spdifrx_isr, 0,
 			       dev_name(&pdev->dev), spdifrx);
-	if (ret)
+	if (ret) {
+		dev_err(&pdev->dev, "IRQ request returned %d\n", ret);
 		return ret;
+	}
 
 	rst = devm_reset_control_get_optional_exclusive(&pdev->dev, NULL);
 	if (IS_ERR(rst))
@@ -984,7 +987,7 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
 	pcm_config = &stm32_spdifrx_pcm_config;
 	ret = snd_dmaengine_pcm_register(&pdev->dev, pcm_config, 0);
 	if (ret)
-		return ret;
+		return dev_err_probe(&pdev->dev, ret, "PCM DMA register error\n");
 
 	ret = snd_soc_register_component(&pdev->dev,
 					 &stm32_spdifrx_component,

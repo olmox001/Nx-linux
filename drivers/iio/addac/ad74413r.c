@@ -312,7 +312,7 @@ static int ad74413r_gpio_set_multiple(struct gpio_chip *chip,
 			return ret;
 
 		real_mask |= BIT(real_offset);
-		if (test_bit(offset, bits))
+		if (*bits & offset)
 			real_bits |= BIT(real_offset);
 	}
 
@@ -1269,8 +1269,8 @@ static int ad74413r_setup_channels(struct iio_dev *indio_dev)
 	unsigned int i, num_chans, chan_i;
 	int ret;
 
-	channels = devm_kzalloc_objs(st->dev, *channels,
-				     indio_dev->num_channels);
+	channels = devm_kcalloc(st->dev, sizeof(*channels),
+				indio_dev->num_channels, GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
 
@@ -1457,7 +1457,7 @@ static int ad74413r_probe(struct spi_device *spi)
 	ret = devm_request_irq(st->dev, spi->irq, ad74413r_adc_data_interrupt,
 			       0, st->chip_info->name, indio_dev);
 	if (ret)
-		return ret;
+		return dev_err_probe(st->dev, ret, "Failed to request irq\n");
 
 	ret = devm_iio_triggered_buffer_setup(st->dev, indio_dev,
 					      &iio_pollfunc_store_time,

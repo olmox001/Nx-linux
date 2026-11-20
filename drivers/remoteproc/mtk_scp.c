@@ -1246,8 +1246,10 @@ static struct mtk_scp *scp_rproc_init(struct platform_device *pdev,
 					scp_irq_handler, IRQF_ONESHOT,
 					pdev->name, scp);
 
-	if (ret)
+	if (ret) {
+		dev_err(dev, "failed to request irq\n");
 		goto remove_subdev;
+	}
 
 	return scp;
 
@@ -1408,7 +1410,7 @@ static int scp_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	scp_cluster = devm_kzalloc_obj(dev, *scp_cluster);
+	scp_cluster = devm_kzalloc(dev, sizeof(*scp_cluster), GFP_KERNEL);
 	if (!scp_cluster)
 		return -ENOMEM;
 

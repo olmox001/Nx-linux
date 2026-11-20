@@ -143,22 +143,16 @@ int range_tree_clear(struct range_tree *rt, u32 start, u32 len)
 		if (rn->rn_start < start && rn->rn_last > last) {
 			u32 old_last = rn->rn_last;
 
-			/*
-			 * Pre-allocate the right-half node before modifying
-			 * the tree. If allocation fails we return -ENOMEM
-			 * without altering the range tree.
-			 */
-			new_rn = kmalloc_nolock(sizeof(struct range_node),
-						__GFP_ACCOUNT, NUMA_NO_NODE);
-			if (!new_rn)
-				return -ENOMEM;
-
 			/* Overlaps with the entire clearing range */
 			range_it_remove(rn, rt);
 			rn->rn_last = start - 1;
 			range_it_insert(rn, rt);
 
-			/* Add right-half range */
+			/* Add a range */
+			new_rn = kmalloc_nolock(sizeof(struct range_node), __GFP_ACCOUNT,
+						NUMA_NO_NODE);
+			if (!new_rn)
+				return -ENOMEM;
 			new_rn->rn_start = last + 1;
 			new_rn->rn_last = old_last;
 			range_it_insert(new_rn, rt);
@@ -199,7 +193,6 @@ int is_range_tree_set(struct range_tree *rt, u32 start, u32 len)
 int range_tree_set(struct range_tree *rt, u32 start, u32 len)
 {
 	u32 last = start + len - 1;
-	struct range_node *new_rn = NULL;
 	struct range_node *right;
 	struct range_node *left;
 	int err;
@@ -209,19 +202,20 @@ int range_tree_set(struct range_tree *rt, u32 start, u32 len)
 	if (left && left->rn_start <= start && left->rn_last >= last)
 		return 0;
 
-	left = range_it_iter_first(rt, start - 1, start - 1);
-	right = range_it_iter_first(rt, last + 1, last + 1);
-	if (!left && !right) {
-		new_rn = kmalloc_nolock(sizeof(struct range_node),
-					__GFP_ACCOUNT, NUMA_NO_NODE);
-		if (!new_rn)
-			return -ENOMEM;
-	}
-
 	/* Clear out everything in the range we want to set. */
 	err = range_tree_clear(rt, start, len);
 	if (err)
-		goto out_free_new;
+		return err;
+
+	/* Do we have a left-adjacent range ? */
+	left = range_it_iter_first(rt, start - 1, start - 1);
+	if (left && left->rn_last + 1 != start)
+		return -EFAULT;
+
+	/* Do we have a right-adjacent range ? */
+	right = range_it_iter_first(rt, last + 1, last + 1);
+	if (right && right->rn_start != last + 1)
+		return -EFAULT;
 
 	if (left && right) {
 		/* Combine left and right adjacent ranges */
@@ -241,16 +235,14 @@ int range_tree_set(struct range_tree *rt, u32 start, u32 len)
 		right->rn_start = start;
 		range_it_insert(right, rt);
 	} else {
-		/* No adjacent ranges; use the pre-allocated node */
-		new_rn->rn_start = start;
-		new_rn->rn_last = last;
-		range_it_insert(new_rn, rt);
+		left = kmalloc_nolock(sizeof(struct range_node), __GFP_ACCOUNT, NUMA_NO_NODE);
+		if (!left)
+			return -ENOMEM;
+		left->rn_start = start;
+		left->rn_last = last;
+		range_it_insert(left, rt);
 	}
 	return 0;
-
-out_free_new:
-	kfree_nolock(new_rn);
-	return err;
 }
 
 void range_tree_destroy(struct range_tree *rt)

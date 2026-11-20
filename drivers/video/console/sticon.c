@@ -302,20 +302,17 @@ static bool sticon_switch(struct vc_data *conp)
 static bool sticon_blank(struct vc_data *c, enum vesa_blank_mode blank,
 			 bool mode_switch)
 {
-	sti_clear(sticon_sti, 0, 0, c->vc_rows, c->vc_cols, BLANK, font_data[c->vc_num]);
-
+    if (blank == VESA_NO_BLANKING) {
 	if (mode_switch)
-		vga_is_gfx = 1;
-
+	    vga_is_gfx = 0;
 	return true;
-}
+    }
+    sti_clear(sticon_sti, 0, 0, c->vc_rows, c->vc_cols, BLANK,
+	      font_data[c->vc_num]);
+    if (mode_switch)
+	vga_is_gfx = 1;
 
-static bool sticon_unblank(struct vc_data *c, bool mode_switch)
-{
-	if (mode_switch)
-		vga_is_gfx = 0;
-
-	return true;
+    return true;
 }
 
 static u8 sticon_build_attr(struct vc_data *conp, u8 color,
@@ -359,7 +356,6 @@ static const struct consw sti_con = {
 	.con_scroll		= sticon_scroll,
 	.con_switch		= sticon_switch,
 	.con_blank		= sticon_blank,
-	.con_unblank		= sticon_unblank,
 	.con_font_set		= sticon_font_set,
 	.con_font_default	= sticon_font_default,
 	.con_build_attr		= sticon_build_attr,

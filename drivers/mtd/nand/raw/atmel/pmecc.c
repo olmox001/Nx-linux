@@ -828,7 +828,7 @@ static struct atmel_pmecc *atmel_pmecc_create(struct platform_device *pdev,
 	struct device *dev = &pdev->dev;
 	struct atmel_pmecc *pmecc;
 
-	pmecc = devm_kzalloc_obj(dev, *pmecc);
+	pmecc = devm_kzalloc(dev, sizeof(*pmecc), GFP_KERNEL);
 	if (!pmecc)
 		return ERR_PTR(-ENOMEM);
 

@@ -8545,7 +8545,8 @@ static int mlxplat_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	priv = devm_kzalloc_obj(&mlxplat_dev->dev, struct mlxplat_priv);
+	priv = devm_kzalloc(&mlxplat_dev->dev, sizeof(struct mlxplat_priv),
+			    GFP_KERNEL);
 	if (!priv) {
 		err = -ENOMEM;
 		goto fail_alloc;

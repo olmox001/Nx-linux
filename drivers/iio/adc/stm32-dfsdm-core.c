@@ -370,7 +370,7 @@ static int stm32_dfsdm_probe(struct platform_device *pdev)
 	struct stm32_dfsdm *dfsdm;
 	int ret;
 
-	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
@@ -398,13 +398,13 @@ static int stm32_dfsdm_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	dfsdm->fl_list = devm_kzalloc_objs(&pdev->dev, *dfsdm->fl_list,
-					   dfsdm->num_fls);
+	dfsdm->fl_list = devm_kcalloc(&pdev->dev, dfsdm->num_fls,
+				      sizeof(*dfsdm->fl_list), GFP_KERNEL);
 	if (!dfsdm->fl_list)
 		return -ENOMEM;
 
-	dfsdm->ch_list = devm_kzalloc_objs(&pdev->dev, *dfsdm->ch_list,
-					   dfsdm->num_chs);
+	dfsdm->ch_list = devm_kcalloc(&pdev->dev, dfsdm->num_chs,
+				      sizeof(*dfsdm->ch_list), GFP_KERNEL);
 	if (!dfsdm->ch_list)
 		return -ENOMEM;
 

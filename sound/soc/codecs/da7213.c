@@ -11,7 +11,6 @@
 #include <linux/acpi.h>
 #include <linux/of.h>
 #include <linux/property.h>
-#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
@@ -217,10 +216,13 @@ static int da7213_volsw_locked_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct da7213_priv *da7213 = snd_soc_component_get_drvdata(component);
+	int ret;
 
-	guard(mutex)(&da7213->ctrl_lock);
+	mutex_lock(&da7213->ctrl_lock);
+	ret = snd_soc_get_volsw(kcontrol, ucontrol);
+	mutex_unlock(&da7213->ctrl_lock);
 
-	return snd_soc_get_volsw(kcontrol, ucontrol);
+	return ret;
 }
 
 static int da7213_volsw_locked_put(struct snd_kcontrol *kcontrol,
@@ -228,10 +230,13 @@ static int da7213_volsw_locked_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct da7213_priv *da7213 = snd_soc_component_get_drvdata(component);
+	int ret;
 
-	guard(mutex)(&da7213->ctrl_lock);
+	mutex_lock(&da7213->ctrl_lock);
+	ret = snd_soc_put_volsw(kcontrol, ucontrol);
+	mutex_unlock(&da7213->ctrl_lock);
 
-	return snd_soc_put_volsw(kcontrol, ucontrol);
+	return ret;
 }
 
 static int da7213_enum_locked_get(struct snd_kcontrol *kcontrol,
@@ -239,10 +244,13 @@ static int da7213_enum_locked_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct da7213_priv *da7213 = snd_soc_component_get_drvdata(component);
+	int ret;
 
-	guard(mutex)(&da7213->ctrl_lock);
+	mutex_lock(&da7213->ctrl_lock);
+	ret = snd_soc_get_enum_double(kcontrol, ucontrol);
+	mutex_unlock(&da7213->ctrl_lock);
 
-	return snd_soc_get_enum_double(kcontrol, ucontrol);
+	return ret;
 }
 
 static int da7213_enum_locked_put(struct snd_kcontrol *kcontrol,
@@ -250,10 +258,13 @@ static int da7213_enum_locked_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct da7213_priv *da7213 = snd_soc_component_get_drvdata(component);
+	int ret;
 
-	guard(mutex)(&da7213->ctrl_lock);
+	mutex_lock(&da7213->ctrl_lock);
+	ret = snd_soc_put_enum_double(kcontrol, ucontrol);
+	mutex_unlock(&da7213->ctrl_lock);
 
-	return snd_soc_put_enum_double(kcontrol, ucontrol);
+	return ret;
 }
 
 /* ALC */
@@ -454,8 +465,9 @@ static int da7213_tonegen_freq_get(struct snd_kcontrol *kcontrol,
 	__le16 val;
 	int ret;
 
-	scoped_guard(mutex, &da7213->ctrl_lock)
-		ret = regmap_raw_read(da7213->regmap, reg, &val, sizeof(val));
+	mutex_lock(&da7213->ctrl_lock);
+	ret = regmap_raw_read(da7213->regmap, reg, &val, sizeof(val));
+	mutex_unlock(&da7213->ctrl_lock);
 
 	if (ret)
 		return ret;
@@ -487,11 +499,12 @@ static int da7213_tonegen_freq_put(struct snd_kcontrol *kcontrol,
 	 */
 	val_new = cpu_to_le16(ucontrol->value.integer.value[0]);
 
-	guard(mutex)(&da7213->ctrl_lock);
+	mutex_lock(&da7213->ctrl_lock);
 	ret = regmap_raw_read(da7213->regmap, reg, &val_old, sizeof(val_old));
 	if (ret == 0 && (val_old != val_new))
 		ret = regmap_raw_write(da7213->regmap, reg,
 				&val_new, sizeof(val_new));
+	mutex_unlock(&da7213->ctrl_lock);
 
 	if (ret < 0)
 		return ret;
@@ -1930,7 +1943,7 @@ static struct da7213_platform_data
 	const char *fw_str;
 	u32 fw_val32;
 
-	pdata = devm_kzalloc_obj(component->dev, *pdata);
+	pdata = devm_kzalloc(component->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return NULL;
 
@@ -2091,6 +2104,16 @@ static int da7213_probe(struct snd_soc_component *component)
 
 	pm_runtime_put_sync(component->dev);
 
+	/* Check if MCLK provided */
+	da7213->mclk = devm_clk_get_optional(component->dev, "mclk");
+	if (IS_ERR(da7213->mclk))
+		return PTR_ERR(da7213->mclk);
+	if (da7213->mclk)
+		/* Do automatic PLL handling assuming fixed clock until
+		 * set_pll() has been called. This makes the codec usable
+		 * with the simple-audio-card driver. */
+		da7213->fixed_clk_auto_pll = true;
+
 	/* Default infinite tone gen, start/stop by Kcontrol */
 	snd_soc_component_write(component, DA7213_TONE_GEN_CYCLES, DA7213_BEEP_CYCLES_MASK);
 
@@ -2179,7 +2202,7 @@ static int da7213_i2c_probe(struct i2c_client *i2c)
 	struct da7213_priv *da7213;
 	int i, ret;
 
-	da7213 = devm_kzalloc_obj(&i2c->dev, *da7213);
+	da7213 = devm_kzalloc(&i2c->dev, sizeof(*da7213), GFP_KERNEL);
 	if (!da7213)
 		return -ENOMEM;
 
@@ -2218,19 +2241,6 @@ static int da7213_i2c_probe(struct i2c_client *i2c)
 	}
 
 	mutex_init(&da7213->ctrl_lock);
-
-	/* Check if MCLK provided */
-	da7213->mclk = devm_clk_get_optional(&i2c->dev, "mclk");
-	if (IS_ERR(da7213->mclk))
-		return dev_err_probe(&i2c->dev, PTR_ERR(da7213->mclk),
-				      "failed to get mclk\n");
-	if (da7213->mclk)
-		/*
-		 * Do automatic PLL handling assuming fixed clock until
-		 * set_pll() has been called. This makes the codec usable
-		 * with the simple-audio-card driver.
-		 */
-		da7213->fixed_clk_auto_pll = true;
 
 	pm_runtime_set_autosuspend_delay(&i2c->dev, 100);
 	pm_runtime_use_autosuspend(&i2c->dev);

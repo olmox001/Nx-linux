@@ -303,8 +303,7 @@ static int rescale_configure_channel(struct device *dev,
 	chan->info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
 		BIT(IIO_CHAN_INFO_SCALE);
 
-	if (rescale->offset ||
-	    iio_channel_has_info(schan, IIO_CHAN_INFO_OFFSET))
+	if (rescale->offset)
 		chan->info_mask_separate |= BIT(IIO_CHAN_INFO_OFFSET);
 
 	/*
@@ -609,4 +608,3 @@ module_platform_driver(rescale_driver);
 MODULE_DESCRIPTION("IIO rescale driver");
 MODULE_AUTHOR("Peter Rosin <peda@axentia.se>");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_CONSUMER");

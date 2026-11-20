@@ -42,9 +42,10 @@ int dump_unix(struct bpf_iter__unix *ctx)
 	seq = ctx->meta->seq;
 	seq_num = ctx->meta->seq_num;
 	if (seq_num == 0)
-		BPF_SEQ_PRINTF(seq, "Num       RefCount Protocol Flags    Type St    Inode Path\n");
+		BPF_SEQ_PRINTF(seq, "Num               RefCount Protocol Flags    Type St    Inode Path\n");
 
-	BPF_SEQ_PRINTF(seq, "%08u: %08X %08X %08X %04X %02X %8lu", 0,
+	BPF_SEQ_PRINTF(seq, "%pK: %08X %08X %08X %04X %02X %8lu",
+		       unix_sk,
 		       sk->sk_refcnt.refs.counter,
 		       0,
 		       sk->sk_state == TCP_LISTEN ? __SO_ACCEPTCON : 0,
@@ -70,7 +71,7 @@ int dump_unix(struct bpf_iter__unix *ctx)
 
 			for (i = 1; i < len; i++) {
 				/* unix_validate_addr() tests this upper bound. */
-				if (i >= sizeof(unix_sk->addr->name->sun_path))
+				if (i >= sizeof(struct sockaddr_un))
 					break;
 
 				BPF_SEQ_PRINTF(seq, "%c",

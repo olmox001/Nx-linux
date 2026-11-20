@@ -801,7 +801,7 @@ static int emmaprp_probe(struct platform_device *pdev)
 	struct video_device *vfd;
 	int irq, ret;
 
-	pcdev = devm_kzalloc_obj(&pdev->dev, *pcdev);
+	pcdev = devm_kzalloc(&pdev->dev, sizeof(*pcdev), GFP_KERNEL);
 	if (!pcdev)
 		return -ENOMEM;
 

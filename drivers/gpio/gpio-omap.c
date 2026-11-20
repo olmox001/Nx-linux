@@ -432,7 +432,8 @@ static int omap_gpio_irq_type(struct irq_data *d, unsigned type)
 	if (type & ~IRQ_TYPE_SENSE_MASK)
 		return -EINVAL;
 
-	if (!bank->regs->leveldetect0 && (type & IRQ_TYPE_LEVEL_MASK))
+	if (!bank->regs->leveldetect0 &&
+		(type & (IRQ_TYPE_LEVEL_LOW|IRQ_TYPE_LEVEL_HIGH)))
 		return -EINVAL;
 
 	raw_spin_lock_irqsave(&bank->lock, flags);
@@ -449,9 +450,9 @@ static int omap_gpio_irq_type(struct irq_data *d, unsigned type)
 	}
 	raw_spin_unlock_irqrestore(&bank->lock, flags);
 
-	if (type & IRQ_TYPE_LEVEL_MASK)
+	if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH))
 		irq_set_handler_locked(d, handle_level_irq);
-	else if (type & IRQ_TYPE_EDGE_BOTH)
+	else if (type & (IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING))
 		/*
 		 * Edge IRQs are already cleared/acked in irq_handler and
 		 * not need to be masked, as result handle_edge_irq()
@@ -701,7 +702,7 @@ static void omap_gpio_unmask_irq(struct irq_data *d)
 	 * after enabing the interrupt to clear the wakeup status.
 	 */
 	if (bank->regs->leveldetect0 && bank->regs->wkup_en &&
-	    trigger & IRQ_TYPE_LEVEL_MASK)
+	    trigger & (IRQ_TYPE_LEVEL_HIGH | IRQ_TYPE_LEVEL_LOW))
 		omap_clear_gpio_irqstatus(bank, offset);
 
 	if (trigger)
@@ -813,11 +814,8 @@ static int omap_gpio_request(struct gpio_chip *chip, unsigned offset)
 {
 	struct gpio_bank *bank = gpiochip_get_data(chip);
 	unsigned long flags;
-	int ret;
 
-	ret = pm_runtime_resume_and_get(chip->parent);
-	if (ret < 0)
-		return ret;
+	pm_runtime_get_sync(chip->parent);
 
 	raw_spin_lock_irqsave(&bank->lock, flags);
 	omap_enable_gpio_module(bank, offset);
@@ -1035,6 +1033,8 @@ static void omap_gpio_mod_init(struct gpio_bank *bank)
 static int omap_gpio_chip_init(struct gpio_bank *bank, struct device *pm_dev)
 {
 	struct gpio_irq_chip *irq;
+	static int gpio;
+	const char *label;
 	int ret;
 
 	/*
@@ -1056,7 +1056,11 @@ static int omap_gpio_chip_init(struct gpio_bank *bank, struct device *pm_dev)
 		if (bank->regs->wkup_en)
 			bank->chip.parent = &omap_mpuio_device.dev;
 	} else {
-		bank->chip.label = dev_name(bank->chip.parent);
+		label = devm_kasprintf(bank->chip.parent, GFP_KERNEL, "gpio-%d-%d",
+				       gpio, gpio + bank->width - 1);
+		if (!label)
+			return -ENOMEM;
+		bank->chip.label = label;
 	}
 	bank->chip.base = -1;
 	bank->chip.ngpio = bank->width;
@@ -1082,6 +1086,9 @@ static int omap_gpio_chip_init(struct gpio_bank *bank, struct device *pm_dev)
 			       0, dev_name(bank->chip.parent), bank);
 	if (ret)
 		gpiochip_remove(&bank->chip);
+
+	if (!bank->is_mpuio)
+		gpio += bank->width;
 
 	return ret;
 }
@@ -1404,7 +1411,7 @@ static int omap_gpio_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -EINVAL;
 
-	bank = devm_kzalloc_obj(dev, *bank);
+	bank = devm_kzalloc(dev, sizeof(*bank), GFP_KERNEL);
 	if (!bank)
 		return -ENOMEM;
 
@@ -1462,13 +1469,7 @@ static int omap_gpio_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, bank);
 
 	pm_runtime_enable(dev);
-	ret = pm_runtime_resume_and_get(dev);
-	if (ret < 0) {
-		pm_runtime_disable(dev);
-		if (bank->dbck_flag)
-			clk_unprepare(bank->dbck);
-		return ret;
-	}
+	pm_runtime_get_sync(dev);
 
 	if (bank->is_mpuio)
 		omap_mpuio_init(bank);

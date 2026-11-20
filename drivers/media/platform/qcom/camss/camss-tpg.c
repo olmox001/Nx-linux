@@ -292,7 +292,6 @@ static int tpg_get_format(struct v4l2_subdev *sd,
 }
 
 static int tpg_set_format(struct v4l2_subdev *sd,
-			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
 {
@@ -323,7 +322,7 @@ static int tpg_init_formats(struct v4l2_subdev *sd,
 		}
 	};
 
-	return tpg_set_format(sd, NULL, fh ? fh->state : NULL, &format);
+	return tpg_set_format(sd, fh ? fh->state : NULL, &format);
 }
 
 static int tpg_s_ctrl(struct v4l2_ctrl *ctrl)
@@ -372,7 +371,8 @@ int msm_tpg_subdev_init(struct camss *camss,
 	if (!tpg->nclocks)
 		return 0;
 
-	tpg->clock = devm_kzalloc_objs(dev, *tpg->clock, tpg->nclocks);
+	tpg->clock = devm_kcalloc(dev, tpg->nclocks,
+				  sizeof(*tpg->clock), GFP_KERNEL);
 	if (!tpg->clock)
 		return -ENOMEM;
 
@@ -394,8 +394,8 @@ int msm_tpg_subdev_init(struct camss *camss,
 			continue;
 		}
 
-		clock->freq = devm_kzalloc_objs(dev, *clock->freq,
-						clock->nfreqs);
+		clock->freq = devm_kcalloc(dev, clock->nfreqs,
+					   sizeof(*clock->freq), GFP_KERNEL);
 		if (!clock->freq)
 			return -ENOMEM;
 

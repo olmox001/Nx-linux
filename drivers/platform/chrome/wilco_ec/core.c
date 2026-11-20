@@ -40,7 +40,7 @@ static int wilco_ec_probe(struct platform_device *pdev)
 	struct wilco_ec_device *ec;
 	int ret;
 
-	ec = devm_kzalloc_obj(dev, *ec);
+	ec = devm_kzalloc(dev, sizeof(*ec), GFP_KERNEL);
 	if (!ec)
 		return -ENOMEM;
 
@@ -151,8 +151,8 @@ static const struct acpi_device_id wilco_ec_acpi_device_ids[] = {
 MODULE_DEVICE_TABLE(acpi, wilco_ec_acpi_device_ids);
 
 static const struct platform_device_id wilco_ec_id[] = {
-	{ .name = DRV_NAME },
-	{ }
+	{ DRV_NAME, 0 },
+	{}
 };
 MODULE_DEVICE_TABLE(platform, wilco_ec_id);
 

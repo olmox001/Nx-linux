@@ -43,7 +43,6 @@
 #define __DAL_OPP_H__
 
 #include "hw_shared.h"
-#include "../custom_float.h"
 #include "dc_hw_types.h"
 #include "transform.h"
 #include "mpc.h"
@@ -141,6 +140,19 @@ enum channel_name {
 	CHANNEL_NAME_RED,
 	CHANNEL_NAME_GREEN,
 	CHANNEL_NAME_BLUE
+};
+
+struct custom_float_format {
+	uint32_t mantissa_bits;
+	uint32_t exponenta_bits;
+	bool sign;
+};
+
+struct custom_float_value {
+	uint32_t mantissa;
+	uint32_t exponenta;
+	uint32_t value;
+	bool negative;
 };
 
 struct hw_x_point {
@@ -340,8 +352,7 @@ struct opp_funcs {
 			const struct tg_color *solid_color,
 			int width,
 			int height,
-			int offset,
-			bool disable_dyn_exp_for_test_pattern);
+			int offset);
 
 	void (*opp_program_dpg_dimensions)(
 				struct output_pixel_processor *opp,

@@ -677,7 +677,6 @@ static int og01a1b_disable_streams(struct v4l2_subdev *sd,
 }
 
 static int og01a1b_set_format(struct v4l2_subdev *sd,
-			      const struct v4l2_subdev_client_info *ci,
 			      struct v4l2_subdev_state *sd_state,
 			      struct v4l2_subdev_format *fmt)
 {
@@ -764,7 +763,7 @@ static int og01a1b_init_state(struct v4l2_subdev *sd,
 		},
 	};
 
-	og01a1b_set_format(sd, NULL, state, &fmt);
+	og01a1b_set_format(sd, state, &fmt);
 
 	return 0;
 }
@@ -957,11 +956,6 @@ static void og01a1b_remove(struct i2c_client *client)
 	media_entity_cleanup(&sd->entity);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
 	pm_runtime_disable(og01a1b->dev);
-
-	if (!pm_runtime_status_suspended(og01a1b->dev)) {
-		og01a1b_power_off(og01a1b->dev);
-		pm_runtime_set_suspended(og01a1b->dev);
-	}
 }
 
 static int og01a1b_probe(struct i2c_client *client)
@@ -970,7 +964,7 @@ static int og01a1b_probe(struct i2c_client *client)
 	unsigned long freq;
 	int ret;
 
-	og01a1b = devm_kzalloc_obj(&client->dev, *og01a1b);
+	og01a1b = devm_kzalloc(&client->dev, sizeof(*og01a1b), GFP_KERNEL);
 	if (!og01a1b)
 		return -ENOMEM;
 

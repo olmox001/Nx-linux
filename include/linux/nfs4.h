@@ -263,12 +263,6 @@ enum why_no_delegation4 { /* new to v4.1 */
 	WND4_IS_DIR = 8,
 };
 
-enum stable_how4 {
-	UNSTABLE4	= 0,
-	DATA_SYNC4	= 1,
-	FILE_SYNC4	= 2,
-};
-
 enum lock_type4 {
 	NFS4_UNLOCK_LT = 0,
 	NFS4_READ_LT = 1,
@@ -396,14 +390,6 @@ enum {
 };
 
 /*
- * Symbol name and value are from draft-ietf-nfsv4-uncacheable-files
- * Section 7.  "XDR for Uncacheable Attribute"
- */
-enum {
-	FATTR4_UNCACHEABLE_FILE_DATA	= 87,
-};
-
-/*
  * The following internal definitions enable processing the above
  * attribute bits within 32-bit word boundaries.
  */
@@ -489,7 +475,6 @@ enum {
 #define FATTR4_WORD2_ACL_TRUEFORM_SCOPE	BIT(FATTR4_ACL_TRUEFORM_SCOPE - 64)
 #define FATTR4_WORD2_POSIX_DEFAULT_ACL	BIT(FATTR4_POSIX_DEFAULT_ACL - 64)
 #define FATTR4_WORD2_POSIX_ACCESS_ACL	BIT(FATTR4_POSIX_ACCESS_ACL - 64)
-#define FATTR4_WORD2_UNCACHEABLE_FILE_DATA	BIT(FATTR4_UNCACHEABLE_FILE_DATA - 64)
 
 /* MDS threshold bitmap bits */
 #define THRESHOLD_RD                    (1UL << 0)

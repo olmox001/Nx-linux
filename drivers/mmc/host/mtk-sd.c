@@ -1805,7 +1805,7 @@ static irqreturn_t msdc_cmdq_irq(struct msdc_host *host, u32 intsts)
 			cmd_err, dat_err, intsts);
 	}
 
-	return cqhci_irq(mmc, cmd_err, dat_err);
+	return cqhci_irq(mmc, 0, cmd_err, dat_err);
 }
 
 static irqreturn_t msdc_irq(int irq, void *dev_id)
@@ -3135,7 +3135,9 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	msdc_init_hw(host);
 
 	if (mmc->caps2 & MMC_CAP2_CQE) {
-		host->cq_host = devm_kzalloc_obj(mmc->parent, *host->cq_host);
+		host->cq_host = devm_kzalloc(mmc->parent,
+					     sizeof(*host->cq_host),
+					     GFP_KERNEL);
 		if (!host->cq_host) {
 			ret = -ENOMEM;
 			goto release;
@@ -3154,7 +3156,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		msdc_cqe_cit_cal(host, 2350);
 	} else if (mmc->caps2 & MMC_CAP2_NO_SDIO) {
 		/* Use HSQ on eMMC/SD (but not on SDIO) if HW CQE not supported */
-		struct mmc_hsq *hsq = devm_kzalloc_obj(&pdev->dev, *hsq);
+		struct mmc_hsq *hsq = devm_kzalloc(&pdev->dev, sizeof(*hsq), GFP_KERNEL);
 		if (!hsq) {
 			ret = -ENOMEM;
 			goto release;

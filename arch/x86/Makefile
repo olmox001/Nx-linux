@@ -20,7 +20,7 @@ ifdef CONFIG_CC_IS_CLANG
 RETPOLINE_CFLAGS	:= -mretpoline-external-thunk
 RETPOLINE_VDSO_CFLAGS	:= -mretpoline
 endif
-RETPOLINE_CFLAGS	+= $(CONFIG_CC_OPT_INDIRECT_BRANCH_CS_PREFIX)
+RETPOLINE_CFLAGS	+= $(call cc-option,-mindirect-branch-cs-prefix)
 
 ifdef CONFIG_MITIGATION_RETHUNK
 RETHUNK_CFLAGS		:= -mfunction-return=thunk-extern
@@ -52,7 +52,7 @@ REALMODE_CFLAGS	:= $(CC_FLAGS_DIALECT) -m16 -g -Os \
 		   -DDISABLE_BRANCH_PROFILING -D__DISABLE_EXPORTS \
 		   -Wall -Wstrict-prototypes -march=i386 -mregparm=3 \
 		   -fno-strict-aliasing -fomit-frame-pointer -fno-pic \
-		   -mno-mmx -mno-sse $(CONFIG_CC_OPT_CF_PROTECTION_NONE)
+		   -mno-mmx -mno-sse $(call cc-option,-fcf-protection=none)
 
 REALMODE_CFLAGS += -ffreestanding
 REALMODE_CFLAGS += -fno-stack-protector
@@ -99,10 +99,10 @@ ifeq ($(CONFIG_X86_KERNEL_IBT),y)
 #
 #   https://gcc.gnu.org/bugzilla/show_bug.cgi?id=104816
 #
-KBUILD_CFLAGS += $(CONFIG_CC_OPT_CF_PROTECTION_BRANCH)
+KBUILD_CFLAGS += $(call cc-option,-fcf-protection=branch -fno-jump-tables)
 KBUILD_RUSTFLAGS += -Zcf-protection=branch $(if $(call rustc-min-version,109300),-Cjump-tables=n,-Zno-jump-tables)
 else
-KBUILD_CFLAGS += $(CONFIG_CC_OPT_CF_PROTECTION_NONE)
+KBUILD_CFLAGS += $(call cc-option,-fcf-protection=none)
 endif
 
 ifeq ($(CONFIG_X86_32),y)
@@ -138,10 +138,10 @@ else
         KBUILD_CFLAGS += -m64
 
         # Align jump targets to 1 byte, not the default 16 bytes:
-        KBUILD_CFLAGS += $(CONFIG_CC_OPT_FALIGN_JUMPS)
+        KBUILD_CFLAGS += $(call cc-option,-falign-jumps=1)
 
         # Pack loops tightly as well:
-        KBUILD_CFLAGS += $(CONFIG_CC_OPT_FALIGN_LOOPS)
+        KBUILD_CFLAGS += $(call cc-option,-falign-loops=1)
 
         # Don't autogenerate traditional x87 instructions
         KBUILD_CFLAGS += -mno-80387

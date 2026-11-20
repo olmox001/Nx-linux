@@ -14,7 +14,7 @@ static size_t syscall_arg__scnprintf_augmented_timespec(struct syscall_arg *arg,
 
 size_t syscall_arg__scnprintf_timespec(char *bf, size_t size, struct syscall_arg *arg)
 {
-	if (syscall_arg__augmented_args_valid(arg, sizeof(struct timespec)))
+	if (arg->augmented.args)
 		return syscall_arg__scnprintf_augmented_timespec(arg, bf, size);
 
 	return scnprintf(bf, size, "%#lx", arg->val);

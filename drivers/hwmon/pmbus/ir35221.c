@@ -99,7 +99,8 @@ static int ir35221_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	info = devm_kzalloc_obj(&client->dev, struct pmbus_driver_info);
+	info = devm_kzalloc(&client->dev, sizeof(struct pmbus_driver_info),
+			    GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
